@@ -174,8 +174,8 @@ class Atmosphere {
 		} elseif ( 'publish' === $new_status && 'publish' === $old_status ) {
 			// Update.
 			\wp_schedule_single_event( \time(), 'atmosphere_update_post', array( $post->ID ) );
-		} elseif ( 'publish' === $old_status && 'publish' !== $new_status ) {
-			// Unpublish / trash — pass TIDs directly since post meta may be gone by cron time.
+		} elseif ( 'publish' !== $new_status ) {
+			// Any transition away from publish (or trashing a draft that has TIDs).
 			$bsky_tid = \get_post_meta( $post->ID, Transformer\Post::META_TID, true );
 			$doc_tid  = \get_post_meta( $post->ID, Transformer\Document::META_TID, true );
 			if ( $bsky_tid || $doc_tid ) {
