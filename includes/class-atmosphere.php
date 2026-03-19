@@ -207,7 +207,7 @@ class Atmosphere {
 		$doc_tid  = \get_post_meta( $post_id, Transformer\Document::META_TID, true );
 
 		if ( $bsky_tid || $doc_tid ) {
-			\wp_schedule_single_event( \time(), 'atmosphere_delete_records', array( $bsky_tid, $doc_tid, $post_id ) );
+			\wp_schedule_single_event( \time(), 'atmosphere_delete_records', array( $bsky_tid, $doc_tid ) );
 		}
 	}
 
