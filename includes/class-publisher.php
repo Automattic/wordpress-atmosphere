@@ -164,6 +164,47 @@ class Publisher {
 	}
 
 	/**
+	 * Delete AT Protocol records by TID, without requiring the post to exist.
+	 *
+	 * Used when a post is permanently deleted and post meta is no longer available.
+	 *
+	 * @param string $bsky_tid Bluesky post TID (may be empty).
+	 * @param string $doc_tid  Document TID (may be empty).
+	 * @return array|\WP_Error
+	 */
+	public static function delete_by_tids( string $bsky_tid, string $doc_tid ): array|\WP_Error {
+		if ( ! $bsky_tid && ! $doc_tid ) {
+			return new \WP_Error( 'atmosphere_not_published', \__( 'No TIDs provided.', 'atmosphere' ) );
+		}
+
+		$writes = array();
+
+		if ( $bsky_tid ) {
+			$writes[] = array(
+				'$type'      => 'com.atproto.repo.applyWrites#delete',
+				'collection' => 'app.bsky.feed.post',
+				'rkey'       => $bsky_tid,
+			);
+		}
+
+		if ( $doc_tid ) {
+			$writes[] = array(
+				'$type'      => 'com.atproto.repo.applyWrites#delete',
+				'collection' => 'site.standard.document',
+				'rkey'       => $doc_tid,
+			);
+		}
+
+		$result = API::apply_writes( $writes );
+
+		if ( \is_wp_error( $result ) ) {
+			return $result;
+		}
+
+		return $result;
+	}
+
+	/**
 	 * Publish or update the site.standard.publication record.
 	 *
 	 * @return array|\WP_Error

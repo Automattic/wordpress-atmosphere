@@ -43,6 +43,9 @@ class Atmosphere {
 		// Post lifecycle hooks.
 		\add_action( 'transition_post_status', array( $this, 'on_status_change' ), 10, 3 );
 
+		// Catch permanent deletes (bypassing trash or emptying trash).
+		\add_action( 'before_delete_post', array( $this, 'on_before_delete' ) );
+
 		// Token refresh cron.
 		\add_action( 'atmosphere_refresh_token', array( $this, 'cron_refresh_token' ) );
 
@@ -172,8 +175,39 @@ class Atmosphere {
 			// Update.
 			\wp_schedule_single_event( \time(), 'atmosphere_update_post', array( $post->ID ) );
 		} elseif ( 'publish' === $old_status && 'publish' !== $new_status ) {
-			// Unpublish / trash.
-			\wp_schedule_single_event( \time(), 'atmosphere_delete_post', array( $post->ID ) );
+			// Unpublish / trash — pass TIDs directly since post meta may be gone by cron time.
+			$bsky_tid = \get_post_meta( $post->ID, Transformer\Post::META_TID, true );
+			$doc_tid  = \get_post_meta( $post->ID, Transformer\Document::META_TID, true );
+			if ( $bsky_tid || $doc_tid ) {
+				\wp_schedule_single_event( \time(), 'atmosphere_delete_records', array( $bsky_tid, $doc_tid ) );
+			}
+		}
+	}
+
+	/**
+	 * Schedule AT Protocol record deletion before a post is permanently deleted.
+	 *
+	 * Captures TIDs from post meta before they're lost, then schedules
+	 * an async delete via cron.
+	 *
+	 * @param int $post_id Post ID being deleted.
+	 */
+	public function on_before_delete( int $post_id ): void {
+		if ( ! is_connected() ) {
+			return;
+		}
+
+		$post = \get_post( $post_id );
+
+		if ( ! $post || ! \in_array( $post->post_type, Backfill::syncable_post_types(), true ) ) {
+			return;
+		}
+
+		$bsky_tid = \get_post_meta( $post_id, Transformer\Post::META_TID, true );
+		$doc_tid  = \get_post_meta( $post_id, Transformer\Document::META_TID, true );
+
+		if ( $bsky_tid || $doc_tid ) {
+			\wp_schedule_single_event( \time(), 'atmosphere_delete_records', array( $bsky_tid, $doc_tid, $post_id ) );
 		}
 	}
 
@@ -220,6 +254,15 @@ class Atmosphere {
 					Publisher::delete( $post );
 				}
 			}
+		);
+
+		\add_action(
+			'atmosphere_delete_records',
+			static function ( string $bsky_tid, string $doc_tid ): void {
+				Publisher::delete_by_tids( $bsky_tid, $doc_tid );
+			},
+			10,
+			2
 		);
 	}
 }
