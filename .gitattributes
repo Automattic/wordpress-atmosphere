@@ -1,4 +1,5 @@
 # Directories excluded from release archives (git archive / GitHub release)
+/.agents         export-ignore
 /.claude         export-ignore
 /.github         export-ignore
 /bin             export-ignore
@@ -15,3 +16,4 @@
 /phpcs.xml        export-ignore
 /phpunit.xml.dist export-ignore
 /CLAUDE.md        export-ignore
+/AGENTS.md        export-ignore
