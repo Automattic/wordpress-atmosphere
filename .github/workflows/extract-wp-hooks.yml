@@ -1,0 +1,23 @@
+name: Extract WordPress Hooks
+
+on:
+  push:
+    branches: [trunk]
+    paths:
+      - '**.php'
+  workflow_dispatch:
+
+jobs:
+  extract-hooks:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # Required to push to wiki repository
+    steps:
+      - uses: actions/checkout@v6
+      - uses: akirk/extract-wp-hooks@1.4.0
+        with:
+          namespace: 'Atmosphere'
+          wiki-directory: '../wordpress-atmosphere.wiki'
+          github-blob-url: 'https://github.com/Automattic/wordpress-atmosphere/blob/trunk/'
+          example-style: 'prefixed'
+          exclude-dirs: 'node_modules,tests,vendor'
