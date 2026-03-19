@@ -22,7 +22,8 @@
 		"yoast/phpunit-polyfills": "^4.0",
 		"dealerdirect/phpcodesniffer-composer-installer": "^1.0.0",
 		"sirbrillig/phpcs-variable-analysis": "^2.11",
-		"phpcsstandards/phpcsextra": "^1.1.0"
+		"phpcsstandards/phpcsextra": "^1.1.0",
+		"automattic/jetpack-changelogger": "^6.0"
 	},
 	"autoload": {
 		"classmap": [
@@ -44,10 +45,24 @@
 		"lint:fix": [
 			"vendor/bin/phpcbf"
 		],
+		"changelog:add": [
+			"composer install",
+			"vendor/bin/changelogger add"
+		],
+		"changelog:write": [
+			"composer install",
+			"vendor/bin/changelogger write --add-pr-num"
+		],
 		"release": [
 			"@composer install --no-dev --optimize-autoloader",
 			"@composer dump-autoload --optimize --no-dev"
 		]
+	},
+	"extra": {
+		"changelogger": {
+			"changes-dir": ".github/changelog/",
+			"link-template": "https://github.com/Automattic/wordpress-atmosphere/compare/${old}...${new}"
+		}
 	},
 	"config": {
 		"allow-plugins": true

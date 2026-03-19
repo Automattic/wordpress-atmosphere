@@ -5,7 +5,9 @@
 		"allowedSkills": [
 			"dev",
 			"code-style",
-			"test"
+			"test",
+			"pr",
+			"release"
 		]
 	}
 }
