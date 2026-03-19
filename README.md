@@ -28,7 +28,7 @@ The plugin uses native AT Protocol OAuth with PKCE and DPoP — no third-party p
 
 ## Requirements
 
-- PHP 8.1+
+- PHP 8.2+
 - WordPress 6.2+
 - Composer
 

@@ -2,7 +2,7 @@
 
 WordPress plugin that publishes posts to AT Protocol in both `app.bsky.feed.post` (Bluesky) and `site.standard.document` / `site.standard.publication` (standard.site) formats via native OAuth.
 
-**Tech stack:** PHP 8.1+, WordPress 6.2+, wp-env for local dev, PHPUnit for tests, Jetpack Changelogger for changelog management.
+**Tech stack:** PHP 8.2+, WordPress 6.2+, wp-env for local dev, PHPUnit for tests, Jetpack Changelogger for changelog management.
 
 **Do NOT:**
 - Edit WordPress core files

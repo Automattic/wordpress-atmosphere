@@ -3,7 +3,7 @@ name: Unit Tests
 on:
   push:
     branches:
-      - main
+      - trunk
     paths:
       - '**.php'
       - composer.json
@@ -30,10 +30,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        php-versions: ['8.1', '8.3', '8.5']
+        php-versions: ['8.2', '8.3', '8.5']
         wp-version: ['latest']
         include:
-          - php-versions: '8.1'
+          - php-versions: '8.2'
             wp-version: '6.2'
           - php-versions: '8.5'
             wp-version: 'trunk'
