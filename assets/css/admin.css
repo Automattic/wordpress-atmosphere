@@ -1,0 +1,28 @@
+/**
+ * ATmosphere admin styles.
+ */
+
+.settings_page_atmosphere .card {
+	max-width: 800px;
+	margin-top: 20px;
+	padding: 12px 24px 24px;
+}
+
+.settings_page_atmosphere .card h2 {
+	margin-top: 12px;
+}
+
+.atmosphere-meta-box .description {
+	margin-top: 8px;
+}
+
+.atmosphere-meta-box code {
+	display: inline-block;
+	margin-top: 2px;
+}
+
+#atmosphere-backfill-progress progress {
+	display: block;
+	width: 100%;
+	height: 24px;
+}

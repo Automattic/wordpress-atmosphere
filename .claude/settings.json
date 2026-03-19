@@ -1,0 +1,11 @@
+{
+	"description": "Claude Code settings for WordPress ATmosphere plugin development",
+	"includeCoAuthoredBy": false,
+	"skills": {
+		"allowedSkills": [
+			"dev",
+			"code-style",
+			"test"
+		]
+	}
+}

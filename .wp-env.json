@@ -1,0 +1,13 @@
+{
+	"core": null,
+	"plugins": [ "." ],
+	"port": 8884,
+	"testsPort": 8885,
+	"env": {
+		"tests": {
+			"config": {
+				"WP_ENVIRONMENT_TYPE": "production"
+			}
+		}
+	}
+}

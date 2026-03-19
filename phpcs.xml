@@ -1,0 +1,25 @@
+<?xml version="1.0"?>
+<ruleset name="WordPress ATmosphere">
+	<description>WordPress ATmosphere Standards</description>
+
+	<file>.</file>
+	<exclude-pattern>.(git|github|vscode|idea)</exclude-pattern>
+	<exclude-pattern>*\.(inc|css|js|svg)</exclude-pattern>
+	<exclude-pattern>*/vendor/*</exclude-pattern>
+	<exclude-pattern>*/node_modules/*</exclude-pattern>
+
+	<arg value="ps"/>
+	<arg name="basepath" value="."/>
+	<arg name="colors"/>
+	<arg name="parallel" value="50"/>
+
+	<config name="testVersion" value="8.1-"/>
+	<config name="minimum_supported_wp_version" value="6.2"/>
+	<config name="text_domain" value="atmosphere,default"/>
+
+	<rule ref="PHPCompatibilityWP"/>
+	<rule ref="WordPress">
+		<exclude name="Universal.Operators.DisallowShortTernary" />
+	</rule>
+	<rule ref="VariableAnalysis"/>
+</ruleset>
