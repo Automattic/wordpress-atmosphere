@@ -1,0 +1,4 @@
+Significance: minor
+Type: added
+
+Add integrations framework for third-party plugin support.
