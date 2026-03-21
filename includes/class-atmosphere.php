@@ -13,6 +13,7 @@ use Atmosphere\OAuth\Client;
 use Atmosphere\Transformer\Document;
 use Atmosphere\Transformer\Publication;
 use Atmosphere\Transformer\TID;
+use Atmosphere\Integrations\Load;
 use Atmosphere\WP_Admin\Admin;
 
 /**
@@ -39,6 +40,9 @@ class Atmosphere {
 		// Well-known publication endpoint.
 		\add_action( 'init', array( $this, 'register_wellknown_rewrite' ) );
 		\add_action( 'template_redirect', array( $this, 'serve_wellknown_publication' ) );
+
+		// Plugin integrations.
+		Load::init();
 
 		// Post lifecycle hooks.
 		\add_action( 'transition_post_status', array( $this, 'on_status_change' ), 10, 3 );
