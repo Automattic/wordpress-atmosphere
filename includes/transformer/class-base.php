@@ -34,7 +34,7 @@ abstract class Base {
 	 *
 	 * @param mixed $object WordPress object.
 	 */
-	public function __construct( mixed $object ) {
+	public function __construct( mixed $object ) { // phpcs:ignore Universal.NamingConventions.NoReservedKeywordParameterNames
 		$this->object = $object;
 	}
 

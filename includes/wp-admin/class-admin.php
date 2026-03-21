@@ -261,7 +261,11 @@ class Admin {
 	 * @param \WP_Post $post Current post.
 	 */
 	public static function render_meta_box( \WP_Post $post ): void {
-		include ATMOSPHERE_PLUGIN_DIR . 'templates/meta-box.php';
+		\load_template(
+			ATMOSPHERE_PLUGIN_DIR . 'templates/meta-box.php',
+			false,
+			array( 'post' => $post )
+		);
 	}
 
 	/**

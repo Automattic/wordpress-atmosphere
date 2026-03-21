@@ -4,7 +4,7 @@
  *
  * @package Atmosphere
  *
- * @var WP_Post $post Current post.
+ * @var array $args Template arguments with 'post' key.
  */
 
 use Atmosphere\Transformer\Document;
@@ -12,8 +12,10 @@ use Atmosphere\Transformer\Post as BskyPost;
 
 \defined( 'ABSPATH' ) || exit;
 
-$bsky_uri = \get_post_meta( $post->ID, BskyPost::META_URI, true );
-$doc_uri  = \get_post_meta( $post->ID, Document::META_URI, true );
+// phpcs:ignore VariableAnalysis.CodeAnalysis.VariableAnalysis.UndefinedVariable -- $args is set by load_template().
+$the_post = $args['post'];
+$bsky_uri = \get_post_meta( $the_post->ID, BskyPost::META_URI, true );
+$doc_uri  = \get_post_meta( $the_post->ID, Document::META_URI, true );
 $synced   = ! empty( $bsky_uri ) || ! empty( $doc_uri );
 ?>
 <div class="atmosphere-meta-box">
