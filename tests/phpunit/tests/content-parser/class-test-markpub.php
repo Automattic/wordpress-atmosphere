@@ -54,7 +54,8 @@ class Test_Markpub extends WP_UnitTestCase {
 		$this->assertArrayHasKey( 'text', $result );
 		$this->assertSame( 'at.markpub.text', $result['text']['$type'] );
 		$this->assertArrayHasKey( 'markdown', $result['text'] );
-		$this->assertSame( 'commonmark', $result['flavor'] );
+		$this->assertSame( 'gfm', $result['flavor'] );
+		$this->assertContains( 'strikethrough', $result['extensions'] );
 	}
 
 	/**

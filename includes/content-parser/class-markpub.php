@@ -56,12 +56,13 @@ class Markpub implements Content_Parser {
 		$markdown = \apply_filters( 'atmosphere_html_to_markdown', $markdown, $content );
 
 		return array(
-			'$type'  => 'at.markpub.markdown',
-			'text'   => array(
+			'$type'      => 'at.markpub.markdown',
+			'text'       => array(
 				'$type'    => 'at.markpub.text',
 				'markdown' => $markdown,
 			),
-			'flavor' => 'commonmark',
+			'flavor'     => 'gfm',
+			'extensions' => array( 'strikethrough', 'table' ),
 		);
 	}
 

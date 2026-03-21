@@ -57,10 +57,13 @@ class Document extends Base {
 			'publishedAt' => $this->to_iso8601( $this->object->post_date_gmt ),
 		);
 
-		// Publication reference.
+		// Publication reference (required by spec).
 		$pub_tid = \get_option( 'atmosphere_publication_tid' );
 		if ( $pub_tid ) {
 			$record['site'] = build_at_uri( get_did(), 'site.standard.publication', $pub_tid );
+		} else {
+			// Fall back to site URL for standalone documents.
+			$record['site'] = \untrailingslashit( \get_home_url() );
 		}
 
 		// Relative path.
