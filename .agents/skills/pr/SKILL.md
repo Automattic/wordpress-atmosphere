@@ -1,6 +1,6 @@
 ---
 name: pr
-description: INVOKE THIS SKILL before creating any PR to ensure compliance with branch naming and reviewer assignment.
+description: INVOKE THIS SKILL before creating any PR to ensure compliance with branch naming, changelog requirements, and reviewer assignment.
 ---
 
 # ATmosphere PR Workflow
@@ -14,7 +14,7 @@ description: INVOKE THIS SKILL before creating any PR to ensure compliance with 
 | `fix/{bug}` | Bug fixes |
 | `try/{idea}` | Experimental ideas |
 
-**Reserved:** `trunk` (main branch).
+**Reserved:** `release/{X.Y.Z}` (releases only), `trunk` (main branch).
 
 ## Pre-PR Review
 
@@ -24,6 +24,7 @@ Before creating a PR, delegate to the **code-review** agent to review all change
 
 **Every PR must:**
 - Assign `@me`
+- Include changelog entry OR "Skip Changelog" label
 - Pass CI checks
 - Merge cleanly with trunk
 
@@ -31,6 +32,29 @@ Before creating a PR, delegate to the **code-review** agent to review all change
 # Create PR (includes required assignment)
 gh pr create --assignee @me
 ```
+
+**Use the exact template from `.github/PULL_REQUEST_TEMPLATE.md`** — do not create custom formatting.
+
+## Changelog
+
+**Write changelog messages for end users, not developers.** Users read these in the WordPress plugin update screen. Avoid internal jargon (OOM, batching, N+1), class names, or method names. Describe what the user experiences or what changed from their perspective.
+
+```
+✅ Fix automatic cleanup of old activities failing silently on sites with many items.
+✅ Add a Site Health check that warns when plugins are causing too many federation updates.
+❌ Fix collection purge methods to batch deletions and enforce a hard item cap.
+❌ Add Site Health test to detect excessive outbox activity rates.
+```
+
+End all changelog messages with punctuation.
+
+Add manually if forgotten:
+```bash
+composer changelog:add
+git add . && git commit -m "Add changelog entry" && git push
+```
+
+See [release](../release/SKILL.md) for complete changelog details.
 
 ## Workflow
 
@@ -70,6 +94,7 @@ git push --force-with-lease
 | `Enhancement` | New features |
 | `Documentation` | Doc updates |
 | `Code Quality` | Refactoring, cleanup, etc. |
+| `Skip Changelog` | No changelog needed |
 | `Needs Review` | Ready for review |
 | `In Progress` | Still working |
 | `Hotfix` | Urgent fix |
