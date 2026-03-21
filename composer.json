@@ -27,8 +27,7 @@
 	},
 	"autoload": {
 		"classmap": [
-			"includes/",
-			"integrations/"
+			"includes/"
 		]
 	},
 	"scripts": {
