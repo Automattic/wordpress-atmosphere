@@ -82,6 +82,23 @@ class Markpub implements Content_Parser {
 			return self::inline_html_to_markdown( $html );
 		}
 
+		/**
+		 * Filters the markdown output for a single block.
+		 *
+		 * Integrations can hook this to handle custom block types
+		 * (e.g. jetpack/slideshow, woocommerce/product). Return a
+		 * string to use as the block's markdown, or null to let
+		 * the default handler process it.
+		 *
+		 * @param string|null $markdown Markdown output. Default null.
+		 * @param array       $block    Parsed WordPress block.
+		 */
+		$markdown = \apply_filters( 'atmosphere_markpub_block', null, $block );
+
+		if ( null !== $markdown ) {
+			return $markdown;
+		}
+
 		return match ( $block['blockName'] ) {
 			'core/paragraph'    => self::paragraph( $block ),
 			'core/heading'      => self::heading( $block ),
