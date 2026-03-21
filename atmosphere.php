@@ -67,6 +67,7 @@ function activate() {
  */
 function deactivate() {
 	\wp_clear_scheduled_hook( 'atmosphere_refresh_token' );
+	\wp_clear_scheduled_hook( 'atmosphere_sync_comments' );
 	\flush_rewrite_rules();
 }
 \register_deactivation_hook( __FILE__, __NAMESPACE__ . '\deactivate' );

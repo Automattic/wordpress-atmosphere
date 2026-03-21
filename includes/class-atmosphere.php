@@ -68,6 +68,13 @@ class Atmosphere {
 
 		// Async action hooks (called by WP-Cron).
 		self::register_async_hooks();
+
+		// Comment sync cron.
+		\add_action( 'atmosphere_sync_comments', array( Comment_Sync::class, 'sync' ) );
+
+		if ( ! \wp_next_scheduled( 'atmosphere_sync_comments' ) && is_connected() ) {
+			\wp_schedule_event( \time(), 'hourly', 'atmosphere_sync_comments' );
+		}
 	}
 
 	/**
