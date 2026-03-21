@@ -17,6 +17,7 @@ Before auditing, fetch the relevant specs for current requirements:
 - **AT Protocol Lexicon** — https://atproto.com/specs/lexicon (schema language for record types and API endpoints)
 - **Bluesky Lexicons** — https://docs.bsky.app/ (app.bsky.feed.post and related schemas)
 - **standard.site Lexicons** — https://standard.site/ (site.standard.publication, site.standard.document schemas)
+- **Markpub Lexicons** — https://markpub.at/ (at.markpub.markdown, at.markpub.text schemas for rich content in document records)
 
 Focus on **required** fields and constraints. Treat optional fields as non-blocking.
 
@@ -24,18 +25,20 @@ Focus on **required** fields and constraints. Treat optional fields as non-block
 
 1. Fetch the relevant Lexicon schema(s) for the area being checked
 2. Read the transformer(s) in `includes/transformer/` that produce the records
-3. Read the OAuth classes in `includes/oauth/` for auth flow compliance
-4. Read `includes/class-api.php` for API request handling
-5. Trace the data flow from WordPress post to AT Protocol record
-6. Compare implementation against the Lexicon schemas and protocol specs
+3. Read the content parser(s) in `includes/content-parser/` for document content formatting
+4. Read the OAuth classes in `includes/oauth/` for auth flow compliance
+5. Read `includes/class-api.php` for API request handling
+6. Trace the data flow from WordPress post to AT Protocol record
+7. Compare implementation against the Lexicon schemas and protocol specs
 
 If the user specifies a live PDS or handle, use `curl` to test actual responses. Otherwise, audit the source code.
 
 ## Key Areas
 
 - **app.bsky.feed.post** — required fields (text, createdAt), facets (mentions, links, hashtags), embed structure, character limits
-- **site.standard.document** — required and recommended properties per Lexicon
+- **site.standard.document** — required and recommended properties per Lexicon, content union field
 - **site.standard.publication** — publication metadata record structure
+- **at.markpub.markdown** — content format for document records (text, flavor, facets)
 - **OAuth 2.1 flow** — PKCE (S256), DPoP proof generation (ES256), PAR, client metadata document
 - **DPoP** — proof structure, nonce handling, token binding, key thumbprint
 - **Repository operations** — com.atproto.repo.applyWrites batch format, TID generation, rkey constraints
