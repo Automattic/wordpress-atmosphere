@@ -180,9 +180,10 @@ class Markpub implements Content_Parser {
 	private static function listing( array $block ): ?string {
 		$ordered = ! empty( $block['attrs']['ordered'] );
 		$items   = array();
+		$counter = 0;
 
 		if ( ! empty( $block['innerBlocks'] ) ) {
-			foreach ( $block['innerBlocks'] as $i => $inner ) {
+			foreach ( $block['innerBlocks'] as $inner ) {
 				$text = self::inline_html_to_markdown( $inner['innerHTML'] ?? '' );
 				$text = \trim( $text );
 
@@ -190,7 +191,8 @@ class Markpub implements Content_Parser {
 					continue;
 				}
 
-				$prefix  = $ordered ? ( $i + 1 ) . '. ' : '- ';
+				++$counter;
+				$prefix  = $ordered ? $counter . '. ' : '- ';
 				$items[] = $prefix . $text;
 			}
 		}
@@ -342,10 +344,10 @@ class Markpub implements Content_Parser {
 			$md
 		);
 
-		// Links.
+		// Links — percent-encode parentheses to avoid breaking markdown syntax.
 		$md = \preg_replace_callback(
 			'#<a[^>]+href=["\']([^"\']*)["\'][^>]*>(.*?)</a>#si',
-			static fn( $m ) => '[' . \wp_strip_all_tags( $m[2] ) . '](' . $m[1] . ')',
+			static fn( $m ) => '[' . \wp_strip_all_tags( $m[2] ) . '](' . \str_replace( array( '(', ')' ), array( '%28', '%29' ), $m[1] ) . ')',
 			$md
 		);
 
