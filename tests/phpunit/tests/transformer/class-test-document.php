@@ -9,32 +9,10 @@
 
 namespace Atmosphere\Tests\Transformer;
 
+require_once __DIR__ . '/class-stub-parser.php';
+
 use WP_UnitTestCase;
-use Atmosphere\Content_Parser\Content_Parser;
 use Atmosphere\Transformer\Document;
-
-/**
- * Stub content parser for testing.
- */
-class Stub_Parser implements Content_Parser {
-
-	/**
-	 * {@inheritDoc}
-	 */
-	public function get_type(): string {
-		return 'test.stub.parser';
-	}
-
-	/**
-	 * {@inheritDoc}
-	 */
-	public function parse( string $content, \WP_Post $post ): array { // phpcs:ignore VariableAnalysis.CodeAnalysis.VariableAnalysis.UnusedVariable
-		return array(
-			'$type' => 'test.stub.parser',
-			'text'  => $content,
-		);
-	}
-}
 
 /**
  * Document transformer tests.
