@@ -1,0 +1,4 @@
+Significance: minor
+Type: added
+
+Add extensible content parser support and a JSON preview endpoint for AT Protocol records.
