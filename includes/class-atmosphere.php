@@ -46,7 +46,7 @@ class Atmosphere {
 		Load::init();
 
 		// Default content parser (Markpub).
-		\add_filter( 'atmosphere_content_parser', static fn() => new Markpub() );
+		\add_filter( 'atmosphere_content_parser', static fn( $parser, $post ) => new Markpub(), 10, 2 );
 
 		// JSON preview for AT Protocol records.
 		\add_action( 'template_redirect', array( $this, 'preview' ) );
