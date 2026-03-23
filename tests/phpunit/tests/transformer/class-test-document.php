@@ -20,9 +20,12 @@ use Atmosphere\Transformer\Document;
 class Test_Document extends WP_UnitTestCase {
 
 	/**
-	 * Test that content field is absent when no parser is registered.
+	 * Test that content field is absent when parser filter returns null.
 	 */
 	public function test_content_absent_without_parser() {
+		\remove_all_filters( 'atmosphere_content_parser' );
+		\add_filter( 'atmosphere_content_parser', '__return_null' );
+
 		$post = self::factory()->post->create_and_get(
 			array( 'post_content' => 'Some content here.' )
 		);
@@ -31,6 +34,8 @@ class Test_Document extends WP_UnitTestCase {
 		$record      = $transformer->transform();
 
 		$this->assertArrayNotHasKey( 'content', $record );
+
+		\remove_all_filters( 'atmosphere_content_parser' );
 	}
 
 	/**
