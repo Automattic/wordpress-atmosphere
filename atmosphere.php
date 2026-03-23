@@ -24,9 +24,15 @@ namespace Atmosphere;
 \define( 'ATMOSPHERE_PLUGIN_URL', \plugin_dir_url( __FILE__ ) );
 \define( 'ATMOSPHERE_PLUGIN_FILE', __FILE__ );
 
-// Composer autoloader (classes).
+/*
+ * Composer autoloader — prefer the plugin's own vendor (standalone
+ * install / release ZIP), then try the site-level autoloader
+ * (installed as a Composer dependency).
+ */
 if ( \file_exists( ATMOSPHERE_PLUGIN_DIR . 'vendor/autoload.php' ) ) {
 	require_once ATMOSPHERE_PLUGIN_DIR . 'vendor/autoload.php';
+} elseif ( \file_exists( ABSPATH . 'vendor/autoload.php' ) ) {
+	require_once ABSPATH . 'vendor/autoload.php';
 }
 
 // Helper functions (loaded after ABSPATH is available).
