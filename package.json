@@ -8,7 +8,7 @@
 	"scripts": {
 		"env-start": "wp-env start",
 		"env-stop": "wp-env stop",
-		"env-test": "wp-env run tests-cli --env-cwd=\"wp-content/plugins/atmosphere\" vendor/bin/phpunit"
+		"env-test": "wp-env run tests-cli --env-cwd=\"wp-content/plugins/wordpress-atmosphere\" vendor/bin/phpunit"
 	},
 	"devDependencies": {
 		"@wordpress/env": "^11.2.0"
