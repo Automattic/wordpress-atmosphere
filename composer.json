@@ -1,5 +1,5 @@
 {
-	"name": "pfefferle/atmosphere",
+	"name": "automattic/atmosphere",
 	"description": "Publish WordPress posts to AT Protocol (Bluesky + standard.site) via native OAuth.",
 	"type": "wordpress-plugin",
 	"license": "GPL-2.0-or-later",
