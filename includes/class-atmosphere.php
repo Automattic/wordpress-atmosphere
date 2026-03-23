@@ -152,9 +152,7 @@ class Atmosphere {
 	 * Serve a JSON preview of the AT Protocol record for a post.
 	 *
 	 * Append ?atproto to a singular post URL to see the document
-	 * record JSON. Optionally pass ?atproto={parser} to preview
-	 * with a specific content parser (requires the parser to be
-	 * registered via the atmosphere_content_parser filter).
+	 * record JSON. Requires the edit_posts capability.
 	 */
 	public function preview(): void {
 		// phpcs:ignore WordPress.Security.NonceVerification.Recommended
