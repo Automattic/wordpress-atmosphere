@@ -44,6 +44,9 @@ class Atmosphere {
 		// Plugin integrations.
 		Load::init();
 
+		// JSON preview for AT Protocol records.
+		\add_action( 'template_redirect', array( $this, 'preview' ) );
+
 		// Post lifecycle hooks.
 		\add_action( 'transition_post_status', array( $this, 'on_status_change' ), 10, 3 );
 
@@ -142,6 +145,43 @@ class Atmosphere {
 		\status_header( 200 );
 		\header( 'Content-Type: text/plain; charset=utf-8' );
 		echo \esc_html( $uri );
+		exit;
+	}
+
+	/**
+	 * Serve a JSON preview of the AT Protocol record for a post.
+	 *
+	 * Append ?atproto to a singular post URL to see the document
+	 * record JSON. Requires the edit_posts capability.
+	 */
+	public function preview(): void {
+		// phpcs:ignore WordPress.Security.NonceVerification.Recommended
+		if ( ! isset( $_GET['atproto'] ) || ! \is_singular() ) {
+			return;
+		}
+
+		if ( ! \current_user_can( 'edit_posts' ) ) {
+			return;
+		}
+
+		$post = \get_queried_object();
+
+		if ( ! $post instanceof \WP_Post ) {
+			return;
+		}
+
+		if ( ! \in_array( $post->post_type, Backfill::syncable_post_types(), true ) ) {
+			\status_header( 404 );
+			exit;
+		}
+
+		$transformer = new Document( $post );
+		$record      = $transformer->transform();
+
+		\status_header( 200 );
+		\header( 'Content-Type: application/json; charset=utf-8' );
+		// phpcs:ignore WordPress.WP.AlternativeFunctions.json_encode_json_encode
+		echo \wp_json_encode( $record, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE );
 		exit;
 	}
 

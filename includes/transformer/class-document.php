@@ -13,6 +13,7 @@ namespace Atmosphere\Transformer;
 
 \defined( 'ABSPATH' ) || exit;
 
+use Atmosphere\Content_Parser\Content_Parser;
 use function Atmosphere\build_at_uri;
 use function Atmosphere\get_did;
 use function Atmosphere\sanitize_text;
@@ -55,10 +56,13 @@ class Document extends Base {
 			'publishedAt' => $this->to_iso8601( $this->object->post_date_gmt ),
 		);
 
-		// Publication reference.
+		// Publication reference (required by spec).
 		$pub_tid = \get_option( 'atmosphere_publication_tid' );
 		if ( $pub_tid ) {
 			$record['site'] = build_at_uri( get_did(), 'site.standard.publication', $pub_tid );
+		} else {
+			// Fall back to site URL for standalone documents.
+			$record['site'] = \untrailingslashit( \get_home_url() );
 		}
 
 		// Relative path.
@@ -87,6 +91,12 @@ class Document extends Base {
 		$text_content = $this->get_text_content();
 		if ( ! empty( $text_content ) ) {
 			$record['textContent'] = $text_content;
+		}
+
+		// Parsed rich content (open union).
+		$content = $this->get_content();
+		if ( ! empty( $content ) ) {
+			$record['content'] = $content;
 		}
 
 		// Tags.
@@ -138,6 +148,43 @@ class Document extends Base {
 		}
 
 		return $rkey;
+	}
+
+	/**
+	 * Get parsed content for the document's content union field.
+	 *
+	 * @return array|null Parsed content object or null.
+	 */
+	private function get_content(): ?array {
+		if ( empty( \trim( $this->object->post_content ) ) ) {
+			return null;
+		}
+
+		/**
+		 * Filters the content parser used for site.standard.document records.
+		 *
+		 * Return a Content_Parser instance to provide a parser.
+		 * Return null to disable the content field entirely.
+		 *
+		 * @param Content_Parser|null $parser The content parser. Default: null.
+		 * @param \WP_Post            $post   The WordPress post.
+		 */
+		$parser = \apply_filters( 'atmosphere_content_parser', null, $this->object );
+
+		if ( ! $parser instanceof Content_Parser ) {
+			return null;
+		}
+
+		$content = $parser->parse( $this->object->post_content, $this->object );
+
+		/**
+		 * Filters the parsed content object before adding to the document record.
+		 *
+		 * @param array          $content The parsed content object.
+		 * @param \WP_Post       $post    The WordPress post.
+		 * @param Content_Parser $parser  The parser that produced the content.
+		 */
+		return \apply_filters( 'atmosphere_document_content', $content, $this->object, $parser );
 	}
 
 	/**
