@@ -283,8 +283,7 @@ async function createRelease() {
 	} );
 
 	// Stage and commit changes
-	exec( 'git add atmosphere.php readme.txt package.json CHANGELOG.md' );
-	exec( 'git add -u -- "*.php"' );
+	exec( 'git add .' );
 	exec( `git commit -m "Release ${ version }"` );
 
 	// Push to remote
