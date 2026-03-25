@@ -138,11 +138,15 @@ class Test_Comment_Sync extends WP_UnitTestCase {
 		$comment = \get_comment( $comment_id );
 
 		$this->assertSame( 'Great post!', $comment->comment_content );
-		$this->assertSame( 'atmosphere', $comment->comment_type );
+		$this->assertSame( 'comment', $comment->comment_type );
 		$this->assertSame( (string) $post_id, $comment->comment_post_ID );
 		$this->assertSame( '0', $comment->comment_parent );
 
 		// Check meta.
+		$this->assertSame(
+			'atproto',
+			\get_comment_meta( $comment_id, Comment_Sync::META_PROTOCOL, true )
+		);
 		$this->assertSame(
 			'at://did:plc:replier/app.bsky.feed.post/reply789',
 			\get_comment_meta( $comment_id, Comment_Sync::META_BSKY_URI, true )

@@ -28,6 +28,13 @@ class Comment_Sync {
 	public const OPTION_CURSOR = 'atmosphere_notif_cursor';
 
 	/**
+	 * Comment meta key for the protocol identifier.
+	 *
+	 * @var string
+	 */
+	public const META_PROTOCOL = 'protocol';
+
+	/**
 	 * Comment meta key for the Bluesky AT-URI.
 	 *
 	 * @var string
@@ -187,7 +194,7 @@ class Comment_Sync {
 			'comment_author_email' => '',
 			'comment_content'      => \wp_kses_post( $comment_text ),
 			'comment_date_gmt'     => \get_gmt_from_date( $record['createdAt'] ?? '' ),
-			'comment_type'         => 'atmosphere',
+			'comment_type'         => 'comment',
 			'comment_approved'     => 1,
 			'comment_agent'        => 'ATmosphere/' . ATMOSPHERE_VERSION,
 		);
@@ -204,6 +211,7 @@ class Comment_Sync {
 		}
 
 		// Store AT Protocol metadata.
+		\update_comment_meta( $comment_id, self::META_PROTOCOL, 'atproto' );
 		\update_comment_meta( $comment_id, self::META_BSKY_URI, $reply_uri );
 		\update_comment_meta( $comment_id, self::META_BSKY_CID, $reply_cid );
 		\update_comment_meta( $comment_id, self::META_AUTHOR_DID, $author['did'] ?? '' );
