@@ -120,7 +120,15 @@ $connected  = is_connected();
 		<!-- Backfill -->
 		<div class="card">
 			<h2><?php \esc_html_e( 'Backfill', 'atmosphere' ); ?></h2>
-			<p><?php \esc_html_e( 'Sync existing published posts that haven\'t been sent to AT Protocol yet.', 'atmosphere' ); ?></p>
+			<p>
+			<?php
+			\printf(
+				/* translators: %d: maximum number of posts to backfill */
+				\esc_html__( 'Sync the last %d published posts that haven\'t been sent to AT Protocol yet.', 'atmosphere' ),
+				(int) \apply_filters( 'atmosphere_backfill_limit', 10 )
+			);
+			?>
+		</p>
 
 			<div id="atmosphere-backfill">
 				<button type="button" class="button" id="atmosphere-backfill-start">
