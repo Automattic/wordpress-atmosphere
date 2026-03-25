@@ -53,6 +53,11 @@ class Atmosphere {
 		// Catch permanent deletes (bypassing trash or emptying trash).
 		\add_action( 'before_delete_post', array( $this, 'on_before_delete' ) );
 
+		// Auto-sync publication when site identity changes.
+		\add_action( 'update_option_blogname', array( $this, 'schedule_publication_sync' ) );
+		\add_action( 'update_option_blogdescription', array( $this, 'schedule_publication_sync' ) );
+		\add_action( 'update_option_site_icon', array( $this, 'schedule_publication_sync' ) );
+
 		// Token refresh cron.
 		\add_action( 'atmosphere_refresh_token', array( $this, 'cron_refresh_token' ) );
 
@@ -256,6 +261,19 @@ class Atmosphere {
 	}
 
 	/**
+	 * Schedule an async publication sync.
+	 */
+	public function schedule_publication_sync(): void {
+		if ( ! is_connected() ) {
+			return;
+		}
+
+		if ( ! \wp_next_scheduled( 'atmosphere_sync_publication' ) ) {
+			\wp_schedule_single_event( \time(), 'atmosphere_sync_publication' );
+		}
+	}
+
+	/**
 	 * Cron: proactively refresh the access token.
 	 */
 	public function cron_refresh_token(): void {
@@ -297,6 +315,13 @@ class Atmosphere {
 				if ( $post ) {
 					Publisher::delete( $post );
 				}
+			}
+		);
+
+		\add_action(
+			'atmosphere_sync_publication',
+			static function (): void {
+				Publisher::sync_publication();
 			}
 		);
 

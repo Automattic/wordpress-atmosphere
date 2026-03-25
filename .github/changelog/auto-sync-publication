@@ -1,0 +1,4 @@
+Significance: minor
+Type: added
+
+Automatically sync the publication record when the site name, tagline, or site icon changes.
