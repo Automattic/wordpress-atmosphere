@@ -30,7 +30,6 @@ class Admin {
 		\add_action( 'admin_enqueue_scripts', array( self::class, 'enqueue_assets' ) );
 
 		\add_action( 'admin_post_atmosphere_disconnect', array( self::class, 'handle_disconnect' ) );
-		\add_action( 'admin_post_atmosphere_sync_publication', array( self::class, 'handle_sync_publication' ) );
 
 		// Meta box on syncable post types.
 		\add_action( 'add_meta_boxes', array( self::class, 'add_meta_box' ) );
@@ -112,14 +111,6 @@ class Admin {
 			array( self::class, 'render_auto_publish_field' ),
 			'atmosphere',
 			'atmosphere_publishing'
-		);
-
-		// Publication section.
-		\add_settings_section(
-			'atmosphere_publication',
-			\__( 'Publication', 'atmosphere' ),
-			array( self::class, 'render_publication_section' ),
-			'atmosphere'
 		);
 
 		// Backfill section.
@@ -242,20 +233,6 @@ class Admin {
 		</label>
 		<p class="description"><?php \esc_html_e( 'When enabled, posts are sent to your PDS as soon as they are published in WordPress.', 'atmosphere' ); ?></p>
 		<?php
-	}
-
-	/**
-	 * Render the Publication section.
-	 */
-	public static function render_publication_section(): void {
-		$sync_url = \wp_nonce_url(
-			\admin_url( 'admin-post.php?action=atmosphere_sync_publication' ),
-			'atmosphere_sync_publication',
-			'atmosphere_nonce'
-		);
-
-		echo '<p>' . \esc_html__( 'Sync your site name, description, and icon as a standard.site publication record on your PDS.', 'atmosphere' ) . '</p>';
-		echo '<p><a href="' . \esc_url( $sync_url ) . '" class="button">' . \esc_html__( 'Sync Publication', 'atmosphere' ) . '</a></p>';
 	}
 
 	/**
@@ -395,34 +372,6 @@ class Admin {
 		);
 		\set_transient( 'settings_errors', \get_settings_errors(), 30 );
 
-		\wp_safe_redirect( \admin_url( 'options-general.php?page=atmosphere' ) );
-		exit;
-	}
-
-	/**
-	 * Handle "Sync Publication" action.
-	 */
-	public static function handle_sync_publication(): void {
-		if ( ! \current_user_can( 'manage_options' ) ) {
-			\wp_die( \esc_html__( 'Unauthorized.', 'atmosphere' ) );
-		}
-
-		\check_admin_referer( 'atmosphere_sync_publication', 'atmosphere_nonce' );
-
-		$result = Publisher::sync_publication();
-
-		if ( \is_wp_error( $result ) ) {
-			\add_settings_error( 'atmosphere', 'sync_failed', $result->get_error_message() );
-		} else {
-			\add_settings_error(
-				'atmosphere',
-				'synced',
-				\__( 'Publication record synced.', 'atmosphere' ),
-				'success'
-			);
-		}
-
-		\set_transient( 'settings_errors', \get_settings_errors(), 30 );
 		\wp_safe_redirect( \admin_url( 'options-general.php?page=atmosphere' ) );
 		exit;
 	}
