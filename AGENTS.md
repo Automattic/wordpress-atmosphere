@@ -7,6 +7,8 @@ WordPress plugin that publishes posts to AT Protocol in both `app.bsky.feed.post
 **Do NOT:**
 - Edit WordPress core files
 - Hardcode new version numbers in changelog messages
+- Create a PR without running `composer lint` and `npm run env-test` first
+- Create a PR without a changelog entry in `.github/changelog/` or a "Skip Changelog" label
 
 ## Directory Structure
 
