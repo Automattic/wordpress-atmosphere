@@ -113,12 +113,12 @@ class Admin {
 			'atmosphere_publishing'
 		);
 
-		// Backfill section.
-		\add_settings_section(
+		\add_settings_field(
 			'atmosphere_backfill',
 			\__( 'Backfill', 'atmosphere' ),
-			array( self::class, 'render_backfill_section' ),
-			'atmosphere'
+			array( self::class, 'render_backfill_field' ),
+			'atmosphere',
+			'atmosphere_publishing'
 		);
 	}
 
@@ -236,18 +236,10 @@ class Admin {
 	}
 
 	/**
-	 * Render the Backfill section.
+	 * Render the Backfill field.
 	 */
-	public static function render_backfill_section(): void {
+	public static function render_backfill_field(): void {
 		$limit = (int) \apply_filters( 'atmosphere_backfill_limit', 10 );
-
-		echo '<p>';
-		\printf(
-			/* translators: %d: maximum number of posts to backfill */
-			\esc_html__( 'Sync the last %d published posts that haven\'t been sent to AT Protocol yet. You can run this multiple times to gradually sync older content.', 'atmosphere' ),
-			$limit
-		);
-		echo '</p>';
 
 		?>
 		<div id="atmosphere-backfill">
@@ -259,6 +251,15 @@ class Admin {
 				<p id="atmosphere-backfill-status"></p>
 			</div>
 		</div>
+		<p class="description">
+			<?php
+			\printf(
+				/* translators: %d: maximum number of posts to backfill */
+				\esc_html__( 'Sync the last %d published posts that haven\'t been sent to AT Protocol yet. You can run this multiple times to gradually sync older content.', 'atmosphere' ),
+				$limit
+			);
+			?>
+		</p>
 		<?php
 	}
 
