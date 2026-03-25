@@ -49,14 +49,14 @@ const generateChangelog = async () => {
 
 	// Grab the version from the generated changelog
 	const content = fs.readFileSync( 'CHANGELOG.md', 'utf8' );
-	const versionMatch = content.match( /## \[(\d+\.\d+\.\d+)\] - \d{4}-\d{2}-\d{2}/ );
+	const version = content.match( /## \[(\d+\.\d+\.\d+)\] - \d{4}-\d{2}-\d{2}/ )[ 1 ];
 
-	if ( ! versionMatch ) {
+	if ( ! version ) {
 		console.error( 'No version found in CHANGELOG.md' );
 		process.exit( 1 );
 	}
 
-	return versionMatch[ 1 ];
+	return version;
 };
 
 const updateReadmeWithChangelog = ( version ) => {
@@ -300,11 +300,7 @@ async function createRelease() {
 
 	// Open PR in browser if a URL was returned
 	if ( prUrl && prUrl.includes( 'github.com' ) ) {
-		try {
-			execSync( `open ${ prUrl }`, { stdio: 'inherit' } );
-		} catch {
-			console.log( `PR created: ${ prUrl }` );
-		}
+		exec( `open ${ prUrl }` );
 	}
 }
 
