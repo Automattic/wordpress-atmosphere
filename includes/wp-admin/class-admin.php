@@ -159,7 +159,7 @@ class Admin {
 			<tr>
 				<th scope="row"></th>
 				<td>
-					<a href="<?php echo \esc_url( $disconnect_url ); ?>" class="button button-link-delete">
+					<a href="<?php echo \esc_url( $disconnect_url ); ?>" class="button">
 						<?php \esc_html_e( 'Disconnect', 'atmosphere' ); ?>
 					</a>
 				</td>
