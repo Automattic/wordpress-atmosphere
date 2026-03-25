@@ -1,0 +1,4 @@
+Significance: patch
+Type: changed
+
+Limit backfill to the 10 most recent unsynced posts to avoid overwhelming the server on large sites.

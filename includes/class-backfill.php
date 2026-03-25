@@ -39,11 +39,23 @@ class Backfill {
 
 		$post_types = self::syncable_post_types();
 
+		/**
+		 * Filters the maximum number of posts to backfill.
+		 *
+		 * Only the most recent unsynced posts (up to this limit) will
+		 * be included in each backfill run. Use 0 or -1 to backfill all.
+		 *
+		 * @param int $limit Maximum number of posts. Default 10.
+		 */
+		$limit = (int) \apply_filters( 'atmosphere_backfill_limit', 10 );
+
 		$all_ids = \get_posts(
 			array(
 				'post_type'      => $post_types,
 				'post_status'    => 'publish',
 				'posts_per_page' => -1,
+				'orderby'        => 'date',
+				'order'          => 'DESC',
 				'fields'         => 'ids',
 			)
 		);
@@ -54,6 +66,10 @@ class Backfill {
 		foreach ( $all_ids as $id ) {
 			if ( ! \get_post_meta( $id, Document::META_URI, true ) ) {
 				$unsynced[] = $id;
+			}
+
+			if ( $limit > 0 && \count( $unsynced ) >= $limit ) {
+				break;
 			}
 		}
 
