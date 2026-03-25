@@ -137,15 +137,24 @@ class Admin {
 		<table class="form-table" role="presentation">
 			<tr>
 				<th scope="row"><?php \esc_html_e( 'Handle', 'atmosphere' ); ?></th>
-				<td><strong><?php echo \esc_html( $connection['handle'] ?? '' ); ?></strong></td>
+				<td>
+					<strong><?php echo \esc_html( $connection['handle'] ?? '' ); ?></strong>
+					<p class="description"><?php \esc_html_e( 'Your public AT Protocol identity, similar to a username.', 'atmosphere' ); ?></p>
+				</td>
 			</tr>
 			<tr>
 				<th scope="row"><?php \esc_html_e( 'DID', 'atmosphere' ); ?></th>
-				<td><code><?php echo \esc_html( $connection['did'] ?? '' ); ?></code></td>
+				<td>
+					<code><?php echo \esc_html( $connection['did'] ?? '' ); ?></code>
+					<p class="description"><?php \esc_html_e( 'Your Decentralized Identifier — a permanent, portable ID that stays the same even if you change your handle.', 'atmosphere' ); ?></p>
+				</td>
 			</tr>
 			<tr>
 				<th scope="row"><?php \esc_html_e( 'PDS', 'atmosphere' ); ?></th>
-				<td><code><?php echo \esc_html( $connection['pds_endpoint'] ?? '' ); ?></code></td>
+				<td>
+					<code><?php echo \esc_html( $connection['pds_endpoint'] ?? '' ); ?></code>
+					<p class="description"><?php \esc_html_e( 'Your Personal Data Server — where your AT Protocol records are stored and served from.', 'atmosphere' ); ?></p>
+				</td>
 			</tr>
 			<tr>
 				<th scope="row"></th>
