@@ -262,10 +262,11 @@ class Admin {
 		</div>
 		<p class="description">
 			<?php
+			// phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- %d with intval is safe.
 			\printf(
 				/* translators: %d: maximum number of posts to backfill */
 				\esc_html__( 'Sync the last %d published posts that haven\'t been sent to AT Protocol yet. You can run this multiple times to gradually sync older content.', 'atmosphere' ),
-				$limit
+				\intval( $limit )
 			);
 			?>
 		</p>
