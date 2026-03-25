@@ -1,0 +1,4 @@
+Significance: minor
+Type: changed
+
+Redesign the settings page to use the standard WordPress Settings API for a cleaner, more consistent admin experience.
