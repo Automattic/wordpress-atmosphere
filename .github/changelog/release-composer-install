@@ -1,0 +1,4 @@
+Significance: patch
+Type: Fixed
+
+Install production Composer dependencies before building release packages.

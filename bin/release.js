@@ -282,9 +282,16 @@ async function createRelease() {
 		] );
 	} );
 
-	// Stage and commit changes
+	// Install production-only Composer dependencies
+	exec( 'composer run release' );
+
+	// Stage and commit changes (force-add vendor/ which is gitignored)
 	exec( 'git add .' );
+	exec( 'git add --force vendor/' );
 	exec( `git commit -m "Release ${ version }"` );
+
+	// Restore dev dependencies for continued development
+	exec( 'composer install' );
 
 	// Push to remote
 	exec( `git push -u origin ${ branchName }` );
