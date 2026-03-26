@@ -37,8 +37,9 @@ class Atmosphere {
 		// Frontend verification headers.
 		\add_action( 'wp_head', array( $this, 'output_document_link' ) );
 
-		// Well-known publication endpoint.
+		// Well-known endpoints.
 		\add_action( 'init', array( $this, 'register_wellknown_rewrite' ) );
+		\add_action( 'template_redirect', array( $this, 'serve_wellknown_atproto_did' ) );
 		\add_action( 'template_redirect', array( $this, 'serve_wellknown_publication' ) );
 
 		// Plugin integrations.
@@ -104,9 +105,15 @@ class Atmosphere {
 	}
 
 	/**
-	 * Register the rewrite rule for /.well-known/site.standard.publication.
+	 * Register rewrite rules for well-known endpoints.
 	 */
 	public function register_wellknown_rewrite(): void {
+		\add_rewrite_rule(
+			'^\.well-known/atproto-did$',
+			'index.php?atmosphere_wellknown=atproto-did',
+			'top'
+		);
+
 		\add_rewrite_rule(
 			'^\.well-known/site\.standard\.publication$',
 			'index.php?atmosphere_wellknown=publication',
@@ -120,6 +127,30 @@ class Atmosphere {
 				return $vars;
 			}
 		);
+	}
+
+	/**
+	 * Serve the /.well-known/atproto-did response.
+	 *
+	 * Returns the connected DID as plain text so the domain can be
+	 * verified as an AT Protocol handle (domain handle verification).
+	 *
+	 * @see https://atproto.com/specs/handle#handle-resolution
+	 */
+	public function serve_wellknown_atproto_did(): void {
+		if ( \get_query_var( 'atmosphere_wellknown' ) !== 'atproto-did' ) {
+			return;
+		}
+
+		if ( ! is_connected() ) {
+			\status_header( 404 );
+			exit;
+		}
+
+		\status_header( 200 );
+		\header( 'Content-Type: text/plain; charset=utf-8' );
+		echo \esc_html( get_did() );
+		exit;
 	}
 
 	/**

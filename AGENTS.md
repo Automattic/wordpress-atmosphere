@@ -90,6 +90,8 @@ Test files live in `tests/phpunit/tests/` mirroring `includes/` structure. Files
 
 **Publisher** — Atomic batch `applyWrites` for both bsky post + standard.site document. See `includes/class-publisher.php`.
 
+**Well-known endpoints** — Rewrite rules + `template_redirect` handlers in `Atmosphere` class serve `/.well-known/atproto-did` (domain handle verification) and `/.well-known/site.standard.publication` (publication AT-URI). All share the `atmosphere_wellknown` query var.
+
 ## Release Process
 
 Build a release ZIP with only production dependencies:

@@ -32,7 +32,7 @@ Every PR **MUST** either:
 - Include a changelog file in `.github/changelog/` (see [Changelog](#changelog) below), **OR**
 - Add the `Skip Changelog` label to the PR
 
-If neither is present, **stop and ask** the user which they prefer before creating the PR.
+**Add the changelog entry as part of your initial commit, not after the PR is created.** If neither changelog nor label is present, **stop and ask** the user which they prefer before creating the PR.
 
 ### 3. Code review
 Delegate to the **code-review** agent to review all changes on the branch. Address any critical issues before proceeding.
