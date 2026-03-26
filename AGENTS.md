@@ -4,6 +4,9 @@ WordPress plugin that publishes posts to AT Protocol in both `app.bsky.feed.post
 
 **Tech stack:** PHP 8.2+, WordPress 6.2+, wp-env for local dev, PHPUnit for tests, Jetpack Changelogger for changelog management.
 
+**ALWAYS:**
+- Add a changelog entry in `.github/changelog/` as part of your initial commit — not after the PR is created. See the **pr** skill for format and end-user writing guidelines.
+
 **Do NOT:**
 - Edit WordPress core files
 - Hardcode new version numbers in changelog messages
