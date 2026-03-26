@@ -1,6 +1,6 @@
 ---
 name: pr
-description: INVOKE THIS SKILL before creating any PR to ensure compliance with branch naming and reviewer assignment.
+description: MUST be invoked before creating any PR, pushing a branch for review, or running `gh pr create`. Covers changelog entries, branch naming, PHPCS/PHPUnit checks, and reviewer assignment.
 ---
 
 Read `.agents/skills/pr/SKILL.md` for full instructions.
