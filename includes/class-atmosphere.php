@@ -65,6 +65,9 @@ class Atmosphere {
 		if ( ! \wp_next_scheduled( 'atmosphere_refresh_token' ) && is_connected() ) {
 			\wp_schedule_event( \time(), 'twicedaily', 'atmosphere_refresh_token' );
 		}
+
+		// Async action hooks (called by WP-Cron).
+		self::register_async_hooks();
 	}
 
 	/**
@@ -366,6 +369,3 @@ class Atmosphere {
 		);
 	}
 }
-
-// Register async hooks outside the class so they're available to WP-Cron.
-Atmosphere::register_async_hooks();

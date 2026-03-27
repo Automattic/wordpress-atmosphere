@@ -1,0 +1,4 @@
+Significance: patch
+Type: fixed
+
+Move scheduled action hook registration into the standard plugin initialization flow.
