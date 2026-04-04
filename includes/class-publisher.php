@@ -88,6 +88,10 @@ class Publisher {
 		$bsky_tid = \get_post_meta( $post->ID, Post::META_TID, true );
 		$doc_tid  = \get_post_meta( $post->ID, Document::META_TID, true );
 
+		if ( ! $bsky_tid || ! $doc_tid ) {
+			return new \WP_Error( 'atmosphere_missing_tid', \__( 'Record URIs exist but TIDs are missing.', 'atmosphere' ) );
+		}
+
 		$bsky_transformer = new Post( $post );
 		$doc_transformer  = new Document( $post );
 
