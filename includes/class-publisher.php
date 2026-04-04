@@ -77,13 +77,16 @@ class Publisher {
 	 * @return array|\WP_Error
 	 */
 	public static function update( \WP_Post $post ): array|\WP_Error {
-		$bsky_tid = \get_post_meta( $post->ID, Post::META_TID, true );
-		$doc_tid  = \get_post_meta( $post->ID, Document::META_TID, true );
+		$bsky_uri = \get_post_meta( $post->ID, Post::META_URI, true );
+		$doc_uri  = \get_post_meta( $post->ID, Document::META_URI, true );
 
-		if ( ! $bsky_tid || ! $doc_tid ) {
+		if ( ! $bsky_uri || ! $doc_uri ) {
 			// Not yet published — do a fresh publish instead.
 			return self::publish( $post );
 		}
+
+		$bsky_tid = \get_post_meta( $post->ID, Post::META_TID, true );
+		$doc_tid  = \get_post_meta( $post->ID, Document::META_TID, true );
 
 		$bsky_transformer = new Post( $post );
 		$doc_transformer  = new Document( $post );
@@ -110,6 +113,9 @@ class Publisher {
 		}
 
 		self::store_results( $post->ID, $result, $bsky_transformer, $doc_transformer );
+
+		// Update document with bsky post reference (CID may have changed).
+		self::update_document_bsky_ref( $post, $doc_transformer );
 
 		return $result;
 	}
