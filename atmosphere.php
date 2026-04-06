@@ -25,17 +25,15 @@ namespace Atmosphere;
 \define( 'ATMOSPHERE_PLUGIN_FILE', __FILE__ );
 
 /*
- * Composer autoloader — prefer the plugin's own vendor (standalone
- * install / release ZIP), then try the site-level autoloader
- * (installed as a Composer dependency).
+ * Custom autoloader for Atmosphere classes — maps the Atmosphere
+ * namespace to includes/ using WordPress filename conventions.
  */
-if ( \file_exists( ATMOSPHERE_PLUGIN_DIR . 'vendor/autoload.php' ) ) {
-	require_once ATMOSPHERE_PLUGIN_DIR . 'vendor/autoload.php';
-} elseif ( \file_exists( ABSPATH . 'vendor/autoload.php' ) ) {
-	require_once ABSPATH . 'vendor/autoload.php';
-}
+require_once ATMOSPHERE_PLUGIN_DIR . 'includes/class-autoloader.php';
 
-// Helper functions (loaded after ABSPATH is available).
+Autoloader::register_path( __NAMESPACE__, ATMOSPHERE_PLUGIN_DIR . 'includes' );
+Autoloader::register_path( __NAMESPACE__ . '\Integrations', ATMOSPHERE_PLUGIN_DIR . 'integrations' );
+
+// Helper functions.
 require_once ATMOSPHERE_PLUGIN_DIR . 'includes/functions.php';
 
 /**

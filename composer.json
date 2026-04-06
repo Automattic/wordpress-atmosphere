@@ -10,8 +10,7 @@
 		}
 	],
 	"require": {
-		"php": ">=8.2",
-		"web-token/jwt-library": "^4.1"
+		"php": ">=8.2"
 	},
 	"require-dev": {
 		"phpunit/phpunit": "^9",
@@ -25,12 +24,7 @@
 		"phpcsstandards/phpcsextra": "^1.1.0",
 		"automattic/jetpack-changelogger": "^6.0"
 	},
-	"autoload": {
-		"classmap": [
-			"includes/",
-			"integrations/"
-		]
-	},
+	"autoload": {},
 	"scripts": {
 		"test": [
 			"composer install",
@@ -54,10 +48,7 @@
 			"composer install",
 			"vendor/bin/changelogger write --add-pr-num"
 		],
-		"release": [
-			"@composer install --no-dev --optimize-autoloader",
-			"@composer dump-autoload --optimize --no-dev"
-		]
+		"release": []
 	},
 	"extra": {
 		"changelogger": {
