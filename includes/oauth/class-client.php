@@ -437,10 +437,19 @@ class Client {
 		}
 
 		if ( $status >= 400 || empty( $data['access_token'] ) ) {
-			// Connection is dead — clear it.
-			\delete_option( 'atmosphere_connection' );
-
 			$msg = $data['error_description'] ?? ( $data['error'] ?? \__( 'Token refresh failed.', 'atmosphere' ) );
+
+			/*
+			 * Only delete the connection for permanent errors where the
+			 * refresh token has been consumed or revoked. Transient errors
+			 * (rate-limiting, server errors) may not have consumed the
+			 * token, so the connection can recover on the next attempt.
+			 */
+			$error = $data['error'] ?? '';
+			if ( \in_array( $error, array( 'invalid_grant', 'invalid_client', 'unauthorized_client' ), true ) ) {
+				\delete_option( 'atmosphere_connection' );
+			}
+
 			return new \WP_Error( 'atmosphere_refresh', $msg );
 		}
 
