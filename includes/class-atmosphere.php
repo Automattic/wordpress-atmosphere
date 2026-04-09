@@ -258,11 +258,16 @@ class Atmosphere {
 			// Update.
 			\wp_schedule_single_event( \time(), 'atmosphere_update_post', array( $post->ID ) );
 		} elseif ( 'publish' === $old_status && 'publish' !== $new_status ) {
-			// Genuine unpublish — transitioning away from publish.
+			/*
+			 * Genuine unpublish — transitioning away from publish.
+			 * Use atmosphere_delete_post (not delete_records) so that
+			 * post meta is cleaned up on success, allowing a subsequent
+			 * restore (trash → publish) to republish correctly.
+			 */
 			$bsky_tid = \get_post_meta( $post->ID, Transformer\Post::META_TID, true );
 			$doc_tid  = \get_post_meta( $post->ID, Transformer\Document::META_TID, true );
 			if ( $bsky_tid || $doc_tid ) {
-				\wp_schedule_single_event( \time(), 'atmosphere_delete_records', array( $bsky_tid, $doc_tid ) );
+				\wp_schedule_single_event( \time(), 'atmosphere_delete_post', array( $post->ID ) );
 			}
 		}
 	}

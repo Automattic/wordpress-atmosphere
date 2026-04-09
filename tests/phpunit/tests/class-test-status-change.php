@@ -57,6 +57,7 @@ class Test_Status_Change extends WP_UnitTestCase {
 		// Clear any scheduled events.
 		\wp_clear_scheduled_hook( 'atmosphere_publish_post' );
 		\wp_clear_scheduled_hook( 'atmosphere_update_post' );
+		\wp_clear_scheduled_hook( 'atmosphere_delete_post' );
 		\wp_clear_scheduled_hook( 'atmosphere_delete_records' );
 
 		parent::tear_down();
@@ -123,8 +124,8 @@ class Test_Status_Change extends WP_UnitTestCase {
 		$this->atmosphere->on_status_change( 'draft', 'publish', $post );
 
 		$this->assertNotFalse(
-			\wp_next_scheduled( 'atmosphere_delete_records', array( 'bsky-tid-123', 'doc-tid-456' ) ),
-			'Expected atmosphere_delete_records to be scheduled.'
+			\wp_next_scheduled( 'atmosphere_delete_post', array( $post->ID ) ),
+			'Expected atmosphere_delete_post to be scheduled.'
 		);
 	}
 
@@ -143,8 +144,8 @@ class Test_Status_Change extends WP_UnitTestCase {
 		$this->atmosphere->on_status_change( 'trash', 'publish', $post );
 
 		$this->assertNotFalse(
-			\wp_next_scheduled( 'atmosphere_delete_records', array( 'bsky-tid-123', 'doc-tid-456' ) ),
-			'Expected atmosphere_delete_records to be scheduled.'
+			\wp_next_scheduled( 'atmosphere_delete_post', array( $post->ID ) ),
+			'Expected atmosphere_delete_post to be scheduled.'
 		);
 	}
 
@@ -166,7 +167,7 @@ class Test_Status_Change extends WP_UnitTestCase {
 		$this->atmosphere->on_status_change( 'draft', 'draft', $post );
 
 		$this->assertFalse(
-			\wp_next_scheduled( 'atmosphere_delete_records', array( 'bsky-tid-123', 'doc-tid-456' ) ),
+			\wp_next_scheduled( 'atmosphere_delete_post', array( $post->ID ) ),
 			'Draft → draft must NOT schedule a delete.'
 		);
 	}
@@ -186,7 +187,7 @@ class Test_Status_Change extends WP_UnitTestCase {
 		$this->atmosphere->on_status_change( 'pending', 'pending', $post );
 
 		$this->assertFalse(
-			\wp_next_scheduled( 'atmosphere_delete_records', array( 'bsky-tid-123', 'doc-tid-456' ) ),
+			\wp_next_scheduled( 'atmosphere_delete_post', array( $post->ID ) ),
 			'Pending → pending must NOT schedule a delete.'
 		);
 	}
@@ -206,7 +207,7 @@ class Test_Status_Change extends WP_UnitTestCase {
 		$this->atmosphere->on_status_change( 'pending', 'draft', $post );
 
 		$this->assertFalse(
-			\wp_next_scheduled( 'atmosphere_delete_records', array( 'bsky-tid-123', 'doc-tid-456' ) ),
+			\wp_next_scheduled( 'atmosphere_delete_post', array( $post->ID ) ),
 			'Draft → pending must NOT schedule a delete.'
 		);
 	}
@@ -223,8 +224,28 @@ class Test_Status_Change extends WP_UnitTestCase {
 		$this->atmosphere->on_status_change( 'draft', 'publish', $post );
 
 		$this->assertFalse(
-			\wp_next_scheduled( 'atmosphere_delete_records', array( '', '' ) ),
+			\wp_next_scheduled( 'atmosphere_delete_post', array( $post->ID ) ),
 			'Unpublish without TIDs must NOT schedule a delete.'
+		);
+	}
+
+	/**
+	 * Test that trash → publish (restore) schedules a publish event.
+	 *
+	 * After trashing a published post, the delete handler cleans up
+	 * post meta. Restoring the post should trigger a fresh publish.
+	 */
+	public function test_restore_from_trash_schedules_publish() {
+		$post = self::factory()->post->create_and_get(
+			array( 'post_status' => 'publish' )
+		);
+
+		$this->reset_publishing_action();
+		$this->atmosphere->on_status_change( 'publish', 'trash', $post );
+
+		$this->assertNotFalse(
+			\wp_next_scheduled( 'atmosphere_publish_post', array( $post->ID ) ),
+			'Expected atmosphere_publish_post to be scheduled on restore.'
 		);
 	}
 
