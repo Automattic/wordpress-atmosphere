@@ -31,7 +31,6 @@ The plugin uses native AT Protocol OAuth with PKCE and DPoP — no third-party p
 
 - PHP 8.2+
 - WordPress 6.2+
-- Composer
 
 ## Installation
 
@@ -39,13 +38,8 @@ The plugin uses native AT Protocol OAuth with PKCE and DPoP — no third-party p
    ```bash
    git clone https://github.com/pfefferle/atmosphere.git wp-content/plugins/atmosphere
    ```
-2. Install dependencies:
-   ```bash
-   cd wp-content/plugins/atmosphere
-   composer install --no-dev
-   ```
-3. Activate the plugin through the "Plugins" menu in WordPress.
-4. Go to **Settings → ATmosphere** and connect your AT Protocol account.
+2. Activate the plugin through the "Plugins" menu in WordPress.
+3. Go to **Settings → ATmosphere** and connect your AT Protocol account.
 
 ## Development
 
