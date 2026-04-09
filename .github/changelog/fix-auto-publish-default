@@ -1,0 +1,4 @@
+Significance: patch
+Type: fixed
+
+Fix auto-publish being disabled by default after saving settings.

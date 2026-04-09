@@ -236,7 +236,7 @@ class Atmosphere {
 			return;
 		}
 
-		if ( ! \get_option( 'atmosphere_auto_publish', '1' ) ) {
+		if ( '0' === \get_option( 'atmosphere_auto_publish', '1' ) ) {
 			return;
 		}
 
