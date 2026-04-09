@@ -30,8 +30,8 @@ namespace Atmosphere;
  */
 require_once ATMOSPHERE_PLUGIN_DIR . 'includes/class-autoloader.php';
 
-Autoloader::register_path( __NAMESPACE__, ATMOSPHERE_PLUGIN_DIR . 'includes' );
 Autoloader::register_path( __NAMESPACE__ . '\Integrations', ATMOSPHERE_PLUGIN_DIR . 'integrations' );
+Autoloader::register_path( __NAMESPACE__, ATMOSPHERE_PLUGIN_DIR . 'includes' );
 
 // Helper functions.
 require_once ATMOSPHERE_PLUGIN_DIR . 'includes/functions.php';

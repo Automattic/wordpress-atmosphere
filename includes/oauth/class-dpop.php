@@ -182,6 +182,11 @@ class DPoP {
 			return false;
 		}
 
+		// P-256 field size is 32 bytes; reject malformed keys.
+		if ( \strlen( $d ) > 32 || \strlen( $x ) > 32 || \strlen( $y ) > 32 ) {
+			return false;
+		}
+
 		// Pad to 32 bytes (P-256 field size).
 		$d = \str_pad( $d, 32, "\0", STR_PAD_LEFT );
 		$x = \str_pad( $x, 32, "\0", STR_PAD_LEFT );
@@ -216,12 +221,12 @@ class DPoP {
 	private static function der_to_raw( string $der, int $length ): string|false {
 		$half = $length / 2;
 
-		// Parse SEQUENCE.
-		if ( \ord( $der[0] ) !== 0x30 ) {
+		// Parse SEQUENCE (P-256 signatures are always < 128 bytes).
+		if ( \ord( $der[0] ) !== 0x30 || \ord( $der[1] ) & 0x80 ) {
 			return false;
 		}
 
-		$offset = 2; // Skip tag + length byte.
+		$offset = 2; // Skip tag + single-byte length.
 
 		// Parse R.
 		if ( \ord( $der[ $offset ] ) !== 0x02 ) {
