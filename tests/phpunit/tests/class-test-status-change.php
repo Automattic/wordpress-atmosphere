@@ -231,9 +231,6 @@ class Test_Status_Change extends WP_UnitTestCase {
 
 	/**
 	 * Test that trash → publish (restore) schedules a publish event.
-	 *
-	 * After trashing a published post, the delete handler cleans up
-	 * post meta. Restoring the post should trigger a fresh publish.
 	 */
 	public function test_restore_from_trash_schedules_publish() {
 		$post = self::factory()->post->create_and_get(
