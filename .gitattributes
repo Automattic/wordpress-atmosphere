@@ -20,3 +20,4 @@
 /phpunit.xml.dist export-ignore
 /CLAUDE.md        export-ignore
 /AGENTS.md        export-ignore
+/README.md        export-ignore

@@ -26,7 +26,7 @@ wp_clear_scheduled_hook( 'atmosphere_delete_post' );
 // Remove post meta.
 global $wpdb;
 
-$meta_keys = array(
+$atmosphere_meta_keys = array(
 	'_atmosphere_bsky_tid',
 	'_atmosphere_bsky_uri',
 	'_atmosphere_bsky_cid',
@@ -36,8 +36,8 @@ $meta_keys = array(
 	'_atmosphere_blob_ref',
 );
 
-foreach ( $meta_keys as $key ) {
-	$wpdb->delete( $wpdb->postmeta, array( 'meta_key' => $key ) ); // phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_key,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching
+foreach ( $atmosphere_meta_keys as $atmosphere_key ) {
+	$wpdb->delete( $wpdb->postmeta, array( 'meta_key' => $atmosphere_key ) ); // phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_key,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching
 }
 
 // Remove transients.
