@@ -193,7 +193,7 @@ class Document extends Base {
 	 * @return string
 	 */
 	private function get_text_content(): string {
-		$content = \apply_filters( 'the_content', $this->object->post_content );
+		$content = \apply_filters( 'the_content', $this->object->post_content ); // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Core WordPress filter.
 		$content = \wp_strip_all_tags( $content );
 		$content = \html_entity_decode( $content, ENT_QUOTES, 'UTF-8' );
 

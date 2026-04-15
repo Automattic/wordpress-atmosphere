@@ -1,0 +1,4 @@
+Significance: patch
+Type: fixed
+
+Fix PHPCS warnings about unprefixed global variables and hook names.
