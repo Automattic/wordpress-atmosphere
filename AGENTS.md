@@ -7,6 +7,8 @@ WordPress plugin that publishes posts to AT Protocol in both `app.bsky.feed.post
 **Do NOT:**
 - Edit WordPress core files
 - Hardcode new version numbers in changelog messages
+- Create a PR without running `composer lint` and `npm run env-test` first
+- Create a PR without a changelog entry in `.github/changelog/` or a "Skip Changelog" label
 
 ## Directory Structure
 
@@ -87,6 +89,8 @@ Test files live in `tests/phpunit/tests/` mirroring `includes/` structure. Files
 **API Client** — DPoP-authenticated PDS requests with automatic nonce retry. See `includes/class-api.php`.
 
 **Publisher** — Atomic batch `applyWrites` for both bsky post + standard.site document. See `includes/class-publisher.php`.
+
+**Well-known endpoints** — Rewrite rules + `template_redirect` handlers in `Atmosphere` class serve `/.well-known/atproto-did` (domain handle verification) and `/.well-known/site.standard.publication` (publication AT-URI). All share the `atmosphere_wellknown` query var.
 
 ## Release Process
 

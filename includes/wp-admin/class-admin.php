@@ -29,9 +29,7 @@ class Admin {
 		\add_action( 'admin_init', array( self::class, 'register_settings' ) );
 		\add_action( 'admin_enqueue_scripts', array( self::class, 'enqueue_assets' ) );
 
-		\add_action( 'admin_post_atmosphere_connect', array( self::class, 'handle_connect' ) );
 		\add_action( 'admin_post_atmosphere_disconnect', array( self::class, 'handle_disconnect' ) );
-		\add_action( 'admin_post_atmosphere_sync_publication', array( self::class, 'handle_sync_publication' ) );
 
 		// Meta box on syncable post types.
 		\add_action( 'add_meta_boxes', array( self::class, 'add_meta_box' ) );
@@ -54,10 +52,225 @@ class Admin {
 	}
 
 	/**
-	 * Register plugin settings.
+	 * Register plugin settings, sections, and fields.
 	 */
 	public static function register_settings(): void {
-		\register_setting( 'atmosphere', 'atmosphere_auto_publish', array( 'default' => '1' ) );
+		\register_setting(
+			'atmosphere',
+			'atmosphere_auto_publish',
+			array(
+				'type'              => 'string',
+				'default'           => '1',
+				'sanitize_callback' => 'sanitize_text_field',
+			)
+		);
+
+		\register_setting(
+			'atmosphere',
+			'atmosphere_handle',
+			array(
+				'type'              => 'string',
+				'show_in_rest'      => false,
+				'sanitize_callback' => array( self::class, 'sanitize_handle' ),
+			)
+		);
+
+		// Connection section.
+		\add_settings_section(
+			'atmosphere_connection',
+			\__( 'Connection', 'atmosphere' ),
+			is_connected()
+				? array( self::class, 'render_connected_section' )
+				: array( self::class, 'render_connect_section' ),
+			'atmosphere'
+		);
+
+		if ( ! is_connected() ) {
+			\add_settings_field(
+				'atmosphere_handle',
+				\__( 'Handle', 'atmosphere' ),
+				array( self::class, 'render_handle_field' ),
+				'atmosphere',
+				'atmosphere_connection'
+			);
+
+			return;
+		}
+
+		// Publishing section.
+		\add_settings_section(
+			'atmosphere_publishing',
+			\__( 'Publishing', 'atmosphere' ),
+			array( self::class, 'render_publishing_section' ),
+			'atmosphere'
+		);
+
+		\add_settings_field(
+			'atmosphere_auto_publish',
+			\__( 'Auto-publish', 'atmosphere' ),
+			array( self::class, 'render_auto_publish_field' ),
+			'atmosphere',
+			'atmosphere_publishing'
+		);
+
+		\add_settings_field(
+			'atmosphere_backfill',
+			\__( 'Backfill', 'atmosphere' ),
+			array( self::class, 'render_backfill_field' ),
+			'atmosphere',
+			'atmosphere_publishing'
+		);
+	}
+
+	/**
+	 * Render the connected state: connection details and disconnect link.
+	 */
+	public static function render_connected_section(): void {
+		$connection     = get_connection();
+		$disconnect_url = \wp_nonce_url(
+			\admin_url( 'admin-post.php?action=atmosphere_disconnect' ),
+			'atmosphere_disconnect',
+			'atmosphere_nonce'
+		);
+
+		?>
+		<table class="form-table" role="presentation">
+			<tr>
+				<th scope="row"><?php \esc_html_e( 'Handle', 'atmosphere' ); ?></th>
+				<td>
+					<strong><?php echo \esc_html( $connection['handle'] ?? '' ); ?></strong>
+					<p class="description"><?php \esc_html_e( 'Your public AT Protocol identity, similar to a username.', 'atmosphere' ); ?></p>
+				</td>
+			</tr>
+			<tr>
+				<th scope="row"><?php \esc_html_e( 'DID', 'atmosphere' ); ?></th>
+				<td>
+					<code><?php echo \esc_html( $connection['did'] ?? '' ); ?></code>
+					<p class="description"><?php \esc_html_e( 'Your Decentralized Identifier — a permanent, portable ID that stays the same even if you change your handle.', 'atmosphere' ); ?></p>
+				</td>
+			</tr>
+			<tr>
+				<th scope="row"><?php \esc_html_e( 'PDS', 'atmosphere' ); ?></th>
+				<td>
+					<code><?php echo \esc_html( $connection['pds_endpoint'] ?? '' ); ?></code>
+					<p class="description"><?php \esc_html_e( 'Your Personal Data Server — where your AT Protocol records are stored and served from.', 'atmosphere' ); ?></p>
+				</td>
+			</tr>
+			<tr>
+				<th scope="row"></th>
+				<td>
+					<a href="<?php echo \esc_url( $disconnect_url ); ?>" class="button">
+						<?php \esc_html_e( 'Disconnect', 'atmosphere' ); ?>
+					</a>
+				</td>
+			</tr>
+		</table>
+		<?php
+	}
+
+	/**
+	 * Render the connect section description.
+	 */
+	public static function render_connect_section(): void {
+		echo '<p>' . \esc_html__( 'Connect your site to the AT Protocol network using your handle. This authorizes ATmosphere to publish content to your Personal Data Server (PDS).', 'atmosphere' ) . '</p>';
+	}
+
+	/**
+	 * Render the handle input field.
+	 */
+	public static function render_handle_field(): void {
+		?>
+		<input
+			type="text"
+			name="atmosphere_handle"
+			id="atmosphere_handle"
+			class="regular-text"
+			placeholder="alice.bsky.social"
+		>
+		<p class="description"><?php \esc_html_e( 'Your AT Protocol handle, e.g. alice.bsky.social or your own domain.', 'atmosphere' ); ?></p>
+		<?php
+	}
+
+	/**
+	 * Sanitize the handle field and trigger OAuth if a value is submitted.
+	 *
+	 * @param string $value The submitted handle.
+	 * @return string Empty string (never stored).
+	 */
+	public static function sanitize_handle( $value ): string {
+		if ( ! \current_user_can( 'manage_options' ) ) {
+			return '';
+		}
+
+		$handle = \sanitize_text_field( $value );
+
+		if ( empty( $handle ) ) {
+			return '';
+		}
+
+		$auth_url = Client::authorize( $handle );
+
+		if ( \is_wp_error( $auth_url ) ) {
+			\add_settings_error( 'atmosphere', 'auth_failed', $auth_url->get_error_message() );
+			return '';
+		}
+
+		\wp_redirect( $auth_url ); // phpcs:ignore WordPress.Security.SafeRedirect.wp_redirect_wp_redirect
+		exit;
+	}
+
+	/**
+	 * Render the Publishing section description.
+	 */
+	public static function render_publishing_section(): void {
+		echo '<p>' . \esc_html__( 'Control how and when your WordPress content is published to the AT Protocol network.', 'atmosphere' ) . '</p>';
+	}
+
+	/**
+	 * Render the Auto-publish settings field.
+	 */
+	public static function render_auto_publish_field(): void {
+		?>
+		<label>
+			<input
+				type="checkbox"
+				name="atmosphere_auto_publish"
+				value="1"
+				<?php \checked( \get_option( 'atmosphere_auto_publish', '1' ), '1' ); ?>
+			>
+			<?php \esc_html_e( 'Automatically publish new posts to AT Protocol', 'atmosphere' ); ?>
+		</label>
+		<p class="description"><?php \esc_html_e( 'When enabled, posts are sent to your PDS as soon as they are published in WordPress.', 'atmosphere' ); ?></p>
+		<?php
+	}
+
+	/**
+	 * Render the Backfill field.
+	 */
+	public static function render_backfill_field(): void {
+		$limit = (int) \apply_filters( 'atmosphere_backfill_limit', 10 );
+
+		?>
+		<div id="atmosphere-backfill">
+			<button type="button" class="button" id="atmosphere-backfill-start">
+				<?php \esc_html_e( 'Start Backfill', 'atmosphere' ); ?>
+			</button>
+			<div id="atmosphere-backfill-progress" style="display:none; margin-top: 10px;">
+				<progress id="atmosphere-backfill-bar" value="0" max="100" style="width: 100%;"></progress>
+				<p id="atmosphere-backfill-status"></p>
+			</div>
+		</div>
+		<p class="description">
+			<?php
+			// phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- %d with intval is safe.
+			\printf(
+				/* translators: %d: maximum number of posts to backfill */
+				\esc_html__( 'Sync the last %d published posts that haven\'t been sent to AT Protocol yet. You can run this multiple times to gradually sync older content.', 'atmosphere' ),
+				\intval( $limit )
+			);
+			?>
+		</p>
+		<?php
 	}
 
 	/**
@@ -104,40 +317,6 @@ class Admin {
 		}
 
 		include ATMOSPHERE_PLUGIN_DIR . 'templates/settings-page.php';
-	}
-
-	/**
-	 * Handle the "Connect" form submission.
-	 */
-	public static function handle_connect(): void {
-		if ( ! \current_user_can( 'manage_options' ) ) {
-			\wp_die( \esc_html__( 'Unauthorized.', 'atmosphere' ) );
-		}
-
-		\check_admin_referer( 'atmosphere_connect', 'atmosphere_nonce' );
-
-		$handle = isset( $_POST['atmosphere_handle'] )
-			? \sanitize_text_field( \wp_unslash( $_POST['atmosphere_handle'] ) )
-			: '';
-
-		if ( empty( $handle ) ) {
-			\add_settings_error( 'atmosphere', 'no_handle', \__( 'Please enter a handle.', 'atmosphere' ) );
-			\set_transient( 'settings_errors', \get_settings_errors(), 30 );
-			\wp_safe_redirect( \admin_url( 'options-general.php?page=atmosphere' ) );
-			exit;
-		}
-
-		$auth_url = Client::authorize( $handle );
-
-		if ( \is_wp_error( $auth_url ) ) {
-			\add_settings_error( 'atmosphere', 'auth_failed', $auth_url->get_error_message() );
-			\set_transient( 'settings_errors', \get_settings_errors(), 30 );
-			\wp_safe_redirect( \admin_url( 'options-general.php?page=atmosphere' ) );
-			exit;
-		}
-
-		\wp_redirect( $auth_url ); // phpcs:ignore WordPress.Security.SafeRedirect.wp_redirect_wp_redirect
-		exit;
 	}
 
 	/**
@@ -204,34 +383,6 @@ class Admin {
 		);
 		\set_transient( 'settings_errors', \get_settings_errors(), 30 );
 
-		\wp_safe_redirect( \admin_url( 'options-general.php?page=atmosphere' ) );
-		exit;
-	}
-
-	/**
-	 * Handle "Sync Publication" action.
-	 */
-	public static function handle_sync_publication(): void {
-		if ( ! \current_user_can( 'manage_options' ) ) {
-			\wp_die( \esc_html__( 'Unauthorized.', 'atmosphere' ) );
-		}
-
-		\check_admin_referer( 'atmosphere_sync_publication', 'atmosphere_nonce' );
-
-		$result = Publisher::sync_publication();
-
-		if ( \is_wp_error( $result ) ) {
-			\add_settings_error( 'atmosphere', 'sync_failed', $result->get_error_message() );
-		} else {
-			\add_settings_error(
-				'atmosphere',
-				'synced',
-				\__( 'Publication record synced.', 'atmosphere' ),
-				'success'
-			);
-		}
-
-		\set_transient( 'settings_errors', \get_settings_errors(), 30 );
 		\wp_safe_redirect( \admin_url( 'options-general.php?page=atmosphere' ) );
 		exit;
 	}

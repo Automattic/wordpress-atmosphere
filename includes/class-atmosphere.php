@@ -38,8 +38,9 @@ class Atmosphere {
 		// Frontend verification headers.
 		\add_action( 'wp_head', array( $this, 'output_document_link' ) );
 
-		// Well-known publication endpoint.
+		// Well-known endpoints.
 		\add_action( 'init', array( $this, 'register_wellknown_rewrite' ) );
+		\add_action( 'template_redirect', array( $this, 'serve_wellknown_atproto_did' ) );
 		\add_action( 'template_redirect', array( $this, 'serve_wellknown_publication' ) );
 
 		// Plugin integrations.
@@ -57,12 +58,20 @@ class Atmosphere {
 		// Catch permanent deletes (bypassing trash or emptying trash).
 		\add_action( 'before_delete_post', array( $this, 'on_before_delete' ) );
 
+		// Auto-sync publication when site identity changes.
+		\add_action( 'update_option_blogname', array( $this, 'schedule_publication_sync' ) );
+		\add_action( 'update_option_blogdescription', array( $this, 'schedule_publication_sync' ) );
+		\add_action( 'update_option_site_icon', array( $this, 'schedule_publication_sync' ) );
+
 		// Token refresh cron.
 		\add_action( 'atmosphere_refresh_token', array( $this, 'cron_refresh_token' ) );
 
 		if ( ! \wp_next_scheduled( 'atmosphere_refresh_token' ) && is_connected() ) {
 			\wp_schedule_event( \time(), 'twicedaily', 'atmosphere_refresh_token' );
 		}
+
+		// Async action hooks (called by WP-Cron).
+		self::register_async_hooks();
 	}
 
 	/**
@@ -103,9 +112,15 @@ class Atmosphere {
 	}
 
 	/**
-	 * Register the rewrite rule for /.well-known/site.standard.publication.
+	 * Register rewrite rules for well-known endpoints.
 	 */
 	public function register_wellknown_rewrite(): void {
+		\add_rewrite_rule(
+			'^\.well-known/atproto-did$',
+			'index.php?atmosphere_wellknown=atproto-did',
+			'top'
+		);
+
 		\add_rewrite_rule(
 			'^\.well-known/site\.standard\.publication$',
 			'index.php?atmosphere_wellknown=publication',
@@ -119,6 +134,30 @@ class Atmosphere {
 				return $vars;
 			}
 		);
+	}
+
+	/**
+	 * Serve the /.well-known/atproto-did response.
+	 *
+	 * Returns the connected DID as plain text so the domain can be
+	 * verified as an AT Protocol handle (domain handle verification).
+	 *
+	 * @see https://atproto.com/specs/handle#handle-resolution
+	 */
+	public function serve_wellknown_atproto_did(): void {
+		if ( \get_query_var( 'atmosphere_wellknown' ) !== 'atproto-did' ) {
+			return;
+		}
+
+		if ( ! is_connected() ) {
+			\status_header( 404 );
+			exit;
+		}
+
+		\status_header( 200 );
+		\header( 'Content-Type: text/plain; charset=utf-8' );
+		echo \esc_html( get_did() );
+		exit;
 	}
 
 	/**
@@ -201,7 +240,7 @@ class Atmosphere {
 			return;
 		}
 
-		if ( ! \get_option( 'atmosphere_auto_publish', '1' ) ) {
+		if ( '0' === \get_option( 'atmosphere_auto_publish', '1' ) ) {
 			return;
 		}
 
@@ -222,12 +261,17 @@ class Atmosphere {
 		} elseif ( 'publish' === $new_status && 'publish' === $old_status ) {
 			// Update.
 			\wp_schedule_single_event( \time(), 'atmosphere_update_post', array( $post->ID ) );
-		} elseif ( 'publish' !== $new_status ) {
-			// Any transition away from publish (or trashing a draft that has TIDs).
+		} elseif ( 'publish' === $old_status && 'publish' !== $new_status ) {
+			/*
+			 * Genuine unpublish — transitioning away from publish.
+			 * Use atmosphere_delete_post (not delete_records) so that
+			 * post meta is cleaned up on success, allowing a subsequent
+			 * restore (trash → publish) to republish correctly.
+			 */
 			$bsky_tid = \get_post_meta( $post->ID, Transformer\Post::META_TID, true );
 			$doc_tid  = \get_post_meta( $post->ID, Transformer\Document::META_TID, true );
 			if ( $bsky_tid || $doc_tid ) {
-				\wp_schedule_single_event( \time(), 'atmosphere_delete_records', array( $bsky_tid, $doc_tid ) );
+				\wp_schedule_single_event( \time(), 'atmosphere_delete_post', array( $post->ID ) );
 			}
 		}
 	}
@@ -256,6 +300,19 @@ class Atmosphere {
 
 		if ( $bsky_tid || $doc_tid ) {
 			\wp_schedule_single_event( \time(), 'atmosphere_delete_records', array( $bsky_tid, $doc_tid ) );
+		}
+	}
+
+	/**
+	 * Schedule an async publication sync.
+	 */
+	public function schedule_publication_sync(): void {
+		if ( ! is_connected() ) {
+			return;
+		}
+
+		if ( ! \wp_next_scheduled( 'atmosphere_sync_publication' ) ) {
+			\wp_schedule_single_event( \time(), 'atmosphere_sync_publication' );
 		}
 	}
 
@@ -305,6 +362,13 @@ class Atmosphere {
 		);
 
 		\add_action(
+			'atmosphere_sync_publication',
+			static function (): void {
+				Publisher::sync_publication();
+			}
+		);
+
+		\add_action(
 			'atmosphere_delete_records',
 			static function ( string $bsky_tid, string $doc_tid ): void {
 				Publisher::delete_by_tids( $bsky_tid, $doc_tid );
@@ -314,6 +378,3 @@ class Atmosphere {
 		);
 	}
 }
-
-// Register async hooks outside the class so they're available to WP-Cron.
-Atmosphere::register_async_hooks();

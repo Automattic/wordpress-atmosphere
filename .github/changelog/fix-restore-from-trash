@@ -1,0 +1,4 @@
+Significance: patch
+Type: fixed
+
+Fix restoring a trashed post not republishing it to Bluesky.

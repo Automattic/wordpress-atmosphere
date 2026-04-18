@@ -77,12 +77,19 @@ class Publisher {
 	 * @return array|\WP_Error
 	 */
 	public static function update( \WP_Post $post ): array|\WP_Error {
+		$bsky_uri = \get_post_meta( $post->ID, Post::META_URI, true );
+		$doc_uri  = \get_post_meta( $post->ID, Document::META_URI, true );
+
+		if ( ! $bsky_uri || ! $doc_uri ) {
+			// Not yet published — do a fresh publish instead.
+			return self::publish( $post );
+		}
+
 		$bsky_tid = \get_post_meta( $post->ID, Post::META_TID, true );
 		$doc_tid  = \get_post_meta( $post->ID, Document::META_TID, true );
 
 		if ( ! $bsky_tid || ! $doc_tid ) {
-			// Not yet published — do a fresh publish instead.
-			return self::publish( $post );
+			return new \WP_Error( 'atmosphere_missing_tid', \__( 'Record URIs exist but TIDs are missing.', 'atmosphere' ) );
 		}
 
 		$bsky_transformer = new Post( $post );
@@ -110,6 +117,9 @@ class Publisher {
 		}
 
 		self::store_results( $post->ID, $result, $bsky_transformer, $doc_transformer );
+
+		// Update document with bsky post reference (CID may have changed).
+		self::update_document_bsky_ref( $post, $doc_transformer );
 
 		return $result;
 	}

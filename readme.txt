@@ -2,9 +2,9 @@
 Contributors: automattic, pfefferle
 Tags: at-protocol, bluesky, fediverse, atproto, crossposting
 Requires at least: 6.2
-Tested up to: 6.8
+Tested up to: 7.0
 Requires PHP: 8.2
-Stable tag: 0.1.0
+Stable tag: unreleased
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -23,6 +23,7 @@ The plugin uses native AT Protocol OAuth with PKCE and DPoP — no third-party p
 * **standard.site records** — Create `site.standard.publication` and `site.standard.document` records on your PDS.
 * **Facet detection** — Automatically detects links, mentions, and hashtags in post content.
 * **Per-post control** — Enable or disable publishing for individual posts via a meta box.
+* **Domain handle verification** — Use your WordPress domain as your Bluesky handle via `/.well-known/atproto-did`.
 * **Backfill** — Sync existing published posts to AT Protocol in bulk.
 
 = How It Works =
@@ -55,6 +56,10 @@ Each published post creates:
 * A `site.standard.document` record (structured metadata for the ATmosphere).
 
 Your site itself is represented by a `site.standard.publication` record.
+
+= Can I use my domain as my Bluesky handle? =
+
+Yes. Once you connect your account, the plugin serves your DID at `/.well-known/atproto-did`. Go to the Bluesky app settings, choose "Change Handle", select "I have my own domain", and enter your WordPress site's domain. Bluesky will verify it automatically.
 
 = Can I disable Bluesky cross-posting? =
 

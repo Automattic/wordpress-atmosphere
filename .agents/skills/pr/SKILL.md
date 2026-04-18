@@ -16,16 +16,33 @@ description: INVOKE THIS SKILL before creating any PR to ensure compliance with 
 
 **Reserved:** `release/{X.Y.Z}` (releases only), `trunk` (main branch).
 
-## Pre-PR Review
+## Pre-PR Checks
 
-Before creating a PR, delegate to the **code-review** agent to review all changes on the branch. Address any critical issues before proceeding.
+Before creating a PR, you **MUST** complete these steps in order:
+
+### 1. Run PHPCS and PHPUnit
+```bash
+composer lint         # MUST pass with zero errors
+npm run env-test      # MUST pass all tests
+```
+Fix any failures before proceeding. Do not create a PR with failing checks.
+
+### 2. Changelog entry
+Every PR **MUST** either:
+- Include a changelog file in `.github/changelog/` (see [Changelog](#changelog) below), **OR**
+- Add the `Skip Changelog` label to the PR
+
+**Add the changelog entry as part of your initial commit, not after the PR is created.** If neither changelog nor label is present, **stop and ask** the user which they prefer before creating the PR.
+
+### 3. Code review
+Delegate to the **code-review** agent to review all changes on the branch. Address any critical issues before proceeding.
 
 ## PR Creation
 
 **Every PR must:**
 - Assign `@me`
 - Include changelog entry OR "Skip Changelog" label
-- Pass CI checks
+- Pass PHPCS and PHPUnit (verified above)
 - Merge cleanly with trunk
 
 ```bash

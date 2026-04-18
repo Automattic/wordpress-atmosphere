@@ -1,6 +1,6 @@
 {
 	"name": "atmosphere",
-	"version": "0.1.0",
+	"version": "0.0.0-unreleased",
 	"description": "Publish WordPress posts to AT Protocol (Bluesky + standard.site) via native OAuth.",
 	"author": "Automattic",
 	"license": "GPL-2.0-or-later",
@@ -8,7 +8,8 @@
 	"scripts": {
 		"env-start": "wp-env start",
 		"env-stop": "wp-env stop",
-		"env-test": "wp-env run tests-cli --env-cwd=\"wp-content/plugins/wordpress-atmosphere\" vendor/bin/phpunit"
+		"env-test": "wp-env run tests-cli --env-cwd=\"wp-content/plugins/wordpress-atmosphere\" vendor/bin/phpunit",
+		"release": "node bin/release.js"
 	},
 	"devDependencies": {
 		"@wordpress/env": "^11.2.0"
