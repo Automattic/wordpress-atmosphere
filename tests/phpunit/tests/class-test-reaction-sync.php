@@ -44,26 +44,26 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 	}
 
 	/**
-	 * Test that find_comment_by_bsky_uri returns the correct comment.
+	 * Test that find_comment_by_source_id returns the correct comment.
 	 */
-	public function test_find_comment_by_bsky_uri() {
+	public function test_find_comment_by_source_id() {
 		$post_id    = self::factory()->post->create();
 		$comment_id = self::factory()->comment->create( array( 'comment_post_ID' => $post_id ) );
 		$uri        = 'at://did:plc:reply/app.bsky.feed.post/reply123';
 
-		\update_comment_meta( $comment_id, Reaction_Sync::META_BSKY_URI, $uri );
+		\update_comment_meta( $comment_id, 'source_id', $uri );
 
-		$method = new \ReflectionMethod( Reaction_Sync::class, 'find_comment_by_bsky_uri' );
+		$method = new \ReflectionMethod( Reaction_Sync::class, 'find_comment_by_source_id' );
 		$method->setAccessible( true );
 
 		$this->assertSame( $comment_id, $method->invoke( null, $uri ) );
 	}
 
 	/**
-	 * Test that find_comment_by_bsky_uri returns false for unknown URI.
+	 * Test that find_comment_by_source_id returns false for unknown URI.
 	 */
-	public function test_find_comment_by_bsky_uri_not_found() {
-		$method = new \ReflectionMethod( Reaction_Sync::class, 'find_comment_by_bsky_uri' );
+	public function test_find_comment_by_source_id_not_found() {
+		$method = new \ReflectionMethod( Reaction_Sync::class, 'find_comment_by_source_id' );
 		$method->setAccessible( true );
 
 		$this->assertFalse( $method->invoke( null, 'at://did:plc:unknown/app.bsky.feed.post/xyz' ) );
@@ -77,7 +77,7 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 		$comment_id = self::factory()->comment->create( array( 'comment_post_ID' => $post_id ) );
 		$uri        = 'at://did:plc:author/app.bsky.feed.post/reply456';
 
-		\update_comment_meta( $comment_id, Reaction_Sync::META_BSKY_URI, $uri );
+		\update_comment_meta( $comment_id, 'source_id', $uri );
 
 		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_reply' );
 		$method->setAccessible( true );
@@ -145,15 +145,19 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 		// Check meta.
 		$this->assertSame(
 			'atproto',
-			\get_comment_meta( $comment_id, Reaction_Sync::META_PROTOCOL, true )
+			\get_comment_meta( $comment_id, 'protocol', true )
 		);
 		$this->assertSame(
 			'at://did:plc:replier/app.bsky.feed.post/reply789',
-			\get_comment_meta( $comment_id, Reaction_Sync::META_BSKY_URI, true )
+			\get_comment_meta( $comment_id, 'source_id', true )
+		);
+		$this->assertSame(
+			'https://bsky.app/profile/replier.bsky.social/post/reply789',
+			\get_comment_meta( $comment_id, 'source_url', true )
 		);
 		$this->assertSame(
 			'did:plc:replier',
-			\get_comment_meta( $comment_id, Reaction_Sync::META_AUTHOR_DID, true )
+			\get_comment_meta( $comment_id, '_atmosphere_author_did', true )
 		);
 	}
 
@@ -172,7 +176,7 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 		);
 		$parent_reply_uri  = 'at://did:plc:first/app.bsky.feed.post/firstreply';
 
-		\update_comment_meta( $parent_comment_id, Reaction_Sync::META_BSKY_URI, $parent_reply_uri );
+		\update_comment_meta( $parent_comment_id, 'source_id', $parent_reply_uri );
 
 		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_reply' );
 		$method->setAccessible( true );

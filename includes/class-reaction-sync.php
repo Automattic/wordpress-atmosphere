@@ -28,26 +28,44 @@ class Reaction_Sync {
 	/**
 	 * Comment meta key for the protocol identifier.
 	 *
+	 * Matches the key used by wordpress-activitypub.
+	 *
 	 * @var string
 	 */
 	public const META_PROTOCOL = 'protocol';
 
 	/**
-	 * Comment meta key for the Bluesky AT-URI.
+	 * Comment meta key for the source object identifier.
+	 *
+	 * Stores the AT-URI. Dedup key. Matches the key used by
+	 * wordpress-activitypub (which stores an HTTP URL there).
 	 *
 	 * @var string
 	 */
-	public const META_BSKY_URI = '_atmosphere_bsky_uri';
+	public const META_SOURCE_ID = 'source_id';
+
+	/**
+	 * Comment meta key for the human-visitable URL of the reaction.
+	 *
+	 * Stores https://bsky.app/profile/<handle>/post/<rkey>.
+	 *
+	 * @var string
+	 */
+	public const META_SOURCE_URL = 'source_url';
 
 	/**
 	 * Comment meta key for the Bluesky CID.
+	 *
+	 * Atproto-specific.
 	 *
 	 * @var string
 	 */
 	public const META_BSKY_CID = '_atmosphere_bsky_cid';
 
 	/**
-	 * Comment meta key for the author DID.
+	 * Comment meta key for the reaction author's DID.
+	 *
+	 * Atproto-specific.
 	 *
 	 * @var string
 	 */
@@ -134,7 +152,7 @@ class Reaction_Sync {
 		}
 
 		// Dedup: skip if already imported.
-		if ( self::find_comment_by_bsky_uri( $reply_uri ) ) {
+		if ( self::find_comment_by_source_id( $reply_uri ) ) {
 			return false;
 		}
 
@@ -154,7 +172,7 @@ class Reaction_Sync {
 
 		if ( ! $post_id ) {
 			// Nested reply: parent is an existing comment.
-			$parent_comment_id = self::find_comment_by_bsky_uri( $parent_uri );
+			$parent_comment_id = self::find_comment_by_source_id( $parent_uri );
 
 			if ( $parent_comment_id ) {
 				$parent_comment = \get_comment( $parent_comment_id );
@@ -210,7 +228,12 @@ class Reaction_Sync {
 
 		// Store AT Protocol metadata.
 		\update_comment_meta( $comment_id, self::META_PROTOCOL, 'atproto' );
-		\update_comment_meta( $comment_id, self::META_BSKY_URI, $reply_uri );
+		\update_comment_meta( $comment_id, self::META_SOURCE_ID, $reply_uri );
+		\update_comment_meta(
+			$comment_id,
+			self::META_SOURCE_URL,
+			self::build_bsky_web_url( $reply_uri, $author_handle )
+		);
 		\update_comment_meta( $comment_id, self::META_BSKY_CID, $reply_cid );
 		\update_comment_meta( $comment_id, self::META_AUTHOR_DID, $author['did'] ?? '' );
 
@@ -266,6 +289,28 @@ class Reaction_Sync {
 	}
 
 	/**
+	 * Build the https://bsky.app/... web URL for a given AT-URI and handle.
+	 *
+	 * @param string $at_uri AT-URI (at://did:plc:.../app.bsky.feed.post/<rkey>).
+	 * @param string $handle Bluesky handle (e.g. replier.bsky.social).
+	 * @return string Web URL, or empty string if URI cannot be parsed.
+	 */
+	private static function build_bsky_web_url( string $at_uri, string $handle ): string {
+		if ( empty( $at_uri ) || empty( $handle ) ) {
+			return '';
+		}
+
+		$parts = \explode( '/', $at_uri );
+		$rkey  = \end( $parts );
+
+		if ( empty( $rkey ) ) {
+			return '';
+		}
+
+		return 'https://bsky.app/profile/' . $handle . '/post/' . $rkey;
+	}
+
+	/**
 	 * Find a WordPress post by its Bluesky AT-URI.
 	 *
 	 * @param string $uri AT-URI.
@@ -290,19 +335,19 @@ class Reaction_Sync {
 	}
 
 	/**
-	 * Find a WordPress comment by its Bluesky AT-URI.
+	 * Find a WordPress comment by its source_id meta (AT-URI).
 	 *
 	 * @param string $uri AT-URI.
 	 * @return int|false Comment ID or false.
 	 */
-	private static function find_comment_by_bsky_uri( string $uri ): int|false {
+	private static function find_comment_by_source_id( string $uri ): int|false {
 		if ( empty( $uri ) ) {
 			return false;
 		}
 
 		$comments = \get_comments(
 			array(
-				'meta_key'   => self::META_BSKY_URI, // phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_key
+				'meta_key'   => self::META_SOURCE_ID, // phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_key
 				'meta_value' => $uri, // phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_value
 				'number'     => 1,
 				'fields'     => 'ids',
