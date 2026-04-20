@@ -231,6 +231,63 @@ class Reaction_Sync {
 	}
 
 	/**
+	 * Shared handler for reactions whose target is in record.subject.uri.
+	 *
+	 * Used by likes and reposts — both point at a single subject post
+	 * and are stored at top level with empty content.
+	 *
+	 * @param array  $notification Notification from listNotifications.
+	 * @param string $comment_type 'like' or 'repost'.
+	 * @return int|false Comment ID or false.
+	 */
+	private static function process_subject_reaction( array $notification, string $comment_type ): int|false {
+		$uri    = $notification['uri'] ?? '';
+		$record = $notification['record'] ?? array();
+		$author = $notification['author'] ?? array();
+
+		if ( empty( $uri ) || empty( $record ) ) {
+			return false;
+		}
+
+		if ( self::find_comment_by_source_id( $uri ) ) {
+			return false;
+		}
+
+		$subject_uri = $record['subject']['uri'] ?? '';
+
+		if ( empty( $subject_uri ) ) {
+			return false;
+		}
+
+		$post_id = self::find_post_by_bsky_uri( $subject_uri );
+
+		if ( ! $post_id ) {
+			return false;
+		}
+
+		$profile = self::resolve_author( $author['did'] ?? '' );
+
+		return self::insert_reaction(
+			$post_id,
+			$comment_type,
+			'',
+			0,
+			$notification,
+			$profile
+		);
+	}
+
+	/**
+	 * Process a like notification into a WordPress like comment.
+	 *
+	 * @param array $notification Notification from listNotifications.
+	 * @return int|false Comment ID or false.
+	 */
+	private static function process_like( array $notification ): int|false {
+		return self::process_subject_reaction( $notification, 'like' );
+	}
+
+	/**
 	 * Process a reply notification into a WordPress comment.
 	 *
 	 * @param array $notification Notification from listNotifications.

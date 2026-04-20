@@ -264,4 +264,107 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 
 		$this->assertFalse( $method->invoke( null, $notification ) );
 	}
+
+	/**
+	 * Test that process_like creates a like comment.
+	 */
+	public function test_process_like_creates_comment() {
+		$post_id  = self::factory()->post->create();
+		$post_uri = 'at://did:plc:me/app.bsky.feed.post/likedpost';
+
+		\update_post_meta( $post_id, BskyPost::META_URI, $post_uri );
+
+		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_like' );
+		$method->setAccessible( true );
+
+		$notification = array(
+			'uri'    => 'at://did:plc:liker/app.bsky.feed.like/like1',
+			'cid'    => 'bafyreilike1',
+			'record' => array(
+				'createdAt' => '2026-03-21T14:00:00.000Z',
+				'subject'   => array(
+					'uri' => $post_uri,
+					'cid' => 'bafyreimypost',
+				),
+			),
+			'author' => array(
+				'did'    => 'did:plc:liker',
+				'handle' => 'liker.bsky.social',
+			),
+		);
+
+		$comment_id = $method->invoke( null, $notification );
+
+		$this->assertIsInt( $comment_id );
+		$this->assertGreaterThan( 0, $comment_id );
+
+		$comment = \get_comment( $comment_id );
+
+		$this->assertSame( '', $comment->comment_content );
+		$this->assertSame( 'like', $comment->comment_type );
+		$this->assertSame( (string) $post_id, $comment->comment_post_ID );
+		$this->assertSame( '0', $comment->comment_parent );
+
+		$this->assertSame(
+			'atproto',
+			\get_comment_meta( $comment_id, 'protocol', true )
+		);
+		$this->assertSame(
+			'at://did:plc:liker/app.bsky.feed.like/like1',
+			\get_comment_meta( $comment_id, 'source_id', true )
+		);
+		$this->assertSame(
+			'https://bsky.app/profile/liker.bsky.social/post/like1',
+			\get_comment_meta( $comment_id, 'source_url', true )
+		);
+	}
+
+	/**
+	 * Test that process_like skips an unknown subject post.
+	 */
+	public function test_process_like_skips_unknown_subject() {
+		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_like' );
+		$method->setAccessible( true );
+
+		$notification = array(
+			'uri'    => 'at://did:plc:liker/app.bsky.feed.like/like2',
+			'cid'    => 'bafyreilike2',
+			'record' => array(
+				'subject' => array( 'uri' => 'at://did:plc:other/app.bsky.feed.post/notours' ),
+			),
+			'author' => array(
+				'did'    => 'did:plc:liker',
+				'handle' => 'liker.bsky.social',
+			),
+		);
+
+		$this->assertFalse( $method->invoke( null, $notification ) );
+	}
+
+	/**
+	 * Test that process_like deduplicates on source_id.
+	 */
+	public function test_process_like_skips_duplicates() {
+		$post_id     = self::factory()->post->create();
+		$post_uri    = 'at://did:plc:me/app.bsky.feed.post/likedpost2';
+		$like_uri    = 'at://did:plc:liker/app.bsky.feed.like/like3';
+		$existing_id = self::factory()->comment->create( array( 'comment_post_ID' => $post_id ) );
+
+		\update_post_meta( $post_id, BskyPost::META_URI, $post_uri );
+		\update_comment_meta( $existing_id, 'source_id', $like_uri );
+
+		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_like' );
+		$method->setAccessible( true );
+
+		$notification = array(
+			'uri'    => $like_uri,
+			'record' => array( 'subject' => array( 'uri' => $post_uri ) ),
+			'author' => array(
+				'did'    => 'did:plc:liker',
+				'handle' => 'liker.bsky.social',
+			),
+		);
+
+		$this->assertFalse( $method->invoke( null, $notification ) );
+	}
 }
