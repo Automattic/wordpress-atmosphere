@@ -367,4 +367,78 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 
 		$this->assertFalse( $method->invoke( null, $notification ) );
 	}
+
+	/**
+	 * Test that process_repost creates a repost comment.
+	 */
+	public function test_process_repost_creates_comment() {
+		$post_id  = self::factory()->post->create();
+		$post_uri = 'at://did:plc:me/app.bsky.feed.post/repostedpost';
+
+		\update_post_meta( $post_id, BskyPost::META_URI, $post_uri );
+
+		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_repost' );
+		$method->setAccessible( true );
+
+		$notification = array(
+			'uri'    => 'at://did:plc:reposter/app.bsky.feed.repost/rep1',
+			'cid'    => 'bafyreirepost1',
+			'record' => array(
+				'createdAt' => '2026-03-21T15:00:00.000Z',
+				'subject'   => array(
+					'uri' => $post_uri,
+					'cid' => 'bafyreimypost',
+				),
+			),
+			'author' => array(
+				'did'    => 'did:plc:reposter',
+				'handle' => 'reposter.bsky.social',
+			),
+		);
+
+		$comment_id = $method->invoke( null, $notification );
+
+		$this->assertIsInt( $comment_id );
+		$this->assertGreaterThan( 0, $comment_id );
+
+		$comment = \get_comment( $comment_id );
+
+		$this->assertSame( '', $comment->comment_content );
+		$this->assertSame( 'repost', $comment->comment_type );
+		$this->assertSame( (string) $post_id, $comment->comment_post_ID );
+
+		$this->assertSame(
+			'at://did:plc:reposter/app.bsky.feed.repost/rep1',
+			\get_comment_meta( $comment_id, 'source_id', true )
+		);
+		$this->assertSame(
+			'https://bsky.app/profile/reposter.bsky.social/post/rep1',
+			\get_comment_meta( $comment_id, 'source_url', true )
+		);
+		$this->assertSame(
+			'did:plc:reposter',
+			\get_comment_meta( $comment_id, '_atmosphere_author_did', true )
+		);
+	}
+
+	/**
+	 * Test that process_repost skips an unknown subject post.
+	 */
+	public function test_process_repost_skips_unknown_subject() {
+		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_repost' );
+		$method->setAccessible( true );
+
+		$notification = array(
+			'uri'    => 'at://did:plc:reposter/app.bsky.feed.repost/rep2',
+			'record' => array(
+				'subject' => array( 'uri' => 'at://did:plc:other/app.bsky.feed.post/notours' ),
+			),
+			'author' => array(
+				'did'    => 'did:plc:reposter',
+				'handle' => 'reposter.bsky.social',
+			),
+		);
+
+		$this->assertFalse( $method->invoke( null, $notification ) );
+	}
 }

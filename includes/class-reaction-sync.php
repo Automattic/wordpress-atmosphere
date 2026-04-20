@@ -288,6 +288,16 @@ class Reaction_Sync {
 	}
 
 	/**
+	 * Process a repost notification into a WordPress repost comment.
+	 *
+	 * @param array $notification Notification from listNotifications.
+	 * @return int|false Comment ID or false.
+	 */
+	private static function process_repost( array $notification ): int|false {
+		return self::process_subject_reaction( $notification, 'repost' );
+	}
+
+	/**
 	 * Process a reply notification into a WordPress comment.
 	 *
 	 * @param array $notification Notification from listNotifications.
