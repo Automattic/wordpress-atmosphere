@@ -186,14 +186,17 @@ class Reaction_Sync {
 		$author_handle = $profile['handle'] ?? ( $author['handle'] ?? '' );
 		$author_name   = $profile['name'] ?? $author_handle;
 
+		$gm_date = \get_gmt_from_date( $record['createdAt'] ?? '' );
+
 		$comment_data = array(
 			'comment_post_ID'      => $post_id,
 			'comment_parent'       => $comment_parent,
 			'comment_author'       => $author_name,
-			'comment_author_url'   => 'https://bsky.app/profile/' . $author_handle,
+			'comment_author_url'   => \esc_url_raw( 'https://bsky.app/profile/' . $author_handle ),
 			'comment_author_email' => '',
 			'comment_content'      => \wp_kses_post( $content ),
-			'comment_date_gmt'     => \get_gmt_from_date( $record['createdAt'] ?? '' ),
+			'comment_date'         => \get_date_from_gmt( $gm_date ),
+			'comment_date_gmt'     => $gm_date,
 			'comment_type'         => $comment_type,
 			'comment_approved'     => 1,
 			'comment_agent'        => 'ATmosphere/' . ATMOSPHERE_VERSION,
@@ -425,7 +428,14 @@ class Reaction_Sync {
 			return '';
 		}
 
-		return 'https://bsky.app/profile/' . $handle . '/post/' . $rkey;
+		// Only app.bsky.feed.post records have a bsky.app web URL.
+		$collection = \prev( $parts );
+
+		if ( 'app.bsky.feed.post' !== $collection ) {
+			return '';
+		}
+
+		return \esc_url_raw( 'https://bsky.app/profile/' . $handle . '/post/' . $rkey );
 	}
 
 	/**

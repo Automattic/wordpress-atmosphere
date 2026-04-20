@@ -314,7 +314,7 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 			\get_comment_meta( $comment_id, 'source_id', true )
 		);
 		$this->assertSame(
-			'https://bsky.app/profile/liker.bsky.social/post/like1',
+			'',
 			\get_comment_meta( $comment_id, 'source_url', true )
 		);
 	}
@@ -412,7 +412,7 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 			\get_comment_meta( $comment_id, 'source_id', true )
 		);
 		$this->assertSame(
-			'https://bsky.app/profile/reposter.bsky.social/post/rep1',
+			'',
 			\get_comment_meta( $comment_id, 'source_url', true )
 		);
 		$this->assertSame(
