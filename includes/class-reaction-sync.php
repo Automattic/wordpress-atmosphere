@@ -99,11 +99,7 @@ class Reaction_Sync {
 			$notifications = $response['notifications'] ?? array();
 
 			foreach ( $notifications as $notification ) {
-				if ( 'reply' !== ( $notification['reason'] ?? '' ) ) {
-					continue;
-				}
-
-				self::process_reply( $notification );
+				self::process_notification( $notification );
 			}
 
 			$cursor = $response['cursor'] ?? null;
@@ -117,14 +113,38 @@ class Reaction_Sync {
 	}
 
 	/**
-	 * Fetch a page of reply notifications from the PDS.
+	 * Dispatch a single notification to its reason-specific handler.
+	 *
+	 * Unknown reasons are silently skipped.
+	 *
+	 * @param array $notification Notification from listNotifications.
+	 * @return int|false Comment ID if inserted, false if skipped.
+	 */
+	private static function process_notification( array $notification ): int|false {
+		switch ( $notification['reason'] ?? '' ) {
+			case 'reply':
+				return self::process_reply( $notification );
+			case 'like':
+				return self::process_like( $notification );
+			case 'repost':
+				return self::process_repost( $notification );
+			default:
+				return false;
+		}
+	}
+
+	/**
+	 * Fetch a page of reaction notifications from the PDS.
+	 *
+	 * Asks for reply, like, and repost reasons. Dispatch happens in
+	 * process_notification based on the individual notification's reason.
 	 *
 	 * @param string|null $cursor Pagination cursor.
 	 * @return array|\WP_Error
 	 */
 	private static function fetch_notifications( ?string $cursor = null ): array|\WP_Error {
 		$params = array(
-			'reasons' => 'reply',
+			'reasons' => array( 'reply', 'like', 'repost' ),
 			'limit'   => 50,
 		);
 
@@ -136,14 +156,88 @@ class Reaction_Sync {
 	}
 
 	/**
-	 * Process a single reply notification into a WordPress comment.
+	 * Insert a reaction notification as a WordPress comment and persist its meta.
+	 *
+	 * Caller is responsible for target-post resolution, dedup, and comment_type.
+	 * This method handles the wp_insert_comment call and writes the standard
+	 * reaction meta (protocol, source_id, source_url, CID, author DID).
+	 *
+	 * @param int    $post_id        WP post the reaction attaches to.
+	 * @param string $comment_type   One of 'comment', 'like', 'repost'.
+	 * @param string $content        Comment body (reply text, or '' for like/repost).
+	 * @param int    $comment_parent Parent comment ID, 0 for top-level.
+	 * @param array  $notification   Raw notification from listNotifications.
+	 * @param array  $profile        Resolved author profile (name, handle, avatar).
+	 * @return int|false Comment ID or false.
+	 */
+	private static function insert_reaction(
+		int $post_id,
+		string $comment_type,
+		string $content,
+		int $comment_parent,
+		array $notification,
+		array $profile
+	): int|false {
+		$uri    = $notification['uri'] ?? '';
+		$cid    = $notification['cid'] ?? '';
+		$author = $notification['author'] ?? array();
+		$record = $notification['record'] ?? array();
+
+		$author_handle = $profile['handle'] ?? ( $author['handle'] ?? '' );
+		$author_name   = $profile['name'] ?? $author_handle;
+
+		$comment_data = array(
+			'comment_post_ID'      => $post_id,
+			'comment_parent'       => $comment_parent,
+			'comment_author'       => $author_name,
+			'comment_author_url'   => 'https://bsky.app/profile/' . $author_handle,
+			'comment_author_email' => '',
+			'comment_content'      => \wp_kses_post( $content ),
+			'comment_date_gmt'     => \get_gmt_from_date( $record['createdAt'] ?? '' ),
+			'comment_type'         => $comment_type,
+			'comment_approved'     => 1,
+			'comment_agent'        => 'ATmosphere/' . ATMOSPHERE_VERSION,
+		);
+
+		\remove_action( 'check_comment_flood', 'check_comment_flood_db' );
+		$comment_id = \wp_insert_comment( $comment_data );
+		\add_action( 'check_comment_flood', 'check_comment_flood_db', 10, 4 );
+
+		if ( ! $comment_id ) {
+			return false;
+		}
+
+		\update_comment_meta( $comment_id, self::META_PROTOCOL, 'atproto' );
+		\update_comment_meta( $comment_id, self::META_SOURCE_ID, $uri );
+		\update_comment_meta(
+			$comment_id,
+			self::META_SOURCE_URL,
+			self::build_bsky_web_url( $uri, $author_handle )
+		);
+		\update_comment_meta( $comment_id, self::META_BSKY_CID, $cid );
+		\update_comment_meta( $comment_id, self::META_AUTHOR_DID, $author['did'] ?? '' );
+
+		/**
+		 * Fires after a Bluesky reaction is synced as a WordPress comment.
+		 *
+		 * @param int    $comment_id   The new comment ID.
+		 * @param array  $notification The raw notification data.
+		 * @param int    $post_id      The WordPress post ID.
+		 * @param string $comment_type One of 'comment', 'like', 'repost'.
+		 */
+		\do_action( 'atmosphere_reaction_synced', $comment_id, $notification, $post_id, $comment_type );
+
+		return $comment_id;
+	}
+
+	/**
+	 * Process a reply notification into a WordPress comment.
 	 *
 	 * @param array $notification Notification from listNotifications.
-	 * @return int|false Comment ID or false if skipped.
+	 * @return int|false Comment ID or false.
 	 */
 	private static function process_reply( array $notification ): int|false {
 		$reply_uri = $notification['uri'] ?? '';
-		$reply_cid = $notification['cid'] ?? '';
 		$record    = $notification['record'] ?? array();
 		$author    = $notification['author'] ?? array();
 
@@ -151,7 +245,6 @@ class Reaction_Sync {
 			return false;
 		}
 
-		// Dedup: skip if already imported.
 		if ( self::find_comment_by_source_id( $reply_uri ) ) {
 			return false;
 		}
@@ -163,7 +256,6 @@ class Reaction_Sync {
 			return false;
 		}
 
-		// Try to match the parent to a local post or comment.
 		$post_id        = 0;
 		$comment_parent = 0;
 
@@ -190,63 +282,22 @@ class Reaction_Sync {
 			return false;
 		}
 
-		// Resolve author profile.
+		$text = $record['text'] ?? '';
+
+		if ( '' === $text ) {
+			return false;
+		}
+
 		$profile = self::resolve_author( $author['did'] ?? '' );
 
-		$comment_text = $record['text'] ?? '';
-
-		if ( empty( $comment_text ) ) {
-			return false;
-		}
-
-		$author_handle = $profile['handle'] ?? ( $author['handle'] ?? '' );
-		$author_name   = $profile['name'] ?? $author_handle;
-
-		$comment_data = array(
-			'comment_post_ID'      => $post_id,
-			'comment_parent'       => $comment_parent,
-			'comment_author'       => $author_name,
-			'comment_author_url'   => 'https://bsky.app/profile/' . $author_handle,
-			'comment_author_email' => '',
-			'comment_content'      => \wp_kses_post( $comment_text ),
-			'comment_date_gmt'     => \get_gmt_from_date( $record['createdAt'] ?? '' ),
-			'comment_type'         => 'comment',
-			'comment_approved'     => 1,
-			'comment_agent'        => 'ATmosphere/' . ATMOSPHERE_VERSION,
+		return self::insert_reaction(
+			$post_id,
+			'comment',
+			$text,
+			$comment_parent,
+			$notification,
+			$profile
 		);
-
-		// Disable flood control for programmatic insertion.
-		\remove_action( 'check_comment_flood', 'check_comment_flood_db' );
-
-		$comment_id = \wp_insert_comment( $comment_data );
-
-		\add_action( 'check_comment_flood', 'check_comment_flood_db', 10, 4 );
-
-		if ( ! $comment_id ) {
-			return false;
-		}
-
-		// Store AT Protocol metadata.
-		\update_comment_meta( $comment_id, self::META_PROTOCOL, 'atproto' );
-		\update_comment_meta( $comment_id, self::META_SOURCE_ID, $reply_uri );
-		\update_comment_meta(
-			$comment_id,
-			self::META_SOURCE_URL,
-			self::build_bsky_web_url( $reply_uri, $author_handle )
-		);
-		\update_comment_meta( $comment_id, self::META_BSKY_CID, $reply_cid );
-		\update_comment_meta( $comment_id, self::META_AUTHOR_DID, $author['did'] ?? '' );
-
-		/**
-		 * Fires after a Bluesky reply is synced as a WordPress comment.
-		 *
-		 * @param int   $comment_id   The new comment ID.
-		 * @param array $notification The raw notification data.
-		 * @param int   $post_id      The WordPress post ID.
-		 */
-		\do_action( 'atmosphere_reaction_synced', $comment_id, $notification, $post_id );
-
-		return $comment_id;
 	}
 
 	/**
