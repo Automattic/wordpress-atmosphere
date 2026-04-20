@@ -1,22 +1,22 @@
 <?php
 /**
- * Tests for the comment sync engine.
+ * Tests for the reaction sync engine.
  *
  * @package Atmosphere
  * @group atmosphere
- * @group comment-sync
+ * @group reaction-sync
  */
 
 namespace Atmosphere\Tests;
 
 use WP_UnitTestCase;
-use Atmosphere\Comment_Sync;
+use Atmosphere\Reaction_Sync;
 use Atmosphere\Transformer\Post as BskyPost;
 
 /**
- * Comment sync tests.
+ * Reaction sync tests.
  */
-class Test_Comment_Sync extends WP_UnitTestCase {
+class Test_Reaction_Sync extends WP_UnitTestCase {
 
 	/**
 	 * Test that find_post_by_bsky_uri returns the correct post.
@@ -27,7 +27,7 @@ class Test_Comment_Sync extends WP_UnitTestCase {
 
 		\update_post_meta( $post_id, BskyPost::META_URI, $uri );
 
-		$method = new \ReflectionMethod( Comment_Sync::class, 'find_post_by_bsky_uri' );
+		$method = new \ReflectionMethod( Reaction_Sync::class, 'find_post_by_bsky_uri' );
 		$method->setAccessible( true );
 
 		$this->assertSame( $post_id, $method->invoke( null, $uri ) );
@@ -37,7 +37,7 @@ class Test_Comment_Sync extends WP_UnitTestCase {
 	 * Test that find_post_by_bsky_uri returns false for unknown URI.
 	 */
 	public function test_find_post_by_bsky_uri_not_found() {
-		$method = new \ReflectionMethod( Comment_Sync::class, 'find_post_by_bsky_uri' );
+		$method = new \ReflectionMethod( Reaction_Sync::class, 'find_post_by_bsky_uri' );
 		$method->setAccessible( true );
 
 		$this->assertFalse( $method->invoke( null, 'at://did:plc:unknown/app.bsky.feed.post/xyz' ) );
@@ -51,9 +51,9 @@ class Test_Comment_Sync extends WP_UnitTestCase {
 		$comment_id = self::factory()->comment->create( array( 'comment_post_ID' => $post_id ) );
 		$uri        = 'at://did:plc:reply/app.bsky.feed.post/reply123';
 
-		\update_comment_meta( $comment_id, Comment_Sync::META_BSKY_URI, $uri );
+		\update_comment_meta( $comment_id, Reaction_Sync::META_BSKY_URI, $uri );
 
-		$method = new \ReflectionMethod( Comment_Sync::class, 'find_comment_by_bsky_uri' );
+		$method = new \ReflectionMethod( Reaction_Sync::class, 'find_comment_by_bsky_uri' );
 		$method->setAccessible( true );
 
 		$this->assertSame( $comment_id, $method->invoke( null, $uri ) );
@@ -63,7 +63,7 @@ class Test_Comment_Sync extends WP_UnitTestCase {
 	 * Test that find_comment_by_bsky_uri returns false for unknown URI.
 	 */
 	public function test_find_comment_by_bsky_uri_not_found() {
-		$method = new \ReflectionMethod( Comment_Sync::class, 'find_comment_by_bsky_uri' );
+		$method = new \ReflectionMethod( Reaction_Sync::class, 'find_comment_by_bsky_uri' );
 		$method->setAccessible( true );
 
 		$this->assertFalse( $method->invoke( null, 'at://did:plc:unknown/app.bsky.feed.post/xyz' ) );
@@ -77,9 +77,9 @@ class Test_Comment_Sync extends WP_UnitTestCase {
 		$comment_id = self::factory()->comment->create( array( 'comment_post_ID' => $post_id ) );
 		$uri        = 'at://did:plc:author/app.bsky.feed.post/reply456';
 
-		\update_comment_meta( $comment_id, Comment_Sync::META_BSKY_URI, $uri );
+		\update_comment_meta( $comment_id, Reaction_Sync::META_BSKY_URI, $uri );
 
-		$method = new \ReflectionMethod( Comment_Sync::class, 'process_reply' );
+		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_reply' );
 		$method->setAccessible( true );
 
 		$notification = array(
@@ -110,7 +110,7 @@ class Test_Comment_Sync extends WP_UnitTestCase {
 
 		\update_post_meta( $post_id, BskyPost::META_URI, $post_uri );
 
-		$method = new \ReflectionMethod( Comment_Sync::class, 'process_reply' );
+		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_reply' );
 		$method->setAccessible( true );
 
 		$notification = array(
@@ -145,15 +145,15 @@ class Test_Comment_Sync extends WP_UnitTestCase {
 		// Check meta.
 		$this->assertSame(
 			'atproto',
-			\get_comment_meta( $comment_id, Comment_Sync::META_PROTOCOL, true )
+			\get_comment_meta( $comment_id, Reaction_Sync::META_PROTOCOL, true )
 		);
 		$this->assertSame(
 			'at://did:plc:replier/app.bsky.feed.post/reply789',
-			\get_comment_meta( $comment_id, Comment_Sync::META_BSKY_URI, true )
+			\get_comment_meta( $comment_id, Reaction_Sync::META_BSKY_URI, true )
 		);
 		$this->assertSame(
 			'did:plc:replier',
-			\get_comment_meta( $comment_id, Comment_Sync::META_AUTHOR_DID, true )
+			\get_comment_meta( $comment_id, Reaction_Sync::META_AUTHOR_DID, true )
 		);
 	}
 
@@ -172,9 +172,9 @@ class Test_Comment_Sync extends WP_UnitTestCase {
 		);
 		$parent_reply_uri  = 'at://did:plc:first/app.bsky.feed.post/firstreply';
 
-		\update_comment_meta( $parent_comment_id, Comment_Sync::META_BSKY_URI, $parent_reply_uri );
+		\update_comment_meta( $parent_comment_id, Reaction_Sync::META_BSKY_URI, $parent_reply_uri );
 
-		$method = new \ReflectionMethod( Comment_Sync::class, 'process_reply' );
+		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_reply' );
 		$method->setAccessible( true );
 
 		$notification = array(
@@ -208,7 +208,7 @@ class Test_Comment_Sync extends WP_UnitTestCase {
 	 * Test that process_reply skips when no matching post is found.
 	 */
 	public function test_process_reply_skips_unmatched() {
-		$method = new \ReflectionMethod( Comment_Sync::class, 'process_reply' );
+		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_reply' );
 		$method->setAccessible( true );
 
 		$notification = array(
@@ -239,7 +239,7 @@ class Test_Comment_Sync extends WP_UnitTestCase {
 
 		\update_post_meta( $post_id, BskyPost::META_URI, $post_uri );
 
-		$method = new \ReflectionMethod( Comment_Sync::class, 'process_reply' );
+		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_reply' );
 		$method->setAccessible( true );
 
 		$notification = array(

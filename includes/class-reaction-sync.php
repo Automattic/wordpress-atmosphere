@@ -1,9 +1,7 @@
 <?php
 /**
- * Syncs Bluesky replies back as WordPress comments.
- *
- * Polls app.bsky.notification.listNotifications for reply
- * notifications and inserts them as WordPress comments with
+ * Polls app.bsky.notification.listNotifications and inserts
+ * replies, likes, and reposts as WordPress comments with
  * AT Protocol metadata stored in comment meta.
  *
  * @package Atmosphere
@@ -16,16 +14,16 @@ namespace Atmosphere;
 use Atmosphere\Transformer\Post as BskyPost;
 
 /**
- * Comment sync engine.
+ * Reaction sync engine.
  */
-class Comment_Sync {
+class Reaction_Sync {
 
 	/**
 	 * Option key for the notification cursor.
 	 *
 	 * @var string
 	 */
-	public const OPTION_CURSOR = 'atmosphere_notif_cursor';
+	public const OPTION_CURSOR = 'atmosphere_reactions_cursor';
 
 	/**
 	 * Comment meta key for the protocol identifier.
@@ -223,7 +221,7 @@ class Comment_Sync {
 		 * @param array $notification The raw notification data.
 		 * @param int   $post_id      The WordPress post ID.
 		 */
-		\do_action( 'atmosphere_comment_synced', $comment_id, $notification, $post_id );
+		\do_action( 'atmosphere_reaction_synced', $comment_id, $notification, $post_id );
 
 		return $comment_id;
 	}
