@@ -1,8 +1,7 @@
 <?php
 /**
- * Polls app.bsky.notification.listNotifications and inserts
- * replies, likes, and reposts as WordPress comments with
- * AT Protocol metadata stored in comment meta.
+ * Polls Bluesky for reactions on posts we've published and inserts
+ * them as WordPress comments with AT Protocol metadata.
  *
  * @package Atmosphere
  */
@@ -49,16 +48,12 @@ class Reaction_Sync {
 	/**
 	 * Comment meta key for the Bluesky CID.
 	 *
-	 * Atproto-specific.
-	 *
 	 * @var string
 	 */
 	public const META_BSKY_CID = '_atmosphere_bsky_cid';
 
 	/**
 	 * Comment meta key for the reaction author's DID.
-	 *
-	 * Atproto-specific.
 	 *
 	 * @var string
 	 */
@@ -67,12 +62,33 @@ class Reaction_Sync {
 	/**
 	 * Comment meta key for the reaction author's avatar URL.
 	 *
-	 * Atproto-specific. Populated at insert time from the Bluesky
-	 * profile so get_avatar() does not fall through to gravatar.
+	 * Populated at insert time so get_avatar() does not fall through
+	 * to gravatar.
 	 *
 	 * @var string
 	 */
 	public const META_AUTHOR_AVATAR = '_atmosphere_author_avatar';
+
+	/**
+	 * Maximum pages fetched per stream per run.
+	 *
+	 * @var int
+	 */
+	private const MAX_PAGES = 5;
+
+	/**
+	 * Watermark option for the listNotifications stream.
+	 *
+	 * @var string
+	 */
+	private const OPTION_LAST_SEEN_NOTIFICATION = 'atmosphere_last_seen_notification';
+
+	/**
+	 * Watermark option prefix for own-repo streams (one per collection).
+	 *
+	 * @var string
+	 */
+	private const OPTION_LAST_SEEN_OWN_PREFIX = 'atmosphere_last_seen_own_';
 
 	/**
 	 * Register display-side hooks.
@@ -121,165 +137,94 @@ class Reaction_Sync {
 	}
 
 	/**
-	 * Maximum pages to process per cron run.
-	 *
-	 * @var int
-	 */
-	private const MAX_PAGES = 5;
-
-	/**
 	 * Run the sync. Called by WP-Cron.
-	 *
-	 * Pagination is per-run only. Each run starts from the newest
-	 * notification and walks backwards up to MAX_PAGES. Duplicates are
-	 * handled at insert time via find_comment_by_source_id.
 	 */
 	public static function sync(): void {
 		if ( ! is_connected() ) {
 			return;
 		}
 
-		self::sync_notifications();
-		self::sync_own_reactions();
-	}
+		// Reactions from other users.
+		self::paginate(
+			static fn( ?string $cursor ) => self::fetch_notifications( $cursor ),
+			'notifications',
+			self::OPTION_LAST_SEEN_NOTIFICATION,
+			static fn( array $item ) => self::process_notification( $item )
+		);
 
-	/**
-	 * Poll listNotifications for reactions from other users.
-	 */
-	private static function sync_notifications(): void {
-		$cursor = null;
-		$pages  = 0;
-
-		do {
-			$response = self::fetch_notifications( $cursor );
-
-			if ( \is_wp_error( $response ) ) {
-				return;
-			}
-
-			$notifications = $response['notifications'] ?? array();
-
-			foreach ( $notifications as $notification ) {
-				self::process_notification( $notification );
-			}
-
-			$cursor = $response['cursor'] ?? null;
-			++$pages;
-		} while ( $cursor && ! empty( $notifications ) && $pages < self::MAX_PAGES );
-	}
-
-	/**
-	 * Scan the authenticated user's own repo for reactions on our posts.
-	 *
-	 * Bluesky's listNotifications endpoint intentionally omits self-
-	 * actions (you don't notify yourself). Without this pass, a post
-	 * author's own likes, reposts, and replies on their own posts never
-	 * reach WordPress. We walk the own app.bsky.feed.like /
-	 * app.bsky.feed.repost / app.bsky.feed.post collections and feed
-	 * subject-matching records through the same insert_reaction path.
-	 */
-	private static function sync_own_reactions(): void {
+		// Self-reactions on our own posts (listNotifications omits these).
 		self::sync_own_collection( 'app.bsky.feed.like', 'like' );
 		self::sync_own_collection( 'app.bsky.feed.repost', 'repost' );
 		self::sync_own_collection( 'app.bsky.feed.post', 'comment' );
 	}
 
 	/**
-	 * Walk one collection of the user's own records and process each entry.
+	 * Walk one collection of the authenticated repo via listRecords.
 	 *
 	 * @param string $collection   AT Protocol collection NSID.
 	 * @param string $comment_type Target WP comment_type (like/repost/comment).
 	 */
 	private static function sync_own_collection( string $collection, string $comment_type ): void {
-		$cursor = null;
-		$pages  = 0;
+		$parts      = \explode( '.', $collection );
+		$option_key = self::OPTION_LAST_SEEN_OWN_PREFIX . \end( $parts );
+
+		self::paginate(
+			static fn( ?string $cursor ) => API::list_records( $collection, 50, $cursor ),
+			'records',
+			$option_key,
+			static fn( array $item ) => self::process_own_record( $item, $comment_type )
+		);
+	}
+
+	/**
+	 * Paginate a Bluesky listing until the previous run's watermark is
+	 * reached, MAX_PAGES is hit, or the cursor runs out.
+	 *
+	 * Stores the first item's URI as the new watermark so the next run
+	 * can short-circuit instead of re-walking already-processed history.
+	 *
+	 * @param callable $fetch      Receives ?string $cursor, returns array|WP_Error.
+	 * @param string   $items_key  Key inside the response holding the items array.
+	 * @param string   $option_key Option name for the watermark.
+	 * @param callable $process    Receives one item array.
+	 */
+	private static function paginate( callable $fetch, string $items_key, string $option_key, callable $process ): void {
+		$last_seen = \get_option( $option_key, '' );
+		$newest    = null;
+		$cursor    = null;
+		$pages     = 0;
+		$caught_up = false;
 
 		do {
-			$response = API::list_records( $collection, 50, $cursor );
+			$response = $fetch( $cursor );
 
 			if ( \is_wp_error( $response ) ) {
 				return;
 			}
 
-			$records = $response['records'] ?? array();
+			$items = $response[ $items_key ] ?? array();
 
-			foreach ( $records as $record ) {
-				self::process_own_record( $record, $comment_type );
+			foreach ( $items as $item ) {
+				$uri = $item['uri'] ?? '';
+
+				if ( null === $newest && $uri ) {
+					$newest = $uri;
+				}
+
+				if ( $last_seen && $uri === $last_seen ) {
+					$caught_up = true;
+					break;
+				}
+
+				$process( $item );
 			}
 
 			$cursor = $response['cursor'] ?? null;
 			++$pages;
-		} while ( $cursor && ! empty( $records ) && $pages < self::MAX_PAGES );
-	}
+		} while ( ! $caught_up && $cursor && ! empty( $items ) && $pages < self::MAX_PAGES );
 
-	/**
-	 * Turn one of our own like/repost/post records into a reaction comment.
-	 *
-	 * Records whose target (subject for likes/reposts, reply parent for
-	 * posts) is not a local WP post are silently skipped — those are
-	 * reactions to other people's content, which don't belong here.
-	 *
-	 * @param array  $record       listRecords entry (uri, cid, value).
-	 * @param string $comment_type Target WP comment_type (like/repost/comment).
-	 * @return int|false Comment ID or false.
-	 */
-	private static function process_own_record( array $record, string $comment_type ): int|false {
-		$value = $record['value'] ?? array();
-
-		// For posts, defer entirely to process_reply — it handles the
-		// reply-vs-original check and the three-step parent matching.
-		if ( 'comment' === $comment_type ) {
-			if ( empty( $value['reply'] ) ) {
-				return false;
-			}
-			return self::process_reply( self::synthesize_own_notification( $record ) );
-		}
-
-		return self::process_subject_reaction(
-			self::synthesize_own_notification( $record ),
-			$comment_type
-		);
-	}
-
-	/**
-	 * Build a notification-shaped array from one of our own records.
-	 *
-	 * @param array $record listRecords entry (uri, cid, value).
-	 * @return array
-	 */
-	private static function synthesize_own_notification( array $record ): array {
-		$did     = get_did();
-		$profile = self::resolve_author( $did );
-
-		return array(
-			'uri'    => $record['uri'] ?? '',
-			'cid'    => $record['cid'] ?? '',
-			'author' => array(
-				'did'    => $did,
-				'handle' => $profile['handle'] ?? '',
-			),
-			'record' => $record['value'] ?? array(),
-		);
-	}
-
-	/**
-	 * Dispatch a single notification to its reason-specific handler.
-	 *
-	 * Unknown reasons are silently skipped.
-	 *
-	 * @param array $notification Notification from listNotifications.
-	 * @return int|false Comment ID if inserted, false if skipped.
-	 */
-	private static function process_notification( array $notification ): int|false {
-		switch ( $notification['reason'] ?? '' ) {
-			case 'reply':
-				return self::process_reply( $notification );
-			case 'like':
-				return self::process_like( $notification );
-			case 'repost':
-				return self::process_repost( $notification );
-			default:
-				return false;
+		if ( $newest ) {
+			\update_option( $option_key, $newest, false );
 		}
 	}
 
@@ -288,8 +233,8 @@ class Reaction_Sync {
 	 *
 	 * No server-side reason filter — the XRPC array-query encoding
 	 * produced by http_build_query is incompatible with Bluesky's
-	 * repeated-key convention. Client-side dispatch in
-	 * process_notification skips non-reaction reasons cheaply.
+	 * repeated-key convention. process_notification's default case
+	 * skips non-reaction reasons cheaply.
 	 *
 	 * @param string|null $cursor Pagination cursor.
 	 * @return array|\WP_Error
@@ -305,17 +250,163 @@ class Reaction_Sync {
 	}
 
 	/**
-	 * Insert a reaction notification as a WordPress comment and persist its meta.
+	 * Dispatch a listNotifications notification by reason.
 	 *
-	 * Caller is responsible for target-post resolution, dedup, and comment_type.
-	 * This method handles the wp_insert_comment call and writes the standard
-	 * reaction meta (protocol, source_id, source_url, CID, author DID).
+	 * @param array $notification Notification from listNotifications.
+	 * @return int|false Comment ID if inserted, false if skipped.
+	 */
+	private static function process_notification( array $notification ): int|false {
+		switch ( $notification['reason'] ?? '' ) {
+			case 'reply':
+				return self::process_reply( $notification );
+			case 'like':
+				return self::process_subject_reaction( $notification, 'like' );
+			case 'repost':
+				return self::process_subject_reaction( $notification, 'repost' );
+			default:
+				return false;
+		}
+	}
+
+	/**
+	 * Dispatch one of our own records (like/repost/post) as a reaction.
+	 *
+	 * Records that target something other than a local WP post are
+	 * silently skipped — reactions to other people's content don't
+	 * belong on our site.
+	 *
+	 * @param array  $record       listRecords entry (uri, cid, value).
+	 * @param string $comment_type Target WP comment_type (like/repost/comment).
+	 * @return int|false Comment ID or false.
+	 */
+	private static function process_own_record( array $record, string $comment_type ): int|false {
+		$value = $record['value'] ?? array();
+
+		// Original (non-reply) posts are not reactions.
+		if ( 'comment' === $comment_type && empty( $value['reply'] ) ) {
+			return false;
+		}
+
+		$did = get_did();
+
+		$notification = array(
+			'uri'    => $record['uri'] ?? '',
+			'cid'    => $record['cid'] ?? '',
+			'author' => array(
+				'did'    => $did,
+				'handle' => self::resolve_author( $did )['handle'] ?? '',
+			),
+			'record' => $value,
+		);
+
+		return 'comment' === $comment_type
+			? self::process_reply( $notification )
+			: self::process_subject_reaction( $notification, $comment_type );
+	}
+
+	/**
+	 * Process a reply notification into a WordPress comment.
+	 *
+	 * @param array $notification Notification or synthesized own-record.
+	 * @return int|false Comment ID or false.
+	 */
+	private static function process_reply( array $notification ): int|false {
+		$reply_uri = $notification['uri'] ?? '';
+		$record    = $notification['record'] ?? array();
+		$author    = $notification['author'] ?? array();
+
+		if ( empty( $reply_uri ) || empty( $record ) ) {
+			return false;
+		}
+
+		if ( self::find_comment_by_source_id( $reply_uri ) ) {
+			return false;
+		}
+
+		$parent_uri = $record['reply']['parent']['uri'] ?? '';
+		$root_uri   = $record['reply']['root']['uri'] ?? '';
+
+		if ( empty( $parent_uri ) ) {
+			return false;
+		}
+
+		$comment_parent = 0;
+		$post_id        = self::find_post_by_bsky_uri( $parent_uri );
+
+		if ( ! $post_id ) {
+			// Nested reply: parent is an existing synced comment.
+			$parent_comment_id = self::find_comment_by_source_id( $parent_uri );
+
+			if ( $parent_comment_id ) {
+				$parent_comment = \get_comment( $parent_comment_id );
+				$post_id        = (int) $parent_comment->comment_post_ID;
+				$comment_parent = $parent_comment_id;
+			}
+		}
+
+		if ( ! $post_id ) {
+			// Deep thread rooted at one of our posts.
+			$post_id = self::find_post_by_bsky_uri( $root_uri );
+		}
+
+		if ( ! $post_id ) {
+			return false;
+		}
+
+		$text = $record['text'] ?? '';
+
+		if ( '' === $text ) {
+			return false;
+		}
+
+		$profile = self::resolve_author( $author['did'] ?? '' );
+
+		return self::insert_reaction( $post_id, 'comment', $text, $comment_parent, $notification, $profile );
+	}
+
+	/**
+	 * Process a like/repost reaction whose target is at record.subject.uri.
+	 *
+	 * @param array  $notification Notification or synthesized own-record.
+	 * @param string $comment_type 'like' or 'repost'.
+	 * @return int|false Comment ID or false.
+	 */
+	private static function process_subject_reaction( array $notification, string $comment_type ): int|false {
+		$uri    = $notification['uri'] ?? '';
+		$record = $notification['record'] ?? array();
+		$author = $notification['author'] ?? array();
+
+		if ( empty( $uri ) || empty( $record ) ) {
+			return false;
+		}
+
+		if ( self::find_comment_by_source_id( $uri ) ) {
+			return false;
+		}
+
+		$subject_uri = $record['subject']['uri'] ?? '';
+		$post_id     = $subject_uri ? self::find_post_by_bsky_uri( $subject_uri ) : false;
+
+		if ( ! $post_id ) {
+			return false;
+		}
+
+		$profile = self::resolve_author( $author['did'] ?? '' );
+
+		return self::insert_reaction( $post_id, $comment_type, '', 0, $notification, $profile );
+	}
+
+	/**
+	 * Insert a reaction as a WordPress comment and persist its meta.
+	 *
+	 * Callers are responsible for target-post resolution, dedup, and
+	 * the comment_type; this method just writes the row and meta.
 	 *
 	 * @param int    $post_id        WP post the reaction attaches to.
 	 * @param string $comment_type   One of 'comment', 'like', 'repost'.
 	 * @param string $content        Comment body (reply text, or '' for like/repost).
 	 * @param int    $comment_parent Parent comment ID, 0 for top-level.
-	 * @param array  $notification   Raw notification from listNotifications.
+	 * @param array  $notification   Raw notification or synthesized own-record.
 	 * @param array  $profile        Resolved author profile (name, handle, avatar).
 	 * @return int|false Comment ID or false.
 	 */
@@ -361,11 +452,7 @@ class Reaction_Sync {
 
 		\update_comment_meta( $comment_id, self::META_PROTOCOL, 'atproto' );
 		\update_comment_meta( $comment_id, self::META_SOURCE_ID, $uri );
-		\update_comment_meta(
-			$comment_id,
-			self::META_SOURCE_URL,
-			self::build_bsky_web_url( $uri, $author_handle )
-		);
+		\update_comment_meta( $comment_id, self::META_SOURCE_URL, self::build_bsky_web_url( $uri, $author_handle ) );
 		\update_comment_meta( $comment_id, self::META_BSKY_CID, $cid );
 		\update_comment_meta( $comment_id, self::META_AUTHOR_DID, $author['did'] ?? '' );
 		\update_comment_meta( $comment_id, self::META_AUTHOR_AVATAR, $profile['avatar'] ?? '' );
@@ -374,7 +461,7 @@ class Reaction_Sync {
 		 * Fires after a Bluesky reaction is synced as a WordPress comment.
 		 *
 		 * @param int    $comment_id   The new comment ID.
-		 * @param array  $notification The raw notification data.
+		 * @param array  $notification The raw notification or own-record.
 		 * @param int    $post_id      The WordPress post ID.
 		 * @param string $comment_type One of 'comment', 'like', 'repost'.
 		 */
@@ -384,154 +471,16 @@ class Reaction_Sync {
 	}
 
 	/**
-	 * Shared handler for reactions whose target is in record.subject.uri.
-	 *
-	 * Used by likes and reposts — both point at a single subject post
-	 * and are stored at top level with empty content.
-	 *
-	 * @param array  $notification Notification from listNotifications.
-	 * @param string $comment_type 'like' or 'repost'.
-	 * @return int|false Comment ID or false.
-	 */
-	private static function process_subject_reaction( array $notification, string $comment_type ): int|false {
-		$uri    = $notification['uri'] ?? '';
-		$record = $notification['record'] ?? array();
-		$author = $notification['author'] ?? array();
-
-		if ( empty( $uri ) || empty( $record ) ) {
-			return false;
-		}
-
-		if ( self::find_comment_by_source_id( $uri ) ) {
-			return false;
-		}
-
-		$subject_uri = $record['subject']['uri'] ?? '';
-
-		if ( empty( $subject_uri ) ) {
-			return false;
-		}
-
-		$post_id = self::find_post_by_bsky_uri( $subject_uri );
-
-		if ( ! $post_id ) {
-			return false;
-		}
-
-		$profile = self::resolve_author( $author['did'] ?? '' );
-
-		return self::insert_reaction(
-			$post_id,
-			$comment_type,
-			'',
-			0,
-			$notification,
-			$profile
-		);
-	}
-
-	/**
-	 * Process a like notification into a WordPress like comment.
-	 *
-	 * @param array $notification Notification from listNotifications.
-	 * @return int|false Comment ID or false.
-	 */
-	private static function process_like( array $notification ): int|false {
-		return self::process_subject_reaction( $notification, 'like' );
-	}
-
-	/**
-	 * Process a repost notification into a WordPress repost comment.
-	 *
-	 * @param array $notification Notification from listNotifications.
-	 * @return int|false Comment ID or false.
-	 */
-	private static function process_repost( array $notification ): int|false {
-		return self::process_subject_reaction( $notification, 'repost' );
-	}
-
-	/**
-	 * Process a reply notification into a WordPress comment.
-	 *
-	 * @param array $notification Notification from listNotifications.
-	 * @return int|false Comment ID or false.
-	 */
-	private static function process_reply( array $notification ): int|false {
-		$reply_uri = $notification['uri'] ?? '';
-		$record    = $notification['record'] ?? array();
-		$author    = $notification['author'] ?? array();
-
-		if ( empty( $reply_uri ) || empty( $record ) ) {
-			return false;
-		}
-
-		if ( self::find_comment_by_source_id( $reply_uri ) ) {
-			return false;
-		}
-
-		$parent_uri = $record['reply']['parent']['uri'] ?? '';
-		$root_uri   = $record['reply']['root']['uri'] ?? '';
-
-		if ( empty( $parent_uri ) ) {
-			return false;
-		}
-
-		$post_id        = 0;
-		$comment_parent = 0;
-
-		// Direct reply to one of our posts.
-		$post_id = self::find_post_by_bsky_uri( $parent_uri );
-
-		if ( ! $post_id ) {
-			// Nested reply: parent is an existing comment.
-			$parent_comment_id = self::find_comment_by_source_id( $parent_uri );
-
-			if ( $parent_comment_id ) {
-				$parent_comment = \get_comment( $parent_comment_id );
-				$post_id        = (int) $parent_comment->comment_post_ID;
-				$comment_parent = $parent_comment_id;
-			}
-		}
-
-		if ( ! $post_id ) {
-			// Fallback: reply somewhere in a thread rooted at our post.
-			$post_id = self::find_post_by_bsky_uri( $root_uri );
-		}
-
-		if ( ! $post_id ) {
-			return false;
-		}
-
-		$text = $record['text'] ?? '';
-
-		if ( '' === $text ) {
-			return false;
-		}
-
-		$profile = self::resolve_author( $author['did'] ?? '' );
-
-		return self::insert_reaction(
-			$post_id,
-			'comment',
-			$text,
-			$comment_parent,
-			$notification,
-			$profile
-		);
-	}
-
-	/**
-	 * Resolve a Bluesky actor profile.
+	 * Resolve a Bluesky actor profile via getProfile, transient-cached.
 	 *
 	 * @param string $did Author DID.
-	 * @return array{name: string, handle: string, avatar: string}
+	 * @return array{name?: string, handle?: string, avatar?: string}
 	 */
 	private static function resolve_author( string $did ): array {
 		if ( empty( $did ) ) {
 			return array();
 		}
 
-		// Check transient cache.
 		$cache_key = 'atmosphere_profile_' . \md5( $did );
 		$cached    = \get_transient( $cache_key );
 
@@ -539,10 +488,7 @@ class Reaction_Sync {
 			return $cached;
 		}
 
-		$result = API::get(
-			'/xrpc/app.bsky.actor.getProfile',
-			array( 'actor' => $did )
-		);
+		$result = API::get( '/xrpc/app.bsky.actor.getProfile', array( 'actor' => $did ) );
 
 		if ( \is_wp_error( $result ) ) {
 			return array();
@@ -560,11 +506,14 @@ class Reaction_Sync {
 	}
 
 	/**
-	 * Build the https://bsky.app/... web URL for a given AT-URI and handle.
+	 * Build the https://bsky.app/... web URL for a given AT-URI + handle.
 	 *
-	 * @param string $at_uri AT-URI (at://did:plc:.../app.bsky.feed.post/<rkey>).
-	 * @param string $handle Bluesky handle (e.g. replier.bsky.social).
-	 * @return string Web URL, or empty string if URI cannot be parsed.
+	 * Only app.bsky.feed.post records have a corresponding bsky.app
+	 * web page; like and repost rkeys don't, so those return ''.
+	 *
+	 * @param string $at_uri AT-URI.
+	 * @param string $handle Bluesky handle.
+	 * @return string
 	 */
 	private static function build_bsky_web_url( string $at_uri, string $handle ): string {
 		if ( empty( $at_uri ) || empty( $handle ) ) {
@@ -574,14 +523,7 @@ class Reaction_Sync {
 		$parts = \explode( '/', $at_uri );
 		$rkey  = \end( $parts );
 
-		if ( empty( $rkey ) ) {
-			return '';
-		}
-
-		// Only app.bsky.feed.post records have a bsky.app web URL.
-		$collection = \prev( $parts );
-
-		if ( 'app.bsky.feed.post' !== $collection ) {
+		if ( empty( $rkey ) || 'app.bsky.feed.post' !== \prev( $parts ) ) {
 			return '';
 		}
 
@@ -592,7 +534,7 @@ class Reaction_Sync {
 	 * Find a WordPress post by its Bluesky AT-URI.
 	 *
 	 * @param string $uri AT-URI.
-	 * @return int|false Post ID or false.
+	 * @return int|false
 	 */
 	private static function find_post_by_bsky_uri( string $uri ): int|false {
 		if ( empty( $uri ) ) {
@@ -616,7 +558,7 @@ class Reaction_Sync {
 	 * Find a WordPress comment by its source_id meta (AT-URI).
 	 *
 	 * @param string $uri AT-URI.
-	 * @return int|false Comment ID or false.
+	 * @return int|false
 	 */
 	private static function find_comment_by_source_id( string $uri ): int|false {
 		if ( empty( $uri ) ) {

@@ -274,7 +274,7 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 
 		\update_post_meta( $post_id, BskyPost::META_URI, $post_uri );
 
-		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_like' );
+		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_subject_reaction' );
 		$method->setAccessible( true );
 
 		$notification = array(
@@ -293,7 +293,7 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 			),
 		);
 
-		$comment_id = $method->invoke( null, $notification );
+		$comment_id = $method->invoke( null, $notification, 'like' );
 
 		$this->assertIsInt( $comment_id );
 		$this->assertGreaterThan( 0, $comment_id );
@@ -323,7 +323,7 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 	 * Test that process_like skips an unknown subject post.
 	 */
 	public function test_process_like_skips_unknown_subject() {
-		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_like' );
+		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_subject_reaction' );
 		$method->setAccessible( true );
 
 		$notification = array(
@@ -338,11 +338,11 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 			),
 		);
 
-		$this->assertFalse( $method->invoke( null, $notification ) );
+		$this->assertFalse( $method->invoke( null, $notification, 'like' ) );
 	}
 
 	/**
-	 * Test that process_like deduplicates on source_id.
+	 * Test that process_subject_reaction deduplicates on source_id.
 	 */
 	public function test_process_like_skips_duplicates() {
 		$post_id     = self::factory()->post->create();
@@ -353,7 +353,7 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 		\update_post_meta( $post_id, BskyPost::META_URI, $post_uri );
 		\update_comment_meta( $existing_id, 'source_id', $like_uri );
 
-		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_like' );
+		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_subject_reaction' );
 		$method->setAccessible( true );
 
 		$notification = array(
@@ -365,11 +365,11 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 			),
 		);
 
-		$this->assertFalse( $method->invoke( null, $notification ) );
+		$this->assertFalse( $method->invoke( null, $notification, 'like' ) );
 	}
 
 	/**
-	 * Test that process_repost creates a repost comment.
+	 * Test that process_subject_reaction creates a repost comment.
 	 */
 	public function test_process_repost_creates_comment() {
 		$post_id  = self::factory()->post->create();
@@ -377,7 +377,7 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 
 		\update_post_meta( $post_id, BskyPost::META_URI, $post_uri );
 
-		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_repost' );
+		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_subject_reaction' );
 		$method->setAccessible( true );
 
 		$notification = array(
@@ -396,7 +396,7 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 			),
 		);
 
-		$comment_id = $method->invoke( null, $notification );
+		$comment_id = $method->invoke( null, $notification, 'repost' );
 
 		$this->assertIsInt( $comment_id );
 		$this->assertGreaterThan( 0, $comment_id );
@@ -425,7 +425,7 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 	 * Test that process_repost skips an unknown subject post.
 	 */
 	public function test_process_repost_skips_unknown_subject() {
-		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_repost' );
+		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_subject_reaction' );
 		$method->setAccessible( true );
 
 		$notification = array(
@@ -439,7 +439,7 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 			),
 		);
 
-		$this->assertFalse( $method->invoke( null, $notification ) );
+		$this->assertFalse( $method->invoke( null, $notification, 'repost' ) );
 	}
 
 	/**
