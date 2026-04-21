@@ -1,0 +1,4 @@
+Significance: minor
+Type: added
+
+Short-form posts (untitled or with a post format) now publish as native Bluesky posts instead of link cards, matching the ActivityPub plugin's Note discriminator. Added the `atmosphere_is_short_form_post` filter for downstream override.

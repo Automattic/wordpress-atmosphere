@@ -190,13 +190,13 @@ class Document extends Base {
 	/**
 	 * Render post content to plain text.
 	 *
+	 * Delegates to Transformer\Base::render_post_content_plain() so
+	 * the short-form Bluesky post path and the document textContent
+	 * field agree on plain-text rendering.
+	 *
 	 * @return string
 	 */
 	private function get_text_content(): string {
-		$content = \apply_filters( 'the_content', $this->object->post_content ); // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Core WordPress filter.
-		$content = \wp_strip_all_tags( $content );
-		$content = \html_entity_decode( $content, ENT_QUOTES, 'UTF-8' );
-
-		return \trim( \preg_replace( '/\s+/', ' ', $content ) );
+		return $this->render_post_content_plain( $this->object );
 	}
 }
