@@ -19,13 +19,6 @@ use Atmosphere\Transformer\Post as BskyPost;
 class Reaction_Sync {
 
 	/**
-	 * Option key for the notification cursor.
-	 *
-	 * @var string
-	 */
-	public const OPTION_CURSOR = 'atmosphere_reactions_cursor';
-
-	/**
 	 * Comment meta key for the protocol identifier.
 	 *
 	 * Matches the key used by wordpress-activitypub.
@@ -80,17 +73,21 @@ class Reaction_Sync {
 
 	/**
 	 * Run the sync. Called by WP-Cron.
+	 *
+	 * Pagination is per-run only. Each run starts from the newest
+	 * notification and walks backwards up to MAX_PAGES. Duplicates are
+	 * handled at insert time via find_comment_by_source_id.
 	 */
 	public static function sync(): void {
 		if ( ! is_connected() ) {
 			return;
 		}
 
-		$cursor = \get_option( self::OPTION_CURSOR, '' );
+		$cursor = null;
 		$pages  = 0;
 
 		do {
-			$response = self::fetch_notifications( $cursor ?: null );
+			$response = self::fetch_notifications( $cursor );
 
 			if ( \is_wp_error( $response ) ) {
 				return;
@@ -103,11 +100,6 @@ class Reaction_Sync {
 			}
 
 			$cursor = $response['cursor'] ?? null;
-
-			if ( $cursor ) {
-				\update_option( self::OPTION_CURSOR, $cursor, false );
-			}
-
 			++$pages;
 		} while ( $cursor && ! empty( $notifications ) && $pages < self::MAX_PAGES );
 	}
@@ -134,19 +126,18 @@ class Reaction_Sync {
 	}
 
 	/**
-	 * Fetch a page of reaction notifications from the PDS.
+	 * Fetch a page of notifications from the PDS.
 	 *
-	 * Asks for reply, like, and repost reasons. Dispatch happens in
-	 * process_notification based on the individual notification's reason.
+	 * No server-side reason filter — the XRPC array-query encoding
+	 * produced by http_build_query is incompatible with Bluesky's
+	 * repeated-key convention. Client-side dispatch in
+	 * process_notification skips non-reaction reasons cheaply.
 	 *
 	 * @param string|null $cursor Pagination cursor.
 	 * @return array|\WP_Error
 	 */
 	private static function fetch_notifications( ?string $cursor = null ): array|\WP_Error {
-		$params = array(
-			'reasons' => array( 'reply', 'like', 'repost' ),
-			'limit'   => 50,
-		);
+		$params = array( 'limit' => 50 );
 
 		if ( null !== $cursor ) {
 			$params['cursor'] = $cursor;
