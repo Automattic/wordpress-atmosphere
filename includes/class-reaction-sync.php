@@ -139,6 +139,14 @@ class Reaction_Sync {
 			return;
 		}
 
+		self::sync_notifications();
+		self::sync_own_reactions();
+	}
+
+	/**
+	 * Poll listNotifications for reactions from other users.
+	 */
+	private static function sync_notifications(): void {
 		$cursor = null;
 		$pages  = 0;
 
@@ -158,6 +166,100 @@ class Reaction_Sync {
 			$cursor = $response['cursor'] ?? null;
 			++$pages;
 		} while ( $cursor && ! empty( $notifications ) && $pages < self::MAX_PAGES );
+	}
+
+	/**
+	 * Scan the authenticated user's own repo for reactions on our posts.
+	 *
+	 * Bluesky's listNotifications endpoint intentionally omits self-
+	 * actions (you don't notify yourself). Without this pass, a post
+	 * author's own likes, reposts, and replies on their own posts never
+	 * reach WordPress. We walk the own app.bsky.feed.like /
+	 * app.bsky.feed.repost / app.bsky.feed.post collections and feed
+	 * subject-matching records through the same insert_reaction path.
+	 */
+	private static function sync_own_reactions(): void {
+		self::sync_own_collection( 'app.bsky.feed.like', 'like' );
+		self::sync_own_collection( 'app.bsky.feed.repost', 'repost' );
+		self::sync_own_collection( 'app.bsky.feed.post', 'comment' );
+	}
+
+	/**
+	 * Walk one collection of the user's own records and process each entry.
+	 *
+	 * @param string $collection   AT Protocol collection NSID.
+	 * @param string $comment_type Target WP comment_type (like/repost/comment).
+	 */
+	private static function sync_own_collection( string $collection, string $comment_type ): void {
+		$cursor = null;
+		$pages  = 0;
+
+		do {
+			$response = API::list_records( $collection, 50, $cursor );
+
+			if ( \is_wp_error( $response ) ) {
+				return;
+			}
+
+			$records = $response['records'] ?? array();
+
+			foreach ( $records as $record ) {
+				self::process_own_record( $record, $comment_type );
+			}
+
+			$cursor = $response['cursor'] ?? null;
+			++$pages;
+		} while ( $cursor && ! empty( $records ) && $pages < self::MAX_PAGES );
+	}
+
+	/**
+	 * Turn one of our own like/repost/post records into a reaction comment.
+	 *
+	 * Records whose target (subject for likes/reposts, reply parent for
+	 * posts) is not a local WP post are silently skipped — those are
+	 * reactions to other people's content, which don't belong here.
+	 *
+	 * @param array  $record       listRecords entry (uri, cid, value).
+	 * @param string $comment_type Target WP comment_type (like/repost/comment).
+	 * @return int|false Comment ID or false.
+	 */
+	private static function process_own_record( array $record, string $comment_type ): int|false {
+		$value = $record['value'] ?? array();
+
+		// For posts, defer entirely to process_reply — it handles the
+		// reply-vs-original check and the three-step parent matching.
+		if ( 'comment' === $comment_type ) {
+			if ( empty( $value['reply'] ) ) {
+				return false;
+			}
+			return self::process_reply( self::synthesize_own_notification( $record ) );
+		}
+
+		return self::process_subject_reaction(
+			self::synthesize_own_notification( $record ),
+			$comment_type
+		);
+	}
+
+	/**
+	 * Build a notification-shaped array from one of our own records.
+	 *
+	 * @param array $record listRecords entry (uri, cid, value).
+	 * @return array
+	 */
+	private static function synthesize_own_notification( array $record ): array {
+		$did     = get_did();
+		$profile = self::resolve_author( $did );
+
+		return array(
+			'uri'    => $record['uri'] ?? '',
+			'cid'    => $record['cid'] ?? '',
+			'author' => array(
+				'did'    => $did,
+				'handle' => $profile['handle'] ?? '',
+			),
+			'record' => $record['value'] ?? array(),
+		);
 	}
 
 	/**

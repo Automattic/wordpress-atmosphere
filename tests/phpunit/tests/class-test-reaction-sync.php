@@ -441,4 +441,142 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 
 		$this->assertFalse( $method->invoke( null, $notification ) );
 	}
+
+	/**
+	 * Seed a fake connection and profile cache so self-sync tests can
+	 * call get_did() and resolve_author() without hitting the network.
+	 *
+	 * @param string $did    Fake self DID to store in atmosphere_connection.
+	 * @param string $handle Fake self handle (also used as display name).
+	 */
+	private function seed_self_identity( string $did = 'did:plc:me', string $handle = 'me.bsky.social' ): void {
+		\update_option(
+			'atmosphere_connection',
+			array( 'did' => $did ),
+			false
+		);
+
+		\set_transient(
+			'atmosphere_profile_' . \md5( $did ),
+			array(
+				'name'   => $handle,
+				'handle' => $handle,
+				'avatar' => 'https://example.com/avatar.jpg',
+			),
+			HOUR_IN_SECONDS
+		);
+	}
+
+	/**
+	 * Test that a self-like record on one of our posts becomes a like comment.
+	 */
+	public function test_process_own_record_like_on_our_post() {
+		$this->seed_self_identity();
+
+		$post_id  = self::factory()->post->create();
+		$post_uri = 'at://did:plc:me/app.bsky.feed.post/mypost';
+		\update_post_meta( $post_id, BskyPost::META_URI, $post_uri );
+
+		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_own_record' );
+		$method->setAccessible( true );
+
+		$record = array(
+			'uri'   => 'at://did:plc:me/app.bsky.feed.like/selflike1',
+			'cid'   => 'bafyselflike1',
+			'value' => array(
+				'$type'     => 'app.bsky.feed.like',
+				'createdAt' => '2026-04-20T14:00:00.000Z',
+				'subject'   => array(
+					'uri' => $post_uri,
+					'cid' => 'bafymypost',
+				),
+			),
+		);
+
+		$comment_id = $method->invoke( null, $record, 'like' );
+
+		$this->assertIsInt( $comment_id );
+		$comment = \get_comment( $comment_id );
+		$this->assertSame( 'like', $comment->comment_type );
+		$this->assertSame( (string) $post_id, $comment->comment_post_ID );
+		$this->assertSame(
+			'at://did:plc:me/app.bsky.feed.like/selflike1',
+			\get_comment_meta( $comment_id, 'source_id', true )
+		);
+	}
+
+	/**
+	 * Test that a self-like on someone else's post is skipped.
+	 */
+	public function test_process_own_record_like_on_foreign_post_is_skipped() {
+		$this->seed_self_identity();
+
+		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_own_record' );
+		$method->setAccessible( true );
+
+		$record = array(
+			'uri'   => 'at://did:plc:me/app.bsky.feed.like/selflike2',
+			'value' => array(
+				'subject' => array( 'uri' => 'at://did:plc:somebodyelse/app.bsky.feed.post/theirs' ),
+			),
+		);
+
+		$this->assertFalse( $method->invoke( null, $record, 'like' ) );
+	}
+
+	/**
+	 * Test that a self-reply to our own post becomes a reply comment.
+	 */
+	public function test_process_own_record_reply_on_our_post() {
+		$this->seed_self_identity();
+
+		$post_id  = self::factory()->post->create();
+		$post_uri = 'at://did:plc:me/app.bsky.feed.post/mypost2';
+		\update_post_meta( $post_id, BskyPost::META_URI, $post_uri );
+
+		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_own_record' );
+		$method->setAccessible( true );
+
+		$record = array(
+			'uri'   => 'at://did:plc:me/app.bsky.feed.post/selfreply1',
+			'cid'   => 'bafyselfreply1',
+			'value' => array(
+				'$type'     => 'app.bsky.feed.post',
+				'text'      => 'Replying to myself',
+				'createdAt' => '2026-04-20T15:00:00.000Z',
+				'reply'     => array(
+					'parent' => array( 'uri' => $post_uri ),
+					'root'   => array( 'uri' => $post_uri ),
+				),
+			),
+		);
+
+		$comment_id = $method->invoke( null, $record, 'comment' );
+
+		$this->assertIsInt( $comment_id );
+		$comment = \get_comment( $comment_id );
+		$this->assertSame( 'comment', $comment->comment_type );
+		$this->assertSame( 'Replying to myself', $comment->comment_content );
+		$this->assertSame( (string) $post_id, $comment->comment_post_ID );
+	}
+
+	/**
+	 * Test that a self-authored original post (no reply field) is skipped.
+	 */
+	public function test_process_own_record_original_post_is_skipped() {
+		$this->seed_self_identity();
+
+		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_own_record' );
+		$method->setAccessible( true );
+
+		$record = array(
+			'uri'   => 'at://did:plc:me/app.bsky.feed.post/originalpost',
+			'value' => array(
+				'$type' => 'app.bsky.feed.post',
+				'text'  => 'A brand new top-level post',
+			),
+		);
+
+		$this->assertFalse( $method->invoke( null, $record, 'comment' ) );
+	}
 }
