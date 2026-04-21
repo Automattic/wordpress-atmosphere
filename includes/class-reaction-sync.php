@@ -65,6 +65,62 @@ class Reaction_Sync {
 	public const META_AUTHOR_DID = '_atmosphere_author_did';
 
 	/**
+	 * Comment meta key for the reaction author's avatar URL.
+	 *
+	 * Atproto-specific. Populated at insert time from the Bluesky
+	 * profile so get_avatar() does not fall through to gravatar.
+	 *
+	 * @var string
+	 */
+	public const META_AUTHOR_AVATAR = '_atmosphere_author_avatar';
+
+	/**
+	 * Register display-side hooks.
+	 */
+	public static function register(): void {
+		\add_filter( 'get_avatar_comment_types', array( self::class, 'avatar_comment_types' ) );
+		\add_filter( 'pre_get_avatar_data', array( self::class, 'filter_avatar_data' ), 10, 2 );
+	}
+
+	/**
+	 * Tell WordPress that like and repost comments are avatar-eligible.
+	 *
+	 * @param array $types Registered avatar-eligible comment types.
+	 * @return array
+	 */
+	public static function avatar_comment_types( array $types ): array {
+		return \array_values( \array_unique( \array_merge( $types, array( 'comment', 'like', 'repost' ) ) ) );
+	}
+
+	/**
+	 * Short-circuit get_avatar_data for atproto-sourced comments.
+	 *
+	 * @param array $args        Avatar args.
+	 * @param mixed $id_or_email The comment, user, or email being rendered.
+	 * @return array
+	 */
+	public static function filter_avatar_data( array $args, $id_or_email ): array {
+		if ( ! $id_or_email instanceof \WP_Comment ) {
+			return $args;
+		}
+
+		if ( 'atproto' !== \get_comment_meta( (int) $id_or_email->comment_ID, self::META_PROTOCOL, true ) ) {
+			return $args;
+		}
+
+		$url = \get_comment_meta( (int) $id_or_email->comment_ID, self::META_AUTHOR_AVATAR, true );
+
+		if ( ! $url ) {
+			return $args;
+		}
+
+		$args['url']          = $url;
+		$args['found_avatar'] = true;
+
+		return $args;
+	}
+
+	/**
 	 * Maximum pages to process per cron run.
 	 *
 	 * @var int
@@ -210,6 +266,7 @@ class Reaction_Sync {
 		);
 		\update_comment_meta( $comment_id, self::META_BSKY_CID, $cid );
 		\update_comment_meta( $comment_id, self::META_AUTHOR_DID, $author['did'] ?? '' );
+		\update_comment_meta( $comment_id, self::META_AUTHOR_AVATAR, $profile['avatar'] ?? '' );
 
 		/**
 		 * Fires after a Bluesky reaction is synced as a WordPress comment.
