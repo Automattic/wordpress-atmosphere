@@ -3,7 +3,7 @@
  * Transforms a WordPress post into an app.bsky.feed.post record.
  *
  * The post text combines title + excerpt + permalink, truncated to
- * 300 graphemes.  An external embed card is attached with the
+ * 300 characters.  An external embed card is attached with the
  * post's URL, title, description, and optional thumbnail.
  *
  * @package Atmosphere
@@ -56,22 +56,25 @@ class Post extends Base {
 		 * embed card). Long-form posts use the teaser composition (title +
 		 * excerpt + permalink) with an external card linking back to
 		 * WordPress. The default discriminator mirrors the ActivityPub
-		 * plugin's Post::get_type() logic: untitled posts OR posts with any
-		 * non-empty post_format are short-form.
+		 * plugin's Post::get_type() logic: short-form when the post type
+		 * does not support titles, the post has an empty title, or the
+		 * post has any non-empty post_format.
 		 *
 		 * @param bool     $is_short Whether the post should be treated as short-form.
 		 * @param \WP_Post $post     The post being transformed.
 		 */
-		$is_short = \apply_filters(
-			'atmosphere_is_short_form_post',
-			$this->is_short_form( $this->object ),
-			$this->object
+		$is_short = \wp_validate_boolean(
+			\apply_filters(
+				'atmosphere_is_short_form_post',
+				$this->is_short_form( $this->object ),
+				$this->object
+			)
 		);
 
-		if ( $is_short ) {
-			$text  = $this->build_short_form_text();
-			$embed = null;
-		} else {
+		$text  = $is_short ? $this->build_short_form_text() : '';
+		$embed = null;
+
+		if ( '' === $text ) {
 			$text  = $this->build_text();
 			$embed = $this->build_embed();
 		}
@@ -128,7 +131,7 @@ class Post extends Base {
 	}
 
 	/**
-	 * Compose the post text: title + excerpt + permalink within 300 graphemes.
+	 * Compose the post text: title + excerpt + permalink within 300 characters.
 	 *
 	 * @return string
 	 */
@@ -260,7 +263,7 @@ class Post extends Base {
 	 *
 	 * The post body becomes the Bluesky text directly, with no title
 	 * prefix or trailing permalink. Defensively clamped to 300
-	 * graphemes; a composer UI is expected to enforce the cap before
+	 * characters; a composer UI is expected to enforce the cap before
 	 * publish.
 	 *
 	 * @return string

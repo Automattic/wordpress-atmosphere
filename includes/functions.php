@@ -60,10 +60,10 @@ function sanitize_text( string $text ): string {
 }
 
 /**
- * Truncate text to a grapheme limit, breaking at word boundaries.
+ * Truncate text to a character limit, breaking at word boundaries.
  *
  * @param string $text   Text to truncate.
- * @param int    $limit  Maximum graphemes.
+ * @param int    $limit  Maximum characters (mb_strlen code points).
  * @param string $marker Ellipsis marker.
  * @return string
  */

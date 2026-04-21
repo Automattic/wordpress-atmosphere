@@ -146,9 +146,7 @@ abstract class Base {
 	 */
 	protected function render_post_content_plain( \WP_Post $post ): string {
 		$content = \apply_filters( 'the_content', $post->post_content ); // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Core WordPress filter.
-		$content = \wp_strip_all_tags( $content );
-		$content = \html_entity_decode( $content, ENT_QUOTES, 'UTF-8' );
 
-		return \trim( \preg_replace( '/\s+/', ' ', $content ) );
+		return sanitize_text( $content );
 	}
 }
