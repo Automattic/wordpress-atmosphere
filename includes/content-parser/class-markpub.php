@@ -82,12 +82,9 @@ class Markpub implements Content_Parser {
 	private static function transform_block( array $block ): ?string {
 		if ( empty( $block['blockName'] ) ) {
 			// Classic (non-block) content or whitespace.
-			$html = \trim( $block['innerHTML'] ?? '' );
-			if ( empty( $html ) ) {
-				return null;
-			}
+			$md = self::inline_html_to_markdown( $block['innerHTML'] ?? '' );
 
-			return self::inline_html_to_markdown( $html );
+			return '' === $md ? null : $md;
 		}
 
 		return match ( $block['blockName'] ) {
@@ -114,12 +111,9 @@ class Markpub implements Content_Parser {
 	 * @return string|null
 	 */
 	private static function paragraph( array $block ): ?string {
-		$html = \trim( $block['innerHTML'] ?? '' );
-		if ( empty( $html ) ) {
-			return null;
-		}
+		$md = self::inline_html_to_markdown( $block['innerHTML'] ?? '' );
 
-		return self::inline_html_to_markdown( $html );
+		return '' === $md ? null : $md;
 	}
 
 	/**
@@ -312,12 +306,9 @@ class Markpub implements Content_Parser {
 			return self::container( $block );
 		}
 
-		$html = \trim( $block['innerHTML'] ?? '' );
-		if ( empty( $html ) ) {
-			return null;
-		}
+		$md = self::inline_html_to_markdown( $block['innerHTML'] ?? '' );
 
-		return self::inline_html_to_markdown( $html );
+		return '' === $md ? null : $md;
 	}
 
 	/**
