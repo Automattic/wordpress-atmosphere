@@ -77,6 +77,20 @@ class Reaction_Sync {
 	private const MAX_PAGES = 5;
 
 	/**
+	 * Items re-walked past the prior run's watermark on each run.
+	 *
+	 * Covers the publish→immediate-reaction race: a reaction can land
+	 * in the stream before the target post's _atmosphere_bsky_uri meta
+	 * is written, get dropped on the first run, and then be skipped
+	 * forever once the watermark moves past it. Re-walking a small
+	 * window gives transient drops a retry; dedup via source_id meta
+	 * keeps already-processed items from being re-inserted.
+	 *
+	 * @var int
+	 */
+	private const WATERMARK_GRACE = 10;
+
+	/**
 	 * Watermark option for the listNotifications stream.
 	 *
 	 * @var string
@@ -178,10 +192,14 @@ class Reaction_Sync {
 
 	/**
 	 * Paginate a Bluesky listing until the previous run's watermark is
-	 * reached, MAX_PAGES is hit, or the cursor runs out.
+	 * reached (plus a grace window), MAX_PAGES is hit, or the cursor
+	 * runs out.
 	 *
 	 * Stores the first item's URI as the new watermark so the next run
 	 * can short-circuit instead of re-walking already-processed history.
+	 * When the watermark URI is hit, paginate keeps walking for up to
+	 * WATERMARK_GRACE more items before stopping, so transient drops
+	 * from the prior run get a second chance.
 	 *
 	 * @param callable $fetch      Receives ?string $cursor, returns array|WP_Error.
 	 * @param string   $items_key  Key inside the response holding the items array.
@@ -193,9 +211,9 @@ class Reaction_Sync {
 		$newest    = null;
 		$cursor    = null;
 		$pages     = 0;
-		$caught_up = false;
+		$rewalk    = null;
 
-		do {
+		while ( $pages < self::MAX_PAGES ) {
 			$response = $fetch( $cursor );
 
 			if ( \is_wp_error( $response ) ) {
@@ -204,6 +222,10 @@ class Reaction_Sync {
 
 			$items = $response[ $items_key ] ?? array();
 
+			if ( empty( $items ) ) {
+				break;
+			}
+
 			foreach ( $items as $item ) {
 				$uri = $item['uri'] ?? '';
 
@@ -211,17 +233,28 @@ class Reaction_Sync {
 					$newest = $uri;
 				}
 
-				if ( $last_seen && $uri === $last_seen ) {
-					$caught_up = true;
-					break;
+				if ( null === $rewalk && $last_seen && $uri === $last_seen ) {
+					$rewalk = self::WATERMARK_GRACE;
+				}
+
+				if ( 0 === $rewalk ) {
+					break 2;
 				}
 
 				$process( $item );
+
+				if ( null !== $rewalk ) {
+					--$rewalk;
+				}
 			}
 
 			$cursor = $response['cursor'] ?? null;
 			++$pages;
-		} while ( ! $caught_up && $cursor && ! empty( $items ) && $pages < self::MAX_PAGES );
+
+			if ( ! $cursor ) {
+				break;
+			}
+		}
 
 		if ( $newest ) {
 			\update_option( $option_key, $newest, false );
@@ -426,13 +459,14 @@ class Reaction_Sync {
 		$author_handle = $profile['handle'] ?? ( $author['handle'] ?? '' );
 		$author_name   = $profile['name'] ?? $author_handle;
 
-		$gm_date = \get_gmt_from_date( $record['createdAt'] ?? '' );
+		$timestamp = \strtotime( $record['createdAt'] ?? '' );
+		$gm_date   = \gmdate( 'Y-m-d H:i:s', false === $timestamp ? 0 : $timestamp );
 
 		$comment_data = array(
 			'comment_post_ID'      => $post_id,
 			'comment_parent'       => $comment_parent,
 			'comment_author'       => $author_name,
-			'comment_author_url'   => \esc_url_raw( 'https://bsky.app/profile/' . $author_handle ),
+			'comment_author_url'   => \esc_url_raw( 'https://bsky.app/profile/' . \rawurlencode( $author_handle ) ),
 			'comment_author_email' => '',
 			'comment_content'      => \wp_kses_post( $content ),
 			'comment_date'         => \get_date_from_gmt( $gm_date ),
@@ -452,6 +486,13 @@ class Reaction_Sync {
 
 		\update_comment_meta( $comment_id, self::META_PROTOCOL, 'atproto' );
 		\update_comment_meta( $comment_id, self::META_SOURCE_ID, $uri );
+
+		/*
+		 * source_url points at the bsky.app page for the reaction itself
+		 * and is intentionally empty for likes and reposts, which have no
+		 * bsky.app landing page. For those, comment_author_url (the
+		 * author profile) is what links out to Bluesky.
+		 */
 		\update_comment_meta( $comment_id, self::META_SOURCE_URL, self::build_bsky_web_url( $uri, $author_handle ) );
 		\update_comment_meta( $comment_id, self::META_BSKY_CID, $cid );
 		\update_comment_meta( $comment_id, self::META_AUTHOR_DID, $author['did'] ?? '' );
@@ -527,7 +568,7 @@ class Reaction_Sync {
 			return '';
 		}
 
-		return \esc_url_raw( 'https://bsky.app/profile/' . $handle . '/post/' . $rkey );
+		return \esc_url_raw( 'https://bsky.app/profile/' . \rawurlencode( $handle ) . '/post/' . $rkey );
 	}
 
 	/**

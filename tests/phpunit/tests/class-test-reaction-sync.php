@@ -579,4 +579,218 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 
 		$this->assertFalse( $method->invoke( null, $record, 'comment' ) );
 	}
+
+	/**
+	 * Test that createdAt (UTC) is stored verbatim in comment_date_gmt
+	 * even when the site timezone is non-UTC, without a second
+	 * local→UTC conversion.
+	 */
+	public function test_reply_stores_createdAt_as_utc_on_non_utc_site() {
+		\update_option( 'timezone_string', 'America/New_York' );
+
+		$post_id  = self::factory()->post->create();
+		$post_uri = 'at://did:plc:me/app.bsky.feed.post/tzpost';
+		\update_post_meta( $post_id, BskyPost::META_URI, $post_uri );
+
+		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_reply' );
+		$method->setAccessible( true );
+
+		$notification = array(
+			'uri'    => 'at://did:plc:replier/app.bsky.feed.post/tzreply',
+			'cid'    => 'bafyrei_tz',
+			'record' => array(
+				'text'      => 'Reply',
+				'createdAt' => '2026-03-21T12:00:00.000Z',
+				'reply'     => array(
+					'parent' => array( 'uri' => $post_uri ),
+					'root'   => array( 'uri' => $post_uri ),
+				),
+			),
+			'author' => array(
+				'did'    => 'did:plc:replier',
+				'handle' => 'replier.bsky.social',
+			),
+		);
+
+		$comment_id = $method->invoke( null, $notification );
+		$this->assertIsInt( $comment_id );
+
+		$comment = \get_comment( $comment_id );
+		$this->assertSame( '2026-03-21 12:00:00', $comment->comment_date_gmt );
+
+		\update_option( 'timezone_string', '' );
+	}
+
+	/**
+	 * Invoke the private paginate() method.
+	 *
+	 * @param callable $fetch      Fetch callback.
+	 * @param string   $items_key  Response items key.
+	 * @param string   $option_key Watermark option.
+	 * @param callable $process    Process callback.
+	 */
+	private function invoke_paginate( callable $fetch, string $items_key, string $option_key, callable $process ): void {
+		$method = new \ReflectionMethod( Reaction_Sync::class, 'paginate' );
+		$method->setAccessible( true );
+		$method->invoke( null, $fetch, $items_key, $option_key, $process );
+	}
+
+	/**
+	 * Test that paginate() walks every item when no watermark is stored.
+	 */
+	public function test_paginate_walks_full_page_without_watermark() {
+		$option_key = 'atmosphere_test_paginate_fresh';
+		\delete_option( $option_key );
+
+		$fetch = static fn() => array(
+			'items' => array(
+				array( 'uri' => 'at://a/1' ),
+				array( 'uri' => 'at://a/2' ),
+				array( 'uri' => 'at://a/3' ),
+			),
+		);
+
+		$seen    = array();
+		$process = static function ( array $item ) use ( &$seen ) {
+			$seen[] = $item['uri'];
+		};
+
+		$this->invoke_paginate( $fetch, 'items', $option_key, $process );
+
+		$this->assertSame( array( 'at://a/1', 'at://a/2', 'at://a/3' ), $seen );
+		$this->assertSame( 'at://a/1', \get_option( $option_key ) );
+	}
+
+	/**
+	 * Test that paginate() re-walks WATERMARK_GRACE items past the last
+	 * seen URI so transient drops from a prior run get a retry.
+	 */
+	public function test_paginate_rewalks_grace_window_past_watermark() {
+		$option_key = 'atmosphere_test_paginate_grace';
+		\update_option( $option_key, 'at://a/4', false );
+
+		$items = array();
+		for ( $i = 1; $i <= 15; $i++ ) {
+			$items[] = array( 'uri' => 'at://a/' . $i );
+		}
+
+		$fetch = static fn() => array( 'items' => $items );
+
+		$seen    = array();
+		$process = static function ( array $item ) use ( &$seen ) {
+			$seen[] = $item['uri'];
+		};
+
+		$this->invoke_paginate( $fetch, 'items', $option_key, $process );
+
+		$expected = array(
+			'at://a/1',
+			'at://a/2',
+			'at://a/3',
+			'at://a/4',
+			'at://a/5',
+			'at://a/6',
+			'at://a/7',
+			'at://a/8',
+			'at://a/9',
+			'at://a/10',
+			'at://a/11',
+			'at://a/12',
+			'at://a/13',
+		);
+		$this->assertSame( $expected, $seen );
+		$this->assertSame( 'at://a/1', \get_option( $option_key ) );
+	}
+
+	/**
+	 * Test that the grace window spans the page boundary — if the
+	 * watermark is near the end of page 1, paginate fetches page 2 to
+	 * finish the re-walk, then stops.
+	 */
+	public function test_paginate_grace_window_spans_pages() {
+		$option_key = 'atmosphere_test_paginate_grace_pages';
+		\update_option( $option_key, 'at://a/4', false );
+
+		$pages = array(
+			array(
+				'items'  => array(
+					array( 'uri' => 'at://a/1' ),
+					array( 'uri' => 'at://a/2' ),
+					array( 'uri' => 'at://a/3' ),
+					array( 'uri' => 'at://a/4' ),
+					array( 'uri' => 'at://a/5' ),
+				),
+				'cursor' => 'next',
+			),
+			array(
+				'items' => array(
+					array( 'uri' => 'at://a/6' ),
+					array( 'uri' => 'at://a/7' ),
+					array( 'uri' => 'at://a/8' ),
+					array( 'uri' => 'at://a/9' ),
+					array( 'uri' => 'at://a/10' ),
+					array( 'uri' => 'at://a/11' ),
+					array( 'uri' => 'at://a/12' ),
+					array( 'uri' => 'at://a/13' ),
+					array( 'uri' => 'at://a/14' ),
+					array( 'uri' => 'at://a/15' ),
+				),
+			),
+		);
+
+		$fetch = static fn( ?string $cursor ) => null === $cursor ? $pages[0] : $pages[1];
+
+		$seen    = array();
+		$process = static function ( array $item ) use ( &$seen ) {
+			$seen[] = $item['uri'];
+		};
+
+		$this->invoke_paginate( $fetch, 'items', $option_key, $process );
+
+		$expected = array(
+			'at://a/1',
+			'at://a/2',
+			'at://a/3',
+			'at://a/4',
+			'at://a/5',
+			'at://a/6',
+			'at://a/7',
+			'at://a/8',
+			'at://a/9',
+			'at://a/10',
+			'at://a/11',
+			'at://a/12',
+			'at://a/13',
+		);
+		$this->assertSame( $expected, $seen );
+		$this->assertSame( 'at://a/1', \get_option( $option_key ) );
+	}
+
+	/**
+	 * Test that paginate() stops cleanly if fewer items than
+	 * WATERMARK_GRACE remain after the watermark is hit.
+	 */
+	public function test_paginate_stops_when_stream_runs_out_inside_grace() {
+		$option_key = 'atmosphere_test_paginate_short';
+		\update_option( $option_key, 'at://a/3', false );
+
+		$fetch = static fn() => array(
+			'items' => array(
+				array( 'uri' => 'at://a/1' ),
+				array( 'uri' => 'at://a/2' ),
+				array( 'uri' => 'at://a/3' ),
+				array( 'uri' => 'at://a/4' ),
+			),
+		);
+
+		$seen    = array();
+		$process = static function ( array $item ) use ( &$seen ) {
+			$seen[] = $item['uri'];
+		};
+
+		$this->invoke_paginate( $fetch, 'items', $option_key, $process );
+
+		$this->assertSame( array( 'at://a/1', 'at://a/2', 'at://a/3', 'at://a/4' ), $seen );
+		$this->assertSame( 'at://a/1', \get_option( $option_key ) );
+	}
 }
