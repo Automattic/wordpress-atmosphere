@@ -133,4 +133,20 @@ abstract class Base {
 
 		return \wp_trim_words( sanitize_text( $post->post_content ), $word_limit, '...' );
 	}
+
+	/**
+	 * Render a post's content to plain text.
+	 *
+	 * Runs the_content filter, strips tags, decodes entities, and
+	 * collapses whitespace. Shared by short-form Bluesky post
+	 * composition and the document record's textContent field.
+	 *
+	 * @param \WP_Post $post Post object.
+	 * @return string
+	 */
+	protected function render_post_content_plain( \WP_Post $post ): string {
+		$content = \apply_filters( 'the_content', $post->post_content ); // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Core WordPress filter.
+
+		return sanitize_text( $content );
+	}
 }
