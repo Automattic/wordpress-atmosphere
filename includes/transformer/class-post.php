@@ -3,7 +3,7 @@
  * Transforms a WordPress post into an app.bsky.feed.post record.
  *
  * The post text combines title + excerpt + permalink, truncated to
- * 300 graphemes.  An external embed card is attached with the
+ * 300 characters.  An external embed card is attached with the
  * post's URL, title, description, and optional thumbnail.
  *
  * @package Atmosphere
@@ -49,7 +49,35 @@ class Post extends Base {
 	 * @return array app.bsky.feed.post record.
 	 */
 	public function transform(): array {
-		$text = $this->build_text();
+		/**
+		 * Filters whether the post should be treated as short-form for Bluesky.
+		 *
+		 * Short-form posts publish natively (post body as text, no external
+		 * embed card). Long-form posts use the teaser composition (title +
+		 * excerpt + permalink) with an external card linking back to
+		 * WordPress. The default discriminator mirrors the ActivityPub
+		 * plugin's Post::get_type() logic: short-form when the post type
+		 * does not support titles, the post has an empty title, or the
+		 * post has any non-empty post_format.
+		 *
+		 * @param bool     $is_short Whether the post should be treated as short-form.
+		 * @param \WP_Post $post     The post being transformed.
+		 */
+		$is_short = \wp_validate_boolean(
+			\apply_filters(
+				'atmosphere_is_short_form_post',
+				$this->is_short_form( $this->object ),
+				$this->object
+			)
+		);
+
+		$text  = $is_short ? $this->build_short_form_text() : '';
+		$embed = null;
+
+		if ( '' === $text ) {
+			$text  = $this->build_text();
+			$embed = $this->build_embed();
+		}
 
 		$record = array(
 			'$type'     => 'app.bsky.feed.post',
@@ -63,7 +91,6 @@ class Post extends Base {
 			$record['facets'] = $facets;
 		}
 
-		$embed = $this->build_embed();
 		if ( $embed ) {
 			$record['embed'] = $embed;
 		}
@@ -104,7 +131,7 @@ class Post extends Base {
 	}
 
 	/**
-	 * Compose the post text: title + excerpt + permalink within 300 graphemes.
+	 * Compose the post text: title + excerpt + permalink within 300 characters.
 	 *
 	 * @return string
 	 */
@@ -208,5 +235,40 @@ class Post extends Base {
 		}
 
 		return $blob_ref;
+	}
+
+	/**
+	 * Whether the post should be treated as short-form for Bluesky.
+	 *
+	 * Mirrors the ActivityPub plugin's Post::get_type() discriminator so
+	 * a post federated as a Mastodon Note also goes to Bluesky as a
+	 * native post instead of a link-card teaser. Short-form when:
+	 * - the post type does not support titles, OR
+	 * - the post has an empty title, OR
+	 * - the post has any non-empty post_format.
+	 *
+	 * @param \WP_Post $post Post being transformed.
+	 * @return bool
+	 */
+	private function is_short_form( \WP_Post $post ): bool {
+		if ( ! \post_type_supports( $post->post_type, 'title' ) || empty( $post->post_title ) ) {
+			return true;
+		}
+
+		return (bool) \get_post_format( $post );
+	}
+
+	/**
+	 * Build the bsky.app post text for a short-form post.
+	 *
+	 * The post body becomes the Bluesky text directly, with no title
+	 * prefix or trailing permalink. Defensively clamped to 300
+	 * characters; a composer UI is expected to enforce the cap before
+	 * publish.
+	 *
+	 * @return string
+	 */
+	private function build_short_form_text(): string {
+		return truncate_text( $this->render_post_content_plain( $this->object ), 300 );
 	}
 }

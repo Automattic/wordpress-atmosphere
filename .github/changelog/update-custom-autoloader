@@ -1,0 +1,4 @@
+Significance: patch
+Type: changed
+
+Replace third-party JWT library with native OpenSSL signing and add a custom class autoloader.
