@@ -30,10 +30,13 @@ class Markpub implements Content_Parser {
 	/**
 	 * {@inheritDoc}
 	 *
+	 * $post is required by the Content_Parser contract so parsers can
+	 * access post metadata; Markpub only needs $content.
+	 *
 	 * @param string   $content Raw post content.
 	 * @param \WP_Post $post    The WordPress post object.
 	 */
-	public function parse( string $content, \WP_Post $post ): array { // phpcs:ignore VariableAnalysis.CodeAnalysis.VariableAnalysis.UnusedVariable
+	public function parse( string $content, \WP_Post $post ): ?array { // phpcs:ignore Generic.CodeAnalysis.UnusedFunctionParameter.Found, VariableAnalysis.CodeAnalysis.VariableAnalysis.UnusedVariable
 		$blocks = \parse_blocks( $content );
 		$parts  = array();
 
@@ -55,6 +58,10 @@ class Markpub implements Content_Parser {
 		 */
 		$markdown = \apply_filters( 'atmosphere_html_to_markdown', $markdown, $content );
 
+		if ( '' === \trim( $markdown ) ) {
+			return null;
+		}
+
 		return array(
 			'$type'      => 'at.markpub.markdown',
 			'text'       => array(
@@ -62,7 +69,7 @@ class Markpub implements Content_Parser {
 				'markdown' => $markdown,
 			),
 			'flavor'     => 'gfm',
-			'extensions' => array( 'strikethrough', 'table' ),
+			'extensions' => array( 'strikethrough' ),
 		);
 	}
 
@@ -158,10 +165,13 @@ class Markpub implements Content_Parser {
 		// Check for a caption in figcaption.
 		$caption_proc = new \WP_HTML_Tag_Processor( $html );
 		if ( $caption_proc->next_tag( 'FIGCAPTION' ) ) {
-			$caption = \wp_strip_all_tags(
-				\preg_replace( '#.*<figcaption[^>]*>#si', '', $html )
-			);
-			$caption = \trim( \preg_replace( '#</figcaption>.*#si', '', $caption ) );
+			// Strip both ends of the figcaption tag BEFORE stripping
+			// remaining tags, so sibling content after </figcaption>
+			// (e.g. a trailing <p> inside the same <figure>) doesn't
+			// bleed into the caption text.
+			$caption = self::safe_replace( '#.*<figcaption[^>]*>#si', '', $html );
+			$caption = self::safe_replace( '#</figcaption>.*#si', '', $caption );
+			$caption = \trim( \wp_strip_all_tags( $caption ) );
 
 			if ( ! empty( $caption ) ) {
 				$md .= "\n" . $caption;
@@ -330,7 +340,7 @@ class Markpub implements Content_Parser {
 		$md = $html;
 
 		// Inline images.
-		$md = \preg_replace_callback(
+		$md = self::safe_replace_callback(
 			'#<img[^>]+>#si',
 			static function ( $m ) {
 				$processor = new \WP_HTML_Tag_Processor( $m[0] );
@@ -345,26 +355,26 @@ class Markpub implements Content_Parser {
 		);
 
 		// Links — percent-encode parentheses to avoid breaking markdown syntax.
-		$md = \preg_replace_callback(
+		$md = self::safe_replace_callback(
 			'#<a[^>]+href=["\']([^"\']*)["\'][^>]*>(.*?)</a>#si',
 			static fn( $m ) => '[' . \wp_strip_all_tags( $m[2] ) . '](' . \str_replace( array( '(', ')' ), array( '%28', '%29' ), $m[1] ) . ')',
 			$md
 		);
 
 		// Bold.
-		$md = \preg_replace( '#<(?:strong|b)>(.*?)</(?:strong|b)>#si', '**$1**', $md );
+		$md = self::safe_replace( '#<(?:strong|b)>(.*?)</(?:strong|b)>#si', '**$1**', $md );
 
 		// Italic.
-		$md = \preg_replace( '#<(?:em|i)>(.*?)</(?:em|i)>#si', '*$1*', $md );
+		$md = self::safe_replace( '#<(?:em|i)>(.*?)</(?:em|i)>#si', '*$1*', $md );
 
 		// Strikethrough.
-		$md = \preg_replace( '#<(?:s|del|strike)>(.*?)</(?:s|del|strike)>#si', '~~$1~~', $md );
+		$md = self::safe_replace( '#<(?:s|del|strike)>(.*?)</(?:s|del|strike)>#si', '~~$1~~', $md );
 
 		// Inline code.
-		$md = \preg_replace( '#<code>(.*?)</code>#si', '`$1`', $md );
+		$md = self::safe_replace( '#<code>(.*?)</code>#si', '`$1`', $md );
 
 		// Line breaks.
-		$md = \preg_replace( '#<br\s*/?\s*>#si', "  \n", $md );
+		$md = self::safe_replace( '#<br\s*/?\s*>#si', "  \n", $md );
 
 		// Strip block-level wrappers and remaining tags.
 		$md = \wp_strip_all_tags( $md );
@@ -373,5 +383,62 @@ class Markpub implements Content_Parser {
 		$md = \html_entity_decode( $md, ENT_QUOTES, 'UTF-8' );
 
 		return \trim( $md );
+	}
+
+	/**
+	 * Wraps preg_replace with a fallback that preserves the input on PCRE failure.
+	 *
+	 * The underlying preg_replace returns null on engine failure
+	 * (e.g. backtrack or recursion limit hit on pathological input).
+	 * Without a guard, null cascades through subsequent string
+	 * operations and can erase the whole buffer with no signal.
+	 *
+	 * @param string $pattern     Pattern.
+	 * @param string $replacement Replacement.
+	 * @param string $subject     Input.
+	 * @return string Replaced string, or the original on PCRE failure.
+	 */
+	private static function safe_replace( string $pattern, string $replacement, string $subject ): string {
+		$result = \preg_replace( $pattern, $replacement, $subject );
+
+		if ( null === $result ) {
+			self::warn_pcre_failure( $pattern );
+			return $subject;
+		}
+
+		return $result;
+	}
+
+	/**
+	 * Wraps preg_replace_callback with the same failure guard as safe_replace().
+	 *
+	 * @param string   $pattern  Pattern.
+	 * @param callable $callback Callback.
+	 * @param string   $subject  Input.
+	 * @return string Replaced string, or the original on PCRE failure.
+	 */
+	private static function safe_replace_callback( string $pattern, callable $callback, string $subject ): string {
+		$result = \preg_replace_callback( $pattern, $callback, $subject );
+
+		if ( null === $result ) {
+			self::warn_pcre_failure( $pattern );
+			return $subject;
+		}
+
+		return $result;
+	}
+
+	/**
+	 * Emit a warning about a PCRE failure without hard-failing.
+	 *
+	 * @param string $pattern The pattern that failed.
+	 */
+	private static function warn_pcre_failure( string $pattern ): void {
+		if ( \function_exists( 'wp_trigger_error' ) ) {
+			\wp_trigger_error(
+				__METHOD__,
+				\sprintf( 'PCRE failure on pattern %s; preserving input.', $pattern )
+			);
+		}
 	}
 }

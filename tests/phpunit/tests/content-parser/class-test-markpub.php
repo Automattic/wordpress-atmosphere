@@ -178,13 +178,12 @@ class Test_Markpub extends WP_UnitTestCase {
 	}
 
 	/**
-	 * Test empty content produces empty markdown.
+	 * Test empty content returns null so Document can omit content.
 	 */
 	public function test_empty_content() {
-		$post   = self::factory()->post->create_and_get();
-		$result = $this->parser->parse( '', $post );
+		$post = self::factory()->post->create_and_get();
 
-		$this->assertSame( '', $result['text']['markdown'] );
+		$this->assertNull( $this->parser->parse( '', $post ) );
 	}
 
 	/**
@@ -230,5 +229,40 @@ class Test_Markpub extends WP_UnitTestCase {
 
 		$this->assertStringContainsString( '**bold**', $md );
 		$this->assertStringContainsString( 'Classic editor content', $md );
+	}
+
+	/**
+	 * Test that sibling content after </figcaption> inside the same
+	 * <figure> does not bleed into the extracted caption text.
+	 */
+	public function test_image_caption_does_not_include_sibling_content() {
+		$post    = self::factory()->post->create_and_get();
+		$content = "<!-- wp:image -->\n"
+			. '<figure class="wp-block-image">'
+			. '<img src="https://example.com/photo.jpg" alt="A photo" />'
+			. '<figcaption>Real caption</figcaption>'
+			. '<p>Should not appear in caption</p>'
+			. '</figure>'
+			. "\n<!-- /wp:image -->";
+
+		$result = $this->parser->parse( $content, $post );
+		$md     = $result['text']['markdown'];
+
+		$this->assertStringContainsString( 'Real caption', $md );
+		$this->assertStringNotContainsString( 'Should not appear in caption', $md );
+	}
+
+	/**
+	 * Test that a post made up entirely of blocks that produce no
+	 * markdown (e.g. core/spacer) returns null so Document can omit
+	 * the content field.
+	 */
+	public function test_parse_returns_null_when_markdown_is_empty() {
+		$post    = self::factory()->post->create_and_get();
+		$content = "<!-- wp:spacer {\"height\":\"20px\"} -->\n"
+			. '<div style="height:20px" aria-hidden="true" class="wp-block-spacer"></div>' . "\n"
+			. '<!-- /wp:spacer -->';
+
+		$this->assertNull( $this->parser->parse( $content, $post ) );
 	}
 }
