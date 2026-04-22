@@ -162,6 +162,67 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 	}
 
 	/**
+	 * Test that process_reply survives get_comment() returning null
+	 * for the found parent comment ID (race: comment deleted between
+	 * the meta lookup and the get_comment call). Should fall through
+	 * to the root-post fallback instead of fataling on a property
+	 * access against null.
+	 */
+	public function test_process_reply_handles_get_comment_returning_null() {
+		$post_id  = self::factory()->post->create();
+		$post_uri = 'at://did:plc:me/app.bsky.feed.post/rootpost';
+		\update_post_meta( $post_id, BskyPost::META_URI, $post_uri );
+
+		$parent_comment_id = self::factory()->comment->create( array( 'comment_post_ID' => $post_id ) );
+		$parent_reply_uri  = 'at://did:plc:first/app.bsky.feed.post/missingparent';
+		\update_comment_meta( $parent_comment_id, 'source_id', $parent_reply_uri );
+
+		// Simulate the race: find_comment_by_source_id returns the ID,
+		// but get_comment() returns null because the row is gone.
+		\add_filter(
+			'get_comment',
+			static function ( $comment ) use ( $parent_comment_id ) {
+				if ( $comment && (int) $comment->comment_ID === $parent_comment_id ) {
+					return null;
+				}
+				return $comment;
+			}
+		);
+
+		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_reply' );
+		$method->setAccessible( true );
+
+		$notification = array(
+			'uri'    => 'at://did:plc:replier/app.bsky.feed.post/nested',
+			'cid'    => 'bafyreinested',
+			'record' => array(
+				'text'      => 'Nested reply',
+				'createdAt' => '2026-03-21T14:00:00.000Z',
+				'reply'     => array(
+					'parent' => array( 'uri' => $parent_reply_uri ),
+					'root'   => array( 'uri' => $post_uri ),
+				),
+			),
+			'author' => array(
+				'did'    => 'did:plc:replier',
+				'handle' => 'replier.bsky.social',
+			),
+		);
+
+		$comment_id = $method->invoke( null, $notification );
+
+		\remove_all_filters( 'get_comment' );
+
+		$this->assertIsInt( $comment_id );
+		$this->assertGreaterThan( 0, $comment_id );
+
+		$comment = \get_comment( $comment_id );
+		$this->assertSame( (string) $post_id, $comment->comment_post_ID );
+		// Parent resolution failed, so the reply attaches at the root.
+		$this->assertSame( '0', $comment->comment_parent );
+	}
+
+	/**
 	 * Test that process_reply handles nested replies.
 	 */
 	public function test_process_reply_nested() {
@@ -670,7 +731,7 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 		\update_option( $option_key, 'at://a/4', false );
 
 		$items = array();
-		for ( $i = 1; $i <= 15; $i++ ) {
+		for ( $i = 1; $i <= 16; $i++ ) {
 			$items[] = array( 'uri' => 'at://a/' . $i );
 		}
 
@@ -683,6 +744,8 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 
 		$this->invoke_paginate( $fetch, 'items', $option_key, $process );
 
+		// 3 items before the watermark, the watermark itself, and
+		// WATERMARK_GRACE (10) items strictly past it = 14 processed.
 		$expected = array(
 			'at://a/1',
 			'at://a/2',
@@ -697,6 +760,7 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 			'at://a/11',
 			'at://a/12',
 			'at://a/13',
+			'at://a/14',
 		);
 		$this->assertSame( $expected, $seen );
 		$this->assertSame( 'at://a/1', \get_option( $option_key ) );
@@ -761,6 +825,7 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 			'at://a/11',
 			'at://a/12',
 			'at://a/13',
+			'at://a/14',
 		);
 		$this->assertSame( $expected, $seen );
 		$this->assertSame( 'at://a/1', \get_option( $option_key ) );

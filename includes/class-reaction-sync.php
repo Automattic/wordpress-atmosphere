@@ -77,7 +77,7 @@ class Reaction_Sync {
 	private const MAX_PAGES = 5;
 
 	/**
-	 * Items re-walked past the prior run's watermark on each run.
+	 * Items re-walked strictly past the prior run's watermark on each run.
 	 *
 	 * Covers the publish→immediate-reaction race: a reaction can land
 	 * in the stream before the target post's _atmosphere_bsky_uri meta
@@ -217,6 +217,19 @@ class Reaction_Sync {
 			$response = $fetch( $cursor );
 
 			if ( \is_wp_error( $response ) ) {
+				/*
+				 * Leave a breadcrumb so operators can diagnose why sync
+				 * stopped making progress (rate limit, OAuth refresh
+				 * failure, transient 5xx all surface here identically).
+				 */
+				\error_log( // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
+					\sprintf(
+						'[atmosphere] reaction sync (%s) fetch failed: %s — %s',
+						$option_key,
+						$response->get_error_code(),
+						$response->get_error_message()
+					)
+				);
 				return;
 			}
 
@@ -234,7 +247,13 @@ class Reaction_Sync {
 				}
 
 				if ( null === $rewalk && $last_seen && $uri === $last_seen ) {
-					$rewalk = self::WATERMARK_GRACE;
+					/*
+					 * +1 because the watermark item itself is processed
+					 * (and dedup-skipped) before this counter decrements;
+					 * initialising to GRACE + 1 means we re-walk exactly
+					 * GRACE items strictly past the watermark.
+					 */
+					$rewalk = self::WATERMARK_GRACE + 1;
 				}
 
 				if ( 0 === $rewalk ) {
@@ -372,8 +391,11 @@ class Reaction_Sync {
 
 			if ( $parent_comment_id ) {
 				$parent_comment = \get_comment( $parent_comment_id );
-				$post_id        = (int) $parent_comment->comment_post_ID;
-				$comment_parent = $parent_comment_id;
+
+				if ( $parent_comment ) {
+					$post_id        = (int) $parent_comment->comment_post_ID;
+					$comment_parent = $parent_comment_id;
+				}
 			}
 		}
 
@@ -476,9 +498,7 @@ class Reaction_Sync {
 			'comment_agent'        => 'ATmosphere/' . ATMOSPHERE_VERSION,
 		);
 
-		\remove_action( 'check_comment_flood', 'check_comment_flood_db' );
 		$comment_id = \wp_insert_comment( $comment_data );
-		\add_action( 'check_comment_flood', 'check_comment_flood_db', 10, 4 );
 
 		if ( ! $comment_id ) {
 			return false;
