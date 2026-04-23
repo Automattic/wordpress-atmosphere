@@ -516,4 +516,73 @@ class Test_Atmosphere extends WP_UnitTestCase {
 
 		\wp_clear_scheduled_hook( 'atmosphere_delete_comment_record', array( 'deadbeef' ) );
 	}
+
+	/**
+	 * The publish cron handler re-checks eligibility at fire time.
+	 * A comment unapproved between schedule and execution must not
+	 * publish; without this guard, the async event would send the
+	 * record even though the gate now says no.
+	 */
+	public function test_publish_comment_cron_rechecks_eligibility() {
+		Atmosphere::register_async_hooks();
+
+		$comment    = $this->make_eligible_comment();
+		$comment_id = (int) $comment->comment_ID;
+
+		// Flip the comment to unapproved after "scheduling".
+		\wp_set_comment_status( $comment_id, 'hold' );
+
+		$captured = false;
+		\add_filter(
+			'pre_http_request',
+			static function ( $response, $args, $url ) use ( &$captured ) {
+				if ( false !== \strpos( $url, 'applyWrites' ) ) {
+					$captured = true;
+				}
+				return $response;
+			},
+			5,
+			3
+		);
+
+		\do_action( 'atmosphere_publish_comment', $comment_id );
+		\remove_all_filters( 'pre_http_request' );
+
+		$this->assertFalse( $captured, 'applyWrites must not be called for a no-longer-eligible comment.' );
+		\remove_all_actions( 'atmosphere_publish_comment' );
+	}
+
+	/**
+	 * The delete cron handler must not fire when the comment has
+	 * become eligible again between schedule and execution (e.g.
+	 * admin unapproved then re-approved before cron ran).
+	 */
+	public function test_delete_comment_cron_skips_when_eligible_again() {
+		Atmosphere::register_async_hooks();
+
+		$comment    = $this->make_eligible_comment();
+		$comment_id = (int) $comment->comment_ID;
+		// Simulate a prior successful publish.
+		\update_comment_meta( $comment_id, Comment::META_URI, 'at://did:plc:test123/app.bsky.feed.post/prev' );
+		\update_comment_meta( $comment_id, Comment::META_TID, 'prev' );
+
+		$captured = false;
+		\add_filter(
+			'pre_http_request',
+			static function ( $response, $args, $url ) use ( &$captured ) {
+				if ( false !== \strpos( $url, 'applyWrites' ) ) {
+					$captured = true;
+				}
+				return $response;
+			},
+			5,
+			3
+		);
+
+		\do_action( 'atmosphere_delete_comment', $comment_id );
+		\remove_all_filters( 'pre_http_request' );
+
+		$this->assertFalse( $captured, 'applyWrites#delete must not be called for a re-approved comment.' );
+		\remove_all_actions( 'atmosphere_delete_comment' );
+	}
 }

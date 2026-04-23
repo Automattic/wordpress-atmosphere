@@ -608,13 +608,27 @@ class Atmosphere {
 			2
 		);
 
+		/*
+		 * Cron handlers re-evaluate eligibility at fire time so state
+		 * changes between enqueue and execution (approve→unapprove,
+		 * unapprove→re-approve, user deleted, etc.) are respected. The
+		 * separate transition hooks only schedule; they cannot cancel
+		 * an already-queued event, and schedule_comment_delete itself
+		 * bails when META_URI is absent (which it is pre-publish), so
+		 * without these guards a pre-cron unapprove would still
+		 * publish, and a pre-cron re-approve would still delete.
+		 */
 		\add_action(
 			'atmosphere_publish_comment',
 			static function ( int $comment_id ): void {
 				$comment = \get_comment( $comment_id );
-				if ( $comment instanceof \WP_Comment ) {
-					Publisher::publish_comment( $comment );
+				if ( ! $comment instanceof \WP_Comment ) {
+					return;
 				}
+				if ( ! self::should_publish_comment( $comment ) ) {
+					return;
+				}
+				Publisher::publish_comment( $comment );
 			}
 		);
 
@@ -622,9 +636,13 @@ class Atmosphere {
 			'atmosphere_update_comment',
 			static function ( int $comment_id ): void {
 				$comment = \get_comment( $comment_id );
-				if ( $comment instanceof \WP_Comment ) {
-					Publisher::update_comment( $comment );
+				if ( ! $comment instanceof \WP_Comment ) {
+					return;
 				}
+				if ( ! self::should_publish_comment( $comment ) ) {
+					return;
+				}
+				Publisher::update_comment( $comment );
 			}
 		);
 
@@ -632,9 +650,15 @@ class Atmosphere {
 			'atmosphere_delete_comment',
 			static function ( int $comment_id ): void {
 				$comment = \get_comment( $comment_id );
-				if ( $comment instanceof \WP_Comment ) {
-					Publisher::delete_comment( $comment );
+				if ( ! $comment instanceof \WP_Comment ) {
+					return;
 				}
+				// If the comment is eligible again by the time cron
+				// fires, another transition has superseded the delete.
+				if ( self::should_publish_comment( $comment ) ) {
+					return;
+				}
+				Publisher::delete_comment( $comment );
 			}
 		);
 

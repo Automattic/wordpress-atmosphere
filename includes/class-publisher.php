@@ -2,10 +2,10 @@
 /**
  * Orchestrates publishing WordPress content to the AT Protocol.
  *
- * Posts go out as a bsky post + standard.site document pair via a
- * single applyWrites call. Comments go out as bsky reply records.
- * The generic publish/update/delete entry points dispatch by object
- * type so callers can stay polymorphic.
+ * Posts go out as an app.bsky.feed.post + site.standard.document
+ * pair via a single applyWrites call. Comments go out as bsky reply
+ * records. The generic publish/update/delete entry points dispatch
+ * by object type so callers can stay polymorphic.
  *
  * @package Atmosphere
  */

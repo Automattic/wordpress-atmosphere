@@ -4,10 +4,11 @@
  * reply record.
  *
  * Only comments authored by a registered WordPress user are published;
- * the Comment_Scheduler enforces that gate before instantiating this
- * transformer. Root is always the parent post's bsky record; parent
- * resolves to a previously-published sibling comment, a federated
- * reply ingested via Reaction_Sync, or falls through to the root.
+ * Atmosphere::should_publish_comment() and the comment lifecycle
+ * hooks enforce that gate before this transformer runs. Root is
+ * always the parent post's bsky record; parent resolves to a
+ * previously-published sibling comment, a federated reply ingested
+ * via Reaction_Sync, or falls through to the root.
  *
  * @package Atmosphere
  */
