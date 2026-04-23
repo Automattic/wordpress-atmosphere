@@ -858,4 +858,53 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 		$this->assertSame( array( 'at://a/1', 'at://a/2', 'at://a/3', 'at://a/4' ), $seen );
 		$this->assertSame( 'at://a/1', \get_option( $option_key ) );
 	}
+
+	/**
+	 * A reply whose URI matches an existing comment's source_id meta
+	 * is skipped, even when that comment has no protocol='atproto'
+	 * marker — the outbound publish path deliberately omits it.
+	 */
+	public function test_process_reply_skips_our_own_outbound_comment() {
+		$post_id  = self::factory()->post->create();
+		$post_uri = 'at://did:plc:me/app.bsky.feed.post/rootpost';
+		\update_post_meta( $post_id, BskyPost::META_URI, $post_uri );
+
+		// Simulate a locally-published outbound comment: source_id set
+		// by Publisher::publish_comment, protocol intentionally absent.
+		$local_comment = self::factory()->comment->create(
+			array(
+				'comment_post_ID' => $post_id,
+				'user_id'         => 1,
+			)
+		);
+		$reply_uri     = 'at://did:plc:me/app.bsky.feed.post/ourreply';
+		\update_comment_meta( $local_comment, Reaction_Sync::META_SOURCE_ID, $reply_uri );
+
+		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_reply' );
+		$method->setAccessible( true );
+
+		$notification = array(
+			'uri'    => $reply_uri,
+			'cid'    => 'bafyownreply',
+			'record' => array(
+				'text'      => 'Our own outbound comment.',
+				'createdAt' => '2026-04-23T10:00:00.000Z',
+				'reply'     => array(
+					'parent' => array( 'uri' => $post_uri ),
+					'root'   => array( 'uri' => $post_uri ),
+				),
+			),
+			'author' => array(
+				'did'    => 'did:plc:me',
+				'handle' => 'me.bsky.social',
+			),
+		);
+
+		$this->assertFalse( $method->invoke( null, $notification ) );
+
+		// No second comment was inserted — only the local one exists.
+		$comments = \get_comments( array( 'post_id' => $post_id ) );
+		$this->assertCount( 1, $comments );
+		$this->assertSame( (string) $local_comment, (string) $comments[0]->comment_ID );
+	}
 }

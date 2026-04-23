@@ -10,7 +10,9 @@ namespace Atmosphere;
 \defined( 'ABSPATH' ) || exit;
 
 use Atmosphere\OAuth\Client;
+use Atmosphere\Transformer\Comment;
 use Atmosphere\Transformer\Document;
+use Atmosphere\Transformer\Post;
 use Atmosphere\Transformer\Publication;
 use Atmosphere\Transformer\TID;
 use Atmosphere\Integrations\Load;
@@ -53,6 +55,12 @@ class Atmosphere {
 
 		// Catch permanent deletes (bypassing trash or emptying trash).
 		\add_action( 'before_delete_post', array( $this, 'on_before_delete' ) );
+
+		// Comment lifecycle hooks.
+		\add_action( 'transition_comment_status', array( $this, 'on_comment_status_change' ), 10, 3 );
+		\add_action( 'comment_post', array( $this, 'on_comment_insert' ), 10, 2 );
+		\add_action( 'edit_comment', array( $this, 'on_comment_edit' ) );
+		\add_action( 'delete_comment', array( $this, 'on_comment_before_delete' ) );
 
 		// Auto-sync publication when site identity changes.
 		\add_action( 'update_option_blogname', array( $this, 'schedule_publication_sync' ) );
@@ -308,6 +316,206 @@ class Atmosphere {
 	}
 
 	/**
+	 * Handle a comment transitioning between approval states.
+	 *
+	 * @param string      $new_status New comment_approved value.
+	 * @param string      $old_status Previous comment_approved value.
+	 * @param \WP_Comment $comment    Comment object.
+	 */
+	public function on_comment_status_change( string $new_status, string $old_status, \WP_Comment $comment ): void {
+		if ( $new_status === $old_status ) {
+			return;
+		}
+
+		if ( 'approved' === $new_status ) {
+			$this->schedule_comment_publish( $comment );
+			return;
+		}
+
+		if ( 'approved' === $old_status ) {
+			$this->schedule_comment_delete( $comment );
+		}
+	}
+
+	/**
+	 * Handle a newly-inserted comment.
+	 *
+	 * Covers the case where a comment lands already-approved (trusted
+	 * author), for which transition_comment_status does not fire.
+	 *
+	 * @param int        $comment_id       Comment ID.
+	 * @param int|string $comment_approved Approval status (1, 0, or 'spam').
+	 */
+	public function on_comment_insert( int $comment_id, int|string $comment_approved ): void {
+		if ( 1 !== (int) $comment_approved ) {
+			return;
+		}
+
+		$comment = \get_comment( $comment_id );
+		if ( $comment instanceof \WP_Comment ) {
+			$this->schedule_comment_publish( $comment );
+		}
+	}
+
+	/**
+	 * Handle a comment edit by updating its bsky record.
+	 *
+	 * @param int $comment_id Comment ID.
+	 */
+	public function on_comment_edit( int $comment_id ): void {
+		$comment = \get_comment( $comment_id );
+
+		if ( ! $comment instanceof \WP_Comment ) {
+			return;
+		}
+
+		if ( ! self::should_publish_comment( $comment ) ) {
+			return;
+		}
+
+		$hook = empty( \get_comment_meta( $comment_id, Comment::META_TID, true ) )
+			? 'atmosphere_publish_comment'
+			: 'atmosphere_update_comment';
+
+		if ( ! \wp_next_scheduled( $hook, array( $comment_id ) ) ) {
+			\wp_schedule_single_event( \time(), $hook, array( $comment_id ) );
+		}
+	}
+
+	/**
+	 * Capture a comment's TID before it is permanently deleted.
+	 *
+	 * Runs on delete_comment which fires before the row and meta are
+	 * removed, so the TID is still reachable. The TID-only cron variant
+	 * lets the async worker issue the PDS delete without re-reading
+	 * state that no longer exists.
+	 *
+	 * @param int $comment_id Comment ID.
+	 */
+	public function on_comment_before_delete( int $comment_id ): void {
+		if ( ! is_connected() ) {
+			return;
+		}
+
+		$tid = \get_comment_meta( $comment_id, Comment::META_TID, true );
+
+		if ( empty( $tid ) ) {
+			return;
+		}
+
+		\wp_schedule_single_event(
+			\time(),
+			'atmosphere_delete_comment_record',
+			array( (string) $tid )
+		);
+	}
+
+	/**
+	 * Eligibility gate for outbound comment publishing.
+	 *
+	 * @param \WP_Comment $comment Comment object.
+	 * @return bool
+	 */
+	public static function should_publish_comment( \WP_Comment $comment ): bool {
+		$should = self::is_comment_eligible( $comment );
+
+		/**
+		 * Filters whether a comment should be published to Bluesky.
+		 *
+		 * @param bool        $should  Whether to publish.
+		 * @param \WP_Comment $comment Comment object.
+		 */
+		return (bool) \apply_filters( 'atmosphere_should_publish_comment', $should, $comment );
+	}
+
+	/**
+	 * Core comment eligibility checks, pre-filter.
+	 *
+	 * @param \WP_Comment $comment Comment object.
+	 * @return bool
+	 */
+	private static function is_comment_eligible( \WP_Comment $comment ): bool {
+		if ( ! is_connected() ) {
+			return false;
+		}
+
+		if ( \in_array( (string) $comment->comment_type, array( 'trackback', 'pingback' ), true ) ) {
+			return false;
+		}
+
+		if ( (int) $comment->user_id <= 0 ) {
+			return false;
+		}
+
+		if ( '1' !== (string) $comment->comment_approved ) {
+			return false;
+		}
+
+		if ( 'atproto' === \get_comment_meta( (int) $comment->comment_ID, Reaction_Sync::META_PROTOCOL, true ) ) {
+			return false;
+		}
+
+		/*
+		 * Defence in depth: Reaction_Sync writes META_PROTOCOL after
+		 * wp_insert_comment, so if any caller ever fires comment_post
+		 * between the insert and the meta write, the gate above would
+		 * miss it. The sync always stamps its own agent string, which
+		 * is set before the insert — use it as a belt-and-braces check.
+		 */
+		if ( 0 === \strpos( (string) $comment->comment_agent, 'ATmosphere/' ) ) {
+			return false;
+		}
+
+		$post_uri = \get_post_meta( (int) $comment->comment_post_ID, Post::META_URI, true );
+		if ( empty( $post_uri ) ) {
+			return false;
+		}
+
+		return true;
+	}
+
+	/**
+	 * Schedule a publish or update event for a comment.
+	 *
+	 * @param \WP_Comment $comment Comment object.
+	 */
+	private function schedule_comment_publish( \WP_Comment $comment ): void {
+		if ( ! self::should_publish_comment( $comment ) ) {
+			return;
+		}
+
+		$comment_id = (int) $comment->comment_ID;
+		$hook       = empty( \get_comment_meta( $comment_id, Comment::META_TID, true ) )
+			? 'atmosphere_publish_comment'
+			: 'atmosphere_update_comment';
+
+		if ( \wp_next_scheduled( $hook, array( $comment_id ) ) ) {
+			return;
+		}
+
+		\wp_schedule_single_event( \time(), $hook, array( $comment_id ) );
+	}
+
+	/**
+	 * Schedule a delete event when a published comment leaves approved state.
+	 *
+	 * @param \WP_Comment $comment Comment object.
+	 */
+	private function schedule_comment_delete( \WP_Comment $comment ): void {
+		$comment_id = (int) $comment->comment_ID;
+
+		if ( empty( \get_comment_meta( $comment_id, Comment::META_TID, true ) ) ) {
+			return;
+		}
+
+		if ( \wp_next_scheduled( 'atmosphere_delete_comment', array( $comment_id ) ) ) {
+			return;
+		}
+
+		\wp_schedule_single_event( \time(), 'atmosphere_delete_comment', array( $comment_id ) );
+	}
+
+	/**
 	 * Schedule an async publication sync.
 	 */
 	public function schedule_publication_sync(): void {
@@ -340,7 +548,7 @@ class Atmosphere {
 			static function ( int $post_id ): void {
 				$post = \get_post( $post_id );
 				if ( $post && 'publish' === $post->post_status ) {
-					Publisher::publish( $post );
+					Publisher::publish_post( $post );
 				}
 			}
 		);
@@ -350,7 +558,7 @@ class Atmosphere {
 			static function ( int $post_id ): void {
 				$post = \get_post( $post_id );
 				if ( $post && 'publish' === $post->post_status ) {
-					Publisher::update( $post );
+					Publisher::update_post( $post );
 				}
 			}
 		);
@@ -360,7 +568,7 @@ class Atmosphere {
 			static function ( int $post_id ): void {
 				$post = \get_post( $post_id );
 				if ( $post ) {
-					Publisher::delete( $post );
+					Publisher::delete_post( $post );
 				}
 			}
 		);
@@ -375,10 +583,51 @@ class Atmosphere {
 		\add_action(
 			'atmosphere_delete_records',
 			static function ( string $bsky_tid, string $doc_tid ): void {
-				Publisher::delete_by_tids( $bsky_tid, $doc_tid );
+				Publisher::delete_post_by_tids( $bsky_tid, $doc_tid );
 			},
 			10,
 			2
+		);
+
+		\add_action(
+			'atmosphere_publish_comment',
+			static function ( int $comment_id ): void {
+				$comment = \get_comment( $comment_id );
+				if ( $comment instanceof \WP_Comment ) {
+					Publisher::publish_comment( $comment );
+				}
+			}
+		);
+
+		\add_action(
+			'atmosphere_update_comment',
+			static function ( int $comment_id ): void {
+				$comment = \get_comment( $comment_id );
+				if ( $comment instanceof \WP_Comment ) {
+					Publisher::update_comment( $comment );
+				}
+			}
+		);
+
+		\add_action(
+			'atmosphere_delete_comment',
+			static function ( int $comment_id ): void {
+				$comment = \get_comment( $comment_id );
+				if ( $comment instanceof \WP_Comment ) {
+					Publisher::delete_comment( $comment );
+				}
+			}
+		);
+
+		\add_action(
+			'atmosphere_delete_comment_record',
+			static function ( string $tid ): void {
+				if ( '' !== $tid ) {
+					Publisher::delete_comment_by_tid( $tid );
+				}
+			},
+			10,
+			1
 		);
 	}
 }

@@ -1,10 +1,11 @@
 <?php
 /**
- * Orchestrates publishing WordPress posts to the AT Protocol.
+ * Orchestrates publishing WordPress content to the AT Protocol.
  *
- * Every publish creates both an app.bsky.feed.post and a
- * site.standard.document atomically via a single applyWrites call.
- * Updates and deletions follow the same pattern.
+ * Posts go out as a bsky post + standard.site document pair via a
+ * single applyWrites call. Comments go out as bsky reply records.
+ * The generic publish/update/delete entry points dispatch by object
+ * type so callers can stay polymorphic.
  *
  * @package Atmosphere
  */
@@ -13,6 +14,7 @@ namespace Atmosphere;
 
 \defined( 'ABSPATH' ) || exit;
 
+use Atmosphere\Transformer\Comment;
 use Atmosphere\Transformer\Document;
 use Atmosphere\Transformer\Post;
 use Atmosphere\Transformer\Publication;
@@ -23,12 +25,54 @@ use Atmosphere\Transformer\Publication;
 class Publisher {
 
 	/**
+	 * Dispatch a publish by object type.
+	 *
+	 * @param \WP_Post|\WP_Comment $object WordPress post or comment.
+	 * @return array|\WP_Error
+	 */
+	public static function publish( \WP_Post|\WP_Comment $object ): array|\WP_Error { // phpcs:ignore Universal.NamingConventions.NoReservedKeywordParameterNames
+		if ( $object instanceof \WP_Comment ) {
+			return self::publish_comment( $object );
+		}
+
+		return self::publish_post( $object );
+	}
+
+	/**
+	 * Dispatch an update by object type.
+	 *
+	 * @param \WP_Post|\WP_Comment $object WordPress post or comment.
+	 * @return array|\WP_Error
+	 */
+	public static function update( \WP_Post|\WP_Comment $object ): array|\WP_Error { // phpcs:ignore Universal.NamingConventions.NoReservedKeywordParameterNames
+		if ( $object instanceof \WP_Comment ) {
+			return self::update_comment( $object );
+		}
+
+		return self::update_post( $object );
+	}
+
+	/**
+	 * Dispatch a delete by object type.
+	 *
+	 * @param \WP_Post|\WP_Comment $object WordPress post or comment.
+	 * @return array|\WP_Error
+	 */
+	public static function delete( \WP_Post|\WP_Comment $object ): array|\WP_Error { // phpcs:ignore Universal.NamingConventions.NoReservedKeywordParameterNames
+		if ( $object instanceof \WP_Comment ) {
+			return self::delete_comment( $object );
+		}
+
+		return self::delete_post( $object );
+	}
+
+	/**
 	 * Publish a post to AT Protocol (both record types).
 	 *
 	 * @param \WP_Post $post WordPress post.
 	 * @return array|\WP_Error applyWrites response or error.
 	 */
-	public static function publish( \WP_Post $post ): array|\WP_Error {
+	public static function publish_post( \WP_Post $post ): array|\WP_Error {
 		$bsky_transformer = new Post( $post );
 		$doc_transformer  = new Document( $post );
 
@@ -62,7 +106,7 @@ class Publisher {
 		}
 
 		// Store URIs and CIDs from the response.
-		self::store_results( $post->ID, $result, $bsky_transformer, $doc_transformer );
+		self::store_post_result( $post->ID, $result, $bsky_transformer, $doc_transformer );
 
 		// Follow-up: update document with bsky post reference (now that we have the CID).
 		self::update_document_bsky_ref( $post, $doc_transformer );
@@ -76,13 +120,13 @@ class Publisher {
 	 * @param \WP_Post $post WordPress post.
 	 * @return array|\WP_Error
 	 */
-	public static function update( \WP_Post $post ): array|\WP_Error {
+	public static function update_post( \WP_Post $post ): array|\WP_Error {
 		$bsky_uri = \get_post_meta( $post->ID, Post::META_URI, true );
 		$doc_uri  = \get_post_meta( $post->ID, Document::META_URI, true );
 
 		if ( ! $bsky_uri || ! $doc_uri ) {
 			// Not yet published — do a fresh publish instead.
-			return self::publish( $post );
+			return self::publish_post( $post );
 		}
 
 		$bsky_tid = \get_post_meta( $post->ID, Post::META_TID, true );
@@ -116,7 +160,7 @@ class Publisher {
 			return $result;
 		}
 
-		self::store_results( $post->ID, $result, $bsky_transformer, $doc_transformer );
+		self::store_post_result( $post->ID, $result, $bsky_transformer, $doc_transformer );
 
 		// Update document with bsky post reference (CID may have changed).
 		self::update_document_bsky_ref( $post, $doc_transformer );
@@ -130,7 +174,7 @@ class Publisher {
 	 * @param \WP_Post $post WordPress post.
 	 * @return array|\WP_Error
 	 */
-	public static function delete( \WP_Post $post ): array|\WP_Error {
+	public static function delete_post( \WP_Post $post ): array|\WP_Error {
 		$bsky_tid = \get_post_meta( $post->ID, Post::META_TID, true );
 		$doc_tid  = \get_post_meta( $post->ID, Document::META_TID, true );
 
@@ -174,7 +218,7 @@ class Publisher {
 	}
 
 	/**
-	 * Delete AT Protocol records by TID, without requiring the post to exist.
+	 * Delete post AT Protocol records by TID, without requiring the post to exist.
 	 *
 	 * Used when a post is permanently deleted and post meta is no longer available.
 	 *
@@ -182,7 +226,7 @@ class Publisher {
 	 * @param string $doc_tid  Document TID (may be empty).
 	 * @return array|\WP_Error
 	 */
-	public static function delete_by_tids( string $bsky_tid, string $doc_tid ): array|\WP_Error {
+	public static function delete_post_by_tids( string $bsky_tid, string $doc_tid ): array|\WP_Error {
 		if ( ! $bsky_tid && ! $doc_tid ) {
 			return new \WP_Error( 'atmosphere_not_published', \__( 'No TIDs provided.', 'atmosphere' ) );
 		}
@@ -205,13 +249,7 @@ class Publisher {
 			);
 		}
 
-		$result = API::apply_writes( $writes );
-
-		if ( \is_wp_error( $result ) ) {
-			return $result;
-		}
-
-		return $result;
+		return API::apply_writes( $writes );
 	}
 
 	/**
@@ -259,14 +297,145 @@ class Publisher {
 	}
 
 	/**
-	 * Extract URIs/CIDs from applyWrites response and store in post meta.
+	 * Publish a WordPress comment as an app.bsky.feed.post reply.
+	 *
+	 * @param \WP_Comment $comment WordPress comment.
+	 * @return array|\WP_Error applyWrites response or error.
+	 */
+	public static function publish_comment( \WP_Comment $comment ): array|\WP_Error {
+		$transformer = new Comment( $comment );
+		$rkey        = $transformer->get_rkey();
+		$record      = $transformer->transform();
+
+		$writes = array(
+			array(
+				'$type'      => 'com.atproto.repo.applyWrites#create',
+				'collection' => 'app.bsky.feed.post',
+				'rkey'       => $rkey,
+				'value'      => $record,
+			),
+		);
+
+		$result = API::apply_writes( $writes );
+
+		if ( \is_wp_error( $result ) ) {
+			return $result;
+		}
+
+		self::store_comment_result( (int) $comment->comment_ID, $result, $transformer );
+
+		return $result;
+	}
+
+	/**
+	 * Update an existing bsky reply for a WordPress comment.
+	 *
+	 * Falls through to publish_comment when no TID is stored — happens
+	 * if an earlier publish attempt failed before meta was written.
+	 *
+	 * @param \WP_Comment $comment WordPress comment.
+	 * @return array|\WP_Error
+	 */
+	public static function update_comment( \WP_Comment $comment ): array|\WP_Error {
+		$comment_id = (int) $comment->comment_ID;
+		$tid        = \get_comment_meta( $comment_id, Comment::META_TID, true );
+
+		if ( empty( $tid ) ) {
+			return self::publish_comment( $comment );
+		}
+
+		$transformer = new Comment( $comment );
+
+		$writes = array(
+			array(
+				'$type'      => 'com.atproto.repo.applyWrites#update',
+				'collection' => 'app.bsky.feed.post',
+				'rkey'       => $tid,
+				'value'      => $transformer->transform(),
+			),
+		);
+
+		$result = API::apply_writes( $writes );
+
+		if ( \is_wp_error( $result ) ) {
+			return $result;
+		}
+
+		self::store_comment_result( $comment_id, $result, $transformer );
+
+		return $result;
+	}
+
+	/**
+	 * Delete the bsky reply record for a WordPress comment.
+	 *
+	 * @param \WP_Comment $comment WordPress comment.
+	 * @return array|\WP_Error
+	 */
+	public static function delete_comment( \WP_Comment $comment ): array|\WP_Error {
+		$comment_id = (int) $comment->comment_ID;
+		$tid        = \get_comment_meta( $comment_id, Comment::META_TID, true );
+
+		if ( empty( $tid ) ) {
+			return new \WP_Error( 'atmosphere_not_published', \__( 'Comment has no AT Protocol record.', 'atmosphere' ) );
+		}
+
+		$writes = array(
+			array(
+				'$type'      => 'com.atproto.repo.applyWrites#delete',
+				'collection' => 'app.bsky.feed.post',
+				'rkey'       => $tid,
+			),
+		);
+
+		$result = API::apply_writes( $writes );
+
+		if ( \is_wp_error( $result ) ) {
+			return $result;
+		}
+
+		\delete_comment_meta( $comment_id, Comment::META_TID );
+		\delete_comment_meta( $comment_id, Comment::META_URI );
+		\delete_comment_meta( $comment_id, Comment::META_CID );
+		\delete_comment_meta( $comment_id, Reaction_Sync::META_SOURCE_ID );
+
+		return $result;
+	}
+
+	/**
+	 * Delete a bsky comment reply by TID, without needing the comment row.
+	 *
+	 * Used when a comment is permanently deleted and its meta is no
+	 * longer reachable at the point the cron fires.
+	 *
+	 * @param string $tid Comment record TID.
+	 * @return array|\WP_Error
+	 */
+	public static function delete_comment_by_tid( string $tid ): array|\WP_Error {
+		if ( '' === $tid ) {
+			return new \WP_Error( 'atmosphere_not_published', \__( 'No TID provided.', 'atmosphere' ) );
+		}
+
+		$writes = array(
+			array(
+				'$type'      => 'com.atproto.repo.applyWrites#delete',
+				'collection' => 'app.bsky.feed.post',
+				'rkey'       => $tid,
+			),
+		);
+
+		return API::apply_writes( $writes );
+	}
+
+	/**
+	 * Extract URIs/CIDs from an applyWrites response and store in post meta.
 	 *
 	 * @param int      $post_id          Post ID.
 	 * @param array    $result           applyWrites response.
 	 * @param Post     $bsky_transformer Bsky transformer.
 	 * @param Document $doc_transformer  Document transformer.
 	 */
-	private static function store_results( int $post_id, array $result, Post $bsky_transformer, Document $doc_transformer ): void {
+	private static function store_post_result( int $post_id, array $result, Post $bsky_transformer, Document $doc_transformer ): void {
 		$results = $result['results'] ?? array();
 
 		foreach ( $results as $i => $item ) {
@@ -294,6 +463,30 @@ class Publisher {
 					\update_post_meta( $post_id, Document::META_CID, $cid );
 				}
 			}
+		}
+	}
+
+	/**
+	 * Store the applyWrites response for a comment publish/update.
+	 *
+	 * Mirrors the comment's AT-URI into Reaction_Sync::META_SOURCE_ID so
+	 * that when listRecords feeds our own reply back through the inbound
+	 * sync, find_comment_by_source_id() matches this row and skips it.
+	 *
+	 * @param int     $comment_id  WordPress comment ID.
+	 * @param array   $result      applyWrites response.
+	 * @param Comment $transformer Comment transformer.
+	 */
+	private static function store_comment_result( int $comment_id, array $result, Comment $transformer ): void {
+		$first = $result['results'][0] ?? array();
+		$uri   = $first['uri'] ?? $transformer->get_uri();
+		$cid   = $first['cid'] ?? '';
+
+		\update_comment_meta( $comment_id, Comment::META_URI, $uri );
+		\update_comment_meta( $comment_id, Reaction_Sync::META_SOURCE_ID, $uri );
+
+		if ( $cid ) {
+			\update_comment_meta( $comment_id, Comment::META_CID, $cid );
 		}
 	}
 

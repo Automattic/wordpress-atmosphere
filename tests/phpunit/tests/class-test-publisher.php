@@ -14,8 +14,10 @@ namespace Atmosphere\Tests;
 
 use WP_UnitTestCase;
 use Atmosphere\Publisher;
-use Atmosphere\Transformer\Post;
+use Atmosphere\Reaction_Sync;
+use Atmosphere\Transformer\Comment;
 use Atmosphere\Transformer\Document;
+use Atmosphere\Transformer\Post;
 
 /**
  * Publisher tests.
@@ -74,7 +76,7 @@ class Test_Publisher extends WP_UnitTestCase {
 		 * so we'll get a WP_Error back — but the important thing is
 		 * that it attempted a publish (create), not an update.
 		 */
-		$result = Publisher::update( $post );
+		$result = Publisher::update_post( $post );
 
 		$this->assertWPError( $result );
 	}
@@ -92,7 +94,7 @@ class Test_Publisher extends WP_UnitTestCase {
 		\update_post_meta( $post->ID, Post::META_URI, 'at://did:plc:test/app.bsky.feed.post/bsky-tid-123' );
 		// No document URI.
 
-		$result = Publisher::update( $post );
+		$result = Publisher::update_post( $post );
 
 		$this->assertWPError( $result );
 	}
@@ -109,7 +111,7 @@ class Test_Publisher extends WP_UnitTestCase {
 		\update_post_meta( $post->ID, Post::META_URI, 'at://did:plc:test/app.bsky.feed.post/bsky-tid-123' );
 		\update_post_meta( $post->ID, Document::META_URI, 'at://did:plc:test/site.standard.document/doc-tid-456' );
 
-		$result = Publisher::update( $post );
+		$result = Publisher::update_post( $post );
 
 		$this->assertWPError( $result );
 		$this->assertSame( 'atmosphere_missing_tid', $result->get_error_code() );
@@ -165,7 +167,7 @@ class Test_Publisher extends WP_UnitTestCase {
 			3
 		);
 
-		$result = Publisher::update( $post );
+		$result = Publisher::update_post( $post );
 
 		\remove_all_filters( 'pre_http_request' );
 
@@ -203,7 +205,7 @@ class Test_Publisher extends WP_UnitTestCase {
 		\update_post_meta( $post->ID, Post::META_TID, 'bsky-tid-123' );
 		\update_post_meta( $post->ID, Document::META_TID, 'doc-tid-456' );
 
-		$result = Publisher::delete( $post );
+		$result = Publisher::delete_post( $post );
 
 		// API call will fail (no valid OAuth), meta should be preserved.
 		$this->assertWPError( $result );
@@ -219,9 +221,285 @@ class Test_Publisher extends WP_UnitTestCase {
 			array( 'post_status' => 'trash' )
 		);
 
-		$result = Publisher::delete( $post );
+		$result = Publisher::delete_post( $post );
 
 		$this->assertWPError( $result );
 		$this->assertSame( 'atmosphere_not_published', $result->get_error_code() );
+	}
+
+	/**
+	 * Seed a published post for comment tests to reply against.
+	 *
+	 * @return int Post ID with bsky meta populated.
+	 */
+	private function seed_root_post(): int {
+		$post_id = self::factory()->post->create();
+		\update_post_meta( $post_id, Post::META_URI, 'at://did:plc:test123/app.bsky.feed.post/root' );
+		\update_post_meta( $post_id, Post::META_CID, 'bafyroot' );
+
+		return $post_id;
+	}
+
+	/**
+	 * Capture the body of the first applyWrites call and stub a successful
+	 * response.
+	 *
+	 * @param string $uri Response URI.
+	 * @param string $cid Response CID.
+	 * @return \Closure Returns the captured body, or null if the filter never fired.
+	 */
+	private function stub_apply_writes( string $uri, string $cid ): \Closure {
+		$captured       = new \stdClass();
+		$captured->body = null;
+
+		\add_filter(
+			'pre_http_request',
+			static function ( $response, $args, $url ) use ( $captured, $uri, $cid ) {
+				if ( false !== \strpos( $url, 'applyWrites' ) ) {
+					$captured->body = \json_decode( $args['body'], true );
+
+					return array(
+						'response' => array( 'code' => 200 ),
+						'body'     => \wp_json_encode(
+							array(
+								'results' => array(
+									array(
+										'uri' => $uri,
+										'cid' => $cid,
+									),
+								),
+							)
+						),
+					);
+				}
+
+				return $response;
+			},
+			5,
+			3
+		);
+
+		return static fn() => $captured->body;
+	}
+
+	/**
+	 * Publish a comment stores URI+CID+TID and the Reaction_Sync dedup key.
+	 */
+	public function test_publish_comment_stores_meta_and_dedup_key() {
+		$post_id    = $this->seed_root_post();
+		$user_id    = self::factory()->user->create();
+		$comment_id = self::factory()->comment->create(
+			array(
+				'comment_post_ID'  => $post_id,
+				'comment_content'  => 'Published comment.',
+				'comment_approved' => '1',
+				'user_id'          => $user_id,
+			)
+		);
+
+		$get_body = $this->stub_apply_writes(
+			'at://did:plc:test123/app.bsky.feed.post/newtid',
+			'bafynew'
+		);
+
+		$result = Publisher::publish_comment( \get_comment( $comment_id ) );
+		\remove_all_filters( 'pre_http_request' );
+
+		if ( \is_wp_error( $result ) ) {
+			$this->markTestSkipped( 'API layer rejected request before stub: ' . $result->get_error_message() );
+		}
+
+		$body = $get_body();
+		$this->assertNotNull( $body, 'applyWrites body was not captured.' );
+		$this->assertSame( 'com.atproto.repo.applyWrites#create', $body['writes'][0]['$type'] );
+		$this->assertSame( 'app.bsky.feed.post', $body['writes'][0]['collection'] );
+
+		$this->assertSame( 'at://did:plc:test123/app.bsky.feed.post/newtid', \get_comment_meta( $comment_id, Comment::META_URI, true ) );
+		$this->assertSame( 'bafynew', \get_comment_meta( $comment_id, Comment::META_CID, true ) );
+		$this->assertSame(
+			'at://did:plc:test123/app.bsky.feed.post/newtid',
+			\get_comment_meta( $comment_id, Reaction_Sync::META_SOURCE_ID, true )
+		);
+		$this->assertNotEmpty( \get_comment_meta( $comment_id, Comment::META_TID, true ) );
+	}
+
+	/**
+	 * Update comment falls back to publish when there is no TID yet.
+	 */
+	public function test_update_comment_falls_back_to_publish_without_tid() {
+		$post_id    = $this->seed_root_post();
+		$user_id    = self::factory()->user->create();
+		$comment_id = self::factory()->comment->create(
+			array(
+				'comment_post_ID'  => $post_id,
+				'comment_approved' => '1',
+				'user_id'          => $user_id,
+			)
+		);
+
+		$get_body = $this->stub_apply_writes(
+			'at://did:plc:test123/app.bsky.feed.post/newtid',
+			'bafynew'
+		);
+
+		$result = Publisher::update_comment( \get_comment( $comment_id ) );
+		\remove_all_filters( 'pre_http_request' );
+
+		if ( \is_wp_error( $result ) ) {
+			$this->markTestSkipped( 'API layer rejected request: ' . $result->get_error_message() );
+		}
+
+		$body = $get_body();
+		$this->assertSame( 'com.atproto.repo.applyWrites#create', $body['writes'][0]['$type'] );
+	}
+
+	/**
+	 * Update comment issues an update when a TID is already stored.
+	 */
+	public function test_update_comment_updates_existing_record() {
+		$post_id    = $this->seed_root_post();
+		$user_id    = self::factory()->user->create();
+		$comment_id = self::factory()->comment->create(
+			array(
+				'comment_post_ID'  => $post_id,
+				'comment_approved' => '1',
+				'user_id'          => $user_id,
+			)
+		);
+		\update_comment_meta( $comment_id, Comment::META_TID, 'existingtid' );
+
+		$get_body = $this->stub_apply_writes(
+			'at://did:plc:test123/app.bsky.feed.post/existingtid',
+			'bafyupdated'
+		);
+
+		$result = Publisher::update_comment( \get_comment( $comment_id ) );
+		\remove_all_filters( 'pre_http_request' );
+
+		if ( \is_wp_error( $result ) ) {
+			$this->markTestSkipped( 'API layer rejected request: ' . $result->get_error_message() );
+		}
+
+		$body = $get_body();
+		$this->assertSame( 'com.atproto.repo.applyWrites#update', $body['writes'][0]['$type'] );
+		$this->assertSame( 'existingtid', $body['writes'][0]['rkey'] );
+	}
+
+	/**
+	 * Delete comment errors when the comment was never published.
+	 */
+	public function test_delete_comment_errors_without_tid() {
+		$post_id    = $this->seed_root_post();
+		$user_id    = self::factory()->user->create();
+		$comment_id = self::factory()->comment->create(
+			array(
+				'comment_post_ID' => $post_id,
+				'user_id'         => $user_id,
+			)
+		);
+
+		$result = Publisher::delete_comment( \get_comment( $comment_id ) );
+
+		$this->assertWPError( $result );
+		$this->assertSame( 'atmosphere_not_published', $result->get_error_code() );
+	}
+
+	/**
+	 * Delete-by-tid issues a delete write for a known TID.
+	 */
+	public function test_delete_comment_by_tid_issues_delete() {
+		$get_body = $this->stub_apply_writes( '', '' );
+
+		$result = Publisher::delete_comment_by_tid( 'goner' );
+		\remove_all_filters( 'pre_http_request' );
+
+		if ( \is_wp_error( $result ) ) {
+			$this->markTestSkipped( 'API layer rejected request: ' . $result->get_error_message() );
+		}
+
+		$body = $get_body();
+		$this->assertSame( 'com.atproto.repo.applyWrites#delete', $body['writes'][0]['$type'] );
+		$this->assertSame( 'goner', $body['writes'][0]['rkey'] );
+	}
+
+	/**
+	 * Delete-by-tid rejects an empty TID.
+	 */
+	public function test_delete_comment_by_tid_rejects_empty() {
+		$result = Publisher::delete_comment_by_tid( '' );
+
+		$this->assertWPError( $result );
+		$this->assertSame( 'atmosphere_not_published', $result->get_error_code() );
+	}
+
+	/**
+	 * Generic Publisher::publish dispatches to publish_post for WP_Post.
+	 */
+	public function test_generic_publish_dispatches_post() {
+		$post = self::factory()->post->create_and_get( array( 'post_status' => 'publish' ) );
+
+		$captured_collections = array();
+		\add_filter(
+			'pre_http_request',
+			static function ( $response, $args, $url ) use ( &$captured_collections ) {
+				if ( false !== \strpos( $url, 'applyWrites' ) ) {
+					$body                 = \json_decode( $args['body'], true );
+					$captured_collections = \array_column( $body['writes'] ?? array(), 'collection' );
+				}
+				return $response;
+			},
+			5,
+			3
+		);
+
+		Publisher::publish( $post );
+		\remove_all_filters( 'pre_http_request' );
+
+		if ( empty( $captured_collections ) ) {
+			$this->markTestSkipped( 'API layer rejected request before stub.' );
+		}
+
+		$this->assertContains( 'app.bsky.feed.post', $captured_collections );
+		$this->assertContains( 'site.standard.document', $captured_collections );
+	}
+
+	/**
+	 * Generic Publisher::publish dispatches to publish_comment for WP_Comment.
+	 */
+	public function test_generic_publish_dispatches_comment() {
+		$post_id    = $this->seed_root_post();
+		$user_id    = self::factory()->user->create();
+		$comment_id = self::factory()->comment->create(
+			array(
+				'comment_post_ID'  => $post_id,
+				'comment_approved' => '1',
+				'user_id'          => $user_id,
+			)
+		);
+
+		$captured_writes = null;
+		\add_filter(
+			'pre_http_request',
+			static function ( $response, $args, $url ) use ( &$captured_writes ) {
+				if ( false !== \strpos( $url, 'applyWrites' ) ) {
+					$body            = \json_decode( $args['body'], true );
+					$captured_writes = $body['writes'] ?? array();
+				}
+				return $response;
+			},
+			5,
+			3
+		);
+
+		Publisher::publish( \get_comment( $comment_id ) );
+		\remove_all_filters( 'pre_http_request' );
+
+		if ( null === $captured_writes ) {
+			$this->markTestSkipped( 'API layer rejected request before stub.' );
+		}
+
+		// Comment publish produces a single app.bsky.feed.post create write.
+		$this->assertCount( 1, $captured_writes );
+		$this->assertSame( 'app.bsky.feed.post', $captured_writes[0]['collection'] );
 	}
 }
