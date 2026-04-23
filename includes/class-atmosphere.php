@@ -72,6 +72,14 @@ class Atmosphere {
 
 		// Async action hooks (called by WP-Cron).
 		self::register_async_hooks();
+
+		// Reaction sync cron + display hooks.
+		\add_action( 'atmosphere_sync_reactions', array( Reaction_Sync::class, 'sync' ) );
+		Reaction_Sync::register();
+
+		if ( ! \wp_next_scheduled( 'atmosphere_sync_reactions' ) && is_connected() ) {
+			\wp_schedule_event( \time(), 'hourly', 'atmosphere_sync_reactions' );
+		}
 	}
 
 	/**
