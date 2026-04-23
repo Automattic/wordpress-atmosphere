@@ -648,6 +648,158 @@ class Test_Atmosphere extends WP_UnitTestCase {
 	}
 
 	/**
+	 * Approve transition schedules a publish.
+	 */
+	public function test_status_change_unapproved_to_approved_schedules_publish() {
+		$comment = $this->make_eligible_comment();
+
+		$this->atmosphere->on_comment_status_change( 'approved', 'unapproved', $comment );
+
+		$this->assertNotFalse(
+			\wp_next_scheduled( 'atmosphere_publish_comment', array( (int) $comment->comment_ID ) ),
+			'Approve transition must schedule atmosphere_publish_comment.'
+		);
+
+		\wp_clear_scheduled_hook( 'atmosphere_publish_comment', array( (int) $comment->comment_ID ) );
+	}
+
+	/**
+	 * Unapprove transition on a published comment schedules a delete.
+	 */
+	public function test_status_change_approved_to_unapproved_schedules_delete() {
+		$comment    = $this->make_eligible_comment();
+		$comment_id = (int) $comment->comment_ID;
+		\update_comment_meta( $comment_id, Comment::META_URI, 'at://did:plc:test123/app.bsky.feed.post/existing' );
+
+		$this->atmosphere->on_comment_status_change( 'unapproved', 'approved', $comment );
+
+		$this->assertNotFalse(
+			\wp_next_scheduled( 'atmosphere_delete_comment', array( $comment_id ) ),
+			'Unapprove transition on a published comment must schedule atmosphere_delete_comment.'
+		);
+
+		\wp_clear_scheduled_hook( 'atmosphere_delete_comment', array( $comment_id ) );
+	}
+
+	/**
+	 * Comment inserted already-approved schedules a publish.
+	 */
+	public function test_insert_approved_schedules_publish() {
+		$comment = $this->make_eligible_comment();
+
+		$this->atmosphere->on_comment_insert( (int) $comment->comment_ID, 1 );
+
+		$this->assertNotFalse(
+			\wp_next_scheduled( 'atmosphere_publish_comment', array( (int) $comment->comment_ID ) ),
+			'Already-approved insert must schedule atmosphere_publish_comment.'
+		);
+
+		\wp_clear_scheduled_hook( 'atmosphere_publish_comment', array( (int) $comment->comment_ID ) );
+	}
+
+	/**
+	 * Comment inserted unapproved (moderation queue) does not schedule.
+	 */
+	public function test_insert_unapproved_does_not_schedule() {
+		$comment = $this->make_eligible_comment();
+
+		$this->atmosphere->on_comment_insert( (int) $comment->comment_ID, 0 );
+
+		$this->assertFalse(
+			\wp_next_scheduled( 'atmosphere_publish_comment', array( (int) $comment->comment_ID ) ),
+			'Pending comment must not schedule a publish.'
+		);
+	}
+
+	/**
+	 * Spam comment never schedules.
+	 */
+	public function test_insert_spam_does_not_schedule() {
+		$comment = $this->make_eligible_comment();
+
+		$this->atmosphere->on_comment_insert( (int) $comment->comment_ID, 'spam' );
+
+		$this->assertFalse(
+			\wp_next_scheduled( 'atmosphere_publish_comment', array( (int) $comment->comment_ID ) ),
+			'Spam insert must not schedule a publish.'
+		);
+	}
+
+	/**
+	 * Editing an already-published comment schedules an update.
+	 */
+	public function test_edit_with_uri_schedules_update() {
+		$comment    = $this->make_eligible_comment();
+		$comment_id = (int) $comment->comment_ID;
+		\update_comment_meta( $comment_id, Comment::META_URI, 'at://did:plc:test123/app.bsky.feed.post/existing' );
+
+		$this->atmosphere->on_comment_edit( $comment_id );
+
+		$this->assertNotFalse(
+			\wp_next_scheduled( 'atmosphere_update_comment', array( $comment_id ) ),
+			'Editing a published comment must schedule atmosphere_update_comment.'
+		);
+		$this->assertFalse(
+			\wp_next_scheduled( 'atmosphere_publish_comment', array( $comment_id ) ),
+			'Editing a published comment must not schedule a publish.'
+		);
+
+		\wp_clear_scheduled_hook( 'atmosphere_update_comment', array( $comment_id ) );
+	}
+
+	/**
+	 * Editing an approved-but-never-published comment schedules a publish.
+	 * Covers the failed-initial-publish recovery path: the edit catches
+	 * the comment up, rather than silently leaving it at TID-only meta.
+	 */
+	public function test_edit_without_uri_schedules_publish() {
+		$comment    = $this->make_eligible_comment();
+		$comment_id = (int) $comment->comment_ID;
+
+		$this->atmosphere->on_comment_edit( $comment_id );
+
+		$this->assertNotFalse(
+			\wp_next_scheduled( 'atmosphere_publish_comment', array( $comment_id ) ),
+			'Editing an unpublished-but-eligible comment must schedule a publish.'
+		);
+
+		\wp_clear_scheduled_hook( 'atmosphere_publish_comment', array( $comment_id ) );
+	}
+
+	/**
+	 * Editing an unapproved comment does not schedule anything — the
+	 * eligibility gate rejects it before the handler decides publish
+	 * vs. update.
+	 */
+	public function test_edit_unapproved_does_not_schedule() {
+		$comment    = $this->make_eligible_comment( array( 'comment_approved' => '0' ) );
+		$comment_id = (int) $comment->comment_ID;
+
+		$this->atmosphere->on_comment_edit( $comment_id );
+
+		$this->assertFalse( \wp_next_scheduled( 'atmosphere_publish_comment', array( $comment_id ) ) );
+		$this->assertFalse( \wp_next_scheduled( 'atmosphere_update_comment', array( $comment_id ) ) );
+	}
+
+	/**
+	 * Hard-delete of a comment with a TID but no URI (failed earlier
+	 * publish) must not schedule the TID-only delete cron — no record
+	 * exists on the PDS to remove.
+	 */
+	public function test_before_delete_with_tid_but_no_uri_does_not_schedule() {
+		$comment    = $this->make_eligible_comment();
+		$comment_id = (int) $comment->comment_ID;
+		\update_comment_meta( $comment_id, Comment::META_TID, 'staletid' );
+
+		$this->atmosphere->on_comment_before_delete( $comment_id );
+
+		$this->assertFalse(
+			\wp_next_scheduled( 'atmosphere_delete_comment_record', array( 'staletid' ) ),
+			'TID without URI (failed earlier publish) must not schedule a delete.'
+		);
+	}
+
+	/**
 	 * After the deferral cap the child publishes anyway so a stuck
 	 * parent cannot block it forever; the root-fallback branch of
 	 * Transformer\Comment::resolve_parent_ref takes over.

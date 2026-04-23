@@ -411,11 +411,14 @@ class Atmosphere {
 	 * Capture a comment's TID before it is permanently deleted.
 	 *
 	 * Runs on delete_comment which fires before the row and meta are
-	 * removed, so the TID is still reachable. META_URI gates whether
-	 * there is anything to delete — a TID without URI is from a failed
-	 * earlier publish (no record on the PDS). The TID-only cron
-	 * variant lets the async worker issue the PDS delete without
-	 * re-reading state that no longer exists.
+	 * removed, so the TID is still reachable. META_URI is the only
+	 * reliable signal that a record exists on the PDS — the TID is
+	 * persisted eagerly by Comment::get_rkey() before the applyWrites
+	 * call, so a TID alone matches both the normal pre-publish state
+	 * and a publish that failed after TID allocation; neither should
+	 * schedule a delete. The TID-only cron variant lets the async
+	 * worker issue the PDS delete without re-reading state that no
+	 * longer exists.
 	 *
 	 * @param int $comment_id Comment ID.
 	 */

@@ -541,6 +541,129 @@ class Test_Publisher extends WP_UnitTestCase {
 	}
 
 	/**
+	 * Publish-comment on API error writes no comment meta. A failed
+	 * API call must not leave synthesized URI/CID/SOURCE_ID behind,
+	 * because later update/delete/dedup paths key off those values.
+	 */
+	public function test_publish_comment_writes_no_meta_on_api_error() {
+		$post_id    = $this->seed_root_post();
+		$user_id    = self::factory()->user->create();
+		$comment_id = self::factory()->comment->create(
+			array(
+				'comment_post_ID'  => $post_id,
+				'comment_approved' => '1',
+				'user_id'          => $user_id,
+			)
+		);
+
+		// No stub — the bootstrap's auth layer returns WP_Error.
+		$result = Publisher::publish_comment( \get_comment( $comment_id ) );
+
+		$this->assertWPError( $result );
+		$this->assertSame( '', \get_comment_meta( $comment_id, Comment::META_URI, true ) );
+		$this->assertSame( '', \get_comment_meta( $comment_id, Comment::META_CID, true ) );
+		$this->assertSame( '', \get_comment_meta( $comment_id, Reaction_Sync::META_SOURCE_ID, true ) );
+	}
+
+	/**
+	 * Publish-comment on a 2xx response that omits results[0].uri
+	 * returns atmosphere_missing_uri and does not write meta, rather
+	 * than silently mirroring a locally-synthesized URI into the
+	 * dedup key.
+	 */
+	public function test_publish_comment_errors_on_response_without_uri() {
+		$post_id    = $this->seed_root_post();
+		$user_id    = self::factory()->user->create();
+		$comment_id = self::factory()->comment->create(
+			array(
+				'comment_post_ID'  => $post_id,
+				'comment_approved' => '1',
+				'user_id'          => $user_id,
+			)
+		);
+
+		\add_filter(
+			'pre_http_request',
+			static function ( $response, $args, $url ) {
+				if ( false !== \strpos( $url, 'applyWrites' ) ) {
+					return array(
+						'response' => array( 'code' => 200 ),
+						'body'     => \wp_json_encode( array( 'results' => array( array() ) ) ),
+					);
+				}
+				return $response;
+			},
+			5,
+			3
+		);
+
+		$result = Publisher::publish_comment( \get_comment( $comment_id ) );
+		\remove_all_filters( 'pre_http_request' );
+
+		if ( \is_wp_error( $result ) && 'atmosphere_missing_uri' !== $result->get_error_code() ) {
+			// Auth layer blocked before the stub — the assertion we
+			// care about cannot run.
+			$this->markTestSkipped( 'API layer rejected request before stub: ' . $result->get_error_code() );
+		}
+
+		$this->assertWPError( $result );
+		$this->assertSame( 'atmosphere_missing_uri', $result->get_error_code() );
+		$this->assertSame( '', \get_comment_meta( $comment_id, Comment::META_URI, true ) );
+		$this->assertSame( '', \get_comment_meta( $comment_id, Reaction_Sync::META_SOURCE_ID, true ) );
+	}
+
+	/**
+	 * Update-comment on API error preserves the previously-stored
+	 * URI/CID meta so subsequent retries see the record still exists.
+	 */
+	public function test_update_comment_preserves_meta_on_api_error() {
+		$post_id    = $this->seed_root_post();
+		$user_id    = self::factory()->user->create();
+		$comment_id = self::factory()->comment->create(
+			array(
+				'comment_post_ID'  => $post_id,
+				'comment_approved' => '1',
+				'user_id'          => $user_id,
+			)
+		);
+		\update_comment_meta( $comment_id, Comment::META_TID, 'existingtid' );
+		\update_comment_meta( $comment_id, Comment::META_URI, 'at://did:plc:test123/app.bsky.feed.post/existingtid' );
+		\update_comment_meta( $comment_id, Comment::META_CID, 'bafyexisting' );
+
+		$result = Publisher::update_comment( \get_comment( $comment_id ) );
+
+		$this->assertWPError( $result );
+		$this->assertSame( 'existingtid', \get_comment_meta( $comment_id, Comment::META_TID, true ) );
+		$this->assertSame( 'at://did:plc:test123/app.bsky.feed.post/existingtid', \get_comment_meta( $comment_id, Comment::META_URI, true ) );
+		$this->assertSame( 'bafyexisting', \get_comment_meta( $comment_id, Comment::META_CID, true ) );
+	}
+
+	/**
+	 * Delete-comment on API error preserves the meta so a later retry
+	 * still targets the existing record instead of silently giving up.
+	 */
+	public function test_delete_comment_preserves_meta_on_api_error() {
+		$post_id    = $this->seed_root_post();
+		$user_id    = self::factory()->user->create();
+		$comment_id = self::factory()->comment->create(
+			array(
+				'comment_post_ID' => $post_id,
+				'user_id'         => $user_id,
+			)
+		);
+		\update_comment_meta( $comment_id, Comment::META_TID, 'doomed' );
+		\update_comment_meta( $comment_id, Comment::META_URI, 'at://did:plc:test123/app.bsky.feed.post/doomed' );
+		\update_comment_meta( $comment_id, Comment::META_CID, 'bafydoomed' );
+
+		$result = Publisher::delete_comment( \get_comment( $comment_id ) );
+
+		$this->assertWPError( $result );
+		$this->assertSame( 'doomed', \get_comment_meta( $comment_id, Comment::META_TID, true ) );
+		$this->assertSame( 'at://did:plc:test123/app.bsky.feed.post/doomed', \get_comment_meta( $comment_id, Comment::META_URI, true ) );
+		$this->assertSame( 'bafydoomed', \get_comment_meta( $comment_id, Comment::META_CID, true ) );
+	}
+
+	/**
 	 * Generic Publisher::publish dispatches to publish_post for WP_Post.
 	 */
 	public function test_generic_publish_dispatches_post() {

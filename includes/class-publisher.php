@@ -385,7 +385,10 @@ class Publisher {
 			return $result;
 		}
 
-		self::store_comment_result( (int) $comment->comment_ID, $result, $transformer );
+		$stored = self::store_comment_result( (int) $comment->comment_ID, $result );
+		if ( \is_wp_error( $stored ) ) {
+			return $stored;
+		}
 
 		return $result;
 	}
@@ -435,7 +438,10 @@ class Publisher {
 			return $result;
 		}
 
-		self::store_comment_result( $comment_id, $result, $transformer );
+		$stored = self::store_comment_result( $comment_id, $result );
+		if ( \is_wp_error( $stored ) ) {
+			return $stored;
+		}
 
 		return $result;
 	}
@@ -557,14 +563,27 @@ class Publisher {
 	 * that when listRecords feeds our own reply back through the inbound
 	 * sync, find_comment_by_source_id() matches this row and skips it.
 	 *
-	 * @param int     $comment_id  WordPress comment ID.
-	 * @param array   $result      applyWrites response.
-	 * @param Comment $transformer Comment transformer.
+	 * Treats a 2xx response that omits `results[0].uri` as a failure
+	 * and returns a WP_Error. A locally-synthesized URI fallback would
+	 * make a malformed server response indistinguishable from a clean
+	 * publish, poison the dedup key, and steer later update/delete
+	 * calls at a record that may not exist.
+	 *
+	 * @param int   $comment_id WordPress comment ID.
+	 * @param array $result     applyWrites response.
+	 * @return true|\WP_Error True on success, WP_Error on missing URI.
 	 */
-	private static function store_comment_result( int $comment_id, array $result, Comment $transformer ): void {
+	private static function store_comment_result( int $comment_id, array $result ): true|\WP_Error {
 		$first = $result['results'][0] ?? array();
-		$uri   = $first['uri'] ?? $transformer->get_uri();
+		$uri   = $first['uri'] ?? '';
 		$cid   = $first['cid'] ?? '';
+
+		if ( '' === $uri ) {
+			return new \WP_Error(
+				'atmosphere_missing_uri',
+				\__( 'applyWrites response did not include a record URI.', 'atmosphere' )
+			);
+		}
 
 		\update_comment_meta( $comment_id, Comment::META_URI, $uri );
 		\update_comment_meta( $comment_id, Reaction_Sync::META_SOURCE_ID, $uri );
@@ -572,6 +591,8 @@ class Publisher {
 		if ( $cid ) {
 			\update_comment_meta( $comment_id, Comment::META_CID, $cid );
 		}
+
+		return true;
 	}
 
 	/**
