@@ -169,7 +169,13 @@ class Publisher {
 	}
 
 	/**
-	 * Delete both records for a post.
+	 * Delete both records for a post, plus any outbound comment replies.
+	 *
+	 * Comment reply records live in our own repo keyed by their own
+	 * TIDs — the AT Protocol has no cascade semantics, so deleting the
+	 * root post does not remove them. If we do not include them here,
+	 * unpublishing a post leaves the comment replies on Bluesky with
+	 * no remaining pointer from WordPress that could clean them up.
 	 *
 	 * @param \WP_Post $post WordPress post.
 	 * @return array|\WP_Error
@@ -200,6 +206,15 @@ class Publisher {
 			);
 		}
 
+		$comment_tids = self::collect_published_comment_tids( $post->ID );
+		foreach ( $comment_tids as $comment_tid ) {
+			$writes[] = array(
+				'$type'      => 'com.atproto.repo.applyWrites#delete',
+				'collection' => 'app.bsky.feed.post',
+				'rkey'       => $comment_tid['tid'],
+			);
+		}
+
 		$result = API::apply_writes( $writes );
 
 		if ( \is_wp_error( $result ) ) {
@@ -214,7 +229,55 @@ class Publisher {
 		\delete_post_meta( $post->ID, Document::META_URI );
 		\delete_post_meta( $post->ID, Document::META_CID );
 
+		// Clean up comment meta for every reply we just deleted.
+		foreach ( $comment_tids as $comment_tid ) {
+			\delete_comment_meta( $comment_tid['comment_id'], Comment::META_TID );
+			\delete_comment_meta( $comment_tid['comment_id'], Comment::META_URI );
+			\delete_comment_meta( $comment_tid['comment_id'], Comment::META_CID );
+			\delete_comment_meta( $comment_tid['comment_id'], Reaction_Sync::META_SOURCE_ID );
+		}
+
 		return $result;
+	}
+
+	/**
+	 * Collect { comment_id, tid } pairs for all outbound comment replies
+	 * on a post. Only comments that actually reached the PDS (META_URI
+	 * present) are returned — stale TIDs from a previously-failed
+	 * publish would refer to a non-existent record and the delete would
+	 * fail.
+	 *
+	 * @param int $post_id Post ID.
+	 * @return array<int, array{comment_id:int, tid:string}>
+	 */
+	private static function collect_published_comment_tids( int $post_id ): array {
+		$comments = \get_comments(
+			array(
+				'post_id'    => $post_id,
+				'status'     => 'any',
+				'meta_query' => array( // phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_query
+					array(
+						'key'     => Comment::META_URI,
+						'compare' => 'EXISTS',
+					),
+				),
+				'fields'     => 'ids',
+			)
+		);
+
+		$out = array();
+
+		foreach ( $comments as $comment_id ) {
+			$tid = \get_comment_meta( (int) $comment_id, Comment::META_TID, true );
+			if ( ! empty( $tid ) ) {
+				$out[] = array(
+					'comment_id' => (int) $comment_id,
+					'tid'        => (string) $tid,
+				);
+			}
+		}
+
+		return $out;
 	}
 
 	/**

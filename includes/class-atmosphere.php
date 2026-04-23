@@ -24,6 +24,31 @@ use Atmosphere\WP_Admin\Admin;
 class Atmosphere {
 
 	/**
+	 * Comment meta key tracking how many times publish has been
+	 * deferred waiting for a parent comment to publish first.
+	 *
+	 * @var string
+	 */
+	private const META_PUBLISH_ATTEMPTS = '_atmosphere_publish_attempts';
+
+	/**
+	 * Maximum re-schedule hops for a child comment waiting on a
+	 * not-yet-published parent. After this many deferrals the child
+	 * publishes as a top-level reply on the post (current fallback
+	 * behavior) so a stuck parent does not block it forever.
+	 *
+	 * @var int
+	 */
+	private const PARENT_DEFER_MAX_ATTEMPTS = 3;
+
+	/**
+	 * Seconds between parent-pending re-schedule hops.
+	 *
+	 * @var int
+	 */
+	private const PARENT_DEFER_DELAY_SECONDS = 30;
+
+	/**
 	 * Wire up all hooks.
 	 */
 	public function init(): void {
@@ -617,6 +642,10 @@ class Atmosphere {
 		 * bails when META_URI is absent (which it is pre-publish), so
 		 * without these guards a pre-cron unapprove would still
 		 * publish, and a pre-cron re-approve would still delete.
+		 *
+		 * Publisher WP_Error returns are logged rather than silently
+		 * dropped so a flaky PDS window or an expired refresh token
+		 * leaves a breadcrumb operators can find.
 		 */
 		\add_action(
 			'atmosphere_publish_comment',
@@ -628,7 +657,13 @@ class Atmosphere {
 				if ( ! self::should_publish_comment( $comment ) ) {
 					return;
 				}
-				Publisher::publish_comment( $comment );
+				if ( self::defer_when_parent_pending( $comment ) ) {
+					return;
+				}
+				\delete_comment_meta( $comment_id, self::META_PUBLISH_ATTEMPTS );
+
+				$result = Publisher::publish_comment( $comment );
+				self::log_cron_error( 'publish_comment', $comment_id, $result );
 			}
 		);
 
@@ -642,7 +677,9 @@ class Atmosphere {
 				if ( ! self::should_publish_comment( $comment ) ) {
 					return;
 				}
-				Publisher::update_comment( $comment );
+
+				$result = Publisher::update_comment( $comment );
+				self::log_cron_error( 'update_comment', $comment_id, $result );
 			}
 		);
 
@@ -658,19 +695,125 @@ class Atmosphere {
 				if ( self::should_publish_comment( $comment ) ) {
 					return;
 				}
-				Publisher::delete_comment( $comment );
+
+				$result = Publisher::delete_comment( $comment );
+				self::log_cron_error( 'delete_comment', $comment_id, $result );
 			}
 		);
 
 		\add_action(
 			'atmosphere_delete_comment_record',
 			static function ( string $tid ): void {
-				if ( '' !== $tid ) {
-					Publisher::delete_comment_by_tid( $tid );
+				if ( '' === $tid ) {
+					return;
+				}
+
+				$result = Publisher::delete_comment_by_tid( $tid );
+
+				if ( \is_wp_error( $result ) ) {
+					// Worst-case path: the WP comment row is already gone,
+					// so operators need the TID to clean up the orphan
+					// record manually.
+					\error_log( // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
+						\sprintf(
+							'[atmosphere] delete_comment_record tid=%s failed: %s — %s',
+							$tid,
+							$result->get_error_code(),
+							$result->get_error_message()
+						)
+					);
 				}
 			},
 			10,
 			1
+		);
+	}
+
+	/**
+	 * Defer a child comment publish when its parent is eligible but
+	 * has not published to the PDS yet.
+	 *
+	 * Comments are scheduled as independent single events with no
+	 * dependency ordering: if a user approves a parent and its reply
+	 * together, the child's cron event can fire first, see
+	 * resolve_parent_ref() return null, and publish flat as a
+	 * top-level reply on the root post. This defers the child a short
+	 * interval (up to PARENT_DEFER_MAX_ATTEMPTS hops) to give the
+	 * parent time to publish first. After the cap the child publishes
+	 * anyway using the root fallback — a stuck parent must not block
+	 * the child forever.
+	 *
+	 * @param \WP_Comment $comment Comment being published.
+	 * @return bool True when the publish was deferred, false to proceed now.
+	 */
+	private static function defer_when_parent_pending( \WP_Comment $comment ): bool {
+		$parent_id = (int) $comment->comment_parent;
+
+		if ( $parent_id <= 0 ) {
+			return false;
+		}
+
+		$parent = \get_comment( $parent_id );
+
+		if ( ! $parent instanceof \WP_Comment ) {
+			return false;
+		}
+
+		if ( ! self::should_publish_comment( $parent ) ) {
+			// Parent is ineligible (anon, rejected, etc.); resolve_parent_ref
+			// will fall back to root, which is the correct behavior.
+			return false;
+		}
+
+		if ( ! empty( \get_comment_meta( $parent_id, Comment::META_URI, true ) ) ) {
+			// Parent is already published — nothing to defer for.
+			return false;
+		}
+
+		$comment_id = (int) $comment->comment_ID;
+		$attempts   = (int) \get_comment_meta( $comment_id, self::META_PUBLISH_ATTEMPTS, true );
+
+		if ( $attempts >= self::PARENT_DEFER_MAX_ATTEMPTS ) {
+			// Give up and publish with root as parent; clear the counter
+			// so a future re-publish gets a fresh deferral budget.
+			\delete_comment_meta( $comment_id, self::META_PUBLISH_ATTEMPTS );
+			return false;
+		}
+
+		\update_comment_meta( $comment_id, self::META_PUBLISH_ATTEMPTS, $attempts + 1 );
+		\wp_schedule_single_event(
+			\time() + self::PARENT_DEFER_DELAY_SECONDS,
+			'atmosphere_publish_comment',
+			array( $comment_id )
+		);
+
+		return true;
+	}
+
+	/**
+	 * Log a WP_Error returned from a comment cron Publisher call.
+	 *
+	 * `wp_schedule_single_event` does not retry, so a silent drop
+	 * here would lose the breadcrumb operators need to diagnose
+	 * auth, transport, or PDS-side failures.
+	 *
+	 * @param string $op         One of 'publish_comment' | 'update_comment' | 'delete_comment'.
+	 * @param int    $comment_id Comment ID.
+	 * @param mixed  $result     Publisher call result.
+	 */
+	private static function log_cron_error( string $op, int $comment_id, $result ): void {
+		if ( ! \is_wp_error( $result ) ) {
+			return;
+		}
+
+		\error_log( // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
+			\sprintf(
+				'[atmosphere] %s %d failed: %s — %s',
+				$op,
+				$comment_id,
+				$result->get_error_code(),
+				$result->get_error_message()
+			)
 		);
 	}
 }

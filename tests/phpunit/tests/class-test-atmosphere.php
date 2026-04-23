@@ -524,7 +524,6 @@ class Test_Atmosphere extends WP_UnitTestCase {
 	 * record even though the gate now says no.
 	 */
 	public function test_publish_comment_cron_rechecks_eligibility() {
-		Atmosphere::register_async_hooks();
 
 		$comment    = $this->make_eligible_comment();
 		$comment_id = (int) $comment->comment_ID;
@@ -558,7 +557,6 @@ class Test_Atmosphere extends WP_UnitTestCase {
 	 * admin unapproved then re-approved before cron ran).
 	 */
 	public function test_delete_comment_cron_skips_when_eligible_again() {
-		Atmosphere::register_async_hooks();
 
 		$comment    = $this->make_eligible_comment();
 		$comment_id = (int) $comment->comment_ID;
@@ -584,5 +582,113 @@ class Test_Atmosphere extends WP_UnitTestCase {
 
 		$this->assertFalse( $captured, 'applyWrites#delete must not be called for a re-approved comment.' );
 		\remove_all_actions( 'atmosphere_delete_comment' );
+	}
+
+	/**
+	 * When a parent comment is eligible but has not yet published,
+	 * the child's cron handler reschedules itself and does not call
+	 * the PDS. This prevents a batch approval from publishing the
+	 * child flat as a top-level reply before the parent exists.
+	 */
+	public function test_publish_comment_defers_when_parent_pending() {
+
+		$post_id = self::factory()->post->create();
+		\update_post_meta( $post_id, Post::META_URI, 'at://did:plc:test123/app.bsky.feed.post/root' );
+		\update_post_meta( $post_id, Post::META_CID, 'bafyroot' );
+
+		$user_id = self::factory()->user->create();
+
+		$parent_id = self::factory()->comment->create(
+			array(
+				'comment_post_ID'  => $post_id,
+				'comment_approved' => '1',
+				'user_id'          => $user_id,
+			)
+		);
+		// Parent is eligible but not yet published — no META_URI.
+
+		$child_id = self::factory()->comment->create(
+			array(
+				'comment_post_ID'  => $post_id,
+				'comment_parent'   => $parent_id,
+				'comment_approved' => '1',
+				'user_id'          => $user_id,
+			)
+		);
+
+		$captured = false;
+		\add_filter(
+			'pre_http_request',
+			static function ( $response, $args, $url ) use ( &$captured ) {
+				if ( false !== \strpos( $url, 'applyWrites' ) ) {
+					$captured = true;
+				}
+				return $response;
+			},
+			5,
+			3
+		);
+
+		\do_action( 'atmosphere_publish_comment', $child_id );
+		\remove_all_filters( 'pre_http_request' );
+
+		$this->assertFalse( $captured, 'Child must not publish while parent is pending.' );
+		$this->assertNotFalse(
+			\wp_next_scheduled( 'atmosphere_publish_comment', array( $child_id ) ),
+			'Child must be rescheduled when parent is pending.'
+		);
+		$this->assertSame(
+			'1',
+			\get_comment_meta( $child_id, '_atmosphere_publish_attempts', true ),
+			'Deferral counter must be incremented on each hop.'
+		);
+
+		\remove_all_actions( 'atmosphere_publish_comment' );
+		\wp_clear_scheduled_hook( 'atmosphere_publish_comment', array( $child_id ) );
+	}
+
+	/**
+	 * After the deferral cap the child publishes anyway so a stuck
+	 * parent cannot block it forever; the root-fallback branch of
+	 * Transformer\Comment::resolve_parent_ref takes over.
+	 */
+	public function test_publish_comment_proceeds_after_parent_defer_cap() {
+
+		$post_id = self::factory()->post->create();
+		\update_post_meta( $post_id, Post::META_URI, 'at://did:plc:test123/app.bsky.feed.post/root' );
+		\update_post_meta( $post_id, Post::META_CID, 'bafyroot' );
+
+		$user_id = self::factory()->user->create();
+
+		$parent_id = self::factory()->comment->create(
+			array(
+				'comment_post_ID'  => $post_id,
+				'comment_approved' => '1',
+				'user_id'          => $user_id,
+			)
+		);
+
+		$child_id = self::factory()->comment->create(
+			array(
+				'comment_post_ID'  => $post_id,
+				'comment_parent'   => $parent_id,
+				'comment_approved' => '1',
+				'user_id'          => $user_id,
+			)
+		);
+		// Already at the cap — next fire must proceed rather than defer.
+		\update_comment_meta( $child_id, '_atmosphere_publish_attempts', 3 );
+
+		\do_action( 'atmosphere_publish_comment', $child_id );
+
+		$this->assertFalse(
+			\wp_next_scheduled( 'atmosphere_publish_comment', array( $child_id ) ),
+			'After the cap the handler must not re-enqueue the child.'
+		);
+		$this->assertSame(
+			'',
+			\get_comment_meta( $child_id, '_atmosphere_publish_attempts', true ),
+			'Counter must be cleared once the child proceeds.'
+		);
 	}
 }

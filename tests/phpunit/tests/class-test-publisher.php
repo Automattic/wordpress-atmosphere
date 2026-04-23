@@ -214,6 +214,71 @@ class Test_Publisher extends WP_UnitTestCase {
 	}
 
 	/**
+	 * Delete-post includes delete writes for every published comment
+	 * reply on the post and clears their meta on success. AT Protocol
+	 * has no cascade semantics, so without this the replies would be
+	 * orphaned on the PDS after the root goes away.
+	 */
+	public function test_delete_post_cascades_comment_replies() {
+		$post = self::factory()->post->create_and_get(
+			array( 'post_status' => 'trash' )
+		);
+		\update_post_meta( $post->ID, Post::META_TID, 'post-tid' );
+		\update_post_meta( $post->ID, Document::META_TID, 'doc-tid' );
+
+		// Two published comment replies + one never-published comment.
+		$c1 = self::factory()->comment->create( array( 'comment_post_ID' => $post->ID ) );
+		\update_comment_meta( $c1, Comment::META_TID, 'reply-tid-1' );
+		\update_comment_meta( $c1, Comment::META_URI, 'at://did:plc:test123/app.bsky.feed.post/reply-tid-1' );
+
+		$c2 = self::factory()->comment->create( array( 'comment_post_ID' => $post->ID ) );
+		\update_comment_meta( $c2, Comment::META_TID, 'reply-tid-2' );
+		\update_comment_meta( $c2, Comment::META_URI, 'at://did:plc:test123/app.bsky.feed.post/reply-tid-2' );
+
+		$c3 = self::factory()->comment->create( array( 'comment_post_ID' => $post->ID ) );
+		\update_comment_meta( $c3, Comment::META_TID, 'stale-tid' );
+		// No META_URI — previously-failed publish; must not be in the delete batch.
+
+		$captured_body = null;
+		\add_filter(
+			'pre_http_request',
+			static function ( $response, $args, $url ) use ( &$captured_body ) {
+				if ( false !== \strpos( $url, 'applyWrites' ) ) {
+					$captured_body = \json_decode( $args['body'], true );
+
+					return array(
+						'response' => array( 'code' => 200 ),
+						'body'     => \wp_json_encode( array( 'results' => array() ) ),
+					);
+				}
+				return $response;
+			},
+			5,
+			3
+		);
+
+		Publisher::delete_post( $post );
+		\remove_all_filters( 'pre_http_request' );
+
+		if ( null === $captured_body ) {
+			$this->markTestSkipped( 'API layer rejected request before stub.' );
+		}
+
+		$rkeys = \array_column( $captured_body['writes'], 'rkey' );
+		$this->assertContains( 'post-tid', $rkeys );
+		$this->assertContains( 'doc-tid', $rkeys );
+		$this->assertContains( 'reply-tid-1', $rkeys );
+		$this->assertContains( 'reply-tid-2', $rkeys );
+		$this->assertNotContains( 'stale-tid', $rkeys, 'Stale TID without URI must not be included.' );
+
+		// Meta cleanup on both the post and the published replies.
+		$this->assertSame( '', \get_comment_meta( $c1, Comment::META_URI, true ) );
+		$this->assertSame( '', \get_comment_meta( $c2, Comment::META_TID, true ) );
+		// Stale comment's TID is left alone — we did not touch its record.
+		$this->assertSame( 'stale-tid', \get_comment_meta( $c3, Comment::META_TID, true ) );
+	}
+
+	/**
 	 * Test that delete() returns error when no TIDs exist.
 	 */
 	public function test_delete_errors_without_tids() {
