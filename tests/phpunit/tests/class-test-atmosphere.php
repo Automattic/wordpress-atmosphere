@@ -80,17 +80,18 @@ class Test_Atmosphere extends WP_UnitTestCase {
 	/**
 	 * Build a WP_Comment on a published post for comment eligibility tests.
 	 *
+	 * A fresh post is created each call: WP_UnitTestCase rolls back
+	 * DB state between tests, so reusing an ID across tests via a
+	 * static cache would leave later tests pointing at a row that no
+	 * longer exists.
+	 *
 	 * @param array $overrides Comment field overrides.
 	 * @return \WP_Comment
 	 */
 	private function make_eligible_comment( array $overrides = array() ): \WP_Comment {
-		static $post_id = null;
-
-		if ( null === $post_id ) {
-			$post_id = self::factory()->post->create();
-			\update_post_meta( $post_id, Post::META_URI, 'at://did:plc:test123/app.bsky.feed.post/abc' );
-			\update_post_meta( $post_id, Post::META_CID, 'bafyroot' );
-		}
+		$post_id = self::factory()->post->create();
+		\update_post_meta( $post_id, Post::META_URI, 'at://did:plc:test123/app.bsky.feed.post/abc' );
+		\update_post_meta( $post_id, Post::META_CID, 'bafyroot' );
 
 		$defaults = array(
 			'comment_post_ID'  => $post_id,

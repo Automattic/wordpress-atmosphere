@@ -147,14 +147,13 @@ class Test_Comment extends WP_UnitTestCase {
 	}
 
 	/**
-	 * A federated parent without a stored CID still resolves to the
-	 * federated URI; the CID field is left empty rather than falling
-	 * back to the root — the AT-URI alone identifies the record for
-	 * reply threading.
+	 * A federated parent without a stored CID falls back to the root
+	 * ref — AT Protocol strongRef requires both URI and CID, and an
+	 * empty CID would be rejected by the PDS.
 	 *
 	 * @covers ::transform
 	 */
-	public function test_reply_to_federated_parent_without_cid_uses_source_uri_with_empty_cid() {
+	public function test_reply_to_federated_parent_without_cid_falls_back_to_root() {
 		$parent_id = self::factory()->comment->create(
 			array( 'comment_post_ID' => $this->post_id )
 		);
@@ -172,8 +171,38 @@ class Test_Comment extends WP_UnitTestCase {
 
 		$record = ( new Comment( \get_comment( $child_id ) ) )->transform();
 
-		$this->assertSame( 'at://did:plc:stranger/app.bsky.feed.post/nocid', $record['reply']['parent']['uri'] );
-		$this->assertSame( '', $record['reply']['parent']['cid'] );
+		$this->assertSame( $this->post_uri, $record['reply']['parent']['uri'] );
+		$this->assertSame( $this->post_cid, $record['reply']['parent']['cid'] );
+	}
+
+	/**
+	 * A local parent published with URI but no stored CID (edge case
+	 * after a PDS response that omitted CID) falls back to root.
+	 *
+	 * @covers ::transform
+	 */
+	public function test_reply_to_local_parent_without_cid_falls_back_to_root() {
+		$parent_id = self::factory()->comment->create(
+			array(
+				'comment_post_ID' => $this->post_id,
+				'user_id'         => 1,
+			)
+		);
+		\update_comment_meta( $parent_id, Comment::META_URI, 'at://did:plc:me/app.bsky.feed.post/localnocid' );
+		// No META_CID.
+
+		$child_id = self::factory()->comment->create(
+			array(
+				'comment_post_ID' => $this->post_id,
+				'comment_parent'  => $parent_id,
+				'user_id'         => 1,
+			)
+		);
+
+		$record = ( new Comment( \get_comment( $child_id ) ) )->transform();
+
+		$this->assertSame( $this->post_uri, $record['reply']['parent']['uri'] );
+		$this->assertSame( $this->post_cid, $record['reply']['parent']['cid'] );
 	}
 
 	/**

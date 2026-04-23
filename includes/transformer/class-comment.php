@@ -142,18 +142,20 @@ class Comment extends Base {
 	 *
 	 * Checks local-publish meta first (this class's own keys), then
 	 * falls through to Reaction_Sync meta for federated parents.
-	 * Returns null when neither path yields a URI, so the caller can
-	 * fall back to the root reference.
+	 * Returns null when neither path yields both a URI and a CID, so
+	 * the caller can fall back to the root reference — strongRef
+	 * requires both fields to be set.
 	 *
 	 * @param int $parent_id Parent comment ID.
 	 * @return array{uri:string,cid:string}|null
 	 */
 	private function resolve_parent_ref( int $parent_id ): ?array {
 		$local_uri = \get_comment_meta( $parent_id, self::META_URI, true );
-		if ( ! empty( $local_uri ) ) {
+		$local_cid = \get_comment_meta( $parent_id, self::META_CID, true );
+		if ( ! empty( $local_uri ) && ! empty( $local_cid ) ) {
 			return array(
 				'uri' => (string) $local_uri,
-				'cid' => (string) \get_comment_meta( $parent_id, self::META_CID, true ),
+				'cid' => (string) $local_cid,
 			);
 		}
 
@@ -162,13 +164,14 @@ class Comment extends Base {
 		}
 
 		$federated_uri = \get_comment_meta( $parent_id, Reaction_Sync::META_SOURCE_ID, true );
-		if ( empty( $federated_uri ) ) {
+		$federated_cid = \get_comment_meta( $parent_id, Reaction_Sync::META_BSKY_CID, true );
+		if ( empty( $federated_uri ) || empty( $federated_cid ) ) {
 			return null;
 		}
 
 		return array(
 			'uri' => (string) $federated_uri,
-			'cid' => (string) \get_comment_meta( $parent_id, Reaction_Sync::META_BSKY_CID, true ),
+			'cid' => (string) $federated_cid,
 		);
 	}
 }
