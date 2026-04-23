@@ -82,7 +82,7 @@ class Test_Markpub extends WP_UnitTestCase {
 		$content = '<!-- wp:heading {"level":2} --><h2>My Heading</h2><!-- /wp:heading -->';
 		$result  = $this->parser->parse( $content, $post );
 
-		$this->assertStringContainsString( '## My Heading', $result['text']['markdown'] );
+		$this->assertSame( '## My Heading', $result['text']['markdown'] );
 	}
 
 	/**
@@ -93,7 +93,7 @@ class Test_Markpub extends WP_UnitTestCase {
 		$content = '<!-- wp:heading {"level":3} --><h3>Sub Heading</h3><!-- /wp:heading -->';
 		$result  = $this->parser->parse( $content, $post );
 
-		$this->assertStringContainsString( '### Sub Heading', $result['text']['markdown'] );
+		$this->assertSame( '### Sub Heading', $result['text']['markdown'] );
 	}
 
 	/**
@@ -147,10 +147,8 @@ class Test_Markpub extends WP_UnitTestCase {
 		$post    = self::factory()->post->create_and_get();
 		$content = '<!-- wp:code --><pre class="wp-block-code"><code>echo "hello";</code></pre><!-- /wp:code -->';
 		$result  = $this->parser->parse( $content, $post );
-		$md      = $result['text']['markdown'];
 
-		$this->assertStringContainsString( '```', $md );
-		$this->assertStringContainsString( 'echo "hello";', $md );
+		$this->assertSame( "```\necho \"hello\";\n```", $result['text']['markdown'] );
 	}
 
 	/**
@@ -174,7 +172,7 @@ class Test_Markpub extends WP_UnitTestCase {
 			. '<!-- wp:paragraph --><p>After</p><!-- /wp:paragraph -->';
 		$result  = $this->parser->parse( $content, $post );
 
-		$this->assertStringContainsString( '---', $result['text']['markdown'] );
+		$this->assertSame( "Before\n\n---\n\nAfter", $result['text']['markdown'] );
 	}
 
 	/**
@@ -188,22 +186,33 @@ class Test_Markpub extends WP_UnitTestCase {
 
 	/**
 	 * Test the atmosphere_html_to_markdown filter.
+	 *
+	 * Verifies the filter callback receives ($markdown, $content) so
+	 * callers can inspect the raw source alongside the conversion.
 	 */
 	public function test_html_to_markdown_filter() {
+		$received = array();
+
 		\add_filter(
 			'atmosphere_html_to_markdown',
-			static fn() => 'custom markdown',
+			static function ( $markdown, $content ) use ( &$received ) {
+				$received = array(
+					'markdown' => $markdown,
+					'content'  => $content,
+				);
+				return 'custom markdown';
+			},
 			10,
 			2
 		);
 
 		$post   = self::factory()->post->create_and_get();
-		$result = $this->parser->parse(
-			'<!-- wp:paragraph --><p>Hello</p><!-- /wp:paragraph -->',
-			$post
-		);
+		$source = '<!-- wp:paragraph --><p>Hello</p><!-- /wp:paragraph -->';
+		$result = $this->parser->parse( $source, $post );
 
 		$this->assertSame( 'custom markdown', $result['text']['markdown'] );
+		$this->assertSame( 'Hello', $received['markdown'] );
+		$this->assertSame( $source, $received['content'] );
 
 		\remove_all_filters( 'atmosphere_html_to_markdown' );
 	}
@@ -264,5 +273,319 @@ class Test_Markpub extends WP_UnitTestCase {
 			. '<!-- /wp:spacer -->';
 
 		$this->assertNull( $this->parser->parse( $content, $post ) );
+	}
+
+	/**
+	 * Test ordered list produces numbered markdown.
+	 */
+	public function test_listing_ordered() {
+		$post    = self::factory()->post->create_and_get();
+		$content = "<!-- wp:list {\"ordered\":true} -->\n<ol>"
+			. '<!-- wp:list-item --><li>First</li><!-- /wp:list-item -->'
+			. '<!-- wp:list-item --><li>Second</li><!-- /wp:list-item -->'
+			. '<!-- wp:list-item --><li>Third</li><!-- /wp:list-item -->'
+			. "</ol>\n<!-- /wp:list -->";
+
+		$result = $this->parser->parse( $content, $post );
+
+		$this->assertSame( "1. First\n2. Second\n3. Third", $result['text']['markdown'] );
+	}
+
+	/**
+	 * Test unordered list produces dashed markdown.
+	 */
+	public function test_listing_unordered() {
+		$post    = self::factory()->post->create_and_get();
+		$content = "<!-- wp:list -->\n<ul>"
+			. '<!-- wp:list-item --><li>First</li><!-- /wp:list-item -->'
+			. '<!-- wp:list-item --><li>Second</li><!-- /wp:list-item -->'
+			. '<!-- wp:list-item --><li>Third</li><!-- /wp:list-item -->'
+			. "</ul>\n<!-- /wp:list -->";
+
+		$result = $this->parser->parse( $content, $post );
+
+		$this->assertSame( "- First\n- Second\n- Third", $result['text']['markdown'] );
+	}
+
+	/**
+	 * Test ordered list skips empty items without gapping the counter.
+	 */
+	public function test_listing_skips_empty_items_without_gap() {
+		$post    = self::factory()->post->create_and_get();
+		$content = "<!-- wp:list {\"ordered\":true} -->\n<ol>"
+			. '<!-- wp:list-item --><li>First</li><!-- /wp:list-item -->'
+			. '<!-- wp:list-item --><li>   </li><!-- /wp:list-item -->'
+			. '<!-- wp:list-item --><li>Third</li><!-- /wp:list-item -->'
+			. "</ol>\n<!-- /wp:list -->";
+
+		$result = $this->parser->parse( $content, $post );
+
+		$this->assertSame( "1. First\n2. Third", $result['text']['markdown'] );
+	}
+
+	/**
+	 * Test list items preserve inline formatting.
+	 */
+	public function test_listing_preserves_inline_formatting() {
+		$post    = self::factory()->post->create_and_get();
+		$content = "<!-- wp:list -->\n<ul>"
+			. '<!-- wp:list-item --><li>some <strong>bold</strong></li><!-- /wp:list-item -->'
+			. "</ul>\n<!-- /wp:list -->";
+
+		$result = $this->parser->parse( $content, $post );
+
+		$this->assertSame( '- some **bold**', $result['text']['markdown'] );
+	}
+
+	/**
+	 * Test quote block wraps an inner paragraph in a "> " prefix.
+	 */
+	public function test_quote_with_inner_paragraph() {
+		$post    = self::factory()->post->create_and_get();
+		$content = '<!-- wp:quote --><blockquote class="wp-block-quote">'
+			. '<!-- wp:paragraph --><p>Paragraph text</p><!-- /wp:paragraph -->'
+			. '</blockquote><!-- /wp:quote -->';
+
+		$result = $this->parser->parse( $content, $post );
+
+		$this->assertSame( '> Paragraph text', $result['text']['markdown'] );
+	}
+
+	/**
+	 * Test quote block prefixes every inner line.
+	 */
+	public function test_quote_prefixes_every_line() {
+		$post    = self::factory()->post->create_and_get();
+		$content = '<!-- wp:quote --><blockquote class="wp-block-quote">'
+			. '<!-- wp:paragraph --><p>First</p><!-- /wp:paragraph -->'
+			. '<!-- wp:paragraph --><p>Second</p><!-- /wp:paragraph -->'
+			. '</blockquote><!-- /wp:quote -->';
+
+		$result = $this->parser->parse( $content, $post );
+
+		$this->assertSame( "> First\n> Second", $result['text']['markdown'] );
+	}
+
+	/**
+	 * Test quote falls back to innerHTML when no innerBlocks are present.
+	 */
+	public function test_quote_innerhtml_fallback() {
+		$post    = self::factory()->post->create_and_get();
+		$content = '<!-- wp:quote --><blockquote class="wp-block-quote">Direct quote text</blockquote><!-- /wp:quote -->';
+
+		$result = $this->parser->parse( $content, $post );
+
+		$this->assertSame( '> Direct quote text', $result['text']['markdown'] );
+	}
+
+	/**
+	 * Test core/group containers flatten inner block markdown.
+	 */
+	public function test_container_group() {
+		$post    = self::factory()->post->create_and_get();
+		$content = '<!-- wp:group --><div class="wp-block-group">'
+			. '<!-- wp:paragraph --><p>Inside group</p><!-- /wp:paragraph -->'
+			. '</div><!-- /wp:group -->';
+
+		$result = $this->parser->parse( $content, $post );
+
+		$this->assertSame( 'Inside group', $result['text']['markdown'] );
+	}
+
+	/**
+	 * Test core/columns containers flatten inner block markdown.
+	 */
+	public function test_container_columns() {
+		$post    = self::factory()->post->create_and_get();
+		$content = '<!-- wp:columns --><div class="wp-block-columns">'
+			. '<!-- wp:paragraph --><p>Inside columns</p><!-- /wp:paragraph -->'
+			. '</div><!-- /wp:columns -->';
+
+		$result = $this->parser->parse( $content, $post );
+
+		$this->assertSame( 'Inside columns', $result['text']['markdown'] );
+	}
+
+	/**
+	 * Test core/column containers flatten inner block markdown.
+	 */
+	public function test_container_column() {
+		$post    = self::factory()->post->create_and_get();
+		$content = '<!-- wp:column --><div class="wp-block-column">'
+			. '<!-- wp:paragraph --><p>Inside column</p><!-- /wp:paragraph -->'
+			. '</div><!-- /wp:column -->';
+
+		$result = $this->parser->parse( $content, $post );
+
+		$this->assertSame( 'Inside column', $result['text']['markdown'] );
+	}
+
+	/**
+	 * Test fallback delegates to container() when innerBlocks exist.
+	 */
+	public function test_fallback_delegates_to_container_with_inner_blocks() {
+		$post    = self::factory()->post->create_and_get();
+		$content = '<!-- wp:custom/unknown --><div>'
+			. '<!-- wp:paragraph --><p>Inside unknown</p><!-- /wp:paragraph -->'
+			. '</div><!-- /wp:custom/unknown -->';
+
+		$result = $this->parser->parse( $content, $post );
+
+		$this->assertSame( 'Inside unknown', $result['text']['markdown'] );
+	}
+
+	/**
+	 * Test image() skips blocks without an <img> tag so surrounding
+	 * content renders with no empty separator.
+	 *
+	 * Uses a mixed fixture so a regression returning "" instead of null
+	 * would produce a leading blank line and fail this exact-match
+	 * assertion (the whole-post empty guard in parse() would otherwise
+	 * mask the handler bug).
+	 */
+	public function test_image_without_img_tag_is_skipped_cleanly() {
+		$post    = self::factory()->post->create_and_get();
+		$content = '<!-- wp:image --><figure class="wp-block-image">'
+			. '<figcaption>Just a caption</figcaption>'
+			. "</figure><!-- /wp:image -->\n\n"
+			. '<!-- wp:paragraph --><p>After</p><!-- /wp:paragraph -->';
+
+		$result = $this->parser->parse( $content, $post );
+
+		$this->assertSame( 'After', $result['text']['markdown'] );
+	}
+
+	/**
+	 * Test heading defaults to level 2 when attrs.level is missing.
+	 */
+	public function test_heading_defaults_to_level_2() {
+		$post    = self::factory()->post->create_and_get();
+		$content = '<!-- wp:heading --><h2>Default level</h2><!-- /wp:heading -->';
+
+		$result = $this->parser->parse( $content, $post );
+
+		$this->assertSame( '## Default level', $result['text']['markdown'] );
+	}
+
+	/**
+	 * Test whitespace-only heading block is skipped cleanly.
+	 *
+	 * Mixed with a non-empty sibling so a regression returning "" from
+	 * heading() would produce a leading blank line and fail the exact
+	 * assertion (the whole-post empty guard would otherwise hide it).
+	 */
+	public function test_heading_whitespace_is_skipped_cleanly() {
+		$post    = self::factory()->post->create_and_get();
+		$content = "<!-- wp:heading --><h2>   </h2><!-- /wp:heading -->\n\n"
+			. '<!-- wp:paragraph --><p>After</p><!-- /wp:paragraph -->';
+
+		$result = $this->parser->parse( $content, $post );
+
+		$this->assertSame( 'After', $result['text']['markdown'] );
+	}
+
+	/**
+	 * Test whitespace-only paragraph block is skipped cleanly.
+	 *
+	 * Mixed with a non-empty sibling so a regression returning "" from
+	 * paragraph() would produce a leading blank line and fail the exact
+	 * assertion (the whole-post empty guard would otherwise hide it).
+	 */
+	public function test_paragraph_whitespace_is_skipped_cleanly() {
+		$post    = self::factory()->post->create_and_get();
+		$content = "<!-- wp:paragraph --><p>   </p><!-- /wp:paragraph -->\n\n"
+			. '<!-- wp:paragraph --><p>After</p><!-- /wp:paragraph -->';
+
+		$result = $this->parser->parse( $content, $post );
+
+		$this->assertSame( 'After', $result['text']['markdown'] );
+	}
+
+	/**
+	 * Test code block emits the configured language in the fence.
+	 */
+	public function test_code_emits_language_fence() {
+		$post    = self::factory()->post->create_and_get();
+		$content = '<!-- wp:code {"language":"php"} --><pre class="wp-block-code"><code>echo 1;</code></pre><!-- /wp:code -->';
+
+		$result = $this->parser->parse( $content, $post );
+
+		$this->assertStringStartsWith( "```php\n", $result['text']['markdown'] );
+	}
+
+	/**
+	 * Test code block decodes HTML entities inside the fence.
+	 */
+	public function test_code_decodes_html_entities() {
+		$post    = self::factory()->post->create_and_get();
+		$content = '<!-- wp:code --><pre class="wp-block-code"><code>&lt;div&gt;</code></pre><!-- /wp:code -->';
+
+		$result = $this->parser->parse( $content, $post );
+
+		$this->assertSame( "```\n<div>\n```", $result['text']['markdown'] );
+	}
+
+	/**
+	 * Test link URLs have parentheses percent-encoded to protect markdown syntax.
+	 */
+	public function test_link_url_parens_percent_encoded() {
+		$post    = self::factory()->post->create_and_get();
+		$content = '<!-- wp:paragraph --><p>See <a href="https://en.wikipedia.org/wiki/Foo_(bar)">Foo</a>.</p><!-- /wp:paragraph -->';
+
+		$result = $this->parser->parse( $content, $post );
+		$md     = $result['text']['markdown'];
+
+		$this->assertStringContainsString( '%28bar%29', $md );
+		$this->assertStringNotContainsString( '(bar)', $md );
+	}
+
+	/**
+	 * Test <br> converts to a markdown hard break (two spaces + newline).
+	 */
+	public function test_br_converts_to_hard_break() {
+		$post    = self::factory()->post->create_and_get();
+		$content = '<!-- wp:paragraph --><p>line1<br>line2</p><!-- /wp:paragraph -->';
+
+		$result = $this->parser->parse( $content, $post );
+
+		$this->assertStringContainsString( "line1  \nline2", $result['text']['markdown'] );
+	}
+
+	/**
+	 * Test HTML entities are decoded in inline paragraph text.
+	 */
+	public function test_inline_html_entities_decoded() {
+		$post    = self::factory()->post->create_and_get();
+		$content = '<!-- wp:paragraph --><p>AT&amp;T&#8217;s</p><!-- /wp:paragraph -->';
+
+		$result = $this->parser->parse( $content, $post );
+		$md     = $result['text']['markdown'];
+
+		$this->assertStringContainsString( 'AT&T', $md );
+		$this->assertStringContainsString( "\xE2\x80\x99", $md );
+	}
+
+	/**
+	 * Test inline <img> inside a paragraph converts via inline_html_to_markdown.
+	 */
+	public function test_inline_image_inside_paragraph() {
+		$post    = self::factory()->post->create_and_get();
+		$content = '<!-- wp:paragraph --><p>Look <img src="x.jpg" alt="x"> here</p><!-- /wp:paragraph -->';
+
+		$result = $this->parser->parse( $content, $post );
+
+		$this->assertSame( 'Look ![x](x.jpg) here', $result['text']['markdown'] );
+	}
+
+	/**
+	 * Test nested inline formatting (bold wrapping italic).
+	 */
+	public function test_nested_inline_formatting() {
+		$post    = self::factory()->post->create_and_get();
+		$content = '<!-- wp:paragraph --><p><strong>bold <em>italic</em></strong></p><!-- /wp:paragraph -->';
+
+		$result = $this->parser->parse( $content, $post );
+
+		$this->assertSame( '**bold *italic***', $result['text']['markdown'] );
 	}
 }
