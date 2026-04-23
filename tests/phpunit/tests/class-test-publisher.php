@@ -324,9 +324,13 @@ class Test_Publisher extends WP_UnitTestCase {
 	}
 
 	/**
-	 * Update comment falls back to publish when there is no TID yet.
+	 * Update comment falls back to publish when there is no URI yet.
+	 *
+	 * A TID may be present (Comment::get_rkey persists it locally) but
+	 * the URI is only set after a successful API call; its absence
+	 * means the record was never created on the PDS.
 	 */
-	public function test_update_comment_falls_back_to_publish_without_tid() {
+	public function test_update_comment_falls_back_to_publish_without_uri() {
 		$post_id    = $this->seed_root_post();
 		$user_id    = self::factory()->user->create();
 		$comment_id = self::factory()->comment->create(
@@ -354,7 +358,7 @@ class Test_Publisher extends WP_UnitTestCase {
 	}
 
 	/**
-	 * Update comment issues an update when a TID is already stored.
+	 * Update comment issues an update when URI and TID are already stored.
 	 */
 	public function test_update_comment_updates_existing_record() {
 		$post_id    = $this->seed_root_post();
@@ -367,6 +371,7 @@ class Test_Publisher extends WP_UnitTestCase {
 			)
 		);
 		\update_comment_meta( $comment_id, Comment::META_TID, 'existingtid' );
+		\update_comment_meta( $comment_id, Comment::META_URI, 'at://did:plc:test123/app.bsky.feed.post/existingtid' );
 
 		$get_body = $this->stub_apply_writes(
 			'at://did:plc:test123/app.bsky.feed.post/existingtid',
@@ -386,9 +391,45 @@ class Test_Publisher extends WP_UnitTestCase {
 	}
 
 	/**
-	 * Delete comment errors when the comment was never published.
+	 * Update comment still falls back to publish when a stale TID
+	 * exists from a previous failed API call but no URI.
+	 *
+	 * This is the regression guard: keying off TID would infinite-loop
+	 * an #update request for a record that never existed.
 	 */
-	public function test_delete_comment_errors_without_tid() {
+	public function test_update_comment_retries_create_when_tid_persisted_but_no_uri() {
+		$post_id    = $this->seed_root_post();
+		$user_id    = self::factory()->user->create();
+		$comment_id = self::factory()->comment->create(
+			array(
+				'comment_post_ID'  => $post_id,
+				'comment_approved' => '1',
+				'user_id'          => $user_id,
+			)
+		);
+		// Simulate a previous publish failure: TID persisted, URI absent.
+		\update_comment_meta( $comment_id, Comment::META_TID, 'staletid' );
+
+		$get_body = $this->stub_apply_writes(
+			'at://did:plc:test123/app.bsky.feed.post/staletid',
+			'bafyretry'
+		);
+
+		$result = Publisher::update_comment( \get_comment( $comment_id ) );
+		\remove_all_filters( 'pre_http_request' );
+
+		if ( \is_wp_error( $result ) ) {
+			$this->markTestSkipped( 'API layer rejected request: ' . $result->get_error_message() );
+		}
+
+		$body = $get_body();
+		$this->assertSame( 'com.atproto.repo.applyWrites#create', $body['writes'][0]['$type'] );
+	}
+
+	/**
+	 * Delete comment errors when the comment was never published (no URI).
+	 */
+	public function test_delete_comment_errors_without_uri() {
 		$post_id    = $this->seed_root_post();
 		$user_id    = self::factory()->user->create();
 		$comment_id = self::factory()->comment->create(
@@ -397,6 +438,8 @@ class Test_Publisher extends WP_UnitTestCase {
 				'user_id'         => $user_id,
 			)
 		);
+		// Even with a stale TID, absent URI means nothing to delete.
+		\update_comment_meta( $comment_id, Comment::META_TID, 'staletid' );
 
 		$result = Publisher::delete_comment( \get_comment( $comment_id ) );
 

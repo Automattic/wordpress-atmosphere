@@ -15,6 +15,7 @@ namespace Atmosphere\Tests;
 use WP_UnitTestCase;
 use Atmosphere\Atmosphere;
 use Atmosphere\Reaction_Sync;
+use Atmosphere\Transformer\Comment;
 use Atmosphere\Transformer\Document;
 use Atmosphere\Transformer\Post;
 
@@ -88,6 +89,7 @@ class Test_Atmosphere extends WP_UnitTestCase {
 		if ( null === $post_id ) {
 			$post_id = self::factory()->post->create();
 			\update_post_meta( $post_id, Post::META_URI, 'at://did:plc:test123/app.bsky.feed.post/abc' );
+			\update_post_meta( $post_id, Post::META_CID, 'bafyroot' );
 		}
 
 		$defaults = array(
@@ -427,5 +429,90 @@ class Test_Atmosphere extends WP_UnitTestCase {
 		);
 
 		$this->assertFalse( Atmosphere::should_publish_comment( $comment ) );
+	}
+
+	/**
+	 * Eligibility requires the root post to have both META_URI and
+	 * META_CID — both are needed to build a valid reply strongRef.
+	 */
+	public function test_comment_on_post_without_cid_is_skipped() {
+		$post_id = self::factory()->post->create();
+		\update_post_meta( $post_id, Post::META_URI, 'at://did:plc:test123/app.bsky.feed.post/nocid' );
+		// No META_CID on purpose.
+
+		$comment_id = self::factory()->comment->create(
+			array(
+				'comment_post_ID'  => $post_id,
+				'comment_approved' => '1',
+				'user_id'          => self::factory()->user->create(),
+			)
+		);
+
+		$this->assertFalse( Atmosphere::should_publish_comment( \get_comment( $comment_id ) ) );
+	}
+
+	/**
+	 * Approving → unapprove transitions must not schedule a delete
+	 * when the plugin is disconnected — otherwise we'd enqueue a cron
+	 * event that has no credentials to execute and only orphans the
+	 * remote record.
+	 */
+	public function test_disconnected_state_does_not_schedule_comment_delete() {
+		$post_id = self::factory()->post->create();
+		\update_post_meta( $post_id, Post::META_URI, 'at://did:plc:test123/app.bsky.feed.post/abc' );
+		\update_post_meta( $post_id, Post::META_CID, 'bafyroot' );
+
+		$comment_id = self::factory()->comment->create(
+			array(
+				'comment_post_ID'  => $post_id,
+				'comment_approved' => '1',
+				'user_id'          => self::factory()->user->create(),
+			)
+		);
+		\update_comment_meta( $comment_id, Comment::META_URI, 'at://did:plc:test123/app.bsky.feed.post/reply' );
+
+		\delete_option( 'atmosphere_connection' );
+
+		$this->atmosphere->on_comment_status_change( 'unapproved', 'approved', \get_comment( $comment_id ) );
+
+		$this->assertFalse(
+			\wp_next_scheduled( 'atmosphere_delete_comment', array( $comment_id ) ),
+			'Disconnected state must not schedule a comment delete.'
+		);
+	}
+
+	/**
+	 * Hard-delete hook must not double-schedule the TID-only delete
+	 * cron when it fires more than once for the same TID.
+	 */
+	public function test_comment_before_delete_does_not_double_schedule() {
+		$post_id = self::factory()->post->create();
+		\update_post_meta( $post_id, Post::META_URI, 'at://did:plc:test123/app.bsky.feed.post/abc' );
+
+		$comment_id = self::factory()->comment->create(
+			array(
+				'comment_post_ID' => $post_id,
+				'user_id'         => self::factory()->user->create(),
+			)
+		);
+		\update_comment_meta( $comment_id, Comment::META_TID, 'deadbeef' );
+		\update_comment_meta( $comment_id, Comment::META_URI, 'at://did:plc:test123/app.bsky.feed.post/deadbeef' );
+
+		$this->atmosphere->on_comment_before_delete( $comment_id );
+		$this->atmosphere->on_comment_before_delete( $comment_id );
+
+		$cron      = \_get_cron_array();
+		$scheduled = 0;
+		foreach ( $cron as $events ) {
+			foreach ( $events['atmosphere_delete_comment_record'] ?? array() as $event ) {
+				if ( isset( $event['args'][0] ) && 'deadbeef' === $event['args'][0] ) {
+					++$scheduled;
+				}
+			}
+		}
+
+		$this->assertSame( 1, $scheduled, 'Expected exactly one delete_comment_record cron event.' );
+
+		\wp_clear_scheduled_hook( 'atmosphere_delete_comment_record', array( 'deadbeef' ) );
 	}
 }

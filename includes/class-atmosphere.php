@@ -373,7 +373,7 @@ class Atmosphere {
 			return;
 		}
 
-		$hook = empty( \get_comment_meta( $comment_id, Comment::META_TID, true ) )
+		$hook = empty( \get_comment_meta( $comment_id, Comment::META_URI, true ) )
 			? 'atmosphere_publish_comment'
 			: 'atmosphere_update_comment';
 
@@ -386,14 +386,22 @@ class Atmosphere {
 	 * Capture a comment's TID before it is permanently deleted.
 	 *
 	 * Runs on delete_comment which fires before the row and meta are
-	 * removed, so the TID is still reachable. The TID-only cron variant
-	 * lets the async worker issue the PDS delete without re-reading
-	 * state that no longer exists.
+	 * removed, so the TID is still reachable. META_URI gates whether
+	 * there is anything to delete — a TID without URI is from a failed
+	 * earlier publish (no record on the PDS). The TID-only cron
+	 * variant lets the async worker issue the PDS delete without
+	 * re-reading state that no longer exists.
 	 *
 	 * @param int $comment_id Comment ID.
 	 */
 	public function on_comment_before_delete( int $comment_id ): void {
 		if ( ! is_connected() ) {
+			return;
+		}
+
+		$uri = \get_comment_meta( $comment_id, Comment::META_URI, true );
+
+		if ( empty( $uri ) ) {
 			return;
 		}
 
@@ -403,11 +411,14 @@ class Atmosphere {
 			return;
 		}
 
-		\wp_schedule_single_event(
-			\time(),
-			'atmosphere_delete_comment_record',
-			array( (string) $tid )
-		);
+		$tid  = (string) $tid;
+		$args = array( $tid );
+
+		if ( \wp_next_scheduled( 'atmosphere_delete_comment_record', $args ) ) {
+			return;
+		}
+
+		\wp_schedule_single_event( \time(), 'atmosphere_delete_comment_record', $args );
 	}
 
 	/**
@@ -466,8 +477,12 @@ class Atmosphere {
 			return false;
 		}
 
-		$post_uri = \get_post_meta( (int) $comment->comment_post_ID, Post::META_URI, true );
-		if ( empty( $post_uri ) ) {
+		$post_id  = (int) $comment->comment_post_ID;
+		$post_uri = \get_post_meta( $post_id, Post::META_URI, true );
+		$post_cid = \get_post_meta( $post_id, Post::META_CID, true );
+
+		// Both URI and CID are required to build a valid reply.root strongRef.
+		if ( empty( $post_uri ) || empty( $post_cid ) ) {
 			return false;
 		}
 
@@ -485,7 +500,7 @@ class Atmosphere {
 		}
 
 		$comment_id = (int) $comment->comment_ID;
-		$hook       = empty( \get_comment_meta( $comment_id, Comment::META_TID, true ) )
+		$hook       = empty( \get_comment_meta( $comment_id, Comment::META_URI, true ) )
 			? 'atmosphere_publish_comment'
 			: 'atmosphere_update_comment';
 
@@ -502,9 +517,13 @@ class Atmosphere {
 	 * @param \WP_Comment $comment Comment object.
 	 */
 	private function schedule_comment_delete( \WP_Comment $comment ): void {
+		if ( ! is_connected() ) {
+			return;
+		}
+
 		$comment_id = (int) $comment->comment_ID;
 
-		if ( empty( \get_comment_meta( $comment_id, Comment::META_TID, true ) ) ) {
+		if ( empty( \get_comment_meta( $comment_id, Comment::META_URI, true ) ) ) {
 			return;
 		}
 

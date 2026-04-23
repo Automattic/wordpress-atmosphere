@@ -330,18 +330,29 @@ class Publisher {
 	/**
 	 * Update an existing bsky reply for a WordPress comment.
 	 *
-	 * Falls through to publish_comment when no TID is stored — happens
-	 * if an earlier publish attempt failed before meta was written.
+	 * Falls through to publish_comment when no URI is stored — the URI
+	 * is only written after a successful API call, so an absent URI
+	 * means the record was never created on the PDS. Keying off the
+	 * TID instead would be unsafe because Comment::get_rkey() persists
+	 * the TID before the API call, so a failed publish would leave the
+	 * TID present and send every subsequent attempt down the #update
+	 * path for a record that does not exist.
 	 *
 	 * @param \WP_Comment $comment WordPress comment.
 	 * @return array|\WP_Error
 	 */
 	public static function update_comment( \WP_Comment $comment ): array|\WP_Error {
 		$comment_id = (int) $comment->comment_ID;
-		$tid        = \get_comment_meta( $comment_id, Comment::META_TID, true );
+		$uri        = \get_comment_meta( $comment_id, Comment::META_URI, true );
+
+		if ( empty( $uri ) ) {
+			return self::publish_comment( $comment );
+		}
+
+		$tid = \get_comment_meta( $comment_id, Comment::META_TID, true );
 
 		if ( empty( $tid ) ) {
-			return self::publish_comment( $comment );
+			return new \WP_Error( 'atmosphere_missing_tid', \__( 'Comment URI exists but TID is missing.', 'atmosphere' ) );
 		}
 
 		$transformer = new Comment( $comment );
@@ -369,15 +380,25 @@ class Publisher {
 	/**
 	 * Delete the bsky reply record for a WordPress comment.
 	 *
+	 * Keys off META_URI rather than META_TID so a previously-failed
+	 * publish (which persisted the TID but never wrote the URI) is
+	 * correctly treated as nothing-to-delete.
+	 *
 	 * @param \WP_Comment $comment WordPress comment.
 	 * @return array|\WP_Error
 	 */
 	public static function delete_comment( \WP_Comment $comment ): array|\WP_Error {
 		$comment_id = (int) $comment->comment_ID;
-		$tid        = \get_comment_meta( $comment_id, Comment::META_TID, true );
+		$uri        = \get_comment_meta( $comment_id, Comment::META_URI, true );
+
+		if ( empty( $uri ) ) {
+			return new \WP_Error( 'atmosphere_not_published', \__( 'Comment has no AT Protocol record.', 'atmosphere' ) );
+		}
+
+		$tid = \get_comment_meta( $comment_id, Comment::META_TID, true );
 
 		if ( empty( $tid ) ) {
-			return new \WP_Error( 'atmosphere_not_published', \__( 'Comment has no AT Protocol record.', 'atmosphere' ) );
+			return new \WP_Error( 'atmosphere_missing_tid', \__( 'Comment URI exists but TID is missing.', 'atmosphere' ) );
 		}
 
 		$writes = array(
