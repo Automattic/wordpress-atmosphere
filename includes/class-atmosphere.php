@@ -53,15 +53,13 @@ class Atmosphere {
 	 */
 	public function init(): void {
 		/*
-		 * Admin and Backfill self-register on admin_init, which only
-		 * fires in admin context (including admin-ajax.php). Priority 5
-		 * runs before the default-priority admin_init phase so the
-		 * sub-hooks Admin::register() installs at admin_init priority 10
-		 * (handle_oauth_callback, register_settings) still fire on this
-		 * request.
+		 * Admin and Backfill self-register on init. This runs before
+		 * admin_init, rest_api_init, and wp_ajax_* so sub-hooks those
+		 * callbacks add are wired up in time, and it also ensures
+		 * REST/AJAX endpoints are available on non-admin requests.
 		 */
-		\add_action( 'admin_init', array( Admin::class, 'register' ), 5 );
-		\add_action( 'admin_init', array( Backfill::class, 'register' ), 5 );
+		\add_action( 'init', array( Admin::class, 'register' ), 5 );
+		\add_action( 'init', array( Backfill::class, 'register' ), 5 );
 
 		// REST route (always active for client-metadata).
 		\add_action( 'rest_api_init', array( Admin::class, 'register_rest_routes' ) );
