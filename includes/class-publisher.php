@@ -200,6 +200,7 @@ class Publisher {
 		}
 
 		$thread_records = array( $root_triple );
+		$created_at     = to_iso8601( $post->post_date_gmt );
 
 		self::store_document_meta( $post->ID, $root_result, $doc_transformer );
 		self::mirror_thread_records_meta( $post->ID, $thread_records );
@@ -212,7 +213,7 @@ class Publisher {
 			$reply_rkey   = TID::generate();
 			$reply_record = $records[ $i ];
 
-			$reply_record['createdAt'] = \wp_date( 'c' );
+			$reply_record['createdAt'] = $created_at;
 			$reply_record['reply']     = array(
 				'root'   => array(
 					'uri' => $thread_records[0]['uri'],
@@ -377,6 +378,12 @@ class Publisher {
 		}
 
 		$existing[] = $entry;
+
+		// Cap the manifest so a crash-looping cron can't grow the meta row
+		// past MySQL's max_allowed_packet. Most-recent entries win.
+		if ( \count( $existing ) > 10 ) {
+			$existing = \array_slice( $existing, -10 );
+		}
 
 		\update_post_meta( $post_id, Post::META_ORPHAN_RECORDS, $existing );
 
@@ -920,14 +927,23 @@ class Publisher {
 	}
 
 	/**
-	 * Persist the thread-records meta and keep the root-mirrored single-record
-	 * meta in sync with it.
+	 * Persist the thread-records meta, mirror the root into the legacy
+	 * single-record meta, and rebuild the flat per-URI index used by
+	 * inbound reaction sync to resolve reply URIs back to the post.
 	 *
 	 * @param int     $post_id        Post ID.
 	 * @param array[] $thread_records Ordered thread records.
 	 */
 	private static function mirror_thread_records_meta( int $post_id, array $thread_records ): void {
 		\update_post_meta( $post_id, Post::META_THREAD_RECORDS, $thread_records );
+
+		// Rebuild the flat URI index so reaction sync can resolve replies.
+		\delete_post_meta( $post_id, Post::META_URI_INDEX );
+		foreach ( $thread_records as $record ) {
+			if ( ! empty( $record['uri'] ) ) {
+				\add_post_meta( $post_id, Post::META_URI_INDEX, $record['uri'] );
+			}
+		}
 
 		if ( empty( $thread_records ) ) {
 			return;
@@ -946,11 +962,11 @@ class Publisher {
 	}
 
 	/**
-	 * Build a single { uri, cid, tid } triple from an `applyWrites` result
-	 * entry, with sensible fallbacks when the PDS omits the URI (falling
-	 * back to the transformer-computed URI) or when the caller needs a
-	 * specific rkey (`Thread replies generate their own rkey so we can't
-	 * derive it from `$item['uri']` reliably — we pass it in).
+	 * Build a single { uri, cid, tid } triple from an `applyWrites`
+	 * result entry. Falls back to the transformer-computed URI when the
+	 * PDS response omits one. Callers pass the rkey in because thread
+	 * replies are created with a freshly-generated TID that isn't
+	 * recoverable from the response URI alone.
 	 *
 	 * @param array  $result         applyWrites response.
 	 * @param int    $index          Zero-based index into `$result['results']`.
@@ -975,6 +991,7 @@ class Publisher {
 	 */
 	private static function clear_all_record_meta( int $post_id ): void {
 		\delete_post_meta( $post_id, Post::META_THREAD_RECORDS );
+		\delete_post_meta( $post_id, Post::META_URI_INDEX );
 		\delete_post_meta( $post_id, Post::META_URI );
 		\delete_post_meta( $post_id, Post::META_TID );
 		\delete_post_meta( $post_id, Post::META_CID );

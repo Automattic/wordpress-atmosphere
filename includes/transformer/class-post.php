@@ -58,6 +58,18 @@ class Post extends Base {
 	public const META_THREAD_RECORDS = '_atmosphere_bsky_thread_records';
 
 	/**
+	 * Multi-row post meta key indexing every Bluesky record URI tied
+	 * to the post — root and every reply — so inbound reaction sync
+	 * can resolve a `subject.uri` that targets a reply post back to
+	 * the parent WordPress post. `META_URI` still holds the root for
+	 * backwards compatibility; this key adds one row per URI,
+	 * populated by Publisher on every successful publish / update.
+	 *
+	 * @var string
+	 */
+	public const META_URI_INDEX = '_atmosphere_bsky_uri_index';
+
+	/**
 	 * Post meta key for thread records left orphaned on the PDS after a
 	 * rollback failure.
 	 *
@@ -405,13 +417,13 @@ class Post extends Base {
 		switch ( $strategy ) {
 			case 'teaser-thread':
 				$records = array();
-				foreach ( $this->build_teaser_thread() as $text ) {
-					$records[] = $this->record_for_thread_entry( (string) $text );
+				foreach ( $this->build_teaser_thread() as $i => $text ) {
+					$records[] = $this->record_for_thread_entry( (string) $text, 0 === $i );
 				}
 				return $records;
 
 			case 'truncate-link':
-				return array( $this->record_for_thread_entry( $this->build_truncate_link_text() ) );
+				return array( $this->record_for_thread_entry( $this->build_truncate_link_text(), true ) );
 
 			case 'link-card':
 			default:
@@ -517,8 +529,10 @@ class Post extends Base {
 	 * @return string[] Text of each post in order. At least 2 entries.
 	 */
 	private function build_teaser_thread(): array {
-		if ( ! empty( $this->object->post_excerpt ) ) {
-			$hook = $this->truncate_to_budget( sanitize_text( $this->object->post_excerpt ), 300, false );
+		$excerpt = sanitize_text( (string) $this->object->post_excerpt );
+
+		if ( \mb_strlen( $excerpt ) >= 10 ) {
+			$hook = $this->truncate_to_budget( $excerpt, 300, false );
 		} else {
 			$plain = $this->render_post_content_plain( $this->object );
 			$hook  = $this->truncate_to_budget( $plain, 280, true );
@@ -536,7 +550,29 @@ class Post extends Base {
 		 * @param string[] $posts 2-entry array: [ hook, cta ].
 		 * @param \WP_Post $post  The post being composed.
 		 */
-		return \apply_filters( 'atmosphere_teaser_thread_posts', array( $hook, $cta ), $this->object );
+		$filtered = \apply_filters( 'atmosphere_teaser_thread_posts', array( $hook, $cta ), $this->object );
+
+		// Defensive: a filter that returns a non-iterable or non-string
+		// entries would otherwise fatal on the caller's foreach. Fall
+		// back to the default pair on anything unexpected.
+		if ( ! \is_array( $filtered ) || empty( $filtered ) ) {
+			return array( $hook, $cta );
+		}
+
+		$texts = array();
+		foreach ( $filtered as $entry ) {
+			if ( \is_string( $entry ) && '' !== $entry ) {
+				$texts[] = $entry;
+			}
+		}
+
+		if ( empty( $texts ) ) {
+			return array( $hook, $cta );
+		}
+
+		// Cap at 5 to contain PDS rate-limit blast radius on mid-thread
+		// failure (which triggers N compensating deletes).
+		return \array_slice( $texts, 0, 5 );
 	}
 
 	/**
@@ -563,20 +599,19 @@ class Post extends Base {
 	 *
 	 * `createdAt` and `reply` are intentionally omitted — Publisher
 	 * stamps both at write time so every record in a thread carries
-	 * a fresh timestamp and a reply-ref to the already-written root.
+	 * a timestamp pinned to the post's publish date and (for replies)
+	 * a reply-ref to the already-written root.
 	 *
-	 * The `atmosphere_transform_bsky_post` filter fires **once per
-	 * thread entry** for the thread strategies. Downstream consumers
-	 * that assumed single-post semantics should branch on record
-	 * shape (e.g. presence of `reply` is not yet set here, but the
-	 * caller can check `$record['text']` against the CTA/permalink
-	 * shape, or filter on `atmosphere_long_form_composition`
-	 * upstream) to decide whether to transform every record.
+	 * The root entry (`$is_root === true`) carries the post's `tags`,
+	 * mirroring `record_for_link_card()` and `transform()` — the root
+	 * is the indexed representation of the WP post for the Bluesky
+	 * algorithm. Non-root replies are conversational and omit tags.
 	 *
-	 * @param string $text Pre-composed post text.
+	 * @param string $text    Pre-composed post text.
+	 * @param bool   $is_root Whether this record is the thread root.
 	 * @return array Bsky post record (no createdAt, no reply).
 	 */
-	private function record_for_thread_entry( string $text ): array {
+	private function record_for_thread_entry( string $text, bool $is_root = false ): array {
 		$record = array(
 			'$type' => 'app.bsky.feed.post',
 			'text'  => $text,
@@ -586,6 +621,13 @@ class Post extends Base {
 		$facets = Facet::extract( $text );
 		if ( ! empty( $facets ) ) {
 			$record['facets'] = $facets;
+		}
+
+		if ( $is_root ) {
+			$tags = $this->collect_tags( $this->object );
+			if ( ! empty( $tags ) ) {
+				$record['tags'] = $tags;
+			}
 		}
 
 		/** This filter is documented in Post::transform() above. */

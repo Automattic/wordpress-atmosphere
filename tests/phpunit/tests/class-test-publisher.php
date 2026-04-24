@@ -63,7 +63,7 @@ class Test_Publisher extends WP_UnitTestCase {
 	 *
 	 * One result per write, with a stable URI + CID derived from the
 	 * write's collection + rkey.  Delete writes produce empty result
-	 * entries so Publisher's `store_results()` treats them as no-ops.
+	 * entries so Publisher's `store_document_meta()` treats them as no-ops.
 	 *
 	 * @param array $writes Write batch.
 	 * @return array applyWrites response shape.
@@ -487,6 +487,14 @@ class Test_Publisher extends WP_UnitTestCase {
 		$this->assertSame( $thread_records[0]['uri'], \get_post_meta( $post->ID, Post::META_URI, true ) );
 		$this->assertSame( $thread_records[0]['tid'], \get_post_meta( $post->ID, Post::META_TID, true ) );
 		$this->assertSame( $thread_records[0]['cid'], \get_post_meta( $post->ID, Post::META_CID, true ) );
+
+		// Flat URI index carries every record URI so reaction sync
+		// can resolve reply URIs back to this post.
+		$indexed = \get_post_meta( $post->ID, Post::META_URI_INDEX, false );
+		$this->assertIsArray( $indexed );
+		$this->assertCount( 2, $indexed );
+		$this->assertContains( $thread_records[0]['uri'], $indexed );
+		$this->assertContains( $thread_records[1]['uri'], $indexed );
 	}
 
 	/**
@@ -812,6 +820,87 @@ class Test_Publisher extends WP_UnitTestCase {
 		$this->assertSame( '', \get_post_meta( $post->ID, Post::META_CID, true ) );
 		$this->assertSame( '', \get_post_meta( $post->ID, Document::META_URI, true ) );
 		$this->assertSame( '', \get_post_meta( $post->ID, Document::META_TID, true ) );
+	}
+
+	/**
+	 * Publisher::delete_by_tids accepts an array of bsky TIDs and
+	 * issues one applyWrites covering every bsky delete + the doc.
+	 */
+	public function test_delete_by_tids_array_of_bsky_tids() {
+		$this->fail_call_indexes = array();
+		$this->register_capture( 0 );
+
+		$result = \Atmosphere\Publisher::delete_by_tids(
+			array( 't-root', 't-r1', 't-r2' ),
+			'doc-tid'
+		);
+
+		$this->assertIsArray( $result );
+		$this->assertCount( 1, $this->captured_calls );
+
+		$writes = $this->captured_calls[0]['writes'];
+		$this->assertCount( 4, $writes );
+		$this->assertSame( 't-root', $writes[0]['rkey'] );
+		$this->assertSame( 't-r1', $writes[1]['rkey'] );
+		$this->assertSame( 't-r2', $writes[2]['rkey'] );
+		$this->assertSame( 'site.standard.document', $writes[3]['collection'] );
+		$this->assertSame( 'doc-tid', $writes[3]['rkey'] );
+	}
+
+	/**
+	 * Publisher::delete_by_tids with a legacy string argument still
+	 * produces a single-bsky-delete batch — backwards compatibility for
+	 * cron events queued before the signature change.
+	 */
+	public function test_delete_by_tids_legacy_string_argument() {
+		$this->fail_call_indexes = array();
+		$this->register_capture( 0 );
+
+		$result = \Atmosphere\Publisher::delete_by_tids( 'legacy-tid', 'doc-tid' );
+
+		$this->assertIsArray( $result );
+		$this->assertCount( 1, $this->captured_calls );
+
+		$writes = $this->captured_calls[0]['writes'];
+		$this->assertCount( 2, $writes );
+		$this->assertSame( 'legacy-tid', $writes[0]['rkey'] );
+		$this->assertSame( 'doc-tid', $writes[1]['rkey'] );
+	}
+
+	/**
+	 * Publisher::delete_by_tids with empty inputs errors without
+	 * making any API call.
+	 */
+	public function test_delete_by_tids_empty_inputs_error() {
+		$this->fail_call_indexes = array();
+		$this->register_capture( 0 );
+
+		$result = \Atmosphere\Publisher::delete_by_tids( array(), '' );
+
+		$this->assertWPError( $result );
+		$this->assertSame( 'atmosphere_not_published', $result->get_error_code() );
+		$this->assertCount( 0, $this->captured_calls, 'No API call should be made.' );
+	}
+
+	/**
+	 * A malformed atmosphere_pre_apply_writes return (scalar, object)
+	 * surfaces as a WP_Error instead of fatal-ing on the return type.
+	 */
+	public function test_pre_apply_writes_malformed_return_surfaces_wp_error() {
+		\add_filter( 'atmosphere_pre_apply_writes', fn() => true );
+
+		$result = \Atmosphere\API::apply_writes(
+			array(
+				array(
+					'$type'      => 'com.atproto.repo.applyWrites#delete',
+					'collection' => 'x',
+					'rkey'       => 'y',
+				),
+			)
+		);
+
+		$this->assertWPError( $result );
+		$this->assertSame( 'atmosphere_invalid_pre_apply_writes_return', $result->get_error_code() );
 	}
 
 	/**

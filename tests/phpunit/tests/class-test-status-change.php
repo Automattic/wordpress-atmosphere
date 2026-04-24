@@ -284,4 +284,88 @@ class Test_Status_Change extends WP_UnitTestCase {
 			'Disconnected state must prevent scheduling.'
 		);
 	}
+
+	/**
+	 * Force-deleting a thread-strategy post schedules a single
+	 * atmosphere_delete_records cron event with every bsky TID in the
+	 * thread, so the whole thread is cleaned up by one applyWrites.
+	 */
+	public function test_before_delete_thread_post_schedules_all_tids() {
+		$post = self::factory()->post->create_and_get(
+			array( 'post_status' => 'publish' )
+		);
+
+		$thread = array(
+			array(
+				'uri' => 'at://did:plc:test/app.bsky.feed.post/t-root',
+				'cid' => 'c1',
+				'tid' => 't-root',
+			),
+			array(
+				'uri' => 'at://did:plc:test/app.bsky.feed.post/t-r1',
+				'cid' => 'c2',
+				'tid' => 't-r1',
+			),
+			array(
+				'uri' => 'at://did:plc:test/app.bsky.feed.post/t-r2',
+				'cid' => 'c3',
+				'tid' => 't-r2',
+			),
+		);
+		\update_post_meta( $post->ID, Post::META_THREAD_RECORDS, $thread );
+		\update_post_meta( $post->ID, Post::META_TID, 't-root' );
+		\update_post_meta( $post->ID, Document::META_TID, 'doc-tid' );
+
+		$this->atmosphere->on_before_delete( $post->ID );
+
+		$scheduled = \wp_next_scheduled(
+			'atmosphere_delete_records',
+			array( array( 't-root', 't-r1', 't-r2' ), 'doc-tid' )
+		);
+		$this->assertNotFalse(
+			$scheduled,
+			'Expected atmosphere_delete_records to be scheduled with every thread tid.'
+		);
+	}
+
+	/**
+	 * Force-deleting a legacy single-record post (no META_THREAD_RECORDS)
+	 * schedules a cron event with a 1-element bsky tid array.
+	 */
+	public function test_before_delete_legacy_post_schedules_single_tid_array() {
+		$post = self::factory()->post->create_and_get(
+			array( 'post_status' => 'publish' )
+		);
+
+		\update_post_meta( $post->ID, Post::META_TID, 'legacy-tid' );
+		\update_post_meta( $post->ID, Document::META_TID, 'doc-tid' );
+
+		$this->atmosphere->on_before_delete( $post->ID );
+
+		$this->assertNotFalse(
+			\wp_next_scheduled(
+				'atmosphere_delete_records',
+				array( array( 'legacy-tid' ), 'doc-tid' )
+			),
+			'Expected atmosphere_delete_records to be scheduled with a 1-element tid array.'
+		);
+	}
+
+	/**
+	 * A post with no AT Protocol meta schedules nothing on before-delete.
+	 */
+	public function test_before_delete_unpublished_post_schedules_nothing() {
+		$post = self::factory()->post->create_and_get(
+			array( 'post_status' => 'publish' )
+		);
+
+		\wp_clear_scheduled_hook( 'atmosphere_delete_records' );
+
+		$this->atmosphere->on_before_delete( $post->ID );
+
+		$this->assertFalse(
+			\wp_next_scheduled( 'atmosphere_delete_records' ),
+			'No atmosphere_delete_records event should be scheduled for a post with no AT Protocol meta.'
+		);
+	}
 }

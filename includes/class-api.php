@@ -187,8 +187,18 @@ class API {
 		 */
 		$short_circuit = \apply_filters( 'atmosphere_pre_apply_writes', null, $writes );
 
-		if ( null !== $short_circuit ) {
+		if ( \is_array( $short_circuit ) || \is_wp_error( $short_circuit ) ) {
 			return $short_circuit;
+		}
+
+		if ( null !== $short_circuit ) {
+			// Malformed filter return (scalar / object / etc). Surface as a
+			// WP_Error instead of letting PHP fatal on the `array|\WP_Error`
+			// return type.
+			return new \WP_Error(
+				'atmosphere_invalid_pre_apply_writes_return',
+				\__( 'atmosphere_pre_apply_writes must return null, an array, or a WP_Error.', 'atmosphere' )
+			);
 		}
 
 		return self::post(
