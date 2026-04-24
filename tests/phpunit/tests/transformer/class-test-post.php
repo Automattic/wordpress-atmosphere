@@ -460,10 +460,12 @@ class Test_Post extends WP_UnitTestCase {
 		$hook = ( new Post( $post ) )->build_long_form_records()[0]['text'];
 
 		$this->assertLessThanOrEqual( 280, \mb_strlen( $hook ) );
+		// Body is built of 8-char words, so a word-boundary cut must not
+		// leave a trailing run shorter than 8 chars.
 		$this->assertDoesNotMatchRegularExpression(
-			'~\S$~',
+			'~\s\S{1,7}$~',
 			$hook,
-			'Hook should end at whitespace, not mid-word.'
+			'Hook should end at a complete word, not mid-word.'
 		);
 	}
 
