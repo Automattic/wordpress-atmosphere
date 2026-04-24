@@ -193,9 +193,17 @@ class Publisher {
 		);
 
 		if ( empty( $root_triple['cid'] ) ) {
-			return new \WP_Error(
-				'atmosphere_missing_cid',
-				\__( 'Root post created but PDS response lacked a CID; cannot chain thread replies.', 'atmosphere' )
+			// Root + doc were written, but without a CID we can't chain
+			// replies. Roll back so a retry starts from a clean slate
+			// instead of hitting "record already exists" on the same TID.
+			return self::rollback_thread(
+				$post,
+				array( $root_triple ),
+				$doc_transformer,
+				new \WP_Error(
+					'atmosphere_missing_cid',
+					\__( 'Root post created but PDS response lacked a CID; rolling back thread.', 'atmosphere' )
+				)
 			);
 		}
 
