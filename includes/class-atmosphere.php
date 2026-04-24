@@ -283,8 +283,11 @@ class Atmosphere {
 	/**
 	 * Schedule AT Protocol record deletion before a post is permanently deleted.
 	 *
-	 * Captures TIDs from post meta before they're lost, then schedules
-	 * an async delete via cron.
+	 * Captures every Bluesky TID (including thread replies) and the
+	 * document TID from post meta before they're lost, then schedules
+	 * an async delete via cron. Thread-strategy posts: reads
+	 * `Post::META_THREAD_RECORDS` and batches every bsky tid into the
+	 * cron event so a single delete covers root + replies.
 	 *
 	 * @param int $post_id Post ID being deleted.
 	 */
@@ -299,11 +302,28 @@ class Atmosphere {
 			return;
 		}
 
-		$bsky_tid = \get_post_meta( $post_id, Transformer\Post::META_TID, true );
-		$doc_tid  = \get_post_meta( $post_id, Transformer\Document::META_TID, true );
+		$bsky_tids = array();
 
-		if ( $bsky_tid || $doc_tid ) {
-			\wp_schedule_single_event( \time(), 'atmosphere_delete_records', array( $bsky_tid, $doc_tid ) );
+		$thread_records = \get_post_meta( $post_id, Transformer\Post::META_THREAD_RECORDS, true );
+		if ( \is_array( $thread_records ) && ! empty( $thread_records ) ) {
+			foreach ( $thread_records as $record ) {
+				if ( ! empty( $record['tid'] ) ) {
+					$bsky_tids[] = (string) $record['tid'];
+				}
+			}
+		}
+
+		if ( empty( $bsky_tids ) ) {
+			$legacy_tid = \get_post_meta( $post_id, Transformer\Post::META_TID, true );
+			if ( $legacy_tid ) {
+				$bsky_tids[] = (string) $legacy_tid;
+			}
+		}
+
+		$doc_tid = (string) \get_post_meta( $post_id, Transformer\Document::META_TID, true );
+
+		if ( ! empty( $bsky_tids ) || '' !== $doc_tid ) {
+			\wp_schedule_single_event( \time(), 'atmosphere_delete_records', array( $bsky_tids, $doc_tid ) );
 		}
 	}
 
@@ -374,8 +394,8 @@ class Atmosphere {
 
 		\add_action(
 			'atmosphere_delete_records',
-			static function ( string $bsky_tid, string $doc_tid ): void {
-				Publisher::delete_by_tids( $bsky_tid, $doc_tid );
+			static function ( $bsky_tids, string $doc_tid ): void {
+				Publisher::delete_by_tids( $bsky_tids, $doc_tid );
 			},
 			10,
 			2

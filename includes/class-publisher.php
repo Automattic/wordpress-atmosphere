@@ -46,10 +46,6 @@ class Publisher {
 		$bsky_transformer = new Post( $post );
 		$doc_transformer  = new Document( $post );
 
-		// Ensure TIDs exist (generates if needed).
-		$bsky_transformer->get_rkey();
-		$doc_transformer->get_rkey();
-
 		if ( $bsky_transformer->is_short_form_post() ) {
 			// Short-form path: single record via today's transform().
 			return self::publish_single(
@@ -76,10 +72,13 @@ class Publisher {
 	 * `link-card` / `truncate-link` long-form strategies (via
 	 * `build_long_form_records()`'s single-element output).
 	 *
-	 * `createdAt` defaults to `wp_date( 'c' )` when the record doesn't
-	 * already carry one. `transform()` sets `createdAt` from the post's
-	 * `post_date_gmt` (preserving today's short-form behavior);
-	 * `build_long_form_records()` omits it on purpose.
+	 * `createdAt` defaults to the post's `post_date_gmt` when the record
+	 * doesn't already carry one, so the Bluesky timeline mirrors the
+	 * WordPress publish date (critical for backfill — otherwise every
+	 * re-synced post would stamp with the backfill-run time and
+	 * collapse chronological order). `transform()` already sets it;
+	 * `build_long_form_records()` leaves it absent on purpose so a
+	 * single policy lives here.
 	 *
 	 * @param \WP_Post $post             WordPress post.
 	 * @param array    $bsky_record      Pre-composed bsky post record.
@@ -94,7 +93,7 @@ class Publisher {
 		Document $doc_transformer
 	): array|\WP_Error {
 		if ( empty( $bsky_record['createdAt'] ) ) {
-			$bsky_record['createdAt'] = \wp_date( 'c' );
+			$bsky_record['createdAt'] = to_iso8601( $post->post_date_gmt );
 		}
 
 		$writes = array(
@@ -118,7 +117,7 @@ class Publisher {
 			return $result;
 		}
 
-		self::store_results( $post->ID, $result, $bsky_transformer, $doc_transformer );
+		self::store_document_meta( $post->ID, $result, $doc_transformer );
 		self::mirror_thread_records_meta(
 			$post->ID,
 			array(
@@ -162,7 +161,7 @@ class Publisher {
 		Document $doc_transformer
 	): array|\WP_Error {
 		$root_record              = $records[0];
-		$root_record['createdAt'] = \wp_date( 'c' );
+		$root_record['createdAt'] = to_iso8601( $post->post_date_gmt );
 		$root_rkey                = $bsky_transformer->get_rkey();
 
 		$root_result = API::apply_writes(
@@ -202,7 +201,7 @@ class Publisher {
 
 		$thread_records = array( $root_triple );
 
-		self::store_results( $post->ID, $root_result, $bsky_transformer, $doc_transformer );
+		self::store_document_meta( $post->ID, $root_result, $doc_transformer );
 		self::mirror_thread_records_meta( $post->ID, $thread_records );
 		self::update_document_bsky_ref( $post, $doc_transformer );
 
@@ -275,11 +274,13 @@ class Publisher {
 	 * replies pointing at the (still-live) root remain valid until their
 	 * own delete lands. The document record is deleted last.
 	 *
-	 * Meta is always cleared — a failed rollback leaves orphans on the
-	 * PDS but the local state stays consistent with "no published thread."
-	 * When rollback itself fails, the returned `WP_Error` wraps both
-	 * errors and carries `partial_records` so an operator retrying can
-	 * clean up by hand.
+	 * Active-record meta is always cleared so the local state stays
+	 * consistent with "no published thread." When rollback itself fails,
+	 * the partial thread is *also* persisted to `Post::META_ORPHAN_RECORDS`
+	 * (and error-logged) so an operator or recovery worker can issue
+	 * manual deletes later — the orphan manifest in the returned
+	 * `WP_Error` data otherwise disappears the moment the cron closure
+	 * returns.
 	 *
 	 * @param \WP_Post  $post            WordPress post.
 	 * @param array[]   $thread_records  Already-written thread records (uri/cid/tid each).
@@ -293,6 +294,8 @@ class Publisher {
 		Document $doc_transformer,
 		\WP_Error $original_error
 	): \WP_Error {
+		$doc_rkey = $doc_transformer->get_rkey();
+
 		$rollback_writes = array();
 
 		for ( $i = \count( $thread_records ) - 1; $i >= 0; $i-- ) {
@@ -305,7 +308,7 @@ class Publisher {
 		$rollback_writes[] = array(
 			'$type'      => 'com.atproto.repo.applyWrites#delete',
 			'collection' => 'site.standard.document',
-			'rkey'       => $doc_transformer->get_rkey(),
+			'rkey'       => $doc_rkey,
 		);
 
 		$rollback_result = API::apply_writes( $rollback_writes );
@@ -313,13 +316,12 @@ class Publisher {
 		self::clear_all_record_meta( $post->ID );
 
 		if ( \is_wp_error( $rollback_result ) ) {
-			// phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
-			\error_log(
-				\sprintf(
-					'[atmosphere] thread rollback failed for post %d: %s',
-					$post->ID,
-					$rollback_result->get_error_message()
-				)
+			self::persist_orphan_records(
+				$post->ID,
+				$thread_records,
+				$doc_rkey,
+				$original_error,
+				$rollback_result
 			);
 
 			return new \WP_Error(
@@ -341,15 +343,69 @@ class Publisher {
 	}
 
 	/**
+	 * Record the partial thread state left on the PDS after a failed
+	 * rollback so a human (or a future recovery worker) can find it.
+	 *
+	 * Writes `Post::META_ORPHAN_RECORDS` and error-logs a
+	 * machine-parseable summary. The post meta is the source of truth —
+	 * the log line is a convenience for ops grepping a filesystem tail.
+	 *
+	 * @param int       $post_id         WordPress post ID.
+	 * @param array[]   $thread_records  Thread records that survived rollback.
+	 * @param string    $doc_rkey        Document rkey that survived rollback.
+	 * @param \WP_Error $original_error  Publish-time error that triggered rollback.
+	 * @param \WP_Error $rollback_error  Rollback-time error.
+	 */
+	private static function persist_orphan_records(
+		int $post_id,
+		array $thread_records,
+		string $doc_rkey,
+		\WP_Error $original_error,
+		\WP_Error $rollback_error
+	): void {
+		$entry = array(
+			'stamp'          => \gmdate( 'Y-m-d\TH:i:s.000\Z' ),
+			'bsky_records'   => $thread_records,
+			'doc_rkey'       => $doc_rkey,
+			'original_error' => $original_error->get_error_message(),
+			'rollback_error' => $rollback_error->get_error_message(),
+		);
+
+		$existing = \get_post_meta( $post_id, Post::META_ORPHAN_RECORDS, true );
+		if ( ! \is_array( $existing ) ) {
+			$existing = array();
+		}
+
+		$existing[] = $entry;
+
+		\update_post_meta( $post_id, Post::META_ORPHAN_RECORDS, $existing );
+
+		// phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
+		\error_log(
+			\sprintf(
+				'[atmosphere] thread rollback failed for post %d; orphans persisted to %s: %s',
+				$post_id,
+				Post::META_ORPHAN_RECORDS,
+				\wp_json_encode( $entry )
+			)
+		);
+	}
+
+	/**
 	 * Update the bsky + doc records for an existing post.
 	 *
-	 * - Single record stored + single record composed: in-place update
-	 *   via `applyWrites#update` on both.
-	 * - Any other shape (strategy change, thread ↔ single, or
-	 *   thread ↔ thread): delete every existing record and republish
-	 *   with the fresh composition. Thread updates therefore arrive to
-	 *   followers as a fresh publish (new `createdAt`), and any replies
-	 *   other Bluesky users posted become orphaned.
+	 * - Stored record count == new record count: in-place update via
+	 *   `applyWrites#update` on every bsky record + doc in one atomic
+	 *   batch. Preserves TIDs, URIs, and external replies; each record
+	 *   just gets a new CID from the PDS. Reply refs are rewired to
+	 *   the pre-update CIDs so each record's `reply.parent.cid` still
+	 *   resolves — clients treat the mismatch as "parent was edited."
+	 * - Record counts differ (strategy change: link-card ↔ teaser-thread,
+	 *   or 2-post thread ↔ 3-post thread): delete every existing record
+	 *   and republish with the fresh composition. Thread updates via
+	 *   this path arrive to followers as a fresh publish (new
+	 *   `createdAt`) and any replies other Bluesky users posted become
+	 *   orphaned.
 	 *
 	 * @param \WP_Post $post WordPress post.
 	 * @return array|\WP_Error
@@ -394,19 +450,29 @@ class Publisher {
 			? array( $bsky_transformer->transform() )
 			: $bsky_transformer->build_long_form_records();
 
-		// In-place update: single stored + single new composition.
-		if ( 1 === \count( $stored ) && 1 === \count( $new_records ) ) {
-			return self::update_single(
+		// In-place update: matching record counts.
+		if ( \count( $stored ) === \count( $new_records ) ) {
+			if ( 1 === \count( $stored ) ) {
+				return self::update_single(
+					$post,
+					$stored[0],
+					$new_records[0],
+					$bsky_transformer,
+					$doc_transformer,
+					$doc_tid
+				);
+			}
+
+			return self::update_thread_in_place(
 				$post,
-				$stored[0],
-				$new_records[0],
-				$bsky_transformer,
+				$stored,
+				$new_records,
 				$doc_transformer,
 				$doc_tid
 			);
 		}
 
-		// Strategy change or thread shape — delete everything and republish.
+		// Strategy or shape change — delete everything and republish.
 		return self::rewrite_thread( $post, $stored, $doc_tid );
 	}
 
@@ -432,7 +498,7 @@ class Publisher {
 		string $doc_tid
 	): array|\WP_Error {
 		if ( empty( $new_bsky_record['createdAt'] ) ) {
-			$new_bsky_record['createdAt'] = \wp_date( 'c' );
+			$new_bsky_record['createdAt'] = to_iso8601( $post->post_date_gmt );
 		}
 
 		$writes = array(
@@ -456,7 +522,7 @@ class Publisher {
 			return $result;
 		}
 
-		self::store_results( $post->ID, $result, $bsky_transformer, $doc_transformer );
+		self::store_document_meta( $post->ID, $result, $doc_transformer );
 		self::mirror_thread_records_meta(
 			$post->ID,
 			array(
@@ -468,6 +534,102 @@ class Publisher {
 				),
 			)
 		);
+		self::update_document_bsky_ref( $post, $doc_transformer );
+
+		return $result;
+	}
+
+	/**
+	 * In-place `applyWrites#update` for every record in a thread +
+	 * the document, in one atomic batch.
+	 *
+	 * Preserves URIs/TIDs/external reply integrity; each record's CID
+	 * changes (since CID is a content hash). Reply refs are built from
+	 * the *pre-update* CIDs stored in `META_THREAD_RECORDS` —
+	 * structurally self-consistent at write time, and clients treat any
+	 * post-update CID mismatch as "parent was edited" rather than
+	 * broken.
+	 *
+	 * After the write, `META_THREAD_RECORDS` is refreshed with the new
+	 * CIDs from the response so future updates chain from current CIDs.
+	 *
+	 * @param \WP_Post $post            WordPress post.
+	 * @param array[]  $stored          Current {uri, cid, tid} triples in order.
+	 * @param array[]  $new_records     Freshly composed bsky records, same count.
+	 * @param Document $doc_transformer Document transformer.
+	 * @param string   $doc_tid         Document record TID.
+	 * @return array|\WP_Error
+	 */
+	private static function update_thread_in_place(
+		\WP_Post $post,
+		array $stored,
+		array $new_records,
+		Document $doc_transformer,
+		string $doc_tid
+	): array|\WP_Error {
+		$root       = $stored[0];
+		$created_at = to_iso8601( $post->post_date_gmt );
+		$writes     = array();
+		$bsky_count = \count( $new_records );
+
+		foreach ( $new_records as $i => $record ) {
+			$record['createdAt'] = $created_at;
+
+			if ( $i > 0 ) {
+				$record['reply'] = array(
+					'root'   => array(
+						'uri' => $root['uri'],
+						'cid' => $root['cid'],
+					),
+					'parent' => array(
+						'uri' => $stored[ $i - 1 ]['uri'],
+						'cid' => $stored[ $i - 1 ]['cid'],
+					),
+				);
+			}
+
+			$writes[] = array(
+				'$type'      => 'com.atproto.repo.applyWrites#update',
+				'collection' => 'app.bsky.feed.post',
+				'rkey'       => $stored[ $i ]['tid'],
+				'value'      => $record,
+			);
+		}
+
+		$writes[] = array(
+			'$type'      => 'com.atproto.repo.applyWrites#update',
+			'collection' => 'site.standard.document',
+			'rkey'       => $doc_tid,
+			'value'      => $doc_transformer->transform(),
+		);
+
+		$result = API::apply_writes( $writes );
+
+		if ( \is_wp_error( $result ) ) {
+			return $result;
+		}
+
+		$results   = $result['results'] ?? array();
+		$refreshed = array();
+		foreach ( $stored as $i => $old ) {
+			$entry       = $results[ $i ] ?? array();
+			$refreshed[] = array(
+				'uri' => $old['uri'],
+				'cid' => (string) ( $entry['cid'] ?? $old['cid'] ),
+				'tid' => $old['tid'],
+			);
+		}
+
+		self::mirror_thread_records_meta( $post->ID, $refreshed );
+
+		$doc_entry = $results[ $bsky_count ] ?? array();
+		if ( ! empty( $doc_entry['uri'] ) ) {
+			\update_post_meta( $post->ID, Document::META_URI, $doc_entry['uri'] );
+		}
+		if ( ! empty( $doc_entry['cid'] ) ) {
+			\update_post_meta( $post->ID, Document::META_CID, $doc_entry['cid'] );
+		}
+
 		self::update_document_bsky_ref( $post, $doc_transformer );
 
 		return $result;
@@ -575,24 +737,31 @@ class Publisher {
 	 * Delete AT Protocol records by TID without requiring the post to exist.
 	 *
 	 * Used when a post is permanently deleted and its meta is no longer
-	 * accessible to `delete()`. Kept at the single-TID signature for
-	 * backwards compatibility with queued cron events; force-deletion of
-	 * thread-strategy posts is handled by the caller by reading
-	 * META_THREAD_RECORDS pre-deletion and scheduling a separate cron per
-	 * thread record.
+	 * accessible to `delete()`. Accepts either a single Bluesky TID
+	 * (legacy single-record posts) or an array of TIDs
+	 * (thread-strategy posts). All are issued in one atomic
+	 * `applyWrites` call.
 	 *
-	 * @param string $bsky_tid Bluesky post TID (may be empty).
-	 * @param string $doc_tid  Document TID (may be empty).
+	 * @param string|string[] $bsky_tids Bluesky post TID or array of TIDs (may be empty).
+	 * @param string          $doc_tid   Document TID (may be empty).
 	 * @return array|\WP_Error
 	 */
-	public static function delete_by_tids( string $bsky_tid, string $doc_tid ): array|\WP_Error {
-		if ( ! $bsky_tid && ! $doc_tid ) {
+	public static function delete_by_tids( $bsky_tids, string $doc_tid ): array|\WP_Error {
+		if ( \is_string( $bsky_tids ) ) {
+			$bsky_tids = '' === $bsky_tids ? array() : array( $bsky_tids );
+		} elseif ( ! \is_array( $bsky_tids ) ) {
+			$bsky_tids = array();
+		}
+
+		$bsky_tids = \array_values( \array_filter( \array_map( 'strval', $bsky_tids ), 'strlen' ) );
+
+		if ( empty( $bsky_tids ) && ! $doc_tid ) {
 			return new \WP_Error( 'atmosphere_not_published', \__( 'No TIDs provided.', 'atmosphere' ) );
 		}
 
 		$writes = array();
 
-		if ( $bsky_tid ) {
+		foreach ( $bsky_tids as $bsky_tid ) {
 			$writes[] = array(
 				'$type'      => 'com.atproto.repo.applyWrites#delete',
 				'collection' => 'app.bsky.feed.post',
@@ -654,45 +823,32 @@ class Publisher {
 	}
 
 	/**
-	 * Extract URIs/CIDs from applyWrites response and mirror into the
-	 * legacy single-record meta keys (META_URI / META_TID / META_CID
-	 * on Post and Document).
+	 * Persist the document record's URI/CID from an applyWrites response.
 	 *
-	 * Called for the root + doc write in every publish flow. Thread
-	 * reply writes don't go through this helper — they're captured in
-	 * `META_THREAD_RECORDS` by `publish_thread()` directly.
+	 * The document is always written at index 1 of the first applyWrites
+	 * batch in every publish flow (root + doc, atomically). Post meta
+	 * (`Post::META_URI` / `META_TID` / `META_CID`) is owned by
+	 * `mirror_thread_records_meta()` and intentionally not touched here
+	 * — single mirroring point keeps the two paths from drifting.
 	 *
-	 * @param int      $post_id          Post ID.
-	 * @param array    $result           applyWrites response.
-	 * @param Post     $bsky_transformer Bsky transformer.
-	 * @param Document $doc_transformer  Document transformer.
+	 * @param int      $post_id         Post ID.
+	 * @param array    $result          applyWrites response.
+	 * @param Document $doc_transformer Document transformer.
 	 */
-	private static function store_results( int $post_id, array $result, Post $bsky_transformer, Document $doc_transformer ): void {
-		$results = $result['results'] ?? array();
+	private static function store_document_meta( int $post_id, array $result, Document $doc_transformer ): void {
+		$doc_entry = $result['results'][1] ?? null;
 
-		foreach ( $results as $i => $item ) {
-			$uri = $item['uri'] ?? '';
-			$cid = $item['cid'] ?? '';
+		if ( null === $doc_entry ) {
+			return;
+		}
 
-			if ( 0 === $i ) {
-				if ( $uri ) {
-					\update_post_meta( $post_id, Post::META_URI, $uri );
-				} else {
-					\update_post_meta( $post_id, Post::META_URI, $bsky_transformer->get_uri() );
-				}
-				if ( $cid ) {
-					\update_post_meta( $post_id, Post::META_CID, $cid );
-				}
-			} elseif ( 1 === $i ) {
-				if ( $uri ) {
-					\update_post_meta( $post_id, Document::META_URI, $uri );
-				} else {
-					\update_post_meta( $post_id, Document::META_URI, $doc_transformer->get_uri() );
-				}
-				if ( $cid ) {
-					\update_post_meta( $post_id, Document::META_CID, $cid );
-				}
-			}
+		$uri = $doc_entry['uri'] ?? '';
+		$cid = $doc_entry['cid'] ?? '';
+
+		\update_post_meta( $post_id, Document::META_URI, $uri ?: $doc_transformer->get_uri() );
+
+		if ( $cid ) {
+			\update_post_meta( $post_id, Document::META_CID, $cid );
 		}
 	}
 

@@ -405,6 +405,8 @@ class Test_Post extends WP_UnitTestCase {
 				'post_title'   => 'A Long Post',
 				// 35 sentences × 10 chars = 350 chars; body exceeds the 280 hook budget.
 				'post_content' => \str_repeat( 'Hi there. ', 35 ),
+				// Force body-path hook; factory auto-fills "Post excerpt NNN" otherwise.
+				'post_excerpt' => '',
 			)
 		);
 
@@ -448,6 +450,8 @@ class Test_Post extends WP_UnitTestCase {
 				'post_title'   => 'Unpunctuated',
 				// 36 repetitions × 18 chars = 648 chars, no `.`/`!`/`?`.
 				'post_content' => \str_repeat( 'abcdefgh ijklmnop ', 36 ),
+				// Force body-path hook; factory auto-fills "Post excerpt NNN" otherwise.
+				'post_excerpt' => '',
 			)
 		);
 
@@ -585,6 +589,8 @@ class Test_Post extends WP_UnitTestCase {
 			array(
 				'post_title'   => 'Titled',
 				'post_content' => 'Read about #testing sensors in this detailed write-up on instrumentation.',
+				// Force body-path hook; factory auto-fills "Post excerpt NNN" otherwise.
+				'post_excerpt' => '',
 			)
 		);
 

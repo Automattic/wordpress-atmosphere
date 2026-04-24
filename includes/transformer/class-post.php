@@ -58,6 +58,22 @@ class Post extends Base {
 	public const META_THREAD_RECORDS = '_atmosphere_bsky_thread_records';
 
 	/**
+	 * Post meta key for thread records left orphaned on the PDS after a
+	 * rollback failure.
+	 *
+	 * Populated by Publisher only when a thread publish fails and the
+	 * compensating-delete rollback also fails — the records listed here
+	 * are alive on Bluesky but no longer tracked in META_THREAD_RECORDS
+	 * (which Publisher clears to keep the local "active" state
+	 * consistent with "not published"). Surfaced so an operator or
+	 * recovery worker can issue manual deletes. Value shape mirrors
+	 * META_THREAD_RECORDS with an added `stamp` key (ISO 8601 UTC).
+	 *
+	 * @var string
+	 */
+	public const META_ORPHAN_RECORDS = '_atmosphere_bsky_orphan_records';
+
+	/**
 	 * Transform the post.
 	 *
 	 * @return array app.bsky.feed.post record.
@@ -116,6 +132,17 @@ class Post extends Base {
 
 		/**
 		 * Filters the app.bsky.feed.post record before publishing.
+		 *
+		 * Fires once per record. For single-record strategies
+		 * (`link-card`, `truncate-link`, and any short-form post) this
+		 * is exactly one call per WordPress post — today's behavior.
+		 * For `teaser-thread`, the filter fires for *every* thread
+		 * entry (hook, intermediate posts, CTA). Listeners that
+		 * accumulate state across calls (rate-limit counters, external
+		 * lint hooks) should branch on record shape (presence of
+		 * `reply` or permalink-in-`text`) or inspect
+		 * `atmosphere_long_form_composition` to decide per-entry
+		 * behavior.
 		 *
 		 * @param array    $record Bsky post record.
 		 * @param \WP_Post $post   WordPress post.
@@ -435,7 +462,7 @@ class Post extends Base {
 		}
 
 		$word_cut = \preg_replace( '/\s+\S*$/u', '', $clamped );
-		if ( \is_string( $word_cut ) && '' !== $word_cut ) {
+		if ( \is_string( $word_cut ) && '' !== $word_cut && $word_cut !== $clamped ) {
 			return $word_cut;
 		}
 

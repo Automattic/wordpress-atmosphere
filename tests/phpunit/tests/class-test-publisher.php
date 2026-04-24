@@ -572,6 +572,16 @@ class Test_Publisher extends WP_UnitTestCase {
 		$this->assertCount( 1, $data['partial_records'] );
 		$this->assertArrayHasKey( 'original_error', $data );
 		$this->assertArrayHasKey( 'rollback_error', $data );
+
+		// Orphan manifest is persisted to post meta so it outlives the cron closure.
+		$orphans = \get_post_meta( $post->ID, Post::META_ORPHAN_RECORDS, true );
+		$this->assertIsArray( $orphans );
+		$this->assertCount( 1, $orphans );
+		$this->assertSame( $data['partial_records'], $orphans[0]['bsky_records'] );
+		$this->assertArrayHasKey( 'stamp', $orphans[0] );
+		$this->assertNotEmpty( $orphans[0]['doc_rkey'] );
+		$this->assertSame( 'Reply write failed.', $orphans[0]['original_error'] );
+		$this->assertSame( 'Rollback PDS error.', $orphans[0]['rollback_error'] );
 	}
 
 	/**
@@ -620,6 +630,76 @@ class Test_Publisher extends WP_UnitTestCase {
 		$this->assertSame( 'stored-rkey-1', $writes[0]['rkey'] );
 		$this->assertSame( 'com.atproto.repo.applyWrites#update', $writes[1]['$type'] );
 		$this->assertSame( 'doc-rkey-1', $writes[1]['rkey'] );
+	}
+
+	/**
+	 * Update of a 2-post thread → 2-post thread uses in-place
+	 * applyWrites#update for every record, preserving TIDs and URIs,
+	 * and refreshes META_THREAD_RECORDS with the response CIDs.
+	 */
+	public function test_update_thread_in_place_when_record_counts_match() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'A Long-Form Post',
+				'post_content' => 'Body content that is enough to compose a hook from.',
+			)
+		);
+
+		$stored = array(
+			array(
+				'uri' => 'at://did:plc:test123/app.bsky.feed.post/t-root',
+				'cid' => 'bafyreibroot-old',
+				'tid' => 't-root',
+			),
+			array(
+				'uri' => 'at://did:plc:test123/app.bsky.feed.post/t-reply',
+				'cid' => 'bafyreibreply-old',
+				'tid' => 't-reply',
+			),
+		);
+		\update_post_meta( $post->ID, Post::META_THREAD_RECORDS, $stored );
+		\update_post_meta( $post->ID, Post::META_URI, $stored[0]['uri'] );
+		\update_post_meta( $post->ID, Post::META_TID, 't-root' );
+		\update_post_meta( $post->ID, Post::META_CID, 'bafyreibroot-old' );
+		\update_post_meta( $post->ID, Document::META_URI, 'at://did:plc:test123/site.standard.document/doc-rkey-1' );
+		\update_post_meta( $post->ID, Document::META_TID, 'doc-rkey-1' );
+
+		\add_filter( 'atmosphere_long_form_composition', fn() => 'teaser-thread' );
+
+		$this->fail_call_indexes = array();
+		$this->register_capture( $post->ID );
+
+		$result = Publisher::update( $post );
+
+		$this->assertIsArray( $result );
+		$this->assertCount( 1, $this->captured_calls, 'in-place thread update uses one applyWrites.' );
+
+		$writes = $this->captured_calls[0]['writes'];
+		$this->assertCount( 3, $writes, '2 bsky updates + 1 doc update.' );
+
+		$this->assertSame( 'com.atproto.repo.applyWrites#update', $writes[0]['$type'] );
+		$this->assertSame( 'app.bsky.feed.post', $writes[0]['collection'] );
+		$this->assertSame( 't-root', $writes[0]['rkey'] );
+		$this->assertArrayNotHasKey( 'reply', $writes[0]['value'] );
+
+		$this->assertSame( 'com.atproto.repo.applyWrites#update', $writes[1]['$type'] );
+		$this->assertSame( 't-reply', $writes[1]['rkey'] );
+		$this->assertArrayHasKey( 'reply', $writes[1]['value'] );
+		$this->assertSame( $stored[0]['uri'], $writes[1]['value']['reply']['root']['uri'] );
+		$this->assertSame( $stored[0]['cid'], $writes[1]['value']['reply']['root']['cid'] );
+
+		$this->assertSame( 'site.standard.document', $writes[2]['collection'] );
+		$this->assertSame( 'doc-rkey-1', $writes[2]['rkey'] );
+
+		// Thread meta was refreshed with the response CIDs; URIs and TIDs preserved.
+		$refreshed = \get_post_meta( $post->ID, Post::META_THREAD_RECORDS, true );
+		$this->assertIsArray( $refreshed );
+		$this->assertCount( 2, $refreshed );
+		$this->assertSame( $stored[0]['uri'], $refreshed[0]['uri'] );
+		$this->assertSame( 't-root', $refreshed[0]['tid'] );
+		$this->assertNotSame( 'bafyreibroot-old', $refreshed[0]['cid'], 'Root CID should refresh to the response cid.' );
+		$this->assertSame( $stored[1]['uri'], $refreshed[1]['uri'] );
+		$this->assertSame( 't-reply', $refreshed[1]['tid'] );
 	}
 
 	/**
