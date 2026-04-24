@@ -446,9 +446,13 @@ class Publisher {
 		$doc_tid = \get_post_meta( $post->ID, Document::META_TID, true );
 
 		if ( ! $doc_uri ) {
-			// Partial state: bsky exists but doc never did. Safer to
-			// republish than to patch around missing doc.
-			return self::publish( $post );
+			// Partial state: bsky exists but the document never did.
+			// Calling publish() directly here would reuse the existing
+			// bsky TID via get_rkey() and the PDS would reject the
+			// create as already-existing. Route through rewrite_thread
+			// with an empty doc_tid so the existing bsky records are
+			// deleted before we republish with fresh TIDs.
+			return self::rewrite_thread( $post, $stored, '' );
 		}
 
 		if ( ! $doc_tid ) {
@@ -656,37 +660,107 @@ class Publisher {
 	 * or when a thread updates to a thread with a different record count.
 	 *
 	 * The local meta is cleared between delete and publish so `publish()`
-	 * sees a clean slate.
+	 * sees a clean slate. If the republish step fails after the delete
+	 * succeeded, the pre-rewrite manifest is persisted to
+	 * `Post::META_ORPHAN_RECORDS` (marked `phase: rewrite`) so operators
+	 * can see what was lost — a subsequent retry of `update()` sees
+	 * empty stored records and goes straight to `publish()`, which
+	 * self-heals with fresh TIDs.
 	 *
 	 * @param \WP_Post $post    WordPress post.
 	 * @param array[]  $stored  Stored thread records (may be 1-entry).
-	 * @param string   $doc_tid Document record TID.
+	 * @param string   $doc_tid Document record TID (may be empty when
+	 *                          recovering from a partial state where the
+	 *                          bsky records exist but the doc never did).
 	 * @return array|\WP_Error
 	 */
 	private static function rewrite_thread( \WP_Post $post, array $stored, string $doc_tid ): array|\WP_Error {
 		$delete_writes = array();
 		foreach ( $stored as $record ) {
+			if ( empty( $record['tid'] ) ) {
+				continue;
+			}
 			$delete_writes[] = array(
 				'$type'      => 'com.atproto.repo.applyWrites#delete',
 				'collection' => 'app.bsky.feed.post',
 				'rkey'       => $record['tid'],
 			);
 		}
-		$delete_writes[] = array(
-			'$type'      => 'com.atproto.repo.applyWrites#delete',
-			'collection' => 'site.standard.document',
-			'rkey'       => $doc_tid,
-		);
+		if ( '' !== $doc_tid ) {
+			$delete_writes[] = array(
+				'$type'      => 'com.atproto.repo.applyWrites#delete',
+				'collection' => 'site.standard.document',
+				'rkey'       => $doc_tid,
+			);
+		}
 
-		$delete_result = API::apply_writes( $delete_writes );
+		if ( ! empty( $delete_writes ) ) {
+			$delete_result = API::apply_writes( $delete_writes );
 
-		if ( \is_wp_error( $delete_result ) ) {
-			return $delete_result;
+			if ( \is_wp_error( $delete_result ) ) {
+				return $delete_result;
+			}
 		}
 
 		self::clear_all_record_meta( $post->ID );
 
-		return self::publish( $post );
+		$publish_result = self::publish( $post );
+
+		if ( \is_wp_error( $publish_result ) ) {
+			self::persist_rewrite_failure( $post->ID, $stored, $doc_tid, $publish_result );
+		}
+
+		return $publish_result;
+	}
+
+	/**
+	 * Record a rewrite-thread failure in the orphan manifest so
+	 * operators can trace what was deleted before the republish
+	 * step failed. The deleted records are genuinely gone from the
+	 * PDS (no recovery is possible), but the manifest gives a
+	 * durable trail for audit / user communication.
+	 *
+	 * @param int       $post_id         Post ID.
+	 * @param array[]   $pre_delete      The thread records as they existed before delete.
+	 * @param string    $doc_tid         Document TID that was deleted (may be empty).
+	 * @param \WP_Error $publish_error   The republish-step failure.
+	 */
+	private static function persist_rewrite_failure(
+		int $post_id,
+		array $pre_delete,
+		string $doc_tid,
+		\WP_Error $publish_error
+	): void {
+		$entry = array(
+			'phase'         => 'rewrite',
+			'stamp'         => \gmdate( 'Y-m-d\TH:i:s.000\Z' ),
+			'deleted_bsky'  => $pre_delete,
+			'deleted_doc'   => $doc_tid,
+			'publish_error' => $publish_error->get_error_message(),
+		);
+
+		$existing = \get_post_meta( $post_id, Post::META_ORPHAN_RECORDS, true );
+		if ( ! \is_array( $existing ) ) {
+			$existing = array();
+		}
+
+		$existing[] = $entry;
+
+		if ( \count( $existing ) > 10 ) {
+			$existing = \array_slice( $existing, -10 );
+		}
+
+		\update_post_meta( $post_id, Post::META_ORPHAN_RECORDS, $existing );
+
+		// phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
+		\error_log(
+			\sprintf(
+				'[atmosphere] rewrite_thread republish failed for post %d; deleted records logged to %s: %s',
+				$post_id,
+				Post::META_ORPHAN_RECORDS,
+				$publish_error->get_error_message()
+			)
+		);
 	}
 
 	/**

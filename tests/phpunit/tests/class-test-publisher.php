@@ -774,6 +774,124 @@ class Test_Publisher extends WP_UnitTestCase {
 	}
 
 	/**
+	 * When rewrite_thread deletes the old records successfully but the
+	 * subsequent republish fails, the pre-delete manifest is persisted
+	 * to META_ORPHAN_RECORDS (phase=rewrite) so operators can audit
+	 * what was lost. Meta is cleared so the next retry self-heals via
+	 * publish().
+	 */
+	public function test_rewrite_thread_persists_manifest_on_republish_failure() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'A Long-Form Post',
+				'post_content' => 'Body content.',
+				'post_excerpt' => 'Teaser excerpt.',
+			)
+		);
+
+		$root_uri = 'at://did:plc:test123/app.bsky.feed.post/stored-rkey-1';
+		\update_post_meta(
+			$post->ID,
+			Post::META_THREAD_RECORDS,
+			array(
+				array(
+					'uri' => $root_uri,
+					'cid' => 'bafyreibstored',
+					'tid' => 'stored-rkey-1',
+				),
+			)
+		);
+		\update_post_meta( $post->ID, Post::META_URI, $root_uri );
+		\update_post_meta( $post->ID, Post::META_TID, 'stored-rkey-1' );
+		\update_post_meta( $post->ID, Post::META_CID, 'bafyreibstored' );
+		\update_post_meta( $post->ID, Document::META_URI, 'at://did:plc:test123/site.standard.document/doc-rkey-1' );
+		\update_post_meta( $post->ID, Document::META_TID, 'doc-rkey-1' );
+
+		// Force a strategy change (1-entry stored → 2-entry new).
+		\add_filter( 'atmosphere_long_form_composition', fn() => 'teaser-thread' );
+
+		// Call 1 (the delete batch) succeeds, call 2 (the republish
+		// create of root + doc) fails.
+		$this->fail_call_indexes = array(
+			2 => new \WP_Error( 'atmosphere_republish_failed', 'Republish PDS error.' ),
+		);
+		$this->register_capture( $post->ID );
+
+		$result = \Atmosphere\Publisher::update( $post );
+
+		$this->assertWPError( $result );
+		$this->assertSame( 'atmosphere_republish_failed', $result->get_error_code() );
+
+		// Active-record meta cleared so a retry self-heals.
+		$this->assertSame( '', \get_post_meta( $post->ID, Post::META_THREAD_RECORDS, true ) );
+		$this->assertSame( '', \get_post_meta( $post->ID, Post::META_TID, true ) );
+
+		// Manifest persisted for operator visibility.
+		$orphans = \get_post_meta( $post->ID, Post::META_ORPHAN_RECORDS, true );
+		$this->assertIsArray( $orphans );
+		$this->assertCount( 1, $orphans );
+		$this->assertSame( 'rewrite', $orphans[0]['phase'] );
+		$this->assertSame( 'doc-rkey-1', $orphans[0]['deleted_doc'] );
+		$this->assertSame( 'Republish PDS error.', $orphans[0]['publish_error'] );
+		$this->assertCount( 1, $orphans[0]['deleted_bsky'] );
+		$this->assertSame( 'stored-rkey-1', $orphans[0]['deleted_bsky'][0]['tid'] );
+	}
+
+	/**
+	 * When bsky records exist but the document URI is missing (an
+	 * anomalous partial state), update() deletes the orphan bsky records
+	 * via rewrite_thread with an empty doc_tid before republishing
+	 * fresh. Previously this branch called publish() directly, which
+	 * reused existing TIDs and triggered "already exists" on the PDS.
+	 */
+	public function test_update_partial_state_missing_doc_uri_rewrites() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'A Long-Form Post',
+				'post_content' => 'Body.',
+				'post_excerpt' => 'Teaser excerpt.',
+			)
+		);
+
+		$root_uri = 'at://did:plc:test123/app.bsky.feed.post/stored-rkey-1';
+		\update_post_meta(
+			$post->ID,
+			Post::META_THREAD_RECORDS,
+			array(
+				array(
+					'uri' => $root_uri,
+					'cid' => 'bafyreibstored',
+					'tid' => 'stored-rkey-1',
+				),
+			)
+		);
+		\update_post_meta( $post->ID, Post::META_URI, $root_uri );
+		\update_post_meta( $post->ID, Post::META_TID, 'stored-rkey-1' );
+		// Deliberately no Document::META_URI or META_TID.
+
+		$this->fail_call_indexes = array();
+		$this->register_capture( $post->ID );
+
+		$result = \Atmosphere\Publisher::update( $post );
+
+		$this->assertIsArray( $result );
+		$this->assertGreaterThanOrEqual( 2, \count( $this->captured_calls ) );
+
+		// First batch: delete the orphan bsky record, no doc delete.
+		$delete_writes = $this->captured_calls[0]['writes'];
+		$this->assertCount( 1, $delete_writes );
+		$this->assertSame( 'com.atproto.repo.applyWrites#delete', $delete_writes[0]['$type'] );
+		$this->assertSame( 'app.bsky.feed.post', $delete_writes[0]['collection'] );
+		$this->assertSame( 'stored-rkey-1', $delete_writes[0]['rkey'] );
+
+		// Second batch: fresh publish with newly-generated TIDs
+		// (not the stale stored-rkey-1).
+		$publish_writes = $this->captured_calls[1]['writes'];
+		$this->assertSame( 'com.atproto.repo.applyWrites#create', $publish_writes[0]['$type'] );
+		$this->assertNotSame( 'stored-rkey-1', $publish_writes[0]['rkey'] );
+	}
+
+	/**
 	 * Deleting a thread-published post issues one atomic applyWrites with
 	 * every bsky delete + the doc delete, then clears all meta.
 	 */
