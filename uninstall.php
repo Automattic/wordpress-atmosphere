@@ -22,6 +22,9 @@ wp_clear_scheduled_hook( 'atmosphere_refresh_token' );
 wp_clear_scheduled_hook( 'atmosphere_publish_post' );
 wp_clear_scheduled_hook( 'atmosphere_update_post' );
 wp_clear_scheduled_hook( 'atmosphere_delete_post' );
+wp_clear_scheduled_hook( 'atmosphere_delete_records' );
+wp_clear_scheduled_hook( 'atmosphere_sync_publication' );
+wp_clear_scheduled_hook( 'atmosphere_sync_reactions' );
 
 // Remove post meta.
 global $wpdb;

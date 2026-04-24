@@ -39,7 +39,18 @@ class Client {
 	 * @return string
 	 */
 	public static function redirect_uri(): string {
-		return \admin_url( 'options-general.php?page=atmosphere' );
+		$uri = \admin_url( 'options-general.php?page=atmosphere' );
+
+		/**
+		 * Filters the OAuth redirect URI.
+		 *
+		 * Allows consumers (e.g. wrapper plugins) to set their own callback
+		 * URL so the OAuth flow returns to their admin page instead of the
+		 * default Atmosphere settings page.
+		 *
+		 * @param string $uri Default redirect URI.
+		 */
+		return \apply_filters( 'atmosphere_oauth_redirect_uri', $uri );
 	}
 
 	/**
