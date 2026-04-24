@@ -358,6 +358,7 @@ class Admin {
 			\__( 'Successfully connected to AT Protocol.', 'atmosphere' ),
 			'success'
 		);
+		\set_transient( 'settings_errors', \get_settings_errors(), 30 );
 
 		\wp_safe_redirect( \admin_url( 'options-general.php?page=atmosphere&connected=1' ) );
 		exit;
