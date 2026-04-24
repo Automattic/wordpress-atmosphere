@@ -1,0 +1,4 @@
+Significance: patch
+Type: added
+
+Preserve the connection success notice after completing Bluesky setup, and let integrating plugins customize the OAuth callback destination.
