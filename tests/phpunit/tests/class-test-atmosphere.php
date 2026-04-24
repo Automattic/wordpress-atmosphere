@@ -548,7 +548,6 @@ class Test_Atmosphere extends WP_UnitTestCase {
 		\remove_all_filters( 'pre_http_request' );
 
 		$this->assertFalse( $captured, 'applyWrites must not be called for a no-longer-eligible comment.' );
-		\remove_all_actions( 'atmosphere_publish_comment' );
 	}
 
 	/**
@@ -581,7 +580,6 @@ class Test_Atmosphere extends WP_UnitTestCase {
 		\remove_all_filters( 'pre_http_request' );
 
 		$this->assertFalse( $captured, 'applyWrites#delete must not be called for a re-approved comment.' );
-		\remove_all_actions( 'atmosphere_delete_comment' );
 	}
 
 	/**
@@ -643,7 +641,6 @@ class Test_Atmosphere extends WP_UnitTestCase {
 			'Deferral counter must be incremented on each hop.'
 		);
 
-		\remove_all_actions( 'atmosphere_publish_comment' );
 		\wp_clear_scheduled_hook( 'atmosphere_publish_comment', array( $child_id ) );
 	}
 
