@@ -251,8 +251,36 @@ class Atmosphere {
 			return;
 		}
 
-		if ( ! \in_array( $post->post_type, Backfill::syncable_post_types(), true ) ) {
+		$is_new_publish = 'publish' === $new_status && 'publish' !== $old_status;
+		$is_update      = 'publish' === $new_status && 'publish' === $old_status;
+		$is_unpublish   = 'publish' === $old_status && 'publish' !== $new_status;
+
+		if ( ! $is_new_publish && ! $is_update && ! $is_unpublish ) {
+			// Transition between two non-publish states; nothing to schedule.
 			return;
+		}
+
+		/*
+		 * Publish-time decisions respect the allowlist so sites only sync
+		 * the post types they've opted into. Unpublish is a cleanup path
+		 * for records that were already synced, so narrowing the allowlist
+		 * later must not orphan those remote records: unpublish defers to
+		 * publication metadata (TIDs on the post) instead of the current
+		 * allowlist.
+		 */
+		if ( ( $is_new_publish || $is_update )
+			&& ! \in_array( $post->post_type, Backfill::syncable_post_types(), true )
+		) {
+			return;
+		}
+
+		if ( $is_unpublish ) {
+			$bsky_tid = \get_post_meta( $post->ID, Transformer\Post::META_TID, true );
+			$doc_tid  = \get_post_meta( $post->ID, Transformer\Document::META_TID, true );
+			if ( ! $bsky_tid && ! $doc_tid ) {
+				// Unpublish of a post that was never synced — nothing to clean up.
+				return;
+			}
 		}
 
 		// Prevent infinite loops from meta updates.
@@ -262,24 +290,18 @@ class Atmosphere {
 
 		\do_action( 'atmosphere_publishing' );
 
-		if ( 'publish' === $new_status && 'publish' !== $old_status ) {
-			// New publish — schedule async.
+		if ( $is_new_publish ) {
 			\wp_schedule_single_event( \time(), 'atmosphere_publish_post', array( $post->ID ) );
-		} elseif ( 'publish' === $new_status && 'publish' === $old_status ) {
-			// Update.
+		} elseif ( $is_update ) {
 			\wp_schedule_single_event( \time(), 'atmosphere_update_post', array( $post->ID ) );
-		} elseif ( 'publish' === $old_status && 'publish' !== $new_status ) {
+		} else {
 			/*
-			 * Genuine unpublish — transitioning away from publish.
-			 * Use atmosphere_delete_post (not delete_records) so that
-			 * post meta is cleaned up on success, allowing a subsequent
-			 * restore (trash → publish) to republish correctly.
+			 * Genuine unpublish — use atmosphere_delete_post (not
+			 * delete_records) so post meta is cleaned up on success,
+			 * allowing a subsequent restore (trash → publish) to
+			 * republish correctly.
 			 */
-			$bsky_tid = \get_post_meta( $post->ID, Transformer\Post::META_TID, true );
-			$doc_tid  = \get_post_meta( $post->ID, Transformer\Document::META_TID, true );
-			if ( $bsky_tid || $doc_tid ) {
-				\wp_schedule_single_event( \time(), 'atmosphere_delete_post', array( $post->ID ) );
-			}
+			\wp_schedule_single_event( \time(), 'atmosphere_delete_post', array( $post->ID ) );
 		}
 	}
 
@@ -298,10 +320,18 @@ class Atmosphere {
 
 		$post = \get_post( $post_id );
 
-		if ( ! $post || ! \in_array( $post->post_type, Backfill::syncable_post_types(), true ) ) {
+		if ( ! $post ) {
 			return;
 		}
 
+		/*
+		 * No allowlist check here. Permanent delete is a cleanup path: if
+		 * the post has Atmosphere publication metadata it was synced at
+		 * some point, and the remote records must be removed even if the
+		 * post type has since been dropped from the syncable allowlist.
+		 * Gating this on the current allowlist would orphan already-
+		 * published records whenever a site narrows its configuration.
+		 */
 		$bsky_tid = \get_post_meta( $post_id, Transformer\Post::META_TID, true );
 		$doc_tid  = \get_post_meta( $post_id, Transformer\Document::META_TID, true );
 
