@@ -1,0 +1,4 @@
+Significance: minor
+Type: added
+
+Long-form post composition is now strategy-aware. New `atmosphere_long_form_composition` filter selects between `link-card` (default, unchanged), `truncate-link` (single post, body + permalink), and `teaser-thread` (2-post thread: hook + CTA). Threads persist as an ordered `{uri, cid, tid}` array under the new `_atmosphere_bsky_thread_records` post meta; legacy `_atmosphere_bsky_*` keys continue to mirror the root. `Publisher::publish/update/delete` rewritten with sequential-writes-with-rollback for multi-record threads and a new `atmosphere_pre_apply_writes` test seam. `Publisher::update()` for thread posts deletes and republishes the whole thread (known caveat: external replies to the original thread are orphaned; followers see the update as a fresh publish with new createdAt) — callers that need in-place updates should pin to a single-post strategy.
