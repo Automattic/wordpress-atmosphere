@@ -356,6 +356,22 @@ class Post extends Base {
 					$strategy
 				)
 			);
+
+			/**
+			 * Fires when a long-form strategy is silently downgraded to
+			 * `'link-card'` because the post has neither a usable excerpt
+			 * nor enough body text to compose a thread hook from.
+			 *
+			 * Purpose is observability — the downgrade is not itself an
+			 * error, but ops teams may want to distinguish a fallback
+			 * from an intentional `'link-card'` configuration.
+			 *
+			 * @param \WP_Post $post      The post being composed.
+			 * @param string   $requested The strategy the filter returned (e.g. 'teaser-thread').
+			 * @param string   $effective The strategy actually used ('link-card').
+			 */
+			\do_action( 'atmosphere_long_form_strategy_downgraded', $this->object, $strategy, 'link-card' );
+
 			$strategy = 'link-card';
 		}
 

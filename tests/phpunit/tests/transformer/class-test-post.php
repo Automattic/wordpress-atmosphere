@@ -24,7 +24,31 @@ class Test_Post extends WP_UnitTestCase {
 	 */
 	public function tear_down() {
 		\remove_all_filters( 'atmosphere_is_short_form_post' );
+		\remove_all_filters( 'atmosphere_long_form_composition' );
+		\remove_all_filters( 'atmosphere_teaser_thread_posts' );
+		\remove_all_filters( 'atmosphere_transform_bsky_post' );
+		\remove_all_actions( 'atmosphere_long_form_strategy_downgraded' );
 		parent::tear_down();
+	}
+
+	/**
+	 * Invoke `Post::truncate_to_budget()` via reflection.
+	 *
+	 * The helper is private because it's an implementation detail of
+	 * composition; tests exercise it directly to lock in the
+	 * sentence / word / hard-cap contract the hook builders depend on.
+	 *
+	 * @param string $text            Input text.
+	 * @param int    $max             Budget.
+	 * @param bool   $prefer_sentence Whether to prefer a sentence break.
+	 * @return string
+	 */
+	private function truncate( string $text, int $max, bool $prefer_sentence = true ): string {
+		$post   = self::factory()->post->create_and_get();
+		$method = new \ReflectionMethod( Post::class, 'truncate_to_budget' );
+		$method->setAccessible( true );
+
+		return $method->invoke( new Post( $post ), $text, $max, $prefer_sentence );
 	}
 
 	/**
@@ -202,5 +226,419 @@ class Test_Post extends WP_UnitTestCase {
 
 		$this->assertFalse( $received_default, 'Default for titled-no-format post should be false (long-form).' );
 		$this->assertSame( $post->ID, $received_post_id, 'Filter should receive the post being transformed.' );
+	}
+
+	/*
+	 * -----------------------------------------------------------------
+	 * truncate_to_budget() — private helper covered via reflection.
+	 * -----------------------------------------------------------------
+	 */
+
+	/**
+	 * Text under budget returns unchanged.
+	 */
+	public function test_truncate_to_budget_returns_unchanged_when_under_budget() {
+		$this->assertSame( 'Hello world.', $this->truncate( 'Hello world.', 100 ) );
+	}
+
+	/**
+	 * Prefers a sentence boundary inside the budget over a word boundary later.
+	 */
+	public function test_truncate_to_budget_prefers_sentence_when_enabled() {
+		$text = \str_repeat( 'Hi there. ', 35 ); // 350 chars, sentence every 10.
+		$cut  = $this->truncate( $text, 280, true );
+		$last = \substr( $cut, -1 );
+		$this->assertLessThanOrEqual( 280, \mb_strlen( $cut ) );
+		$this->assertSame( '.', $last, 'Sentence-preferred cut must end at sentence punctuation.' );
+		// The text at the boundary is `"Hi there. " x N`, cut after the 28th period (byte 279).
+		$this->assertSame( 279, \strlen( $cut ) );
+	}
+
+	/**
+	 * Cut includes optional trailing close-punctuation after the sentence stop.
+	 */
+	public function test_truncate_to_budget_allows_trailing_close_punctuation() {
+		// Clamp to 5 chars: `Hi!" ` — regex matches `!"` (close-quote allowed). Cut = `Hi!"`.
+		$cut = $this->truncate( 'Hi!" Then I left.', 5, true );
+		$this->assertSame( 'Hi!"', $cut );
+	}
+
+	/**
+	 * Falls back to the last word boundary when no sentence break is in range.
+	 */
+	public function test_truncate_to_budget_falls_back_to_word_boundary_when_no_sentence() {
+		$text = 'The quick brown fox jumps over the lazy dog';
+		$cut  = $this->truncate( $text, 20, true );
+		// mb_substr 0,20 = "The quick brown fox ", word cut strips trailing space+token → "The quick brown fox".
+		$this->assertSame( 'The quick brown fox', $cut );
+	}
+
+	/**
+	 * With prefer_sentence=false, ignores sentence breaks and uses word boundary.
+	 */
+	public function test_truncate_to_budget_word_boundary_only_when_prefer_sentence_false() {
+		// Sentence break at char 3 (`.`) would dominate if prefer_sentence were true.
+		$text = 'Hi. Then hello world goodbye.';
+		$cut  = $this->truncate( $text, 12, false );
+		// Clamp "Hi. Then hel", word-cut strips " hel" → "Hi. Then".
+		$this->assertSame( 'Hi. Then', $cut );
+	}
+
+	/**
+	 * Single token longer than budget: hard-cap with a trailing ellipsis.
+	 */
+	public function test_truncate_to_budget_hard_cap_for_single_long_word() {
+		$cut = $this->truncate( 'Supercalifragilisticexpialidocious', 10, true );
+		$this->assertSame( 10, \mb_strlen( $cut ) );
+		$this->assertSame( '…', \mb_substr( $cut, -1 ) );
+		$this->assertNotSame( '', $cut );
+	}
+
+	/*
+	 * -----------------------------------------------------------------
+	 * build_long_form_records() — strategy branches.
+	 * -----------------------------------------------------------------
+	 */
+
+	/**
+	 * No filter: long-form default is link-card. Single record, text and embed
+	 * match today's transform() output byte-for-byte on the relevant fields.
+	 *
+	 * @covers ::build_long_form_records
+	 */
+	public function test_build_long_form_records_default_is_link_card() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'A Titled Post',
+				'post_content' => 'Body.',
+				'post_excerpt' => 'Teaser excerpt.',
+			)
+		);
+
+		$transformer = new Post( $post );
+		$records     = $transformer->build_long_form_records();
+		$oracle      = $transformer->transform();
+
+		$this->assertCount( 1, $records );
+		$this->assertSame( $oracle['text'], $records[0]['text'] );
+		$this->assertArrayHasKey( 'embed', $records[0] );
+		$this->assertSame( $oracle['embed'], $records[0]['embed'] );
+	}
+
+	/**
+	 * The `atmosphere_transform_bsky_post` filter fires once per record
+	 * in thread strategies — not once per WP post.
+	 *
+	 * @covers ::build_long_form_records
+	 */
+	public function test_build_long_form_records_applies_atmosphere_transform_bsky_post_per_entry() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'A Titled Post',
+				'post_content' => 'Body sentence one. Body sentence two.',
+			)
+		);
+
+		\add_filter( 'atmosphere_long_form_composition', fn() => 'teaser-thread' );
+		\add_filter(
+			'atmosphere_transform_bsky_post',
+			static function ( $record ) {
+				$record['text'] .= ' __transformed__';
+				return $record;
+			}
+		);
+
+		$records = ( new Post( $post ) )->build_long_form_records();
+
+		$this->assertCount( 2, $records );
+		foreach ( $records as $record ) {
+			$this->assertStringEndsWith( ' __transformed__', $record['text'] );
+		}
+	}
+
+	/**
+	 * Truncate-link branch: single record, no embed, text ends with permalink,
+	 * and facets include a link covering the permalink.
+	 *
+	 * @covers ::build_long_form_records
+	 */
+	public function test_build_long_form_records_truncate_link_branch() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'Titled',
+				'post_content' => \str_repeat( 'Some body content. ', 20 ),
+			)
+		);
+
+		\add_filter( 'atmosphere_long_form_composition', fn() => 'truncate-link' );
+
+		$records = ( new Post( $post ) )->build_long_form_records();
+
+		$this->assertCount( 1, $records );
+		$this->assertArrayNotHasKey( 'embed', $records[0] );
+
+		$permalink = \get_permalink( $post );
+		$this->assertStringEndsWith( "\n\n" . $permalink, $records[0]['text'] );
+
+		$has_link_facet = false;
+		foreach ( $records[0]['facets'] ?? array() as $facet ) {
+			foreach ( $facet['features'] as $feature ) {
+				if ( 'app.bsky.richtext.facet#link' === ( $feature['$type'] ?? '' )
+					&& ( $feature['uri'] ?? '' ) === $permalink
+				) {
+					$has_link_facet = true;
+				}
+			}
+		}
+		$this->assertTrue( $has_link_facet, 'Permalink should be captured by a link facet.' );
+	}
+
+	/**
+	 * Teaser-thread default: 2 entries, hook cut at sentence punctuation,
+	 * CTA starts with `Continue reading: <https?://...>`.
+	 *
+	 * @covers ::build_long_form_records
+	 */
+	public function test_build_long_form_records_teaser_thread_default_two_entries() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'A Long Post',
+				// 35 sentences × 10 chars = 350 chars; body exceeds the 280 hook budget.
+				'post_content' => \str_repeat( 'Hi there. ', 35 ),
+			)
+		);
+
+		\add_filter( 'atmosphere_long_form_composition', fn() => 'teaser-thread' );
+
+		$records = ( new Post( $post ) )->build_long_form_records();
+
+		$this->assertCount( 2, $records );
+
+		// Hook.
+		$hook = $records[0]['text'];
+		$this->assertLessThanOrEqual( 280, \mb_strlen( $hook ) );
+		$this->assertContains( \substr( $hook, -1 ), array( '.', '!', '?' ), 'Hook should end at sentence punctuation.' );
+		$this->assertStringNotContainsString( \get_permalink( $post ), $hook );
+		$this->assertArrayNotHasKey( 'embed', $records[0] );
+
+		// CTA.
+		$cta = $records[1]['text'];
+		$this->assertMatchesRegularExpression( '~^Continue reading: https?://~', $cta );
+
+		$has_cta_link_facet = false;
+		foreach ( $records[1]['facets'] ?? array() as $facet ) {
+			foreach ( $facet['features'] as $feature ) {
+				if ( 'app.bsky.richtext.facet#link' === ( $feature['$type'] ?? '' ) ) {
+					$has_cta_link_facet = true;
+				}
+			}
+		}
+		$this->assertTrue( $has_cta_link_facet, 'CTA permalink should produce a link facet.' );
+	}
+
+	/**
+	 * When no sentence boundary exists inside 280 chars the hook falls back
+	 * to a word boundary — never ends mid-word.
+	 *
+	 * @covers ::build_long_form_records
+	 */
+	public function test_build_long_form_records_teaser_thread_hook_falls_back_to_word_boundary_when_no_sentence() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'Unpunctuated',
+				// 36 repetitions × 18 chars = 648 chars, no `.`/`!`/`?`.
+				'post_content' => \str_repeat( 'abcdefgh ijklmnop ', 36 ),
+			)
+		);
+
+		\add_filter( 'atmosphere_long_form_composition', fn() => 'teaser-thread' );
+
+		$hook = ( new Post( $post ) )->build_long_form_records()[0]['text'];
+
+		$this->assertLessThanOrEqual( 280, \mb_strlen( $hook ) );
+		$this->assertDoesNotMatchRegularExpression(
+			'~\S$~',
+			$hook,
+			'Hook should end at whitespace, not mid-word.'
+		);
+	}
+
+	/**
+	 * Post excerpt, when set, takes precedence over body-derived hooks.
+	 *
+	 * @covers ::build_long_form_records
+	 */
+	public function test_build_long_form_records_teaser_thread_uses_excerpt_when_set() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'Titled',
+				'post_content' => 'Body sentence one. Body sentence two.',
+				'post_excerpt' => 'Custom-curated hook copy.',
+			)
+		);
+
+		\add_filter( 'atmosphere_long_form_composition', fn() => 'teaser-thread' );
+
+		$records = ( new Post( $post ) )->build_long_form_records();
+
+		$this->assertSame( 'Custom-curated hook copy.', $records[0]['text'] );
+	}
+
+	/**
+	 * Empty body + empty excerpt: strategy silently degrades to link-card
+	 * and fires the observability action so ops can distinguish fallback
+	 * from intentional configuration.
+	 *
+	 * @covers ::build_long_form_records
+	 */
+	public function test_build_long_form_records_degrades_to_link_card_when_body_and_excerpt_empty() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'Almost Empty Post',
+				'post_content' => 'Hi',  // 2 chars — below the 10-char floor.
+				'post_excerpt' => '',
+			)
+		);
+
+		$events = array();
+		\add_action(
+			'atmosphere_long_form_strategy_downgraded',
+			function ( $downgrade_post, $requested, $effective ) use ( &$events ) {
+				$events[] = array( $downgrade_post->ID, $requested, $effective );
+			},
+			10,
+			3
+		);
+
+		\add_filter( 'atmosphere_long_form_composition', fn() => 'teaser-thread' );
+
+		$records = ( new Post( $post ) )->build_long_form_records();
+
+		$this->assertCount( 1, $records );
+		$this->assertArrayHasKey( 'embed', $records[0] );
+		$this->assertSame( 'app.bsky.embed.external', $records[0]['embed']['$type'] );
+
+		$this->assertCount( 1, $events, 'Downgrade action should fire exactly once.' );
+		$this->assertSame( array( $post->ID, 'teaser-thread', 'link-card' ), $events[0] );
+	}
+
+	/**
+	 * Downstream filters may extend the thread to 3 posts.
+	 *
+	 * @covers ::build_long_form_records
+	 */
+	public function test_build_long_form_records_teaser_thread_filter_extends_to_three() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'Titled',
+				'post_content' => 'Body content.',
+			)
+		);
+
+		\add_filter( 'atmosphere_long_form_composition', fn() => 'teaser-thread' );
+		\add_filter(
+			'atmosphere_teaser_thread_posts',
+			fn() => array( 'Hook post', 'Key takeaway', 'Call to action link' )
+		);
+
+		$records = ( new Post( $post ) )->build_long_form_records();
+
+		$this->assertCount( 3, $records );
+		$this->assertSame( 'Hook post', $records[0]['text'] );
+		$this->assertSame( 'Key takeaway', $records[1]['text'] );
+		$this->assertSame( 'Call to action link', $records[2]['text'] );
+	}
+
+	/**
+	 * Every record in a thread carries the same `langs` array.
+	 *
+	 * @covers ::build_long_form_records
+	 */
+	public function test_build_long_form_records_langs_consistent_across_thread() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'Titled',
+				'post_content' => 'Body content with enough prose to form a hook.',
+			)
+		);
+
+		\add_filter( 'atmosphere_long_form_composition', fn() => 'teaser-thread' );
+
+		$records = ( new Post( $post ) )->build_long_form_records();
+
+		$this->assertGreaterThanOrEqual( 2, \count( $records ) );
+		$root_langs = $records[0]['langs'];
+		$this->assertNotEmpty( $root_langs );
+		foreach ( $records as $record ) {
+			$this->assertSame( $root_langs, $record['langs'] );
+		}
+	}
+
+	/**
+	 * Facets are extracted against each record's own text — tag on the hook,
+	 * link on the CTA.
+	 *
+	 * @covers ::build_long_form_records
+	 */
+	public function test_build_long_form_records_facets_extracted_per_entry() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'Titled',
+				'post_content' => 'Read about #testing sensors in this detailed write-up on instrumentation.',
+			)
+		);
+
+		\add_filter( 'atmosphere_long_form_composition', fn() => 'teaser-thread' );
+
+		$records = ( new Post( $post ) )->build_long_form_records();
+
+		$hook_has_tag = false;
+		foreach ( $records[0]['facets'] ?? array() as $facet ) {
+			foreach ( $facet['features'] as $feature ) {
+				if ( 'app.bsky.richtext.facet#tag' === ( $feature['$type'] ?? '' )
+					&& 'testing' === ( $feature['tag'] ?? '' )
+				) {
+					$hook_has_tag = true;
+				}
+			}
+		}
+		$this->assertTrue( $hook_has_tag, 'Hook text should have a #testing tag facet.' );
+
+		$cta_has_link = false;
+		foreach ( $records[1]['facets'] ?? array() as $facet ) {
+			foreach ( $facet['features'] as $feature ) {
+				if ( 'app.bsky.richtext.facet#link' === ( $feature['$type'] ?? '' ) ) {
+					$cta_has_link = true;
+				}
+			}
+		}
+		$this->assertTrue( $cta_has_link, 'CTA text should have a link facet.' );
+	}
+
+	/**
+	 * An unknown strategy value silently falls back to link-card.
+	 *
+	 * @covers ::build_long_form_records
+	 */
+	public function test_build_long_form_records_unknown_strategy_falls_back_to_link_card() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'Titled',
+				'post_content' => 'Body.',
+				'post_excerpt' => 'Teaser excerpt.',
+			)
+		);
+
+		\add_filter( 'atmosphere_long_form_composition', fn() => 'nonsense' );
+
+		$transformer = new Post( $post );
+		$records     = $transformer->build_long_form_records();
+
+		\remove_all_filters( 'atmosphere_long_form_composition' );
+		$oracle = $transformer->transform();
+
+		$this->assertCount( 1, $records );
+		$this->assertSame( $oracle['text'], $records[0]['text'] );
+		$this->assertSame( $oracle['embed'], $records[0]['embed'] );
 	}
 }
