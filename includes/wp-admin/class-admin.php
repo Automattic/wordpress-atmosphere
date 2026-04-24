@@ -34,8 +34,11 @@ class Admin {
 		// Meta box on syncable post types.
 		\add_action( 'add_meta_boxes', array( self::class, 'add_meta_box' ) );
 
-		// REST route for client metadata.
-		\add_action( 'rest_api_init', array( self::class, 'register_rest_routes' ) );
+		/*
+		 * REST route for client metadata is registered globally from
+		 * Atmosphere::init() — rest_api_init does not fire on admin
+		 * requests, so wiring it up here is redundant.
+		 */
 	}
 
 	/**
