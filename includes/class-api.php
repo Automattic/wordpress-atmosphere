@@ -167,6 +167,30 @@ class API {
 	 * @return array|\WP_Error
 	 */
 	public static function apply_writes( array $writes ): array|\WP_Error {
+		/**
+		 * Short-circuits the applyWrites call before it reaches the PDS.
+		 *
+		 * Return a non-null array (success shape: `[ 'results' => [...] ]`)
+		 * or a `WP_Error` to bypass the real HTTP round-trip. Used by
+		 * the PHPUnit suite, the FOSSE end-to-end harness, and anything
+		 * else that needs to observe or mock a write batch without
+		 * actually hitting the PDS.
+		 *
+		 * A common use is `pre_http_request`, but that filter fires
+		 * inside `wp_remote_request`, which is only reached after the
+		 * DPoP proof has been built — so in test environments without
+		 * a real DPoP JWK, the call errors out first. This filter runs
+		 * before any of that.
+		 *
+		 * @param null|array|\WP_Error $short_circuit Short-circuit value. Return null to skip.
+		 * @param array                $writes        The write batch about to be sent.
+		 */
+		$short_circuit = \apply_filters( 'atmosphere_pre_apply_writes', null, $writes );
+
+		if ( null !== $short_circuit ) {
+			return $short_circuit;
+		}
+
 		return self::post(
 			'/xrpc/com.atproto.repo.applyWrites',
 			array(
