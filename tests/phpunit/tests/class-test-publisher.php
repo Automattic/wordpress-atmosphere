@@ -822,9 +822,14 @@ class Test_Publisher extends WP_UnitTestCase {
 		$this->assertWPError( $result );
 		$this->assertSame( 'atmosphere_republish_failed', $result->get_error_code() );
 
-		// Active-record meta cleared so a retry self-heals.
+		// Active-record meta cleared so a retry self-heals. A fresh TID
+		// may have been reserved by the failed publish's get_rkey() — that's
+		// a harmless ghost; stored_thread_records's legacy fallback ignores
+		// bare TIDs without a URI so the retry goes through publish() and
+		// reuses the reserved TID.
 		$this->assertSame( '', \get_post_meta( $post->ID, Post::META_THREAD_RECORDS, true ) );
-		$this->assertSame( '', \get_post_meta( $post->ID, Post::META_TID, true ) );
+		$this->assertSame( '', \get_post_meta( $post->ID, Post::META_URI, true ) );
+		$this->assertSame( '', \get_post_meta( $post->ID, Post::META_CID, true ) );
 
 		// Manifest persisted for operator visibility.
 		$orphans = \get_post_meta( $post->ID, Post::META_ORPHAN_RECORDS, true );

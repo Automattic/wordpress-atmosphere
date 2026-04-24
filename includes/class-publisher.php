@@ -995,7 +995,13 @@ class Publisher {
 		$tid = \get_post_meta( $post_id, Post::META_TID, true );
 		$cid = \get_post_meta( $post_id, Post::META_CID, true );
 
-		if ( ! $uri && ! $tid ) {
+		// A bare TID without a URI means the rkey was reserved via
+		// Transformer::get_rkey() but no create ever succeeded on the
+		// PDS (e.g. a prior publish failed mid-step, or a rewrite_thread
+		// republish failed). Treat that as "nothing published" so the
+		// caller falls back to a fresh publish and the reserved TID is
+		// reused on the next attempt.
+		if ( ! $uri ) {
 			return array();
 		}
 
