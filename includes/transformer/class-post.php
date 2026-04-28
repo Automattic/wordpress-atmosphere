@@ -433,6 +433,7 @@ class Post extends Base {
 		switch ( $strategy ) {
 			case 'teaser-thread':
 				if ( $this->requires_link_card_for_long_permalink() ) {
+					\do_action( 'atmosphere_long_form_strategy_downgraded', $this->object, $strategy, 'link-card' );
 					return array( $this->record_for_link_card() );
 				}
 
@@ -452,6 +453,7 @@ class Post extends Base {
 
 			case 'truncate-link':
 				if ( $this->requires_link_card_for_long_permalink() ) {
+					\do_action( 'atmosphere_long_form_strategy_downgraded', $this->object, $strategy, 'link-card' );
 					return array( $this->record_for_link_card() );
 				}
 

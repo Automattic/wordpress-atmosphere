@@ -571,6 +571,60 @@ class Test_Publisher extends WP_UnitTestCase {
 	}
 
 	/**
+	 * In a thread publish, a failure on the doc-ref `putRecord` between
+	 * step 1 (root + doc) and step 2+ (replies) must not abort the thread
+	 * — otherwise META_THREAD_RECORDS sticks at length=1 and the next
+	 * edit triggers a rewrite that replaces the already-published root
+	 * URI/TID, invalidating likes/reposts/external replies.
+	 *
+	 * Best-effort: log the doc-ref failure, then continue writing replies.
+	 */
+	public function test_publish_thread_continues_when_doc_ref_update_fails() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'A Long-Form Post',
+				'post_excerpt' => 'A curated excerpt long enough to compose a hook from.',
+				'post_content' => 'Body content that has plenty to teaser from for a thread.',
+			)
+		);
+
+		\add_filter( 'atmosphere_long_form_composition', fn() => 'teaser-thread' );
+
+		$put_record_failure = static function ( $response, $args, $url ) {
+			if ( false !== \strpos( $url, 'com.atproto.repo.putRecord' ) ) {
+				return new \WP_Error( 'atmosphere_doc_ref_failed', 'Document ref update failed.' );
+			}
+			return $response;
+		};
+
+		\add_filter( 'pre_http_request', $put_record_failure, 5, 3 );
+
+		try {
+			$this->fail_call_indexes = array();
+			$this->register_capture( $post->ID );
+
+			$result = Publisher::publish( $post );
+
+			// Doc-ref failure is swallowed — overall publish succeeds.
+			$this->assertIsArray( $result );
+			$this->assertArrayHasKey( 'results', $result );
+
+			// Both root + reply applyWrites batches went through (call 1 = root+doc, call 2 = reply).
+			$this->assertCount( 2, $this->captured_calls );
+
+			$thread_records = \get_post_meta( $post->ID, Post::META_THREAD_RECORDS, true );
+			$this->assertIsArray( $thread_records );
+			$this->assertCount( 2, $thread_records );
+			foreach ( $thread_records as $record ) {
+				$this->assertNotEmpty( $record['uri'] );
+				$this->assertNotEmpty( $record['cid'] );
+			}
+		} finally {
+			\remove_filter( 'pre_http_request', $put_record_failure, 5 );
+		}
+	}
+
+	/**
 	 * When the reply write fails, issue compensating deletes for the root
 	 * + doc, clear every meta key, and return the original WP_Error.
 	 */

@@ -76,9 +76,10 @@ class Publisher {
 	 * doesn't already carry one, so the Bluesky timeline mirrors the
 	 * WordPress publish date (critical for backfill — otherwise every
 	 * re-synced post would stamp with the backfill-run time and
-	 * collapse chronological order). `transform()` already sets it;
-	 * `build_long_form_records()` leaves it absent on purpose so a
-	 * single policy lives here.
+	 * collapse chronological order). `transform()` and the long-form
+	 * record builders normally set it already; Publisher only backfills
+	 * here when a record arrives without `createdAt` (for example, if a
+	 * filter stripped it).
 	 *
 	 * @param \WP_Post $post             WordPress post.
 	 * @param array    $bsky_record      Pre-composed bsky post record.
@@ -219,9 +220,23 @@ class Publisher {
 		self::store_document_meta( $post->ID, $root_result, $doc_transformer );
 		self::mirror_thread_records_meta( $post->ID, $thread_records );
 
+		// Best-effort: a doc-ref update failure must not abort thread
+		// publishing after the root + document are already created.
+		// Bailing here leaves META_THREAD_RECORDS at length=1, and a
+		// subsequent edit treats that as a shape change and rewrites
+		// the (already-published) root — invalidating likes/reposts/
+		// external replies pointing at it. Log and continue; the
+		// doc-ref is metadata, the replies are user-visible content.
 		$doc_ref_result = self::update_document_bsky_ref( $post, $doc_transformer );
 		if ( \is_wp_error( $doc_ref_result ) ) {
-			return $doc_ref_result;
+			// phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
+			\error_log(
+				\sprintf(
+					'[atmosphere] post %d: doc-ref update failed during thread publish (%s); continuing with replies',
+					$post->ID,
+					$doc_ref_result->get_error_code()
+				)
+			);
 		}
 
 		$aggregated_results = $root_result['results'] ?? array();
