@@ -129,7 +129,11 @@ class Publisher {
 				),
 			)
 		);
-		self::update_document_bsky_ref( $post, $doc_transformer );
+
+		$doc_ref_result = self::update_document_bsky_ref( $post, $doc_transformer );
+		if ( \is_wp_error( $doc_ref_result ) ) {
+			return $doc_ref_result;
+		}
 
 		return $result;
 	}
@@ -160,9 +164,11 @@ class Publisher {
 		Post $bsky_transformer,
 		Document $doc_transformer
 	): array|\WP_Error {
-		$root_record              = $records[0];
-		$root_record['createdAt'] = to_iso8601( $post->post_date_gmt );
-		$root_rkey                = $bsky_transformer->get_rkey();
+		$root_record = $records[0];
+		if ( empty( $root_record['createdAt'] ) ) {
+			$root_record['createdAt'] = to_iso8601( $post->post_date_gmt );
+		}
+		$root_rkey = $bsky_transformer->get_rkey();
 
 		$root_result = API::apply_writes(
 			array(
@@ -212,7 +218,11 @@ class Publisher {
 
 		self::store_document_meta( $post->ID, $root_result, $doc_transformer );
 		self::mirror_thread_records_meta( $post->ID, $thread_records );
-		self::update_document_bsky_ref( $post, $doc_transformer );
+
+		$doc_ref_result = self::update_document_bsky_ref( $post, $doc_transformer );
+		if ( \is_wp_error( $doc_ref_result ) ) {
+			return $doc_ref_result;
+		}
 
 		$aggregated_results = $root_result['results'] ?? array();
 
@@ -221,8 +231,10 @@ class Publisher {
 			$reply_rkey   = TID::generate();
 			$reply_record = $records[ $i ];
 
-			$reply_record['createdAt'] = $created_at;
-			$reply_record['reply']     = array(
+			if ( empty( $reply_record['createdAt'] ) ) {
+				$reply_record['createdAt'] = $created_at;
+			}
+			$reply_record['reply'] = array(
 				'root'   => array(
 					'uri' => $thread_records[0]['uri'],
 					'cid' => $thread_records[0]['cid'],
@@ -258,7 +270,7 @@ class Publisher {
 			if ( empty( $reply_triple['cid'] ) ) {
 				return self::rollback_thread(
 					$post,
-					$thread_records,
+					\array_merge( $thread_records, array( $reply_triple ) ),
 					$doc_transformer,
 					new \WP_Error(
 						'atmosphere_missing_cid',
@@ -553,7 +565,11 @@ class Publisher {
 				),
 			)
 		);
-		self::update_document_bsky_ref( $post, $doc_transformer );
+
+		$doc_ref_result = self::update_document_bsky_ref( $post, $doc_transformer );
+		if ( \is_wp_error( $doc_ref_result ) ) {
+			return $doc_ref_result;
+		}
 
 		return $result;
 	}
@@ -592,7 +608,9 @@ class Publisher {
 		$bsky_count = \count( $new_records );
 
 		foreach ( $new_records as $i => $record ) {
-			$record['createdAt'] = $created_at;
+			if ( empty( $record['createdAt'] ) ) {
+				$record['createdAt'] = $created_at;
+			}
 
 			if ( $i > 0 ) {
 				$record['reply'] = array(
@@ -649,7 +667,10 @@ class Publisher {
 			\update_post_meta( $post->ID, Document::META_CID, $doc_entry['cid'] );
 		}
 
-		self::update_document_bsky_ref( $post, $doc_transformer );
+		$doc_ref_result = self::update_document_bsky_ref( $post, $doc_transformer );
+		if ( \is_wp_error( $doc_ref_result ) ) {
+			return $doc_ref_result;
+		}
 
 		return $result;
 	}
@@ -952,19 +973,20 @@ class Publisher {
 	 *
 	 * @param \WP_Post $post            WordPress post.
 	 * @param Document $doc_transformer Document transformer.
+	 * @return array|\WP_Error|null
 	 */
-	private static function update_document_bsky_ref( \WP_Post $post, Document $doc_transformer ): void {
+	private static function update_document_bsky_ref( \WP_Post $post, Document $doc_transformer ): array|\WP_Error|null {
 		$bsky_uri = \get_post_meta( $post->ID, Post::META_URI, true );
 		$bsky_cid = \get_post_meta( $post->ID, Post::META_CID, true );
 
 		if ( ! $bsky_uri || ! $bsky_cid ) {
-			return;
+			return null;
 		}
 
 		$updated_doc = new Document( $post );
 		$record      = $updated_doc->transform();
 
-		API::post(
+		return API::post(
 			'/xrpc/com.atproto.repo.putRecord',
 			array(
 				'repo'       => get_did(),

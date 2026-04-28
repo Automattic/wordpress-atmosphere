@@ -357,6 +357,49 @@ class Test_Post extends WP_UnitTestCase {
 	}
 
 	/**
+	 * Long-form filters receive records with `createdAt` plus context for
+	 * distinguishing thread entries before Publisher adds final reply refs.
+	 *
+	 * @covers ::build_long_form_records
+	 */
+	public function test_build_long_form_records_filter_receives_created_at_and_context() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'A Titled Post',
+				'post_content' => 'Body sentence one. Body sentence two.',
+			)
+		);
+
+		\add_filter( 'atmosphere_long_form_composition', fn() => 'teaser-thread' );
+
+		$seen = array();
+		\add_filter(
+			'atmosphere_transform_bsky_post',
+			static function ( $record, $filtered_post, $context = array() ) use ( &$seen ) {
+				$seen[] = array(
+					'createdAt' => $record['createdAt'] ?? '',
+					'context'   => $context,
+				);
+
+				return $record;
+			},
+			10,
+			3
+		);
+
+		( new Post( $post ) )->build_long_form_records();
+
+		$this->assertCount( 2, $seen );
+		$this->assertNotEmpty( $seen[0]['createdAt'] );
+		$this->assertNotEmpty( $seen[1]['createdAt'] );
+		$this->assertSame( 'teaser-thread', $seen[0]['context']['strategy'] ?? '' );
+		$this->assertSame( 0, $seen[0]['context']['thread_index'] ?? null );
+		$this->assertFalse( $seen[0]['context']['is_thread_reply'] ?? true );
+		$this->assertSame( 1, $seen[1]['context']['thread_index'] ?? null );
+		$this->assertTrue( $seen[1]['context']['is_thread_reply'] ?? false );
+	}
+
+	/**
 	 * Truncate-link branch: single record, no embed, text ends with permalink,
 	 * and facets include a link covering the permalink.
 	 *
@@ -391,6 +434,68 @@ class Test_Post extends WP_UnitTestCase {
 			}
 		}
 		$this->assertTrue( $has_link_facet, 'Permalink should be captured by a link facet.' );
+	}
+
+	/**
+	 * Truncate-link branch: an unusually long permalink must not push the
+	 * final post text over Bluesky's 300-character limit.
+	 *
+	 * @covers ::build_long_form_records
+	 */
+	public function test_build_long_form_records_truncate_link_long_permalink_stays_under_limit() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'Titled',
+				'post_content' => \str_repeat( 'Some body content. ', 20 ),
+			)
+		);
+
+		$permalink_filter = static fn() => 'https://example.com/' . \str_repeat( 'a', 320 );
+
+		\add_filter( 'atmosphere_long_form_composition', fn() => 'truncate-link' );
+		\add_filter( 'post_link', $permalink_filter );
+
+		try {
+			$records = ( new Post( $post ) )->build_long_form_records();
+		} finally {
+			\remove_filter( 'post_link', $permalink_filter );
+		}
+
+		$this->assertCount( 1, $records );
+		$this->assertLessThanOrEqual( 300, \mb_strlen( $records[0]['text'] ) );
+		$this->assertArrayHasKey( 'embed', $records[0], 'Overlong inline permalinks should fall back to a link card.' );
+	}
+
+	/**
+	 * Filtered teaser-thread entries are sanitized and clamped before
+	 * they are turned into Bluesky records.
+	 *
+	 * @covers ::build_long_form_records
+	 */
+	public function test_build_long_form_records_teaser_thread_filter_entries_are_sanitized_and_clamped() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'Titled',
+				'post_content' => 'Body content with enough prose to form a hook.',
+			)
+		);
+
+		\add_filter( 'atmosphere_long_form_composition', fn() => 'teaser-thread' );
+		\add_filter(
+			'atmosphere_teaser_thread_posts',
+			fn() => array(
+				'<strong>' . \str_repeat( 'A', 400 ) . '</strong>',
+				\str_repeat( 'B', 400 ),
+			)
+		);
+
+		$records = ( new Post( $post ) )->build_long_form_records();
+
+		$this->assertCount( 2, $records );
+		foreach ( $records as $record ) {
+			$this->assertLessThanOrEqual( 300, \mb_strlen( $record['text'] ) );
+			$this->assertStringNotContainsString( '<strong>', $record['text'] );
+		}
 	}
 
 	/**

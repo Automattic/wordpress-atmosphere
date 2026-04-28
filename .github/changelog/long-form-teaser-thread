@@ -1,4 +1,4 @@
 Significance: minor
 Type: added
 
-Long-form posts can now be published as a Bluesky thread. A new filter lets sites choose between a single link-card post (default, unchanged from today), a single post that combines body text with the permalink, or a 2-post teaser thread that leads with a hook and follows with a "continue reading" link. Post edits update every record in place when the shape of the post hasn't changed, so Bluesky URLs stay stable and people's replies don't get orphaned. If the shape of the post changes (for example, switching between a single post and a thread), the old records are replaced with fresh ones.
+Long-form posts can now be published to Bluesky as a short thread that points readers back to the full article. Sites can keep the existing single-post behavior, publish a shortened text version with a link, or use a two-post teaser thread. When a threaded post is edited, ATmosphere updates the existing Bluesky posts when possible so links and replies stay connected. If the publishing format changes, ATmosphere replaces the old Bluesky posts with new ones.

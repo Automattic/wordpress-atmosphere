@@ -151,15 +151,23 @@ class Post extends Base {
 		 * For `teaser-thread`, the filter fires for *every* thread
 		 * entry (hook, intermediate posts, CTA). Listeners that
 		 * accumulate state across calls (rate-limit counters, external
-		 * lint hooks) should branch on record shape (presence of
-		 * `reply` or permalink-in-`text`) or inspect
-		 * `atmosphere_long_form_composition` to decide per-entry
-		 * behavior.
+		 * lint hooks) should use the `$context` array to distinguish
+		 * single-post output from teaser-thread entries.
 		 *
 		 * @param array    $record Bsky post record.
 		 * @param \WP_Post $post   WordPress post.
+		 * @param array    $context Additional composition context.
 		 */
-		return \apply_filters( 'atmosphere_transform_bsky_post', $record, $this->object );
+		return \apply_filters(
+			'atmosphere_transform_bsky_post',
+			$record,
+			$this->object,
+			array(
+				'strategy'        => $is_short ? 'short-form' : 'link-card',
+				'thread_index'    => 0,
+				'is_thread_reply' => false,
+			)
+		);
 	}
 
 	/**
@@ -203,6 +211,12 @@ class Post extends Base {
 		// Reserve space for permalink + separators.
 		$reserved  = \mb_strlen( $permalink ) + 4;
 		$available = 300 - $reserved;
+
+		if ( $available <= 0 ) {
+			$prose = \trim( $title . ( ! empty( $excerpt ) ? "\n\n" . $excerpt : '' ) );
+
+			return '' !== $prose ? truncate_text( $prose, 300 ) : truncate_text( $permalink, 300 );
+		}
 
 		$prose = $title;
 		if ( ! empty( $excerpt ) ) {
@@ -364,9 +378,11 @@ class Post extends Base {
 	 * `'link-card'` and an error_log notice is emitted so operators
 	 * can tell the fallback from an intentional configuration.
 	 *
-	 * Publisher stamps `createdAt` (and `reply` for thread entries
-	 * 1..N) at write time — they are intentionally absent from the
-	 * returned records.
+	 * Records carry `createdAt` before `atmosphere_transform_bsky_post`
+	 * runs so filters see the same timestamp shape as `transform()`.
+	 * Publisher fills `createdAt` only if a filter removes it, and adds
+	 * `reply` refs for thread entries 1..N at write time after parent
+	 * CIDs are known.
 	 *
 	 * `Post::transform()` is unchanged and remains the entry point
 	 * for the short-form path and for any legacy caller on today's
@@ -416,14 +432,40 @@ class Post extends Base {
 
 		switch ( $strategy ) {
 			case 'teaser-thread':
+				if ( $this->requires_link_card_for_long_permalink() ) {
+					return array( $this->record_for_link_card() );
+				}
+
 				$records = array();
 				foreach ( $this->build_teaser_thread() as $i => $text ) {
-					$records[] = $this->record_for_thread_entry( (string) $text, 0 === $i );
+					$records[] = $this->record_for_thread_entry(
+						(string) $text,
+						0 === $i,
+						array(
+							'strategy'        => 'teaser-thread',
+							'thread_index'    => $i,
+							'is_thread_reply' => 0 !== $i,
+						)
+					);
 				}
 				return $records;
 
 			case 'truncate-link':
-				return array( $this->record_for_thread_entry( $this->build_truncate_link_text(), true ) );
+				if ( $this->requires_link_card_for_long_permalink() ) {
+					return array( $this->record_for_link_card() );
+				}
+
+				return array(
+					$this->record_for_thread_entry(
+						$this->build_truncate_link_text(),
+						true,
+						array(
+							'strategy'        => 'truncate-link',
+							'thread_index'    => 0,
+							'is_thread_reply' => false,
+						)
+					),
+				);
 
 			case 'link-card':
 			default:
@@ -454,8 +496,16 @@ class Post extends Base {
 	 * @return string
 	 */
 	private function truncate_to_budget( string $text, int $max, bool $prefer_sentence = true ): string {
+		if ( $max <= 0 ) {
+			return '';
+		}
+
 		if ( \mb_strlen( $text ) <= $max ) {
 			return $text;
+		}
+
+		if ( 1 === $max ) {
+			return '…';
 		}
 
 		$clamped = \mb_substr( $text, 0, $max );
@@ -483,6 +533,15 @@ class Post extends Base {
 	}
 
 	/**
+	 * Whether the permalink is too long to place safely in post text.
+	 *
+	 * @return bool
+	 */
+	private function requires_link_card_for_long_permalink(): bool {
+		return \mb_strlen( \get_permalink( $this->object ) ) >= 300;
+	}
+
+	/**
 	 * Compose the single-post truncate-link text.
 	 *
 	 * Used when `atmosphere_long_form_composition` returns
@@ -493,13 +552,24 @@ class Post extends Base {
 	 * @return string
 	 */
 	private function build_truncate_link_text(): string {
-		$permalink = \get_permalink( $this->object );
-		$plain     = $this->render_post_content_plain( $this->object );
-		$budget    = 300 - \mb_strlen( "\n\n" ) - \mb_strlen( $permalink );
+		$max_length = 300;
+		$separator  = "\n\n";
+		$permalink  = \get_permalink( $this->object );
+		$plain      = $this->render_post_content_plain( $this->object );
 
-		$body = $this->truncate_to_budget( $plain, $budget, false );
+		if ( \mb_strlen( $permalink ) >= $max_length ) {
+			return $this->truncate_to_budget( $permalink, $max_length, false );
+		}
 
-		return $body . "\n\n" . $permalink;
+		$budget = $max_length - \mb_strlen( $permalink );
+
+		if ( $budget <= \mb_strlen( $separator ) ) {
+			return $permalink;
+		}
+
+		$body = $this->truncate_to_budget( $plain, $budget - \mb_strlen( $separator ), false );
+
+		return $body . $separator . $permalink;
 	}
 
 	/**
@@ -561,8 +631,11 @@ class Post extends Base {
 
 		$texts = array();
 		foreach ( $filtered as $entry ) {
-			if ( \is_string( $entry ) && '' !== $entry ) {
-				$texts[] = $entry;
+			if ( \is_string( $entry ) ) {
+				$entry = sanitize_text( $entry );
+				if ( '' !== $entry ) {
+					$texts[] = $this->truncate_to_budget( $entry, 300, false );
+				}
 			}
 		}
 
@@ -597,10 +670,8 @@ class Post extends Base {
 	/**
 	 * Build one thread-entry record (hook, intermediate, or CTA).
 	 *
-	 * `createdAt` and `reply` are intentionally omitted — Publisher
-	 * stamps both at write time so every record in a thread carries
-	 * a timestamp pinned to the post's publish date and (for replies)
-	 * a reply-ref to the already-written root.
+	 * `reply` is intentionally omitted — Publisher stamps it at write
+	 * time for non-root entries after the parent CID is known.
 	 *
 	 * The root entry (`$is_root === true`) carries the post's `tags`,
 	 * mirroring `record_for_link_card()` and `transform()` — the root
@@ -609,13 +680,15 @@ class Post extends Base {
 	 *
 	 * @param string $text    Pre-composed post text.
 	 * @param bool   $is_root Whether this record is the thread root.
-	 * @return array Bsky post record (no createdAt, no reply).
+	 * @param array  $context Additional filter context.
+	 * @return array Bsky post record (no reply).
 	 */
-	private function record_for_thread_entry( string $text, bool $is_root = false ): array {
+	private function record_for_thread_entry( string $text, bool $is_root = false, array $context = array() ): array {
 		$record = array(
-			'$type' => 'app.bsky.feed.post',
-			'text'  => $text,
-			'langs' => $this->get_langs(),
+			'$type'     => 'app.bsky.feed.post',
+			'text'      => $text,
+			'createdAt' => $this->to_iso8601( $this->object->post_date_gmt ),
+			'langs'     => $this->get_langs(),
 		);
 
 		$facets = Facet::extract( $text );
@@ -630,8 +703,17 @@ class Post extends Base {
 			}
 		}
 
+		$context = \wp_parse_args(
+			$context,
+			array(
+				'strategy'        => 'teaser-thread',
+				'thread_index'    => 0,
+				'is_thread_reply' => ! $is_root,
+			)
+		);
+
 		/** This filter is documented in Post::transform() above. */
-		return \apply_filters( 'atmosphere_transform_bsky_post', $record, $this->object );
+		return \apply_filters( 'atmosphere_transform_bsky_post', $record, $this->object, $context );
 	}
 
 	/**
@@ -642,16 +724,17 @@ class Post extends Base {
 	 * can produce the same output when the composition filter
 	 * resolves to `'link-card'` (the default) or an unknown value.
 	 *
-	 * @return array Bsky post record (no createdAt — Publisher stamps).
+	 * @return array Bsky post record.
 	 */
 	private function record_for_link_card(): array {
 		$text  = $this->build_text();
 		$embed = $this->build_embed();
 
 		$record = array(
-			'$type' => 'app.bsky.feed.post',
-			'text'  => $text,
-			'langs' => $this->get_langs(),
+			'$type'     => 'app.bsky.feed.post',
+			'text'      => $text,
+			'createdAt' => $this->to_iso8601( $this->object->post_date_gmt ),
+			'langs'     => $this->get_langs(),
 		);
 
 		$facets = Facet::extract( $text );
@@ -669,6 +752,15 @@ class Post extends Base {
 		}
 
 		/** This filter is documented in Post::transform() above. */
-		return \apply_filters( 'atmosphere_transform_bsky_post', $record, $this->object );
+		return \apply_filters(
+			'atmosphere_transform_bsky_post',
+			$record,
+			$this->object,
+			array(
+				'strategy'        => 'link-card',
+				'thread_index'    => 0,
+				'is_thread_reply' => false,
+			)
+		);
 	}
 }

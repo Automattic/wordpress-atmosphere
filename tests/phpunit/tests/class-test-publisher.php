@@ -14,6 +14,8 @@ namespace Atmosphere\Tests;
 
 use WP_UnitTestCase;
 use Atmosphere\Publisher;
+use Atmosphere\OAuth\DPoP;
+use Atmosphere\OAuth\Encryption;
 use Atmosphere\Transformer\Post;
 use Atmosphere\Transformer\Document;
 
@@ -32,13 +34,16 @@ class Test_Publisher extends WP_UnitTestCase {
 		\update_option(
 			'atmosphere_connection',
 			array(
-				'access_token' => 'encrypted-token',
+				'access_token' => Encryption::encrypt( 'test-token' ),
 				'did'          => 'did:plc:test123',
 				'pds_endpoint' => 'https://pds.example.com',
-				'dpop_jwk'     => 'encrypted-jwk',
+				'dpop_jwk'     => Encryption::encrypt( (string) \wp_json_encode( DPoP::generate_key() ) ),
+				'expires_at'   => \time() + HOUR_IN_SECONDS,
 			)
 		);
 		\update_option( 'atmosphere_did', 'did:plc:test123' );
+
+		\add_filter( 'pre_http_request', array( $this, 'mock_document_ref_update' ), 10, 3 );
 	}
 
 	/**
@@ -54,8 +59,37 @@ class Test_Publisher extends WP_UnitTestCase {
 		\remove_all_filters( 'atmosphere_teaser_thread_posts' );
 		\remove_all_filters( 'atmosphere_transform_bsky_post' );
 		\remove_all_filters( 'atmosphere_is_short_form_post' );
+		\remove_filter( 'pre_http_request', array( $this, 'mock_document_ref_update' ), 10 );
 
 		parent::tear_down();
+	}
+
+	/**
+	 * Mock follow-up document putRecord calls.
+	 *
+	 * @param false|array|\WP_Error $response Preemptive HTTP response.
+	 * @param array                 $args     Request args.
+	 * @param string                $url      Request URL.
+	 * @return false|array|\WP_Error
+	 */
+	public function mock_document_ref_update( $response, array $args, string $url ) {
+		if ( false !== $response ) {
+			return $response;
+		}
+
+		if ( false === \strpos( $url, 'com.atproto.repo.putRecord' ) ) {
+			return $response;
+		}
+
+		return array(
+			'response' => array( 'code' => 200 ),
+			'body'     => \wp_json_encode(
+				array(
+					'uri' => 'at://did:plc:test123/site.standard.document/doc-ref',
+					'cid' => 'bafyreibdocref',
+				)
+			),
+		);
 	}
 
 	/**
@@ -495,6 +529,45 @@ class Test_Publisher extends WP_UnitTestCase {
 		$this->assertCount( 2, $indexed );
 		$this->assertContains( $thread_records[0]['uri'], $indexed );
 		$this->assertContains( $thread_records[1]['uri'], $indexed );
+	}
+
+	/**
+	 * If the follow-up document update fails after the initial applyWrites,
+	 * publish returns the error while preserving meta for a retry.
+	 */
+	public function test_publish_surfaces_document_ref_update_failure() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'A Long-Form Post',
+				'post_content' => 'Body content.',
+			)
+		);
+
+		\add_filter(
+			'pre_http_request',
+			static function ( $response, $args, $url ) {
+				if ( false !== \strpos( $url, 'com.atproto.repo.putRecord' ) ) {
+					return new \WP_Error( 'atmosphere_doc_ref_failed', 'Document ref update failed.' );
+				}
+
+				return $response;
+			},
+			5,
+			3
+		);
+
+		$this->fail_call_indexes = array();
+		$this->register_capture( $post->ID );
+
+		$result = Publisher::publish( $post );
+
+		$this->assertWPError( $result );
+		$this->assertSame( 'atmosphere_doc_ref_failed', $result->get_error_code() );
+
+		$thread_records = \get_post_meta( $post->ID, Post::META_THREAD_RECORDS, true );
+		$this->assertIsArray( $thread_records );
+		$this->assertCount( 1, $thread_records );
+		$this->assertNotEmpty( \get_post_meta( $post->ID, Document::META_URI, true ) );
 	}
 
 	/**
@@ -1024,6 +1097,56 @@ class Test_Publisher extends WP_UnitTestCase {
 
 		$this->assertWPError( $result );
 		$this->assertSame( 'atmosphere_invalid_pre_apply_writes_return', $result->get_error_code() );
+	}
+
+	/**
+	 * A malformed atmosphere_pre_apply_writes success array must include
+	 * a results list matching the write batch.
+	 */
+	public function test_pre_apply_writes_malformed_success_array_surfaces_wp_error() {
+		\add_filter( 'atmosphere_pre_apply_writes', fn() => array( 'ok' => true ) );
+
+		$result = \Atmosphere\API::apply_writes(
+			array(
+				array(
+					'$type'      => 'com.atproto.repo.applyWrites#delete',
+					'collection' => 'x',
+					'rkey'       => 'y',
+				),
+			)
+		);
+
+		$this->assertWPError( $result );
+		$this->assertSame( 'atmosphere_invalid_pre_apply_writes_response', $result->get_error_code() );
+	}
+
+	/**
+	 * A create/update short-circuit result must include the URI and CID
+	 * shape returned by the PDS.
+	 */
+	public function test_pre_apply_writes_create_result_without_uri_and_cid_surfaces_wp_error() {
+		\add_filter(
+			'atmosphere_pre_apply_writes',
+			fn() => array(
+				'results' => array(
+					array(),
+				),
+			)
+		);
+
+		$result = \Atmosphere\API::apply_writes(
+			array(
+				array(
+					'$type'      => 'com.atproto.repo.applyWrites#create',
+					'collection' => 'app.bsky.feed.post',
+					'rkey'       => 'abc',
+					'value'      => array( 'text' => 'Hello' ),
+				),
+			)
+		);
+
+		$this->assertWPError( $result );
+		$this->assertSame( 'atmosphere_invalid_pre_apply_writes_response', $result->get_error_code() );
 	}
 
 	/**
