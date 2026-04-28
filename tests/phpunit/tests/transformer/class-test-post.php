@@ -661,6 +661,34 @@ class Test_Post extends WP_UnitTestCase {
 	}
 
 	/**
+	 * Filter that returns fewer than 2 entries should trigger
+	 * _doing_it_wrong and fall back to the default hook + CTA pair —
+	 * a 1-entry return would silently route to publish_single() and
+	 * drop the CTA.
+	 *
+	 * @covers ::build_long_form_records
+	 */
+	public function test_build_long_form_records_teaser_thread_filter_under_two_falls_back() {
+		$this->setExpectedIncorrectUsage( 'atmosphere_teaser_thread_posts' );
+
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'Titled',
+				'post_content' => 'Body content with enough prose to form a hook.',
+			)
+		);
+
+		\add_filter( 'atmosphere_long_form_composition', fn() => 'teaser-thread' );
+		\add_filter( 'atmosphere_teaser_thread_posts', fn() => array( 'Just one entry' ) );
+
+		$records = ( new Post( $post ) )->build_long_form_records();
+
+		$this->assertCount( 2, $records );
+		$this->assertNotSame( 'Just one entry', $records[0]['text'] );
+		$this->assertMatchesRegularExpression( '~^Continue reading: ~', $records[1]['text'] );
+	}
+
+	/**
 	 * Every record in a thread carries the same `langs` array.
 	 *
 	 * @covers ::build_long_form_records

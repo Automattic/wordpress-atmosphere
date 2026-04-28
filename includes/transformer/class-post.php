@@ -641,7 +641,15 @@ class Post extends Base {
 			}
 		}
 
-		if ( empty( $texts ) ) {
+		// A 1-entry return would silently route to publish_single() and
+		// drop the CTA — confusing for filter authors who expected a
+		// thread. Enforce the docblock contract instead.
+		if ( \count( $texts ) < 2 ) {
+			\_doing_it_wrong(
+				'atmosphere_teaser_thread_posts',
+				\esc_html__( 'The atmosphere_teaser_thread_posts filter must return at least 2 string entries; falling back to the default hook + CTA pair.', 'atmosphere' ),
+				'unreleased'
+			);
 			return array( $hook, $cta );
 		}
 
