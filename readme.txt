@@ -5,7 +5,7 @@ Requires at least: 6.2
 Tested up to: 7.0
 Requires PHP: 8.2
 Stable tag: unreleased
-License: GPL-2.0-or-later
+License: GPL-2.0
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
 Publish WordPress posts to AT Protocol (Bluesky and standard.site) via native OAuth.
