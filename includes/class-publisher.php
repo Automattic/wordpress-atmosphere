@@ -386,6 +386,10 @@ class Publisher {
 	 * machine-parseable summary. The post meta is the source of truth —
 	 * the log line is a convenience for ops grepping a filesystem tail.
 	 *
+	 * TODO: surface the manifest in admin / Site Health / WP-CLI so
+	 * orphans don't require a manual `get_post_meta()` to discover.
+	 * Tracked in issue 44.
+	 *
 	 * @param int       $post_id         WordPress post ID.
 	 * @param array[]   $thread_records  Thread records that survived rollback.
 	 * @param string    $doc_rkey        Document rkey that survived rollback.
@@ -496,7 +500,12 @@ class Publisher {
 			? array( $bsky_transformer->transform() )
 			: $bsky_transformer->build_long_form_records();
 
-		// In-place update: matching record counts.
+		// In-place update: matching record counts. Strategy is not
+		// compared — a `truncate-link` (count=1) post that switches to
+		// a `teaser-thread` whose empty-body guard downgrades to
+		// `link-card` (count=1) takes this path. Output is structurally
+		// correct because both end up as a single-record post; URIs and
+		// TIDs are reused on the bsky side.
 		if ( \count( $stored ) === \count( $new_records ) ) {
 			if ( 1 === \count( $stored ) ) {
 				return self::update_single(
@@ -998,8 +1007,11 @@ class Publisher {
 			return null;
 		}
 
-		$updated_doc = new Document( $post );
-		$record      = $updated_doc->transform();
+		// `transform()` reads Post::META_URI / META_CID fresh from post
+		// meta on every call, so the existing transformer picks up the
+		// values just persisted by mirror_thread_records_meta() above —
+		// no need for a new instance.
+		$record = $doc_transformer->transform();
 
 		return API::post(
 			'/xrpc/com.atproto.repo.putRecord',
