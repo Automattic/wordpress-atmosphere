@@ -634,6 +634,48 @@ class Test_Post extends WP_UnitTestCase {
 	}
 
 	/**
+	 * Long-permalink fallback: when the permalink alone is >= 300 chars,
+	 * teaser-thread / truncate-link both fall back to link-card and fire
+	 * the observability action so the downgrade is distinguishable from
+	 * an intentional link-card configuration.
+	 *
+	 * @covers ::build_long_form_records
+	 */
+	public function test_build_long_form_records_long_permalink_fires_downgrade_action() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'Titled',
+				'post_content' => \str_repeat( 'Some body content. ', 20 ),
+			)
+		);
+
+		$permalink_filter = static fn() => 'https://example.com/' . \str_repeat( 'a', 320 );
+
+		$events = array();
+		\add_action(
+			'atmosphere_long_form_strategy_downgraded',
+			function ( $downgrade_post, $requested, $effective ) use ( &$events ) {
+				$events[] = array( $downgrade_post->ID, $requested, $effective );
+			},
+			10,
+			3
+		);
+
+		\add_filter( 'atmosphere_long_form_composition', fn() => 'teaser-thread' );
+		\add_filter( 'post_link', $permalink_filter );
+
+		try {
+			$records = ( new Post( $post ) )->build_long_form_records();
+		} finally {
+			\remove_filter( 'post_link', $permalink_filter );
+		}
+
+		$this->assertCount( 1, $records );
+		$this->assertCount( 1, $events );
+		$this->assertSame( array( $post->ID, 'teaser-thread', 'link-card' ), $events[0] );
+	}
+
+	/**
 	 * Downstream filters may extend the thread to 3 posts.
 	 *
 	 * @covers ::build_long_form_records
