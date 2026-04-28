@@ -86,6 +86,25 @@ class Post extends Base {
 	public const META_ORPHAN_RECORDS = '_atmosphere_bsky_orphan_records';
 
 	/**
+	 * Tracks a deferred `update_document_bsky_ref` failure.
+	 *
+	 * Set by Publisher when the doc-ref `putRecord` fails after the
+	 * thread root + document have already been written, so the bsky
+	 * post(s) and the document are both live on the PDS but the
+	 * document's `bskyPostRef` is missing or stale. The publish itself
+	 * is treated as successful (replies still ship; rewriting the root
+	 * on the next edit would be worse) and this meta records the gap so
+	 * an operator or admin/Site Health surface can spot it.
+	 *
+	 * Cleared the next time `update_document_bsky_ref` succeeds for the
+	 * post (typical recovery path: any subsequent edit retries the
+	 * follow-up putRecord). Value: `[ stamp, code, message ]`.
+	 *
+	 * @var string
+	 */
+	public const META_DOC_REF_PENDING = '_atmosphere_doc_ref_pending';
+
+	/**
 	 * Transform the post.
 	 *
 	 * @return array app.bsky.feed.post record.

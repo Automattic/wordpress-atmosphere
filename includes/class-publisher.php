@@ -225,18 +225,13 @@ class Publisher {
 		// Bailing here leaves META_THREAD_RECORDS at length=1, and a
 		// subsequent edit treats that as a shape change and rewrites
 		// the (already-published) root — invalidating likes/reposts/
-		// external replies pointing at it. Log and continue; the
-		// doc-ref is metadata, the replies are user-visible content.
+		// external replies pointing at it. Persist the gap to
+		// META_DOC_REF_PENDING so operators (and any admin/Site Health
+		// surface) can see it; the next edit retries the doc-ref via
+		// update_*'s normal call to update_document_bsky_ref.
 		$doc_ref_result = self::update_document_bsky_ref( $post, $doc_transformer );
 		if ( \is_wp_error( $doc_ref_result ) ) {
-			// phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
-			\error_log(
-				\sprintf(
-					'[atmosphere] post %d: doc-ref update failed during thread publish (%s); continuing with replies',
-					$post->ID,
-					$doc_ref_result->get_error_code()
-				)
-			);
+			self::record_doc_ref_pending( $post->ID, $doc_ref_result );
 		}
 
 		$aggregated_results = $root_result['results'] ?? array();
@@ -1013,13 +1008,62 @@ class Publisher {
 		// no need for a new instance.
 		$record = $doc_transformer->transform();
 
-		return API::post(
+		$result = API::post(
 			'/xrpc/com.atproto.repo.putRecord',
 			array(
 				'repo'       => get_did(),
 				'collection' => 'site.standard.document',
 				'rkey'       => $doc_transformer->get_rkey(),
 				'record'     => $record,
+			)
+		);
+
+		// Clear any previous deferred-failure marker on success so
+		// subsequent edits stop reporting the post as pending.
+		if ( ! \is_wp_error( $result ) ) {
+			\delete_post_meta( $post->ID, Post::META_DOC_REF_PENDING );
+		}
+
+		return $result;
+	}
+
+	/**
+	 * Persist a deferred `update_document_bsky_ref` failure.
+	 *
+	 * Called from `publish_thread()` when the follow-up `putRecord`
+	 * fails after the bsky thread root and document records have
+	 * already been created. The publish itself is treated as a success
+	 * (replies still ship; rewriting the root on the next edit would
+	 * be the worse failure mode), but the gap is recorded here so
+	 * operators / admin surfaces can see that the document's
+	 * `bskyPostRef` is stale and that the post should be re-saved to
+	 * trigger a retry.
+	 *
+	 * Cleared by a subsequent successful `update_document_bsky_ref`.
+	 *
+	 * TODO: surface in admin / Site Health alongside META_ORPHAN_RECORDS
+	 * (issue 44).
+	 *
+	 * @param int       $post_id WordPress post ID.
+	 * @param \WP_Error $error   The doc-ref failure to record.
+	 */
+	private static function record_doc_ref_pending( int $post_id, \WP_Error $error ): void {
+		\update_post_meta(
+			$post_id,
+			Post::META_DOC_REF_PENDING,
+			array(
+				'stamp'   => \gmdate( 'Y-m-d\TH:i:s.000\Z' ),
+				'code'    => $error->get_error_code(),
+				'message' => $error->get_error_message(),
+			)
+		);
+
+		// phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
+		\error_log(
+			\sprintf(
+				'[atmosphere] post %d: doc-ref update failed during thread publish (%s); continuing with replies',
+				$post_id,
+				$error->get_error_code()
 			)
 		);
 	}
@@ -1132,6 +1176,7 @@ class Publisher {
 		\delete_post_meta( $post_id, Post::META_URI );
 		\delete_post_meta( $post_id, Post::META_TID );
 		\delete_post_meta( $post_id, Post::META_CID );
+		\delete_post_meta( $post_id, Post::META_DOC_REF_PENDING );
 		\delete_post_meta( $post_id, Document::META_URI );
 		\delete_post_meta( $post_id, Document::META_TID );
 		\delete_post_meta( $post_id, Document::META_CID );

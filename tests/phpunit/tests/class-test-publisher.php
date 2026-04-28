@@ -578,9 +578,52 @@ class Test_Publisher extends WP_UnitTestCase {
 				$this->assertNotEmpty( $record['uri'] );
 				$this->assertNotEmpty( $record['cid'] );
 			}
+
+			// Pending-doc-ref marker is persisted so admin / Site Health
+			// can surface the gap; logs are not the only signal.
+			$pending = \get_post_meta( $post->ID, Post::META_DOC_REF_PENDING, true );
+			$this->assertIsArray( $pending );
+			$this->assertSame( 'atmosphere_doc_ref_failed', $pending['code'] );
+			$this->assertNotEmpty( $pending['stamp'] );
+			$this->assertNotEmpty( $pending['message'] );
 		} finally {
 			\remove_filter( 'pre_http_request', $put_record_failure, 5 );
 		}
+	}
+
+	/**
+	 * A successful `update_document_bsky_ref` clears any prior
+	 * `META_DOC_REF_PENDING` marker — typical recovery path is the user
+	 * re-saves the post (any `Publisher::update*` flow ends at
+	 * `update_document_bsky_ref`).
+	 */
+	public function test_publish_clears_doc_ref_pending_on_successful_doc_ref() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'A Long-Form Post',
+				'post_content' => 'Body.',
+				'post_excerpt' => 'Teaser excerpt.',
+			)
+		);
+
+		// Pretend a previous publish persisted a pending marker.
+		\update_post_meta(
+			$post->ID,
+			Post::META_DOC_REF_PENDING,
+			array(
+				'stamp'   => '2026-04-28T00:00:00.000Z',
+				'code'    => 'atmosphere_doc_ref_failed',
+				'message' => 'previous failure',
+			)
+		);
+
+		$this->fail_call_indexes = array();
+		$this->register_capture( $post->ID );
+
+		$result = Publisher::publish( $post );
+
+		$this->assertIsArray( $result );
+		$this->assertSame( '', \get_post_meta( $post->ID, Post::META_DOC_REF_PENDING, true ) );
 	}
 
 	/**
