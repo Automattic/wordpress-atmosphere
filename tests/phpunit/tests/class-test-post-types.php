@@ -103,4 +103,21 @@ class Test_Post_Types extends WP_UnitTestCase {
 		$this->assertSame( array(), Post_Types::sanitize( '' ) );
 		$this->assertSame( array(), Post_Types::sanitize( array() ) );
 	}
+
+	/**
+	 * Filter callbacks returning duplicates / non-strings / empties are
+	 * normalised away so callers always get a clean string[] of unique slugs.
+	 */
+	public function test_get_supported_normalises_filter_output() {
+		\add_filter(
+			'atmosphere_syncable_post_types',
+			static function (): array {
+				return array( 'post', 'post', '', null, 42, 'page' );
+			}
+		);
+
+		$result = get_supported_post_types();
+
+		$this->assertSame( array( 'post', 'page' ), \array_values( $result ) );
+	}
 }

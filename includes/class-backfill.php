@@ -39,6 +39,20 @@ class Backfill {
 
 		$post_types = get_supported_post_types();
 
+		/*
+		 * Short-circuit when no post types are enabled. Passing an empty
+		 * array to get_posts() falls back to the default `post` query,
+		 * which would surface posts that nothing is configured to sync.
+		 */
+		if ( empty( $post_types ) ) {
+			\wp_send_json_success(
+				array(
+					'total'    => 0,
+					'post_ids' => array(),
+				)
+			);
+		}
+
 		/**
 		 * Filters the maximum number of posts to backfill.
 		 *
@@ -104,7 +118,7 @@ class Backfill {
 		foreach ( $post_ids as $post_id ) {
 			$post = \get_post( $post_id );
 
-			if ( ! $post || 'publish' !== $post->post_status ) {
+			if ( ! $post || 'publish' !== $post->post_status || ! is_supported_post_type( $post->post_type ) ) {
 				$results[] = array(
 					'id'      => $post_id,
 					'success' => false,

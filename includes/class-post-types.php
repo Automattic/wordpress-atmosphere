@@ -26,7 +26,7 @@ class Post_Types {
 		$configured = (array) \get_option( 'atmosphere_support_post_types', array( 'post' ) );
 		$native     = \get_post_types_by_support( 'atmosphere' );
 
-		$post_types = \array_values( \array_unique( \array_merge( $configured, $native ) ) );
+		$post_types = \array_merge( $configured, $native );
 
 		/**
 		 * Filters the post types that support ATmosphere publishing.
@@ -36,7 +36,14 @@ class Post_Types {
 		 *
 		 * @param string[] $post_types Post type slugs.
 		 */
-		return \apply_filters( 'atmosphere_syncable_post_types', $post_types );
+		$post_types = (array) \apply_filters( 'atmosphere_syncable_post_types', $post_types );
+
+		// Normalise: drop empties / non-strings, dedupe, re-index.
+		$post_types = \array_filter( $post_types, '\is_string' );
+		$post_types = \array_map( 'sanitize_key', $post_types );
+		$post_types = \array_filter( $post_types );
+
+		return \array_values( \array_unique( $post_types ) );
 	}
 
 	/**
