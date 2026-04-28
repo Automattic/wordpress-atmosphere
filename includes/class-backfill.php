@@ -37,7 +37,7 @@ class Backfill {
 
 		\check_ajax_referer( 'atmosphere_backfill', 'nonce' );
 
-		$post_types = self::syncable_post_types();
+		$post_types = get_supported_post_types();
 
 		/**
 		 * Filters the maximum number of posts to backfill.
@@ -132,19 +132,5 @@ class Backfill {
 		}
 
 		\wp_send_json_success( array( 'results' => $results ) );
-	}
-
-	/**
-	 * Get the post types eligible for syncing.
-	 *
-	 * @return string[]
-	 */
-	public static function syncable_post_types(): array {
-		/**
-		 * Filters the post types that can be synced to AT Protocol.
-		 *
-		 * @param string[] $post_types Post type slugs.
-		 */
-		return \apply_filters( 'atmosphere_syncable_post_types', array( 'post' ) );
 	}
 }

@@ -1,0 +1,4 @@
+Significance: minor
+Type: added
+
+Choose which post types are published to AT Protocol from the ATmosphere settings page. Plugins and themes can also opt their custom post types in directly with `add_post_type_support( 'your_type', 'atmosphere' )`.

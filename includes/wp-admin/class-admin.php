@@ -9,10 +9,11 @@ namespace Atmosphere\WP_Admin;
 
 \defined( 'ABSPATH' ) || exit;
 
-use Atmosphere\Backfill;
 use Atmosphere\OAuth\Client;
+use Atmosphere\Post_Types;
 use Atmosphere\Publisher;
 use function Atmosphere\get_connection;
+use function Atmosphere\get_supported_post_types;
 use function Atmosphere\is_connected;
 
 /**
@@ -70,6 +71,23 @@ class Admin {
 
 		\register_setting(
 			'atmosphere',
+			'atmosphere_support_post_types',
+			array(
+				'type'              => 'array',
+				'description'       => 'Post types to publish to AT Protocol.',
+				'default'           => array( 'post' ),
+				'sanitize_callback' => array( Post_Types::class, 'sanitize' ),
+				'show_in_rest'      => array(
+					'schema' => array(
+						'type'  => 'array',
+						'items' => array( 'type' => 'string' ),
+					),
+				),
+			)
+		);
+
+		\register_setting(
+			'atmosphere',
 			'atmosphere_handle',
 			array(
 				'type'              => 'string',
@@ -112,6 +130,14 @@ class Admin {
 			'atmosphere_auto_publish',
 			\__( 'Auto-publish', 'atmosphere' ),
 			array( self::class, 'render_auto_publish_field' ),
+			'atmosphere',
+			'atmosphere_publishing'
+		);
+
+		\add_settings_field(
+			'atmosphere_support_post_types',
+			\__( 'Post types', 'atmosphere' ),
+			array( self::class, 'render_support_post_types_field' ),
 			'atmosphere',
 			'atmosphere_publishing'
 		);
@@ -244,6 +270,38 @@ class Admin {
 			<?php \esc_html_e( 'Automatically publish new posts to AT Protocol', 'atmosphere' ); ?>
 		</label>
 		<p class="description"><?php \esc_html_e( 'When enabled, posts are sent to your PDS as soon as they are published in WordPress.', 'atmosphere' ); ?></p>
+		<?php
+	}
+
+	/**
+	 * Render the post type support checkboxes.
+	 */
+	public static function render_support_post_types_field(): void {
+		$post_types = \get_post_types( array( 'public' => true ), 'objects' );
+		$enabled    = get_supported_post_types();
+		?>
+		<fieldset>
+			<legend class="screen-reader-text">
+				<?php \esc_html_e( 'Post types', 'atmosphere' ); ?>
+			</legend>
+			<?php foreach ( $post_types as $post_type ) : ?>
+				<p>
+					<label>
+						<input
+							type="checkbox"
+							name="atmosphere_support_post_types[]"
+							value="<?php echo \esc_attr( $post_type->name ); ?>"
+							<?php \checked( \in_array( $post_type->name, $enabled, true ) ); ?>
+						>
+						<?php echo \esc_html( $post_type->label ); ?>
+						<code><?php echo \esc_html( $post_type->name ); ?></code>
+					</label>
+				</p>
+			<?php endforeach; ?>
+		</fieldset>
+		<p class="description">
+			<?php \esc_html_e( 'Select which post types are published to AT Protocol.', 'atmosphere' ); ?>
+		</p>
 		<?php
 	}
 
@@ -399,7 +457,7 @@ class Admin {
 			return;
 		}
 
-		foreach ( Backfill::syncable_post_types() as $post_type ) {
+		foreach ( get_supported_post_types() as $post_type ) {
 			\add_meta_box(
 				'atmosphere',
 				\__( 'ATmosphere', 'atmosphere' ),
