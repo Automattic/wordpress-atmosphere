@@ -6,12 +6,13 @@
 	"license": "GPL-2.0-or-later",
 	"private": true,
 	"scripts": {
-		"env-start": "wp-env start",
+		"env-start": "wp-env start --auto-port",
 		"env-stop": "wp-env stop",
+		"preenv-test": "wp-env start --auto-port",
 		"env-test": "wp-env run tests-cli --env-cwd=\"wp-content/plugins/wordpress-atmosphere\" vendor/bin/phpunit",
 		"release": "node bin/release.js"
 	},
 	"devDependencies": {
-		"@wordpress/env": "^11.2.0"
+		"@wordpress/env": "^11.4.0"
 	}
 }
