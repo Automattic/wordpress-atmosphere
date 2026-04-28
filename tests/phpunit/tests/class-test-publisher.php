@@ -627,8 +627,17 @@ class Test_Publisher extends WP_UnitTestCase {
 	}
 
 	/**
-	 * When the reply write fails, issue compensating deletes for the root
-	 * + doc, clear every meta key, and return the original WP_Error.
+	 * When the reply write fails, issue compensating deletes for the
+	 * (possibly committed) reply, the root, and the doc, clear every
+	 * meta key, and return the original WP_Error.
+	 *
+	 * The reply rkey is generated locally before the create, so even
+	 * when the WP_Error is genuinely "never committed" the delete still
+	 * has the correct rkey to target — and when the failure is actually
+	 * an ambiguous "PDS committed but response failed", that rkey is
+	 * the only handle on the live record. Including it in rollback
+	 * closes the gap where rollback used to leave a live reply
+	 * untracked in META_THREAD_RECORDS.
 	 */
 	public function test_publish_teaser_thread_rollback_on_second_write_failure() {
 		$post = self::factory()->post->create_and_get(
@@ -646,6 +655,8 @@ class Test_Publisher extends WP_UnitTestCase {
 		);
 		$this->register_capture( $post->ID );
 
+		// Capture the reply rkey from the (failed) create write so we can
+		// assert it appears in the rollback batch.
 		$result = Publisher::publish( $post );
 
 		$this->assertWPError( $result );
@@ -654,19 +665,25 @@ class Test_Publisher extends WP_UnitTestCase {
 		// 3 calls total: root+doc create, reply create (fail), rollback deletes.
 		$this->assertCount( 3, $this->captured_calls );
 
+		$failed_reply_rkey = $this->captured_calls[1]['writes'][0]['rkey'];
+		$this->assertNotEmpty( $failed_reply_rkey );
+
 		$rollback_writes = $this->captured_calls[2]['writes'];
 
-		// Rollback deletes root bsky first, then doc: tail-first traversal
-		// over the thread records, which here is just the root (only the
-		// root made it before failure).
-		$this->assertCount( 2, $rollback_writes );
+		// Rollback deletes the (ambiguous) reply first, then the root,
+		// then the doc — tail-first traversal over thread_records with
+		// the failed-reply triple appended.
+		$this->assertCount( 3, $rollback_writes );
 		$this->assertSame( 'com.atproto.repo.applyWrites#delete', $rollback_writes[0]['$type'] );
 		$this->assertSame( 'app.bsky.feed.post', $rollback_writes[0]['collection'] );
+		$this->assertSame( $failed_reply_rkey, $rollback_writes[0]['rkey'] );
 		$this->assertSame( 'com.atproto.repo.applyWrites#delete', $rollback_writes[1]['$type'] );
-		$this->assertSame( 'site.standard.document', $rollback_writes[1]['collection'] );
+		$this->assertSame( 'app.bsky.feed.post', $rollback_writes[1]['collection'] );
+		$this->assertSame( 'com.atproto.repo.applyWrites#delete', $rollback_writes[2]['$type'] );
+		$this->assertSame( 'site.standard.document', $rollback_writes[2]['collection'] );
 
-		// Root TID appears in rollback.
-		$root_rkey = $rollback_writes[0]['rkey'];
+		// Root TID is the second delete (after the ambiguous reply).
+		$root_rkey = $rollback_writes[1]['rkey'];
 		$this->assertNotEmpty( $root_rkey );
 
 		// Meta fully cleared.
@@ -706,7 +723,8 @@ class Test_Publisher extends WP_UnitTestCase {
 		$this->assertIsArray( $data );
 		$this->assertArrayHasKey( 'partial_records', $data );
 		$this->assertIsArray( $data['partial_records'] );
-		$this->assertCount( 1, $data['partial_records'] );
+		// Root + ambiguous failed-reply (rkey known, commit state unknown).
+		$this->assertCount( 2, $data['partial_records'] );
 		$this->assertArrayHasKey( 'original_error', $data );
 		$this->assertArrayHasKey( 'rollback_error', $data );
 

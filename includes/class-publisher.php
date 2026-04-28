@@ -267,7 +267,28 @@ class Publisher {
 			);
 
 			if ( \is_wp_error( $reply_result ) ) {
-				return self::rollback_thread( $post, $thread_records, $doc_transformer, $reply_result );
+				// `apply_writes` errors are ambiguous: the PDS may have
+				// committed the create even when WP got a transport-level
+				// failure back (server-side commit + response timeout /
+				// connection drop). The rkey is generated locally and is
+				// known regardless of commit state, so include a synthetic
+				// triple in the rollback list. If the record was never
+				// committed, the compensating delete is a no-op (or
+				// surfaces in the orphan manifest if the PDS rejects it).
+				// If it was committed, rollback cleans it up. Either way
+				// we don't leave a live reply that META_THREAD_RECORDS
+				// can't see.
+				$ambiguous_triple = array(
+					'uri' => build_at_uri( get_did(), 'app.bsky.feed.post', $reply_rkey ),
+					'cid' => '',
+					'tid' => $reply_rkey,
+				);
+				return self::rollback_thread(
+					$post,
+					\array_merge( $thread_records, array( $ambiguous_triple ) ),
+					$doc_transformer,
+					$reply_result
+				);
 			}
 
 			$reply_triple = self::build_triple_from_result(
