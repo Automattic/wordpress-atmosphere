@@ -634,6 +634,52 @@ class Test_Post extends WP_UnitTestCase {
 	}
 
 	/**
+	 * Teaser-thread downgrades to link-card whenever the localized CTA
+	 * (`Continue reading: <permalink>`) exceeds 300 chars — even when
+	 * the bare permalink is below the 300-char limit. Otherwise the CTA
+	 * gets word-truncated and the URL fragment is dropped, shipping a
+	 * thread whose call-to-action has no link.
+	 *
+	 * @covers ::build_long_form_records
+	 */
+	public function test_build_long_form_records_teaser_thread_downgrades_when_cta_overflows() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'Titled',
+				'post_content' => \str_repeat( 'Some body content. ', 20 ),
+			)
+		);
+
+		// Bare permalink under 300 chars but CTA "Continue reading: <permalink>"
+		// pushes the composed text past the 300-char limit.
+		$permalink_filter = static fn() => 'https://example.com/' . \str_repeat( 'a', 280 );
+
+		$events = array();
+		\add_action(
+			'atmosphere_long_form_strategy_downgraded',
+			function ( $downgrade_post, $requested, $effective ) use ( &$events ) {
+				$events[] = array( $downgrade_post->ID, $requested, $effective );
+			},
+			10,
+			3
+		);
+
+		\add_filter( 'atmosphere_long_form_composition', fn() => 'teaser-thread' );
+		\add_filter( 'post_link', $permalink_filter );
+
+		try {
+			$records = ( new Post( $post ) )->build_long_form_records();
+		} finally {
+			\remove_filter( 'post_link', $permalink_filter );
+		}
+
+		$this->assertCount( 1, $records );
+		$this->assertArrayHasKey( 'embed', $records[0] );
+		$this->assertCount( 1, $events );
+		$this->assertSame( array( $post->ID, 'teaser-thread', 'link-card' ), $events[0] );
+	}
+
+	/**
 	 * Long-permalink fallback: when the permalink alone is >= 300 chars,
 	 * teaser-thread / truncate-link both fall back to link-card and fire
 	 * the observability action so the downgrade is distinguishable from

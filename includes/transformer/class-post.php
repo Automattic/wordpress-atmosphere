@@ -432,7 +432,7 @@ class Post extends Base {
 
 		switch ( $strategy ) {
 			case 'teaser-thread':
-				if ( $this->requires_link_card_for_long_permalink() ) {
+				if ( $this->requires_link_card_for_teaser_thread() ) {
 					\do_action( 'atmosphere_long_form_strategy_downgraded', $this->object, $strategy, 'link-card' );
 					return array( $this->record_for_link_card() );
 				}
@@ -537,10 +537,46 @@ class Post extends Base {
 	/**
 	 * Whether the permalink is too long to place safely in post text.
 	 *
+	 * Used by the `truncate-link` strategy where the post text is just
+	 * `<body>\n\n<permalink>` and the permalink is the load-bearing part.
+	 *
 	 * @return bool
 	 */
 	private function requires_link_card_for_long_permalink(): bool {
 		return \mb_strlen( \get_permalink( $this->object ) ) >= 300;
+	}
+
+	/**
+	 * Whether the teaser-thread CTA can't carry the full permalink.
+	 *
+	 * The CTA text is `Continue reading: <permalink>` (localized — the
+	 * prefix length varies by locale). If the composed CTA exceeds the
+	 * 300-char post limit, `truncate_to_budget()` would word-cut the URL
+	 * fragment off and ship a thread whose final post says
+	 * `Continue reading:` with no link. Detect that case and bail to
+	 * link-card instead.
+	 *
+	 * @return bool
+	 */
+	private function requires_link_card_for_teaser_thread(): bool {
+		return \mb_strlen( $this->teaser_thread_cta_text() ) > 300;
+	}
+
+	/**
+	 * Compose the default teaser-thread CTA text.
+	 *
+	 * Centralised so the overflow guard (`requires_link_card_for_teaser_thread`)
+	 * and the actual thread builder (`build_teaser_thread`) operate on
+	 * identical strings.
+	 *
+	 * @return string
+	 */
+	private function teaser_thread_cta_text(): string {
+		return \sprintf(
+			/* translators: %s: the WordPress post permalink. */
+			\__( 'Continue reading: %s', 'atmosphere' ),
+			\get_permalink( $this->object )
+		);
 	}
 
 	/**
@@ -610,11 +646,7 @@ class Post extends Base {
 			$hook  = $this->truncate_to_budget( $plain, 280, true );
 		}
 
-		$cta = \sprintf(
-			/* translators: %s: the WordPress post permalink. */
-			\__( 'Continue reading: %s', 'atmosphere' ),
-			\get_permalink( $this->object )
-		);
+		$cta = $this->teaser_thread_cta_text();
 
 		/**
 		 * Filters the default teaser-thread post texts.
