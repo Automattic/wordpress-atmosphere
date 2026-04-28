@@ -34,6 +34,23 @@ class Atmosphere {
 		\add_action( 'init', array( Admin::class, 'register' ), 5 );
 		\add_action( 'init', array( Backfill::class, 'register' ), 5 );
 
+		/*
+		 * Seed the long-form composition strategy from the user's
+		 * setting. Priority 1 so any downstream filter at the default
+		 * priority can still override it per post.
+		 */
+		\add_filter(
+			'atmosphere_long_form_composition',
+			static function ( string $strategy ): string {
+				$option = (string) \get_option( 'atmosphere_long_form_composition', 'link-card' );
+
+				return \in_array( $option, array( 'link-card', 'truncate-link', 'teaser-thread' ), true )
+					? $option
+					: $strategy;
+			},
+			1
+		);
+
 		// REST route (always active for client-metadata).
 		\add_action( 'rest_api_init', array( Admin::class, 'register_rest_routes' ) );
 

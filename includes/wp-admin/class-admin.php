@@ -70,6 +70,22 @@ class Admin {
 
 		\register_setting(
 			'atmosphere',
+			'atmosphere_long_form_composition',
+			array(
+				'type'              => 'string',
+				'description'       => 'Composition strategy for long-form Bluesky posts.',
+				'default'           => 'link-card',
+				'sanitize_callback' => array( self::class, 'sanitize_long_form_composition' ),
+				'show_in_rest'      => array(
+					'schema' => array(
+						'enum' => array( 'link-card', 'truncate-link', 'teaser-thread' ),
+					),
+				),
+			)
+		);
+
+		\register_setting(
+			'atmosphere',
 			'atmosphere_handle',
 			array(
 				'type'              => 'string',
@@ -112,6 +128,14 @@ class Admin {
 			'atmosphere_auto_publish',
 			\__( 'Auto-publish', 'atmosphere' ),
 			array( self::class, 'render_auto_publish_field' ),
+			'atmosphere',
+			'atmosphere_publishing'
+		);
+
+		\add_settings_field(
+			'atmosphere_long_form_composition',
+			\__( 'Long-form posts', 'atmosphere' ),
+			array( self::class, 'render_long_form_composition_field' ),
 			'atmosphere',
 			'atmosphere_publishing'
 		);
@@ -245,6 +269,66 @@ class Admin {
 		</label>
 		<p class="description"><?php \esc_html_e( 'When enabled, posts are sent to your PDS as soon as they are published in WordPress.', 'atmosphere' ); ?></p>
 		<?php
+	}
+
+	/**
+	 * Render the long-form composition radio group.
+	 */
+	public static function render_long_form_composition_field(): void {
+		$current = \get_option( 'atmosphere_long_form_composition', 'link-card' );
+		$choices = array(
+			'link-card'     => array(
+				'label' => \__( 'Link card', 'atmosphere' ),
+				'help'  => \__( 'A single Bluesky post with the title, an excerpt, and a permalink card. (Default — unchanged behavior.)', 'atmosphere' ),
+			),
+			'truncate-link' => array(
+				'label' => \__( 'Truncated post with link', 'atmosphere' ),
+				'help'  => \__( 'A single Bluesky post containing the body text followed by an inline permalink. No card.', 'atmosphere' ),
+			),
+			'teaser-thread' => array(
+				'label' => \__( 'Teaser thread', 'atmosphere' ),
+				'help'  => \__( 'A two-post Bluesky thread: a hook followed by a "continue reading" reply with the permalink.', 'atmosphere' ),
+			),
+		);
+
+		?>
+		<fieldset>
+			<legend class="screen-reader-text">
+				<?php \esc_html_e( 'Long-form composition', 'atmosphere' ); ?>
+			</legend>
+			<?php foreach ( $choices as $value => $choice ) : ?>
+				<p>
+					<label>
+						<input
+							type="radio"
+							name="atmosphere_long_form_composition"
+							value="<?php echo \esc_attr( $value ); ?>"
+							<?php \checked( $current, $value ); ?>
+						>
+						<strong><?php echo \esc_html( $choice['label'] ); ?></strong>
+					</label>
+					<br>
+					<span class="description"><?php echo \esc_html( $choice['help'] ); ?></span>
+				</p>
+			<?php endforeach; ?>
+		</fieldset>
+		<p class="description">
+			<?php \esc_html_e( 'How posts longer than the Bluesky 300-character limit are published. Plugins can override this per post via the atmosphere_long_form_composition filter.', 'atmosphere' ); ?>
+		</p>
+		<?php
+	}
+
+	/**
+	 * Sanitize the long-form composition setting.
+	 *
+	 * @param mixed $value Submitted value.
+	 * @return string
+	 */
+	public static function sanitize_long_form_composition( $value ): string {
+		$allowed = array( 'link-card', 'truncate-link', 'teaser-thread' );
+		$value   = \is_string( $value ) ? \sanitize_text_field( $value ) : '';
+
+		return \in_array( $value, $allowed, true ) ? $value : 'link-card';
 	}
 
 	/**
