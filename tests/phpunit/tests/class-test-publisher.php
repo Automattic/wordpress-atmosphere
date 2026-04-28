@@ -251,6 +251,10 @@ class Test_Publisher extends WP_UnitTestCase {
 
 	/**
 	 * Test that update() sends applyWrites#update when URIs and TIDs exist.
+	 *
+	 * Uses the `atmosphere_pre_apply_writes` short-circuit so the test
+	 * runs to completion regardless of the DPoP/auth state in the test
+	 * environment, and assertions are unconditional.
 	 */
 	public function test_update_sends_update_writes() {
 		$post = self::factory()->post->create_and_get(
@@ -262,65 +266,20 @@ class Test_Publisher extends WP_UnitTestCase {
 		\update_post_meta( $post->ID, Post::META_URI, 'at://did:plc:test/app.bsky.feed.post/bsky-tid-123' );
 		\update_post_meta( $post->ID, Document::META_URI, 'at://did:plc:test/site.standard.document/doc-tid-456' );
 
-		/*
-		 * Intercept the HTTP request to verify the payload contains
-		 * #update operations (not #create or #delete).
-		 */
-		$captured_body = null;
-
-		\add_filter(
-			'pre_http_request',
-			static function ( $response, $args, $url ) use ( &$captured_body ) {
-				if ( false !== \strpos( $url, 'applyWrites' ) ) {
-					$captured_body = \json_decode( $args['body'], true );
-
-					return array(
-						'response' => array( 'code' => 200 ),
-						'body'     => \wp_json_encode(
-							array(
-								'results' => array(
-									array(
-										'uri' => 'at://did:plc:test/app.bsky.feed.post/bsky-tid-123',
-										'cid' => 'bafyreib-new-bsky-cid',
-									),
-									array(
-										'uri' => 'at://did:plc:test/site.standard.document/doc-tid-456',
-										'cid' => 'bafyreib-new-doc-cid',
-									),
-								),
-							)
-						),
-					);
-				}
-
-				return $response;
-			},
-			10,
-			3
-		);
+		$this->fail_call_indexes = array();
+		$this->register_capture( $post->ID );
 
 		$result = Publisher::update( $post );
 
-		\remove_all_filters( 'pre_http_request' );
+		$this->assertIsArray( $result );
+		$this->assertCount( 1, $this->captured_calls );
 
-		/*
-		 * The API call requires a valid access token and DPoP proof,
-		 * which we can't easily mock. If the request reached our
-		 * filter, captured_body will be set. If it failed before
-		 * reaching the HTTP layer (auth errors), we still verify the
-		 * flow didn't crash.
-		 */
-		if ( null !== $captured_body ) {
-			$this->assertIsArray( $captured_body['writes'] );
-			$this->assertCount( 2, $captured_body['writes'] );
-			$this->assertSame( 'com.atproto.repo.applyWrites#update', $captured_body['writes'][0]['$type'] );
-			$this->assertSame( 'com.atproto.repo.applyWrites#update', $captured_body['writes'][1]['$type'] );
-			$this->assertSame( 'bsky-tid-123', $captured_body['writes'][0]['rkey'] );
-			$this->assertSame( 'doc-tid-456', $captured_body['writes'][1]['rkey'] );
-		} else {
-			// Auth layer blocked the request — still verify no crash.
-			$this->assertWPError( $result );
-		}
+		$writes = $this->captured_calls[0]['writes'];
+		$this->assertCount( 2, $writes );
+		$this->assertSame( 'com.atproto.repo.applyWrites#update', $writes[0]['$type'] );
+		$this->assertSame( 'com.atproto.repo.applyWrites#update', $writes[1]['$type'] );
+		$this->assertSame( 'bsky-tid-123', $writes[0]['rkey'] );
+		$this->assertSame( 'doc-tid-456', $writes[1]['rkey'] );
 	}
 
 	/**
@@ -543,31 +502,31 @@ class Test_Publisher extends WP_UnitTestCase {
 			)
 		);
 
-		\add_filter(
-			'pre_http_request',
-			static function ( $response, $args, $url ) {
-				if ( false !== \strpos( $url, 'com.atproto.repo.putRecord' ) ) {
-					return new \WP_Error( 'atmosphere_doc_ref_failed', 'Document ref update failed.' );
-				}
+		$put_record_failure = static function ( $response, $args, $url ) {
+			if ( false !== \strpos( $url, 'com.atproto.repo.putRecord' ) ) {
+				return new \WP_Error( 'atmosphere_doc_ref_failed', 'Document ref update failed.' );
+			}
+			return $response;
+		};
 
-				return $response;
-			},
-			5,
-			3
-		);
+		\add_filter( 'pre_http_request', $put_record_failure, 5, 3 );
 
-		$this->fail_call_indexes = array();
-		$this->register_capture( $post->ID );
+		try {
+			$this->fail_call_indexes = array();
+			$this->register_capture( $post->ID );
 
-		$result = Publisher::publish( $post );
+			$result = Publisher::publish( $post );
 
-		$this->assertWPError( $result );
-		$this->assertSame( 'atmosphere_doc_ref_failed', $result->get_error_code() );
+			$this->assertWPError( $result );
+			$this->assertSame( 'atmosphere_doc_ref_failed', $result->get_error_code() );
 
-		$thread_records = \get_post_meta( $post->ID, Post::META_THREAD_RECORDS, true );
-		$this->assertIsArray( $thread_records );
-		$this->assertCount( 1, $thread_records );
-		$this->assertNotEmpty( \get_post_meta( $post->ID, Document::META_URI, true ) );
+			$thread_records = \get_post_meta( $post->ID, Post::META_THREAD_RECORDS, true );
+			$this->assertIsArray( $thread_records );
+			$this->assertCount( 1, $thread_records );
+			$this->assertNotEmpty( \get_post_meta( $post->ID, Document::META_URI, true ) );
+		} finally {
+			\remove_filter( 'pre_http_request', $put_record_failure, 5 );
+		}
 	}
 
 	/**
