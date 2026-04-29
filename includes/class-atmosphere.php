@@ -319,8 +319,17 @@ class Atmosphere {
 	/**
 	 * Schedule AT Protocol record deletion before a post is permanently deleted.
 	 *
-	 * Captures TIDs from post meta before they're lost, then schedules
-	 * an async delete via cron.
+	 * Captures the post TIDs and the TIDs of every published outbound
+	 * comment reply, then schedules a single async batch delete via
+	 * cron. Comment TIDs must be collected here, while WP still has
+	 * the comment rows: `wp_delete_post( $id, true )` fires
+	 * `before_delete_post` first and only then iterates child comments,
+	 * so this is the last opportunity to read them.
+	 *
+	 * The trash path (`Publisher::delete_post()`) already cascades
+	 * comment deletes; this keeps the permanent-delete path symmetric
+	 * so unpublishing or hard-deleting a post does not orphan its
+	 * outbound replies on the PDS.
 	 *
 	 * @param int $post_id Post ID being deleted.
 	 */
@@ -338,8 +347,17 @@ class Atmosphere {
 		$bsky_tid = \get_post_meta( $post_id, Transformer\Post::META_TID, true );
 		$doc_tid  = \get_post_meta( $post_id, Transformer\Document::META_TID, true );
 
-		if ( $bsky_tid || $doc_tid ) {
-			\wp_schedule_single_event( \time(), 'atmosphere_delete_records', array( $bsky_tid, $doc_tid ) );
+		$comment_tids = \array_column(
+			Publisher::collect_published_comment_tids( $post_id ),
+			'tid'
+		);
+
+		if ( $bsky_tid || $doc_tid || ! empty( $comment_tids ) ) {
+			\wp_schedule_single_event(
+				\time(),
+				'atmosphere_delete_records',
+				array( $bsky_tid, $doc_tid, $comment_tids )
+			);
 		}
 	}
 
@@ -632,11 +650,15 @@ class Atmosphere {
 
 		\add_action(
 			'atmosphere_delete_records',
-			static function ( string $bsky_tid, string $doc_tid ): void {
-				Publisher::delete_post_by_tids( $bsky_tid, $doc_tid );
+			static function ( string $bsky_tid, string $doc_tid, $comment_tids = array() ): void {
+				Publisher::delete_post_by_tids(
+					$bsky_tid,
+					$doc_tid,
+					\is_array( $comment_tids ) ? $comment_tids : array()
+				);
 			},
 			10,
-			2
+			3
 		);
 
 		/*

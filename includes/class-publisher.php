@@ -247,10 +247,14 @@ class Publisher {
 	 * publish would refer to a non-existent record and the delete would
 	 * fail.
 	 *
+	 * Public so the permanent-delete path (`on_before_delete`) can
+	 * collect the same TIDs while comments still exist, before WP's
+	 * natural cascade removes them.
+	 *
 	 * @param int $post_id Post ID.
 	 * @return array<int, array{comment_id:int, tid:string}>
 	 */
-	private static function collect_published_comment_tids( int $post_id ): array {
+	public static function collect_published_comment_tids( int $post_id ): array {
 		$comments = \get_comments(
 			array(
 				'post_id'    => $post_id,
@@ -285,12 +289,13 @@ class Publisher {
 	 *
 	 * Used when a post is permanently deleted and post meta is no longer available.
 	 *
-	 * @param string $bsky_tid Bluesky post TID (may be empty).
-	 * @param string $doc_tid  Document TID (may be empty).
+	 * @param string   $bsky_tid     Bluesky post TID (may be empty).
+	 * @param string   $doc_tid      Document TID (may be empty).
+	 * @param string[] $comment_tids Comment reply TIDs to delete in the same batch.
 	 * @return array|\WP_Error
 	 */
-	public static function delete_post_by_tids( string $bsky_tid, string $doc_tid ): array|\WP_Error {
-		if ( ! $bsky_tid && ! $doc_tid ) {
+	public static function delete_post_by_tids( string $bsky_tid, string $doc_tid, array $comment_tids = array() ): array|\WP_Error {
+		if ( ! $bsky_tid && ! $doc_tid && empty( $comment_tids ) ) {
 			return new \WP_Error( 'atmosphere_not_published', \__( 'No TIDs provided.', 'atmosphere' ) );
 		}
 
@@ -309,6 +314,17 @@ class Publisher {
 				'$type'      => 'com.atproto.repo.applyWrites#delete',
 				'collection' => 'site.standard.document',
 				'rkey'       => $doc_tid,
+			);
+		}
+
+		foreach ( $comment_tids as $comment_tid ) {
+			if ( '' === (string) $comment_tid ) {
+				continue;
+			}
+			$writes[] = array(
+				'$type'      => 'com.atproto.repo.applyWrites#delete',
+				'collection' => 'app.bsky.feed.post',
+				'rkey'       => (string) $comment_tid,
 			);
 		}
 

@@ -840,4 +840,76 @@ class Test_Atmosphere extends WP_UnitTestCase {
 			'Counter must be cleared once the child proceeds.'
 		);
 	}
+
+	/**
+	 * Permanent delete must cascade to outbound comment replies.
+	 *
+	 * `before_delete_post` fires before WP iterates child comments, so
+	 * `on_before_delete` is the only point at which we can read those
+	 * comments' TIDs. The scheduled `atmosphere_delete_records` event
+	 * must include them so a single batch removes the post, document,
+	 * and every reply record.
+	 */
+	public function test_on_before_delete_includes_published_comment_tids() {
+		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		\update_post_meta( $post_id, Post::META_TID, 'bsky-tid-root' );
+		\update_post_meta( $post_id, Document::META_TID, 'doc-tid-root' );
+
+		// Two published comment replies.
+		$comment_a = self::factory()->comment->create(
+			array(
+				'comment_post_ID'  => $post_id,
+				'comment_approved' => '1',
+			)
+		);
+		\update_comment_meta( $comment_a, Comment::META_TID, 'bsky-tid-a' );
+		\update_comment_meta( $comment_a, Comment::META_URI, 'at://did:plc:test123/app.bsky.feed.post/bsky-tid-a' );
+
+		$comment_b = self::factory()->comment->create(
+			array(
+				'comment_post_ID'  => $post_id,
+				'comment_approved' => '1',
+			)
+		);
+		\update_comment_meta( $comment_b, Comment::META_TID, 'bsky-tid-b' );
+		\update_comment_meta( $comment_b, Comment::META_URI, 'at://did:plc:test123/app.bsky.feed.post/bsky-tid-b' );
+
+		// One reply with a TID but no URI — never reached the PDS, must be excluded.
+		$comment_unpublished = self::factory()->comment->create(
+			array(
+				'comment_post_ID'  => $post_id,
+				'comment_approved' => '1',
+			)
+		);
+		\update_comment_meta( $comment_unpublished, Comment::META_TID, 'bsky-tid-orphan' );
+
+		$this->atmosphere->on_before_delete( $post_id );
+
+		$expected_args = array( 'bsky-tid-root', 'doc-tid-root', array( 'bsky-tid-a', 'bsky-tid-b' ) );
+
+		$this->assertNotFalse(
+			\wp_next_scheduled( 'atmosphere_delete_records', $expected_args ),
+			'Expected atmosphere_delete_records to be scheduled with the published comment TIDs.'
+		);
+	}
+
+	/**
+	 * Posts with no published comment replies still schedule the
+	 * existing post + document delete pair — backward compatible.
+	 */
+	public function test_on_before_delete_without_comments_schedules_post_only() {
+		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		\update_post_meta( $post_id, Post::META_TID, 'bsky-tid-root' );
+		\update_post_meta( $post_id, Document::META_TID, 'doc-tid-root' );
+
+		$this->atmosphere->on_before_delete( $post_id );
+
+		$this->assertNotFalse(
+			\wp_next_scheduled(
+				'atmosphere_delete_records',
+				array( 'bsky-tid-root', 'doc-tid-root', array() )
+			),
+			'Expected atmosphere_delete_records with empty comment list when the post has no replies.'
+		);
+	}
 }
