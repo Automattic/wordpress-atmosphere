@@ -9,6 +9,7 @@ namespace Atmosphere\WP_Admin;
 
 \defined( 'ABSPATH' ) || exit;
 
+use Atmosphere\Atmosphere;
 use Atmosphere\Backfill;
 use Atmosphere\OAuth\Client;
 use Atmosphere\Publisher;
@@ -78,7 +79,7 @@ class Admin {
 				'sanitize_callback' => array( self::class, 'sanitize_long_form_composition' ),
 				'show_in_rest'      => array(
 					'schema' => array(
-						'enum' => array( 'link-card', 'truncate-link', 'teaser-thread' ),
+						'enum' => Atmosphere::LONG_FORM_STRATEGIES,
 					),
 				),
 			)
@@ -276,34 +277,23 @@ class Admin {
 	 */
 	public static function render_long_form_composition_field(): void {
 		$current = \get_option( 'atmosphere_long_form_composition', 'link-card' );
-		$choices = array(
-			'link-card'     => array(
-				'label' => \__( 'Link card', 'atmosphere' ),
-				'help'  => \__( 'A single Bluesky post with the title, an excerpt, and a permalink card. (Default — unchanged behavior.)', 'atmosphere' ),
-			),
-			'truncate-link' => array(
-				'label' => \__( 'Truncated post with link', 'atmosphere' ),
-				'help'  => \__( 'A single Bluesky post containing the body text followed by an inline permalink. No card.', 'atmosphere' ),
-			),
-			'teaser-thread' => array(
-				'label' => \__( 'Teaser thread', 'atmosphere' ),
-				'help'  => \__( 'A two-post Bluesky thread: a hook followed by a "continue reading" reply with the permalink.', 'atmosphere' ),
-			),
-		);
 
 		?>
 		<fieldset>
 			<legend class="screen-reader-text">
 				<?php \esc_html_e( 'Long-form composition', 'atmosphere' ); ?>
 			</legend>
-			<?php foreach ( $choices as $value => $choice ) : ?>
+			<?php
+			foreach ( Atmosphere::LONG_FORM_STRATEGIES as $strategy ) :
+				$choice = self::long_form_composition_choice( $strategy );
+				?>
 				<p>
 					<label>
 						<input
 							type="radio"
 							name="atmosphere_long_form_composition"
-							value="<?php echo \esc_attr( $value ); ?>"
-							<?php \checked( $current, $value ); ?>
+							value="<?php echo \esc_attr( $strategy ); ?>"
+							<?php \checked( $current, $strategy ); ?>
 						>
 						<strong><?php echo \esc_html( $choice['label'] ); ?></strong>
 					</label>
@@ -319,16 +309,42 @@ class Admin {
 	}
 
 	/**
+	 * Return the translatable label/help for a long-form strategy.
+	 *
+	 * @param string $strategy Strategy slug from `Atmosphere::LONG_FORM_STRATEGIES`.
+	 * @return array{label: string, help: string}
+	 */
+	private static function long_form_composition_choice( string $strategy ): array {
+		switch ( $strategy ) {
+			case 'truncate-link':
+				return array(
+					'label' => \__( 'Truncated post with link', 'atmosphere' ),
+					'help'  => \__( 'A single Bluesky post containing the body text followed by an inline permalink. No card.', 'atmosphere' ),
+				);
+			case 'teaser-thread':
+				return array(
+					'label' => \__( 'Teaser thread', 'atmosphere' ),
+					'help'  => \__( 'A two-post Bluesky thread: a hook followed by a "continue reading" reply with the permalink.', 'atmosphere' ),
+				);
+			case 'link-card':
+			default:
+				return array(
+					'label' => \__( 'Link card', 'atmosphere' ),
+					'help'  => \__( 'A single Bluesky post with the title, an excerpt, and a permalink card. (Default — unchanged behavior.)', 'atmosphere' ),
+				);
+		}
+	}
+
+	/**
 	 * Sanitize the long-form composition setting.
 	 *
 	 * @param mixed $value Submitted value.
 	 * @return string
 	 */
 	public static function sanitize_long_form_composition( $value ): string {
-		$allowed = array( 'link-card', 'truncate-link', 'teaser-thread' );
-		$value   = \is_string( $value ) ? \sanitize_text_field( $value ) : '';
+		$value = \is_string( $value ) ? \sanitize_text_field( $value ) : '';
 
-		return \in_array( $value, $allowed, true ) ? $value : 'link-card';
+		return \in_array( $value, Atmosphere::LONG_FORM_STRATEGIES, true ) ? $value : 'link-card';
 	}
 
 	/**

@@ -12,6 +12,7 @@
 namespace Atmosphere\Tests;
 
 use WP_UnitTestCase;
+use Atmosphere\Atmosphere;
 use Atmosphere\WP_Admin\Admin;
 
 /**
@@ -20,10 +21,28 @@ use Atmosphere\WP_Admin\Admin;
 class Test_Long_Form_Composition_Setting extends WP_UnitTestCase {
 
 	/**
+	 * Re-register the seed filter and clear option/transient state.
+	 *
+	 * Other test classes call `remove_all_filters( 'atmosphere_long_form_composition' )`
+	 * in their `tear_down`, which would strip the production seed registered once on
+	 * `plugins_loaded`. Re-add it here so each test in this class starts with the
+	 * expected filter wiring regardless of execution order.
+	 */
+	public function set_up(): void {
+		parent::set_up();
+
+		\remove_all_filters( 'atmosphere_long_form_composition' );
+		\add_filter( 'atmosphere_long_form_composition', array( Atmosphere::class, 'seed_long_form_composition' ), 1 );
+		\delete_transient( 'atmosphere_invalid_long_form_composition_logged' );
+	}
+
+	/**
 	 * Reset state between tests.
 	 */
 	public function tear_down(): void {
 		\delete_option( 'atmosphere_long_form_composition' );
+		\delete_transient( 'atmosphere_invalid_long_form_composition_logged' );
+		\remove_all_filters( 'atmosphere_long_form_composition' );
 
 		parent::tear_down();
 	}
@@ -74,8 +93,6 @@ class Test_Long_Form_Composition_Setting extends WP_UnitTestCase {
 		$result = \apply_filters( 'atmosphere_long_form_composition', 'link-card', null );
 
 		$this->assertSame( 'truncate-link', $result );
-
-		\remove_all_filters( 'atmosphere_long_form_composition' );
 	}
 
 	/**
