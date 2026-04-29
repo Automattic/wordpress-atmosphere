@@ -22,6 +22,12 @@ use Atmosphere\WP_Admin\Admin;
 class Atmosphere {
 
 	/**
+	 * Allowed values for the long-form composition strategy filter and
+	 * the matching `atmosphere_long_form_composition` option.
+	 */
+	public const LONG_FORM_STRATEGIES = array( 'link-card', 'truncate-link', 'teaser-thread' );
+
+	/**
 	 * Wire up all hooks.
 	 */
 	public function init(): void {
@@ -33,6 +39,13 @@ class Atmosphere {
 		 */
 		\add_action( 'init', array( Admin::class, 'register' ), 5 );
 		\add_action( 'init', array( Backfill::class, 'register' ), 5 );
+
+		/*
+		 * Seed the long-form composition strategy from the user's
+		 * setting. Priority 1 so any downstream filter at the default
+		 * priority can still override it per post.
+		 */
+		\add_filter( 'atmosphere_long_form_composition', array( self::class, 'seed_long_form_composition' ), 1 );
 
 		// REST route (always active for client-metadata).
 		\add_action( 'rest_api_init', array( Admin::class, 'register_rest_routes' ) );
@@ -352,6 +365,38 @@ class Atmosphere {
 		}
 
 		Client::refresh();
+	}
+
+	/**
+	 * Seed the `atmosphere_long_form_composition` filter from the option.
+	 *
+	 * Returns the configured strategy when valid; otherwise returns the
+	 * incoming `$strategy` (so downstream filters and the `link-card`
+	 * default still apply). An invalid stored value is logged at most
+	 * once per hour so operators can spot config drift.
+	 *
+	 * @param string $strategy Strategy passed in by `apply_filters()`.
+	 * @return string
+	 */
+	public static function seed_long_form_composition( string $strategy ): string {
+		$option = (string) \get_option( 'atmosphere_long_form_composition', 'link-card' );
+
+		if ( \in_array( $option, self::LONG_FORM_STRATEGIES, true ) ) {
+			return $option;
+		}
+
+		if ( ! \get_transient( 'atmosphere_invalid_long_form_composition_logged' ) ) {
+			// phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
+			\error_log(
+				\sprintf(
+					'[atmosphere] invalid `atmosphere_long_form_composition` option value %s; falling through to default',
+					\wp_json_encode( $option )
+				)
+			);
+			\set_transient( 'atmosphere_invalid_long_form_composition_logged', 1, \HOUR_IN_SECONDS );
+		}
+
+		return $strategy;
 	}
 
 	/**
