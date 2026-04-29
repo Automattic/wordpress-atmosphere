@@ -68,6 +68,10 @@ function deactivate() {
 	\wp_clear_scheduled_hook( 'atmosphere_sync_reactions' );
 	\wp_clear_scheduled_hook( 'atmosphere_sync_publication' );
 	\wp_clear_scheduled_hook( 'atmosphere_delete_records' );
+	\wp_clear_scheduled_hook( 'atmosphere_publish_comment' );
+	\wp_clear_scheduled_hook( 'atmosphere_update_comment' );
+	\wp_clear_scheduled_hook( 'atmosphere_delete_comment' );
+	\wp_clear_scheduled_hook( 'atmosphere_delete_comment_record' );
 	// Clear the legacy hook name in case an earlier PR-6 build scheduled it.
 	\wp_clear_scheduled_hook( 'atmosphere_sync_comments' );
 	\flush_rewrite_rules();
