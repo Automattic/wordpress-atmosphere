@@ -105,6 +105,26 @@ class Test_Post_Types extends WP_UnitTestCase {
 	}
 
 	/**
+	 * `Post_Types::sanitize()` dedupes the result so the saved option is
+	 * a canonical list.
+	 */
+	public function test_sanitize_dedupes() {
+		$result = Post_Types::sanitize( array( 'post', 'page', 'post', 'page' ) );
+
+		$this->assertSame( array( 'post', 'page' ), $result );
+	}
+
+	/**
+	 * `Post_Types::sanitize()` drops non-strings and empties so callers
+	 * never store junk.
+	 */
+	public function test_sanitize_drops_non_strings_and_empties() {
+		$result = Post_Types::sanitize( array( 'post', '', null, 42, true, 'page' ) );
+
+		$this->assertSame( array( 'post', 'page' ), $result );
+	}
+
+	/**
 	 * Filter callbacks returning duplicates / non-strings / empties are
 	 * normalised away so callers always get a clean string[] of unique slugs.
 	 */

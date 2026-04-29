@@ -295,8 +295,10 @@ class Admin {
 			</legend>
 			<?php
 			foreach ( $post_types as $post_type ) :
-				$is_saved    = \in_array( $post_type->name, $saved, true );
-				$is_external = ! $is_saved && \in_array( $post_type->name, $effective, true );
+				$is_saved        = \in_array( $post_type->name, $saved, true );
+				$is_effective    = \in_array( $post_type->name, $effective, true );
+				$is_external     = ! $is_saved && $is_effective;
+				$is_filtered_out = $is_saved && ! $is_effective;
 				?>
 				<p>
 					<label>
@@ -313,6 +315,11 @@ class Admin {
 						<br>
 						<span class="description">
 							<?php \esc_html_e( 'Enabled by another plugin or theme.', 'atmosphere' ); ?>
+						</span>
+					<?php elseif ( $is_filtered_out ) : ?>
+						<br>
+						<span class="description">
+							<?php \esc_html_e( 'Disabled by another plugin or theme — this post type will not be published.', 'atmosphere' ); ?>
 						</span>
 					<?php endif; ?>
 				</p>

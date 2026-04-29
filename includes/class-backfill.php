@@ -113,12 +113,14 @@ class Backfill {
 			\wp_send_json_error( 'No post IDs provided.' );
 		}
 
-		$results = array();
+		// Resolve supported post types once for the whole batch.
+		$supported = get_supported_post_types();
+		$results   = array();
 
 		foreach ( $post_ids as $post_id ) {
 			$post = \get_post( $post_id );
 
-			if ( ! $post || 'publish' !== $post->post_status || ! is_supported_post_type( $post->post_type ) ) {
+			if ( ! $post || 'publish' !== $post->post_status || ! \in_array( $post->post_type, $supported, true ) ) {
 				$results[] = array(
 					'id'      => $post_id,
 					'success' => false,

@@ -59,8 +59,9 @@ class Post_Types {
 	/**
 	 * Sanitize the option on save.
 	 *
-	 * Drops unknown or non-public post types and coerces empty input
-	 * (e.g. all checkboxes unchecked) to an empty array.
+	 * Normalises input to a clean string[] of unique public post type
+	 * slugs. Coerces empty input (e.g. all checkboxes unchecked) to an
+	 * empty array.
 	 *
 	 * @param mixed $value Submitted value.
 	 * @return string[]
@@ -71,8 +72,11 @@ class Post_Types {
 		}
 
 		$allowed = \get_post_types( array( 'public' => true ) );
-		$value   = \array_map( 'sanitize_text_field', (array) $value );
 
-		return \array_values( \array_intersect( $value, $allowed ) );
+		$value = \array_filter( (array) $value, '\is_string' );
+		$value = \array_map( 'sanitize_key', $value );
+		$value = \array_filter( $value );
+
+		return \array_values( \array_unique( \array_intersect( $value, $allowed ) ) );
 	}
 }

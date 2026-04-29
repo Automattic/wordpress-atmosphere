@@ -366,11 +366,19 @@ class Atmosphere {
 	 * Register async action hooks (called by WP-Cron).
 	 */
 	public static function register_async_hooks(): void {
+		/*
+		 * Publish/update cron callbacks re-check post-type support.
+		 * A user (or downstream filter) can disable a post type after a
+		 * cron event was queued, and we must not still publish it.
+		 *
+		 * The delete callback intentionally skips this check so cleanup
+		 * still runs after support is removed.
+		 */
 		\add_action(
 			'atmosphere_publish_post',
 			static function ( int $post_id ): void {
 				$post = \get_post( $post_id );
-				if ( $post && 'publish' === $post->post_status ) {
+				if ( $post && 'publish' === $post->post_status && is_supported_post_type( $post->post_type ) ) {
 					Publisher::publish( $post );
 				}
 			}
@@ -380,7 +388,7 @@ class Atmosphere {
 			'atmosphere_update_post',
 			static function ( int $post_id ): void {
 				$post = \get_post( $post_id );
-				if ( $post && 'publish' === $post->post_status ) {
+				if ( $post && 'publish' === $post->post_status && is_supported_post_type( $post->post_type ) ) {
 					Publisher::update( $post );
 				}
 			}
