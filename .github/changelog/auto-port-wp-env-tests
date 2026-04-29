@@ -1,0 +1,4 @@
+Significance: patch
+Type: changed
+
+Improve the development test setup so automated tests can run while another local WordPress environment is already using the default ports.

@@ -26,11 +26,14 @@ class Atmosphere {
 	 * Wire up all hooks.
 	 */
 	public function init(): void {
-		// Admin.
-		if ( \is_admin() ) {
-			Admin::register();
-			Backfill::register();
-		}
+		/*
+		 * Admin and Backfill self-register on init. This runs before
+		 * admin_init, rest_api_init, and wp_ajax_* so sub-hooks those
+		 * callbacks add are wired up in time, and it also ensures
+		 * REST/AJAX endpoints are available on non-admin requests.
+		 */
+		\add_action( 'init', array( Admin::class, 'register' ), 5 );
+		\add_action( 'init', array( Backfill::class, 'register' ), 5 );
 
 		// REST route (always active for client-metadata).
 		\add_action( 'rest_api_init', array( Admin::class, 'register_rest_routes' ) );

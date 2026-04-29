@@ -1,12 +1,12 @@
 === ATmosphere ===
-Contributors: automattic, pfefferle
+Contributors: automattic, pfefferle, kraftbj, ryancowles
 Tags: at-protocol, bluesky, fediverse, atproto, crossposting
 Requires at least: 6.2
 Tested up to: 7.0
 Requires PHP: 8.2
 Stable tag: unreleased
 License: GPL-2.0-or-later
-License URI: https://www.gnu.org/licenses/gpl-2.0.html
+License URI: https://spdx.org/licenses/GPL-2.0-or-later.html
 
 Publish WordPress posts to AT Protocol (Bluesky and standard.site) via native OAuth.
 
