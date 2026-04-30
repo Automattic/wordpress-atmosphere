@@ -1,0 +1,4 @@
+Significance: minor
+Type: changed
+
+Long-form teaser threads now use a 3-post default (hook, body chunk, "continue reading" reply with a link card), so the thread reliably surfaces on bsky.app profiles and the terminal post offers a clear path back to the WordPress article.
