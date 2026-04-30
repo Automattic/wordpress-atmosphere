@@ -350,7 +350,7 @@ class Admin {
 			case 'teaser-thread':
 				return array(
 					'label' => \__( 'Teaser thread', 'atmosphere' ),
-					'help'  => \__( 'A short Bluesky thread: a hook, a body chunk, and a "continue reading" reply with a link card back to the WordPress post.', 'atmosphere' ),
+					'help'  => \__( 'A short Bluesky thread: a hook, an optional body chunk for longer posts, and a "continue reading" reply with a link card back to the WordPress post.', 'atmosphere' ),
 				);
 			case 'link-card':
 			default:

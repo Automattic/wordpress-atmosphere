@@ -54,7 +54,10 @@ function build_at_uri( string $did, string $collection, string $rkey ): string {
 function sanitize_text( string $text ): string {
 	$text = \wp_strip_all_tags( $text );
 	$text = \html_entity_decode( $text, ENT_QUOTES, 'UTF-8' );
-	$text = \preg_replace( '/\s+/', ' ', $text );
+	// `/u` matches Unicode whitespace too — without it NBSP (U+00A0),
+	// ideographic space (U+3000), and similar survive both this collapse
+	// and the trim() below, masquerading as real prose downstream.
+	$text = \preg_replace( '/\s+/u', ' ', $text );
 
 	return \trim( $text );
 }

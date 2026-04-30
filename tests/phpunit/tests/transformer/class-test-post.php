@@ -987,6 +987,183 @@ class Test_Post extends WP_UnitTestCase {
 	}
 
 	/**
+	 * Hard-cap multibyte path: a body of unbroken multibyte runs (no
+	 * spaces, no sentence punctuation) forces `truncate_to_budget` into
+	 * the hard-cap branch where the hook ends in `…`. The body chunk
+	 * must continue from the next plain-text codepoint, not corrupt the
+	 * trailing multibyte char of the hook (which `rtrim($hook, '…')`
+	 * would do — this test pins the `mb_substr` safety the PR added).
+	 *
+	 * @covers ::build_long_form_records
+	 */
+	public function test_build_long_form_records_teaser_thread_hook_hard_cap_multibyte_chunk_offset() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'Titled',
+				// 100 × `日本語` = 300 codepoints, no whitespace or sentence
+				// punctuation, forcing the hook into the hard-cap path.
+				'post_content' => \str_repeat( '日本語', 100 ),
+				'post_excerpt' => '',
+			)
+		);
+
+		\add_filter( 'atmosphere_long_form_composition', fn() => 'teaser-thread' );
+
+		$records = ( new Post( $post ) )->build_long_form_records();
+
+		$this->assertCount( 3, $records );
+
+		$hook  = $records[0]['text'];
+		$chunk = $records[1]['text'];
+
+		$this->assertSame( '…', \mb_substr( $hook, -1 ), 'Hard-cap hook should end with the ellipsis marker.' );
+		$this->assertSame( 280, \mb_strlen( $hook ) );
+
+		// First codepoint of the chunk should be the next codepoint of
+		// the original prose — no UTF-8 corruption from a byte-level
+		// rtrim, no overlap with the hook's last consumed codepoint.
+		$consumed = \mb_substr( $hook, 0, 279 );
+		$this->assertSame(
+			\mb_substr( \str_repeat( '日本語', 100 ), \mb_strlen( $consumed ), 1 ),
+			\mb_substr( $chunk, 0, 1 )
+		);
+	}
+
+	/**
+	 * Body chunk falls back to a word boundary when its source has no
+	 * sentence punctuation in the first 280 chars. Pins the chunk's
+	 * truncation contract — the same sentence-preferred /
+	 * word-fallback / hard-cap order as the hook.
+	 *
+	 * @covers ::build_long_form_records
+	 */
+	public function test_build_long_form_records_teaser_thread_body_chunk_word_cut_fallback() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'Titled',
+				// One sentence so the hook lands at the period, then a
+				// long stream of 8-char words separated by spaces but
+				// with no further punctuation — forces the chunk into
+				// the word-boundary fallback branch.
+				'post_content' => 'First sentence. ' . \str_repeat( 'abcdefgh ijklmnop ', 36 ),
+				'post_excerpt' => '',
+			)
+		);
+
+		\add_filter( 'atmosphere_long_form_composition', fn() => 'teaser-thread' );
+
+		$records = ( new Post( $post ) )->build_long_form_records();
+
+		$this->assertCount( 3, $records );
+
+		$chunk = $records[1]['text'];
+
+		$this->assertLessThanOrEqual( 280, \mb_strlen( $chunk ) );
+		$this->assertDoesNotMatchRegularExpression(
+			'~\s\S{1,7}$~',
+			$chunk,
+			'Word-cut chunk should end at a complete word, not mid-word.'
+		);
+		// No sentence punctuation in the chunk source means the chunk
+		// itself should not contain `.`/`!`/`?` either.
+		$this->assertDoesNotMatchRegularExpression( '~[.!?]~', $chunk );
+	}
+
+	/**
+	 * Filter return is silently capped at 5 entries to bound the
+	 * compensating-delete blast radius on a mid-thread publish failure.
+	 *
+	 * @covers ::build_long_form_records
+	 */
+	public function test_build_long_form_records_teaser_thread_filter_caps_at_five_entries() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'Titled',
+				'post_content' => 'Body content with enough prose to compose a hook from.',
+			)
+		);
+
+		\add_filter( 'atmosphere_long_form_composition', fn() => 'teaser-thread' );
+		\add_filter(
+			'atmosphere_teaser_thread_posts',
+			fn() => array( 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven' )
+		);
+
+		$records = ( new Post( $post ) )->build_long_form_records();
+
+		$this->assertCount( 5, $records );
+		$this->assertSame( 'Five', $records[4]['text'] );
+		$this->assertArrayHasKey( 'embed', $records[4], 'Embed still attaches to the last entry after the cap.' );
+	}
+
+	/**
+	 * Filter that returns a non-array value triggers `_doing_it_wrong`
+	 * and falls back to the default — same treatment as the < 2 valid
+	 * entries case, so filter authors get visibility into both misuse
+	 * shapes.
+	 *
+	 * @covers ::build_long_form_records
+	 */
+	public function test_build_long_form_records_teaser_thread_filter_non_array_falls_back() {
+		$this->setExpectedIncorrectUsage( 'atmosphere_teaser_thread_posts' );
+
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'Titled',
+				'post_content' => 'Body content with enough prose to compose a hook from.',
+				'post_excerpt' => 'Curated excerpt.',
+			)
+		);
+
+		\add_filter( 'atmosphere_long_form_composition', fn() => 'teaser-thread' );
+		\add_filter( 'atmosphere_teaser_thread_posts', fn() => null );
+
+		$records = ( new Post( $post ) )->build_long_form_records();
+
+		$this->assertGreaterThanOrEqual( 2, \count( $records ) );
+		$this->assertMatchesRegularExpression(
+			'~^Continue reading: ~',
+			$records[ \count( $records ) - 1 ]['text']
+		);
+	}
+
+	/**
+	 * Filter that returns only whitespace-equivalent entries (NBSP,
+	 * ideographic space) is treated as < 2 valid entries after
+	 * sanitisation. Locks in the Unicode-whitespace behavior of
+	 * `sanitize_text` — without `/u` on its whitespace regex these
+	 * would survive trim and ship as fake records.
+	 *
+	 * @covers ::build_long_form_records
+	 */
+	public function test_build_long_form_records_teaser_thread_filter_whitespace_only_entries_fall_back() {
+		$this->setExpectedIncorrectUsage( 'atmosphere_teaser_thread_posts' );
+
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'Titled',
+				'post_content' => 'Body content with enough prose to compose a hook from.',
+				'post_excerpt' => 'Curated excerpt.',
+			)
+		);
+
+		\add_filter( 'atmosphere_long_form_composition', fn() => 'teaser-thread' );
+		\add_filter(
+			'atmosphere_teaser_thread_posts',
+			fn() => array( "\xC2\xA0\xC2\xA0", "\xE3\x80\x80\xE3\x80\x80" )
+		);
+
+		$records = ( new Post( $post ) )->build_long_form_records();
+
+		// Default (excerpt + body) should resurface; the CTA stays terminal.
+		$this->assertGreaterThanOrEqual( 2, \count( $records ) );
+		$this->assertMatchesRegularExpression(
+			'~^Continue reading: ~',
+			$records[ \count( $records ) - 1 ]['text']
+		);
+	}
+
+	/**
 	 * Every record in a thread carries the same `langs` array.
 	 *
 	 * @covers ::build_long_form_records

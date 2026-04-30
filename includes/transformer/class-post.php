@@ -706,7 +706,11 @@ class Post extends Base {
 			$chunk_source = \mb_substr( $plain, \mb_strlen( $consumed ) );
 		}
 
-		$chunk_source = \ltrim( $chunk_source );
+		// Unicode-aware leading-whitespace strip: `\ltrim` only handles
+		// ASCII whitespace, so NBSP (U+00A0) and ideographic space
+		// (U+3000) at the start of `$chunk_source` would otherwise leak
+		// into the body chunk as leading invisible whitespace.
+		$chunk_source = \preg_replace( '/^\s+/u', '', $chunk_source );
 		$cta          = $this->teaser_thread_cta_text();
 
 		$default = \mb_strlen( $chunk_source ) >= 10
@@ -716,6 +720,14 @@ class Post extends Base {
 		/**
 		 * Filters the default teaser-thread post texts.
 		 *
+		 * Filtered entries are not shipped verbatim: each string passes
+		 * through `sanitize_text()` and is clamped to 300 chars by
+		 * `truncate_to_budget()`, and the array is silently capped at 5
+		 * entries (PDS rate-limit blast-radius guard for mid-thread
+		 * failures). Returning a non-array, an empty array, or fewer
+		 * than 2 valid string entries triggers `_doing_it_wrong` and
+		 * falls back to the default array.
+		 *
 		 * @param string[] $posts Default array: 2 entries `[ hook, cta ]`
 		 *                        when the body is too short for a body
 		 *                        chunk, otherwise 3 entries
@@ -724,10 +736,15 @@ class Post extends Base {
 		 */
 		$filtered = \apply_filters( 'atmosphere_teaser_thread_posts', $default, $this->object );
 
-		// Defensive: a filter that returns a non-iterable or non-string
-		// entries would otherwise fatal on the caller's foreach. Fall
-		// back to the default on anything unexpected.
+		// Defensive: a non-iterable or empty filter return would fatal on
+		// the caller's foreach. Surface the misuse so the filter author
+		// notices, then fall back to the default array.
 		if ( ! \is_array( $filtered ) || empty( $filtered ) ) {
+			\_doing_it_wrong(
+				'atmosphere_teaser_thread_posts',
+				\esc_html__( 'The atmosphere_teaser_thread_posts filter must return a non-empty array of strings; falling back to the default teaser-thread shape.', 'atmosphere' ),
+				'unreleased'
+			);
 			return $default;
 		}
 
@@ -747,7 +764,7 @@ class Post extends Base {
 		if ( \count( $texts ) < 2 ) {
 			\_doing_it_wrong(
 				'atmosphere_teaser_thread_posts',
-				\esc_html__( 'The atmosphere_teaser_thread_posts filter must return at least 2 string entries; falling back to the default hook + body chunk + CTA shape.', 'atmosphere' ),
+				\esc_html__( 'The atmosphere_teaser_thread_posts filter must return at least 2 string entries; falling back to the default teaser-thread shape.', 'atmosphere' ),
 				'unreleased'
 			);
 			return $default;
