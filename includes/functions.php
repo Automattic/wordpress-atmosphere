@@ -128,3 +128,22 @@ function get_did(): string {
 function get_pds_endpoint(): string {
 	return get_connection()['pds_endpoint'] ?? '';
 }
+
+/**
+ * Get post types that publish to AT Protocol.
+ *
+ * @return string[] Post type slugs.
+ */
+function get_supported_post_types(): array {
+	return Post_Types::get_supported();
+}
+
+/**
+ * Whether a post type publishes to AT Protocol.
+ *
+ * @param string $post_type Post type slug.
+ * @return bool
+ */
+function is_supported_post_type( string $post_type ): bool {
+	return Post_Types::supports( $post_type );
+}

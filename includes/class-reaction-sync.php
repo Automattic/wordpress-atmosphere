@@ -594,6 +594,13 @@ class Reaction_Sync {
 	/**
 	 * Find a WordPress post by its Bluesky AT-URI.
 	 *
+	 * Checks the single-record meta key first (fast, unique per post,
+	 * covers every non-thread post) and falls back to the thread-URI
+	 * index that Publisher populates for every record — root and
+	 * every reply — under the `teaser-thread` strategy. Without the
+	 * fallback, a like/repost targeting a reply post would silently
+	 * fail to resolve back to the originating WordPress post.
+	 *
 	 * @param string $uri AT-URI.
 	 * @return int|false
 	 */
@@ -605,6 +612,20 @@ class Reaction_Sync {
 		$posts = \get_posts(
 			array(
 				'meta_key'       => BskyPost::META_URI, // phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_key
+				'meta_value'     => $uri, // phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_value
+				'posts_per_page' => 1,
+				'post_status'    => 'publish',
+				'fields'         => 'ids',
+			)
+		);
+
+		if ( ! empty( $posts ) ) {
+			return (int) $posts[0];
+		}
+
+		$posts = \get_posts(
+			array(
+				'meta_key'       => BskyPost::META_URI_INDEX, // phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_key
 				'meta_value'     => $uri, // phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_value
 				'posts_per_page' => 1,
 				'post_status'    => 'publish',

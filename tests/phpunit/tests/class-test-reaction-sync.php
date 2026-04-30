@@ -34,6 +34,21 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 	}
 
 	/**
+	 * Test that find_post_by_bsky_uri falls back to the thread URI index.
+	 */
+	public function test_find_post_by_bsky_uri_uses_thread_uri_index() {
+		$post_id   = self::factory()->post->create();
+		$reply_uri = 'at://did:plc:test123/app.bsky.feed.post/reply123';
+
+		\add_post_meta( $post_id, BskyPost::META_URI_INDEX, $reply_uri );
+
+		$method = new \ReflectionMethod( Reaction_Sync::class, 'find_post_by_bsky_uri' );
+		$method->setAccessible( true );
+
+		$this->assertSame( $post_id, $method->invoke( null, $reply_uri ) );
+	}
+
+	/**
 	 * Test that find_post_by_bsky_uri returns false for unknown URI.
 	 */
 	public function test_find_post_by_bsky_uri_not_found() {

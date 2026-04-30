@@ -24,6 +24,12 @@ use Atmosphere\WP_Admin\Admin;
 class Atmosphere {
 
 	/**
+	 * Allowed values for the long-form composition strategy filter and
+	 * the matching `atmosphere_long_form_composition` option.
+	 */
+	public const LONG_FORM_STRATEGIES = array( 'link-card', 'truncate-link', 'teaser-thread' );
+
+	/**
 	 * Comment meta key tracking how many times publish has been
 	 * deferred waiting for a parent comment to publish first.
 	 *
@@ -60,6 +66,13 @@ class Atmosphere {
 		 */
 		\add_action( 'init', array( Admin::class, 'register' ), 5 );
 		\add_action( 'init', array( Backfill::class, 'register' ), 5 );
+
+		/*
+		 * Seed the long-form composition strategy from the user's
+		 * setting. Priority 1 so any downstream filter at the default
+		 * priority can still override it per post.
+		 */
+		\add_filter( 'atmosphere_long_form_composition', array( self::class, 'seed_long_form_composition' ), 1 );
 
 		// REST route (always active for client-metadata).
 		\add_action( 'rest_api_init', array( Admin::class, 'register_rest_routes' ) );
@@ -131,7 +144,7 @@ class Atmosphere {
 			return;
 		}
 
-		if ( ! \in_array( $post->post_type, Backfill::syncable_post_types(), true ) ) {
+		if ( ! is_supported_post_type( $post->post_type ) ) {
 			return;
 		}
 
@@ -253,7 +266,7 @@ class Atmosphere {
 			return;
 		}
 
-		if ( ! \in_array( $post->post_type, Backfill::syncable_post_types(), true ) ) {
+		if ( ! is_supported_post_type( $post->post_type ) ) {
 			\status_header( 404 );
 			exit;
 		}
@@ -284,8 +297,34 @@ class Atmosphere {
 			return;
 		}
 
-		if ( ! \in_array( $post->post_type, Backfill::syncable_post_types(), true ) ) {
+		$is_new_publish = 'publish' === $new_status && 'publish' !== $old_status;
+		$is_update      = 'publish' === $new_status && 'publish' === $old_status;
+		$is_unpublish   = 'publish' === $old_status && 'publish' !== $new_status;
+
+		if ( ! $is_new_publish && ! $is_update && ! $is_unpublish ) {
+			// Transition between two non-publish states; nothing to schedule.
 			return;
+		}
+
+		/*
+		 * Publish-time decisions respect the supported list so sites
+		 * only sync the post types they've opted into. Unpublish is a
+		 * cleanup path for records that were already synced, so
+		 * narrowing support later must not orphan those remote records:
+		 * unpublish defers to publication metadata (TIDs on the post)
+		 * instead of the current support list.
+		 */
+		if ( ( $is_new_publish || $is_update ) && ! is_supported_post_type( $post->post_type ) ) {
+			return;
+		}
+
+		if ( $is_unpublish ) {
+			$bsky_tid = \get_post_meta( $post->ID, Transformer\Post::META_TID, true );
+			$doc_tid  = \get_post_meta( $post->ID, Transformer\Document::META_TID, true );
+			if ( ! $bsky_tid && ! $doc_tid ) {
+				// Unpublish of a post that was never synced — nothing to clean up.
+				return;
+			}
 		}
 
 		// Prevent infinite loops from meta updates.
@@ -295,36 +334,34 @@ class Atmosphere {
 
 		\do_action( 'atmosphere_publishing' );
 
-		if ( 'publish' === $new_status && 'publish' !== $old_status ) {
-			// New publish — schedule async.
+		if ( $is_new_publish ) {
 			\wp_schedule_single_event( \time(), 'atmosphere_publish_post', array( $post->ID ) );
-		} elseif ( 'publish' === $new_status && 'publish' === $old_status ) {
-			// Update.
+		} elseif ( $is_update ) {
 			\wp_schedule_single_event( \time(), 'atmosphere_update_post', array( $post->ID ) );
-		} elseif ( 'publish' === $old_status && 'publish' !== $new_status ) {
+		} else {
 			/*
-			 * Genuine unpublish — transitioning away from publish.
-			 * Use atmosphere_delete_post (not delete_records) so that
-			 * post meta is cleaned up on success, allowing a subsequent
-			 * restore (trash → publish) to republish correctly.
+			 * Genuine unpublish — use atmosphere_delete_post (not
+			 * delete_records) so post meta is cleaned up on success,
+			 * allowing a subsequent restore (trash → publish) to
+			 * republish correctly.
 			 */
-			$bsky_tid = \get_post_meta( $post->ID, Transformer\Post::META_TID, true );
-			$doc_tid  = \get_post_meta( $post->ID, Transformer\Document::META_TID, true );
-			if ( $bsky_tid || $doc_tid ) {
-				\wp_schedule_single_event( \time(), 'atmosphere_delete_post', array( $post->ID ) );
-			}
+			\wp_schedule_single_event( \time(), 'atmosphere_delete_post', array( $post->ID ) );
 		}
 	}
 
 	/**
 	 * Schedule AT Protocol record deletion before a post is permanently deleted.
 	 *
-	 * Captures the post TIDs and the TIDs of every published outbound
-	 * comment reply, then schedules a single async batch delete via
-	 * cron. Comment TIDs must be collected here, while WP still has
-	 * the comment rows: `wp_delete_post( $id, true )` fires
-	 * `before_delete_post` first and only then iterates child comments,
-	 * so this is the last opportunity to read them.
+	 * Captures every Bluesky TID (post root + thread replies + outbound
+	 * comment replies) and the document TID from post meta, then
+	 * schedules a single async batch delete via cron. Thread-strategy
+	 * posts read every TID from `Post::META_THREAD_RECORDS`; outbound
+	 * comment replies come from `Publisher::collect_published_comment_tids()`.
+	 *
+	 * Comment TIDs must be collected here, while WP still has the
+	 * comment rows: `wp_delete_post( $id, true )` fires `before_delete_post`
+	 * first and only then iterates child comments, so this is the last
+	 * opportunity to read them.
 	 *
 	 * The trash path (`Publisher::delete_post()`) already cascades
 	 * comment deletes; this keeps the permanent-delete path symmetric
@@ -340,23 +377,48 @@ class Atmosphere {
 
 		$post = \get_post( $post_id );
 
-		if ( ! $post || ! \in_array( $post->post_type, Backfill::syncable_post_types(), true ) ) {
+		if ( ! $post ) {
 			return;
 		}
 
-		$bsky_tid = \get_post_meta( $post_id, Transformer\Post::META_TID, true );
-		$doc_tid  = \get_post_meta( $post_id, Transformer\Document::META_TID, true );
+		/*
+		 * No support check here. Permanent delete is a cleanup path: if
+		 * the post has Atmosphere publication metadata it was synced at
+		 * some point, and the remote records must be removed even if the
+		 * post type has since been removed from the supported list.
+		 * Gating this on current support would orphan already-published
+		 * records whenever a site narrows its configuration.
+		 */
+		$bsky_tids = array();
+
+		$thread_records = \get_post_meta( $post_id, Transformer\Post::META_THREAD_RECORDS, true );
+		if ( \is_array( $thread_records ) && ! empty( $thread_records ) ) {
+			foreach ( $thread_records as $record ) {
+				if ( ! empty( $record['tid'] ) ) {
+					$bsky_tids[] = (string) $record['tid'];
+				}
+			}
+		}
+
+		if ( empty( $bsky_tids ) ) {
+			$legacy_tid = \get_post_meta( $post_id, Transformer\Post::META_TID, true );
+			if ( $legacy_tid ) {
+				$bsky_tids[] = (string) $legacy_tid;
+			}
+		}
+
+		$doc_tid = (string) \get_post_meta( $post_id, Transformer\Document::META_TID, true );
 
 		$comment_tids = \array_column(
 			Publisher::collect_published_comment_tids( $post_id ),
 			'tid'
 		);
 
-		if ( $bsky_tid || $doc_tid || ! empty( $comment_tids ) ) {
+		if ( ! empty( $bsky_tids ) || '' !== $doc_tid || ! empty( $comment_tids ) ) {
 			\wp_schedule_single_event(
 				\time(),
 				'atmosphere_delete_records',
-				array( $bsky_tid, $doc_tid, $comment_tids )
+				array( $bsky_tids, $doc_tid, $comment_tids )
 			);
 		}
 	}
@@ -608,14 +670,54 @@ class Atmosphere {
 	}
 
 	/**
+	 * Seed the `atmosphere_long_form_composition` filter from the option.
+	 *
+	 * Returns the configured strategy when valid; otherwise returns the
+	 * incoming `$strategy` (so downstream filters and the `link-card`
+	 * default still apply). An invalid stored value is logged at most
+	 * once per hour so operators can spot config drift.
+	 *
+	 * @param string $strategy Strategy passed in by `apply_filters()`.
+	 * @return string
+	 */
+	public static function seed_long_form_composition( string $strategy ): string {
+		$option = (string) \get_option( 'atmosphere_long_form_composition', 'link-card' );
+
+		if ( \in_array( $option, self::LONG_FORM_STRATEGIES, true ) ) {
+			return $option;
+		}
+
+		if ( ! \get_transient( 'atmosphere_invalid_long_form_composition_logged' ) ) {
+			// phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
+			\error_log(
+				\sprintf(
+					'[atmosphere] invalid `atmosphere_long_form_composition` option value %s; falling through to default',
+					\wp_json_encode( $option )
+				)
+			);
+			\set_transient( 'atmosphere_invalid_long_form_composition_logged', 1, \HOUR_IN_SECONDS );
+		}
+
+		return $strategy;
+	}
+
+	/**
 	 * Register async action hooks (called by WP-Cron).
 	 */
 	public static function register_async_hooks(): void {
+		/*
+		 * Publish/update cron callbacks re-check post-type support.
+		 * A user (or downstream filter) can disable a post type after a
+		 * cron event was queued, and we must not still publish it.
+		 *
+		 * The delete callback intentionally skips this check so cleanup
+		 * still runs after support is removed.
+		 */
 		\add_action(
 			'atmosphere_publish_post',
 			static function ( int $post_id ): void {
 				$post = \get_post( $post_id );
-				if ( $post && 'publish' === $post->post_status ) {
+				if ( $post && 'publish' === $post->post_status && is_supported_post_type( $post->post_type ) ) {
 					Publisher::publish_post( $post );
 				}
 			}
@@ -625,7 +727,7 @@ class Atmosphere {
 			'atmosphere_update_post',
 			static function ( int $post_id ): void {
 				$post = \get_post( $post_id );
-				if ( $post && 'publish' === $post->post_status ) {
+				if ( $post && 'publish' === $post->post_status && is_supported_post_type( $post->post_type ) ) {
 					Publisher::update_post( $post );
 				}
 			}
@@ -650,9 +752,9 @@ class Atmosphere {
 
 		\add_action(
 			'atmosphere_delete_records',
-			static function ( string $bsky_tid, string $doc_tid, $comment_tids = array() ): void {
+			static function ( $bsky_tids, string $doc_tid, $comment_tids = array() ): void {
 				Publisher::delete_post_by_tids(
-					$bsky_tid,
+					$bsky_tids,
 					$doc_tid,
 					\is_array( $comment_tids ) ? $comment_tids : array()
 				);

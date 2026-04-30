@@ -167,12 +167,101 @@ class API {
 	 * @return array|\WP_Error
 	 */
 	public static function apply_writes( array $writes ): array|\WP_Error {
+		/**
+		 * Short-circuits the applyWrites call before it reaches the PDS.
+		 *
+		 * Return a non-null array (success shape: `[ 'results' => [...] ]`,
+		 * with one array result per write) or a `WP_Error` to bypass the
+		 * real HTTP round-trip. Used by
+		 * the PHPUnit suite, the FOSSE end-to-end harness, and anything
+		 * else that needs to observe or mock a write batch without
+		 * actually hitting the PDS.
+		 *
+		 * A common use is `pre_http_request`, but that filter fires
+		 * inside `wp_remote_request`, which is only reached after the
+		 * DPoP proof has been built — so in test environments without
+		 * a real DPoP JWK, the call errors out first. This filter runs
+		 * before any of that.
+		 *
+		 * @param null|array|\WP_Error $short_circuit Short-circuit value. Return null to skip.
+		 * @param array                $writes        The write batch about to be sent.
+		 */
+		$short_circuit = \apply_filters( 'atmosphere_pre_apply_writes', null, $writes );
+
+		if ( \is_wp_error( $short_circuit ) ) {
+			return $short_circuit;
+		}
+
+		if ( \is_array( $short_circuit ) ) {
+			return self::validate_apply_writes_response( $short_circuit, $writes );
+		}
+
+		if ( null !== $short_circuit ) {
+			// Malformed filter return (scalar / object / etc). Surface as a
+			// WP_Error instead of letting PHP fatal on the `array|\WP_Error`
+			// return type.
+			return new \WP_Error(
+				'atmosphere_invalid_pre_apply_writes_return',
+				\__( 'atmosphere_pre_apply_writes must return null, an array, or a WP_Error.', 'atmosphere' )
+			);
+		}
+
 		return self::post(
 			'/xrpc/com.atproto.repo.applyWrites',
 			array(
 				'repo'   => get_did(),
 				'writes' => $writes,
 			)
+		);
+	}
+
+	/**
+	 * Validate a short-circuited applyWrites success response.
+	 *
+	 * @param array $response Short-circuited applyWrites response.
+	 * @param array $writes   Write batch the response represents.
+	 * @return array|\WP_Error
+	 */
+	private static function validate_apply_writes_response( array $response, array $writes ): array|\WP_Error {
+		if ( ! isset( $response['results'] )
+			|| ! \is_array( $response['results'] )
+			|| ! \array_is_list( $response['results'] )
+			|| \count( $response['results'] ) !== \count( $writes )
+		) {
+			return self::invalid_apply_writes_response();
+		}
+
+		foreach ( $response['results'] as $i => $result ) {
+			if ( ! \is_array( $result ) ) {
+				return self::invalid_apply_writes_response();
+			}
+
+			$type = $writes[ $i ]['$type'] ?? '';
+			if ( \in_array(
+				$type,
+				array(
+					'com.atproto.repo.applyWrites#create',
+					'com.atproto.repo.applyWrites#update',
+				),
+				true
+			) && ( empty( $result['uri'] ) || empty( $result['cid'] ) )
+			) {
+				return self::invalid_apply_writes_response();
+			}
+		}
+
+		return $response;
+	}
+
+	/**
+	 * Build a consistent malformed applyWrites response error.
+	 *
+	 * @return \WP_Error
+	 */
+	private static function invalid_apply_writes_response(): \WP_Error {
+		return new \WP_Error(
+			'atmosphere_invalid_pre_apply_writes_response',
+			\__( 'atmosphere_pre_apply_writes success responses must include one results array entry for each write.', 'atmosphere' )
 		);
 	}
 

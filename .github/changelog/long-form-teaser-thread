@@ -1,0 +1,4 @@
+Significance: minor
+Type: added
+
+Long-form posts can now be published to Bluesky as a short thread that points readers back to the full article. Sites can keep the existing single-post behavior, publish a shortened text version with a link, or use a two-post teaser thread. When a threaded post is edited, ATmosphere updates the existing Bluesky posts when possible so links and replies stay connected. If the publishing format changes, ATmosphere replaces the old Bluesky posts with new ones.
