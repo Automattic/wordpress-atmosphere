@@ -7,7 +7,7 @@
  * Author: Automattic
  * Author URI: https://automattic.com
  * License: GPL-2.0-or-later
- * License URI: https://www.gnu.org/licenses/gpl-2.0.html
+ * License URI: https://spdx.org/licenses/GPL-2.0-or-later.html
  * Text Domain: atmosphere
  * Requires PHP: 8.2
  * Requires at least: 6.2

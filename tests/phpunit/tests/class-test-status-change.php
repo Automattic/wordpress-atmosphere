@@ -368,4 +368,90 @@ class Test_Status_Change extends WP_UnitTestCase {
 			'No atmosphere_delete_records event should be scheduled for a post with no AT Protocol meta.'
 		);
 	}
+
+	/**
+	 * Unpublish of a previously-synced post with a post type no longer in
+	 * the syncable allowlist must still schedule remote cleanup. Without
+	 * this, narrowing the allowlist after publishing orphans the remote
+	 * records.
+	 */
+	public function test_unpublish_of_previously_synced_non_syncable_post_schedules_delete() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_status' => 'draft',
+				'post_type'   => 'page',
+			)
+		);
+
+		\update_post_meta( $post->ID, Post::META_TID, 'bsky-tid-123' );
+		\update_post_meta( $post->ID, Document::META_TID, 'doc-tid-456' );
+
+		$this->reset_publishing_action();
+		$this->atmosphere->on_status_change( 'draft', 'publish', $post );
+
+		$this->assertNotFalse(
+			\wp_next_scheduled( 'atmosphere_delete_post', array( $post->ID ) ),
+			'Unpublish must clean up remote records even when the post type is no longer in the syncable allowlist.'
+		);
+	}
+
+	/**
+	 * Permanent delete of a previously-synced post with a post type no
+	 * longer in the syncable allowlist must still capture TIDs and
+	 * schedule remote cleanup. Same rationale as the unpublish test
+	 * above: the allowlist governs new-publish eligibility, not cleanup.
+	 */
+	public function test_before_delete_of_previously_synced_non_syncable_post_schedules_delete_records() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_status' => 'publish',
+				'post_type'   => 'page',
+			)
+		);
+
+		\update_post_meta( $post->ID, Post::META_TID, 'bsky-tid-123' );
+		\update_post_meta( $post->ID, Document::META_TID, 'doc-tid-456' );
+
+		$this->atmosphere->on_before_delete( $post->ID );
+
+		$this->assertNotFalse(
+			\wp_next_scheduled(
+				'atmosphere_delete_records',
+				array( array( 'bsky-tid-123' ), 'doc-tid-456' )
+			),
+			'Permanent delete must schedule remote cleanup even when the post type is no longer in the syncable allowlist.'
+		);
+	}
+
+	/**
+	 * Regression guard for the split gate: narrowing the allowlist via
+	 * the `atmosphere_syncable_post_types` filter must still block a
+	 * new-publish of a post type the filter excludes. Only cleanup
+	 * paths are meant to bypass the allowlist.
+	 */
+	public function test_new_publish_respects_allowlist_even_when_filter_narrows() {
+		$narrow = static function () {
+			return array( 'page' );
+		};
+		\add_filter( 'atmosphere_syncable_post_types', $narrow );
+
+		try {
+			$post = self::factory()->post->create_and_get(
+				array(
+					'post_status' => 'publish',
+					'post_type'   => 'post',
+				)
+			);
+
+			$this->reset_publishing_action();
+			$this->atmosphere->on_status_change( 'publish', 'draft', $post );
+
+			$this->assertFalse(
+				\wp_next_scheduled( 'atmosphere_publish_post', array( $post->ID ) ),
+				'New publish of a post type outside the allowlist must not be scheduled.'
+			);
+		} finally {
+			\remove_filter( 'atmosphere_syncable_post_types', $narrow );
+		}
+	}
 }

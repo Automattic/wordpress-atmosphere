@@ -10,10 +10,11 @@ namespace Atmosphere\WP_Admin;
 \defined( 'ABSPATH' ) || exit;
 
 use Atmosphere\Atmosphere;
-use Atmosphere\Backfill;
 use Atmosphere\OAuth\Client;
+use Atmosphere\Post_Types;
 use Atmosphere\Publisher;
 use function Atmosphere\get_connection;
+use function Atmosphere\get_supported_post_types;
 use function Atmosphere\is_connected;
 
 /**
@@ -87,6 +88,23 @@ class Admin {
 
 		\register_setting(
 			'atmosphere',
+			'atmosphere_support_post_types',
+			array(
+				'type'              => 'array',
+				'description'       => 'Post types to publish to AT Protocol.',
+				'default'           => array( 'post' ),
+				'sanitize_callback' => array( Post_Types::class, 'sanitize' ),
+				'show_in_rest'      => array(
+					'schema' => array(
+						'type'  => 'array',
+						'items' => array( 'type' => 'string' ),
+					),
+				),
+			)
+		);
+
+		\register_setting(
+			'atmosphere',
 			'atmosphere_handle',
 			array(
 				'type'              => 'string',
@@ -137,6 +155,14 @@ class Admin {
 			'atmosphere_long_form_composition',
 			\__( 'Long-form posts', 'atmosphere' ),
 			array( self::class, 'render_long_form_composition_field' ),
+			'atmosphere',
+			'atmosphere_publishing'
+		);
+
+		\add_settings_field(
+			'atmosphere_support_post_types',
+			\__( 'Post types', 'atmosphere' ),
+			array( self::class, 'render_support_post_types_field' ),
 			'atmosphere',
 			'atmosphere_publishing'
 		);
@@ -348,6 +374,64 @@ class Admin {
 	}
 
 	/**
+	 * Render the post type support checkboxes.
+	 */
+	public static function render_support_post_types_field(): void {
+		$post_types = \get_post_types( array( 'public' => true ), 'objects' );
+
+		/*
+		 * The checkbox state reflects the saved option only. Native
+		 * `add_post_type_support()` opt-ins and the syncable filter are
+		 * surfaced as a note below the label so the user can see when a
+		 * post type is enabled outside this UI.
+		 */
+		$saved     = (array) \get_option( 'atmosphere_support_post_types', array( 'post' ) );
+		$saved     = \array_filter( \array_map( 'sanitize_key', $saved ) );
+		$effective = get_supported_post_types();
+		?>
+		<fieldset>
+			<legend class="screen-reader-text">
+				<?php \esc_html_e( 'Post types', 'atmosphere' ); ?>
+			</legend>
+			<?php
+			foreach ( $post_types as $post_type ) :
+				$is_saved        = \in_array( $post_type->name, $saved, true );
+				$is_effective    = \in_array( $post_type->name, $effective, true );
+				$is_external     = ! $is_saved && $is_effective;
+				$is_filtered_out = $is_saved && ! $is_effective;
+				?>
+				<p>
+					<label>
+						<input
+							type="checkbox"
+							name="atmosphere_support_post_types[]"
+							value="<?php echo \esc_attr( $post_type->name ); ?>"
+							<?php \checked( $is_saved ); ?>
+						>
+						<?php echo \esc_html( $post_type->label ); ?>
+						<code><?php echo \esc_html( $post_type->name ); ?></code>
+					</label>
+					<?php if ( $is_external ) : ?>
+						<br>
+						<span class="description">
+							<?php \esc_html_e( 'Enabled by another plugin or theme.', 'atmosphere' ); ?>
+						</span>
+					<?php elseif ( $is_filtered_out ) : ?>
+						<br>
+						<span class="description">
+							<?php \esc_html_e( 'Disabled by another plugin or theme — this post type will not be published.', 'atmosphere' ); ?>
+						</span>
+					<?php endif; ?>
+				</p>
+			<?php endforeach; ?>
+		</fieldset>
+		<p class="description">
+			<?php \esc_html_e( 'Select which post types are published to AT Protocol.', 'atmosphere' ); ?>
+		</p>
+		<?php
+	}
+
+	/**
 	 * Render the Backfill field.
 	 */
 	public static function render_backfill_field(): void {
@@ -499,7 +583,7 @@ class Admin {
 			return;
 		}
 
-		foreach ( Backfill::syncable_post_types() as $post_type ) {
+		foreach ( get_supported_post_types() as $post_type ) {
 			\add_meta_box(
 				'atmosphere',
 				\__( 'ATmosphere', 'atmosphere' ),
