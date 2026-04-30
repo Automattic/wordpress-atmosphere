@@ -552,9 +552,9 @@ class Test_Publisher extends WP_UnitTestCase {
 			array(
 				'post_title'   => 'A Long-Form Post',
 				'post_excerpt' => 'A curated excerpt long enough to compose a hook from.',
-				// Empty body so the hook absorbs everything and the default
-				// shape stays at 2 entries — the protocol assertions below
-				// expect a single reply write.
+				// Empty body: hook comes from the excerpt and there is no
+				// body chunk, so the default shape is [hook, cta] and the
+				// protocol assertions below expect a single reply write.
 				'post_content' => '',
 			)
 		);
