@@ -71,6 +71,18 @@ class Test_Functions extends WP_UnitTestCase {
 	}
 
 	/**
+	 * `/u`-mode preg_replace returns null on malformed UTF-8; the
+	 * function must not TypeError when that happens. Locks in the
+	 * defensive `is_string` fallback.
+	 */
+	public function test_sanitize_text_handles_invalid_utf8_without_fataling() {
+		// 0xC3 0x28 is a malformed UTF-8 sequence (continuation byte missing).
+		$result = sanitize_text( "ok \xC3\x28 still here" );
+		$this->assertIsString( $result );
+		$this->assertNotSame( '', $result );
+	}
+
+	/**
 	 * Test truncate_text respects limit.
 	 */
 	public function test_truncate_text_short() {

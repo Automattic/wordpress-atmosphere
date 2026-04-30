@@ -57,7 +57,10 @@ function sanitize_text( string $text ): string {
 	// `/u` matches Unicode whitespace too — without it NBSP (U+00A0),
 	// ideographic space (U+3000), and similar survive both this collapse
 	// and the trim() below, masquerading as real prose downstream.
-	$text = \preg_replace( '/\s+/u', ' ', $text );
+	// PCRE in `/u` mode returns null on invalid UTF-8; fall back to the
+	// pre-replacement text so trim() doesn't TypeError on PHP 8.1+.
+	$collapsed = \preg_replace( '/\s+/u', ' ', $text );
+	$text      = \is_string( $collapsed ) ? $collapsed : $text;
 
 	return \trim( $text );
 }

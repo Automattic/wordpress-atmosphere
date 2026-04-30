@@ -709,8 +709,11 @@ class Post extends Base {
 		// Unicode-aware leading-whitespace strip: `\ltrim` only handles
 		// ASCII whitespace, so NBSP (U+00A0) and ideographic space
 		// (U+3000) at the start of `$chunk_source` would otherwise leak
-		// into the body chunk as leading invisible whitespace.
-		$chunk_source = \preg_replace( '/^\s+/u', '', $chunk_source );
+		// into the body chunk as leading invisible whitespace. PCRE in
+		// `/u` mode returns null on invalid UTF-8; fall back to the
+		// pre-strip slice so the `mb_strlen` check below stays string-safe.
+		$stripped     = \preg_replace( '/^\s+/u', '', $chunk_source );
+		$chunk_source = \is_string( $stripped ) ? $stripped : $chunk_source;
 		$cta          = $this->teaser_thread_cta_text();
 
 		$default = \mb_strlen( $chunk_source ) >= 10
