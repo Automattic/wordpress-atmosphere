@@ -1002,4 +1002,161 @@ class Test_Atmosphere extends WP_UnitTestCase {
 			\remove_filter( 'atmosphere_syncable_post_types', $narrow );
 		}
 	}
+
+	/**
+	 * `Atmosphere\deactivate` clears every plugin-owned cron hook so a
+	 * deactivate→reactivate cycle (or deactivate→reconnect→reactivate)
+	 * cannot fire stale events against the new connection's repo.
+	 */
+	public function test_deactivate_clears_all_cron_hooks() {
+		$hooks = \Atmosphere\get_cron_hooks();
+
+		foreach ( $hooks as $hook ) {
+			\wp_schedule_single_event( \time() + 60, $hook, array() );
+		}
+		foreach ( $hooks as $hook ) {
+			$this->assertNotFalse( \wp_next_scheduled( $hook ), "Setup: {$hook} must be scheduled." );
+		}
+
+		\Atmosphere\deactivate();
+
+		foreach ( $hooks as $hook ) {
+			$this->assertFalse(
+				\wp_next_scheduled( $hook ),
+				"deactivate() must clear scheduled hook: {$hook}"
+			);
+		}
+	}
+
+	/**
+	 * `Client::disconnect` clears the same crons as `deactivate()`.
+	 *
+	 * A disconnect→reconnect-to-different-account cycle would otherwise
+	 * fire `atmosphere_delete_records` /
+	 * `atmosphere_delete_comment_record` against the new account's
+	 * repo, since neither cron handler re-checks the connection's DID
+	 * before issuing the delete.
+	 */
+	public function test_disconnect_clears_all_cron_hooks() {
+		$hooks = \Atmosphere\get_cron_hooks();
+
+		foreach ( $hooks as $hook ) {
+			\wp_schedule_single_event( \time() + 60, $hook, array() );
+		}
+
+		\Atmosphere\OAuth\Client::disconnect();
+
+		foreach ( $hooks as $hook ) {
+			$this->assertFalse(
+				\wp_next_scheduled( $hook ),
+				"Client::disconnect must clear scheduled hook: {$hook}"
+			);
+		}
+	}
+
+	/**
+	 * Race: a moderator unapproves the comment while applyWrites is in
+	 * flight. `Comment::get_rkey` writes META_TID before the API call,
+	 * but META_URI is only written after the call returns. The status
+	 * transition's cleanup hook requires META_URI, so it silently
+	 * short-circuits — and once the in-flight publish lands, the
+	 * record is live on Bluesky with no scheduled cleanup.
+	 *
+	 * After publish, `reconcile_comment_after_publish` re-fetches the
+	 * comment; if it is no longer eligible the meta we just wrote is
+	 * cleared and the TID-only delete cron used by the permanent-delete
+	 * path is scheduled.
+	 */
+	public function test_reconcile_after_publish_schedules_delete_when_comment_unapproved_mid_publish() {
+		$comment    = $this->make_eligible_comment();
+		$comment_id = (int) $comment->comment_ID;
+
+		$captured_tid = '';
+		\add_filter(
+			'atmosphere_pre_apply_writes',
+			static function ( $short, $writes ) use ( $comment_id, &$captured_tid ) {
+				$captured_tid = $writes[0]['rkey'] ?? '';
+
+				/*
+				 * Simulate the moderator unapproving the comment during
+				 * the in-flight applyWrites. The status transition
+				 * fires on_comment_status_change which would normally
+				 * schedule a delete, but META_URI is empty during the
+				 * race window so it short-circuits.
+				 */
+				\wp_set_comment_status( $comment_id, 'hold' );
+
+				return array(
+					'results' => array(
+						array(
+							'uri' => 'at://did:plc:test123/app.bsky.feed.post/' . $captured_tid,
+							'cid' => 'bafyreibraced',
+						),
+					),
+				);
+			},
+			10,
+			2
+		);
+
+		\do_action( 'atmosphere_publish_comment', $comment_id );
+
+		$this->assertNotEmpty( $captured_tid, 'applyWrites filter must have fired.' );
+
+		$this->assertEmpty(
+			\get_comment_meta( $comment_id, Comment::META_TID, true ),
+			'Reconcile must clear the orphan TID meta.'
+		);
+		$this->assertEmpty(
+			\get_comment_meta( $comment_id, Comment::META_URI, true ),
+			'Reconcile must clear the orphan URI meta.'
+		);
+
+		$this->assertNotFalse(
+			\wp_next_scheduled( 'atmosphere_delete_comment_record', array( $captured_tid ) ),
+			'Reconcile must schedule delete-by-TID for the orphan record.'
+		);
+
+		\remove_all_filters( 'atmosphere_pre_apply_writes' );
+		\wp_clear_scheduled_hook( 'atmosphere_delete_comment_record' );
+	}
+
+	/**
+	 * If the comment is still eligible after publish (the normal case),
+	 * reconcile is a no-op: meta survives and no delete is scheduled.
+	 */
+	public function test_reconcile_after_publish_is_noop_for_still_eligible_comment() {
+		$comment    = $this->make_eligible_comment();
+		$comment_id = (int) $comment->comment_ID;
+
+		\add_filter(
+			'atmosphere_pre_apply_writes',
+			static function ( $short, $writes ) {
+				$results = array();
+				foreach ( $writes as $write ) {
+					$rkey      = $write['rkey'] ?? 'tid';
+					$results[] = array(
+						'uri' => 'at://did:plc:test123/app.bsky.feed.post/' . $rkey,
+						'cid' => 'bafyreibtest',
+					);
+				}
+				return array( 'results' => $results );
+			},
+			10,
+			2
+		);
+
+		\do_action( 'atmosphere_publish_comment', $comment_id );
+
+		$this->assertNotEmpty(
+			\get_comment_meta( $comment_id, Comment::META_URI, true ),
+			'Eligible comment must keep its URI meta.'
+		);
+		$this->assertFalse(
+			\wp_next_scheduled( 'atmosphere_delete_comment_record' ),
+			'No delete should be scheduled when the comment is still eligible.'
+		);
+
+		\remove_all_filters( 'atmosphere_pre_apply_writes' );
+	}
 }

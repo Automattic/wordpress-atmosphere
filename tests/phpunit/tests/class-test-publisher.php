@@ -1765,4 +1765,89 @@ class Test_Publisher extends WP_UnitTestCase {
 		$this->assertSame( '', \get_post_meta( $post->ID, Post::META_TID, true ) );
 		$this->assertSame( '', \get_post_meta( $post->ID, Post::META_CID, true ) );
 	}
+
+	/**
+	 * `delete_post_by_tids` chunks oversized batches into multiple
+	 * `applyWrites` calls. The lexicon caps a single batch at 200 writes;
+	 * a high-traffic post with hundreds of outbound comment replies must
+	 * still clean up cleanly rather than failing the whole cascade.
+	 */
+	public function test_delete_post_by_tids_chunks_oversized_batches() {
+		$this->fail_call_indexes = array();
+		$this->register_capture( 0 );
+
+		$comment_tids = array();
+		for ( $i = 0; $i < 250; $i++ ) {
+			$comment_tids[] = 'reply-' . $i;
+		}
+
+		$result = Publisher::delete_post_by_tids(
+			array( 'root-tid' ),
+			'doc-tid',
+			$comment_tids
+		);
+
+		$this->assertIsArray( $result );
+		// 252 total writes / 100 per chunk = 3 calls.
+		$this->assertCount( 3, $this->captured_calls );
+
+		$total_writes = 0;
+		foreach ( $this->captured_calls as $call ) {
+			$total_writes += \count( $call['writes'] );
+			$this->assertLessThanOrEqual( 100, \count( $call['writes'] ) );
+		}
+		$this->assertSame( 252, $total_writes );
+	}
+
+	/**
+	 * Chunked deletes report the chunk index and how many chunks
+	 * succeeded when one fails partway through, so operators can see
+	 * the partial-success state in the error log rather than treating
+	 * it as a clean failure.
+	 */
+	public function test_delete_post_by_tids_chunked_failure_carries_progress_data() {
+		$this->fail_call_indexes = array(
+			2 => new \WP_Error( 'atmosphere_pds_500', 'PDS rejected batch.' ),
+		);
+		$this->register_capture( 0 );
+
+		$comment_tids = array();
+		for ( $i = 0; $i < 250; $i++ ) {
+			$comment_tids[] = 'reply-' . $i;
+		}
+
+		$result = Publisher::delete_post_by_tids(
+			array( 'root-tid' ),
+			'doc-tid',
+			$comment_tids
+		);
+
+		$this->assertWPError( $result );
+		$this->assertSame( 'atmosphere_pds_500', $result->get_error_code() );
+
+		$data = $result->get_error_data( 'atmosphere_chunked_apply_writes' );
+		$this->assertIsArray( $data );
+		$this->assertSame( 1, $data['chunk_index'] );
+		$this->assertSame( 3, $data['chunks_total'] );
+		$this->assertSame( 1, $data['chunks_succeeded'] );
+	}
+
+	/**
+	 * Small batches (<= chunk size) take the single-call path and do
+	 * not touch the chunking layer's results-merging.
+	 */
+	public function test_delete_post_by_tids_small_batch_uses_single_call() {
+		$this->fail_call_indexes = array();
+		$this->register_capture( 0 );
+
+		$result = Publisher::delete_post_by_tids(
+			array( 'root-tid' ),
+			'doc-tid',
+			array( 'reply-1', 'reply-2' )
+		);
+
+		$this->assertIsArray( $result );
+		$this->assertCount( 1, $this->captured_calls );
+		$this->assertCount( 4, $this->captured_calls[0]['writes'] );
+	}
 }

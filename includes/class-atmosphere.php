@@ -753,11 +753,27 @@ class Atmosphere {
 		\add_action(
 			'atmosphere_delete_records',
 			static function ( $bsky_tids, string $doc_tid, $comment_tids = array() ): void {
-				Publisher::delete_post_by_tids(
-					$bsky_tids,
-					$doc_tid,
-					\is_array( $comment_tids ) ? $comment_tids : array()
-				);
+				$comment_tids = \is_array( $comment_tids ) ? $comment_tids : array();
+				$result       = Publisher::delete_post_by_tids( $bsky_tids, $doc_tid, $comment_tids );
+
+				if ( \is_wp_error( $result ) ) {
+					/*
+					 * One-shot cron event with no retry: dropping this error
+					 * would orphan every record in the cascade (root + thread
+					 * replies + outbound comment replies + document) on the
+					 * PDS with no operator-visible breadcrumb.
+					 */
+					\error_log( // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
+						\sprintf(
+							'[atmosphere] delete_records failed (bsky=%d, doc=%s, comments=%d): %s — %s',
+							\is_array( $bsky_tids ) ? \count( $bsky_tids ) : (int) ! empty( $bsky_tids ),
+							$doc_tid ? 'yes' : 'no',
+							\count( $comment_tids ),
+							$result->get_error_code(),
+							$result->get_error_message()
+						)
+					);
+				}
 			},
 			10,
 			3
@@ -794,6 +810,10 @@ class Atmosphere {
 
 				$result = Publisher::publish_comment( $comment );
 				self::log_cron_error( 'publish_comment', $comment_id, $result );
+
+				if ( ! \is_wp_error( $result ) ) {
+					self::reconcile_comment_after_publish( $comment_id );
+				}
 			}
 		);
 
@@ -945,5 +965,52 @@ class Atmosphere {
 				$result->get_error_message()
 			)
 		);
+	}
+
+	/**
+	 * Roll back a successful publish if the comment became ineligible
+	 * during the in-flight applyWrites.
+	 *
+	 * The race: `Comment::get_rkey()` persists META_TID before the API
+	 * call, and META_URI is only written after success. Both
+	 * `schedule_comment_delete` and `on_comment_before_delete` require
+	 * META_URI to schedule cleanup. A moderator who deletes or
+	 * unapproves the comment while applyWrites is in flight therefore
+	 * leaves a live Bluesky reply with no scheduled cleanup once
+	 * `store_comment_result()` finally writes META_URI.
+	 *
+	 * Re-checking eligibility after publish closes that race. If the
+	 * comment is gone or no longer eligible, we clear the meta we just
+	 * wrote and schedule the same TID-only delete event the
+	 * permanent-delete path uses, so transient PDS failures retry via
+	 * the standard cleanup channel rather than getting dropped here.
+	 *
+	 * @param int $comment_id Comment ID just published.
+	 */
+	private static function reconcile_comment_after_publish( int $comment_id ): void {
+		$fresh = \get_comment( $comment_id );
+
+		if ( $fresh instanceof \WP_Comment && self::should_publish_comment( $fresh ) ) {
+			return;
+		}
+
+		$tid = (string) \get_comment_meta( $comment_id, Comment::META_TID, true );
+
+		\delete_comment_meta( $comment_id, Comment::META_TID );
+		\delete_comment_meta( $comment_id, Comment::META_URI );
+		\delete_comment_meta( $comment_id, Comment::META_CID );
+		\delete_comment_meta( $comment_id, Reaction_Sync::META_SOURCE_ID );
+
+		if ( '' === $tid ) {
+			return;
+		}
+
+		$args = array( $tid );
+
+		if ( \wp_next_scheduled( 'atmosphere_delete_comment_record', $args ) ) {
+			return;
+		}
+
+		\wp_schedule_single_event( \time(), 'atmosphere_delete_comment_record', $args );
 	}
 }

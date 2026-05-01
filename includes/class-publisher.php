@@ -872,6 +872,15 @@ class Publisher {
 	}
 
 	/**
+	 * Maximum writes per `applyWrites` call.
+	 *
+	 * The AT Protocol `com.atproto.repo.applyWrites` lexicon caps the
+	 * `writes` array at 200. We chunk well under that to leave headroom
+	 * and keep request bodies small.
+	 */
+	private const APPLY_WRITES_CHUNK_SIZE = 100;
+
+	/**
 	 * Delete every bsky record (root + thread replies + outbound
 	 * comment replies) and the document for a post.
 	 *
@@ -879,8 +888,12 @@ class Publisher {
 	 * single-record posts (falls back to the mirrored `META_URI` /
 	 * `META_TID` / `META_CID` keys). Outbound comment replies live in
 	 * our own repo keyed by their own TIDs — the AT Protocol has no
-	 * cascade semantics, so they have to be enumerated and bundled into
-	 * the same `applyWrites` batch or they orphan on Bluesky.
+	 * cascade semantics, so they have to be enumerated alongside the
+	 * post records or they orphan on Bluesky.
+	 *
+	 * Writes are chunked into bounded `applyWrites` calls (the lexicon
+	 * caps a single batch at 200), so a high-traffic post with a long
+	 * reply tail still cleans up cleanly.
 	 *
 	 * @param \WP_Post $post WordPress post.
 	 * @return array|\WP_Error
@@ -932,7 +945,7 @@ class Publisher {
 			);
 		}
 
-		$result = API::apply_writes( $writes );
+		$result = self::apply_writes_chunked( $writes );
 
 		if ( \is_wp_error( $result ) ) {
 			// Leave meta intact so a retry can complete.
@@ -1051,7 +1064,63 @@ class Publisher {
 			);
 		}
 
-		return API::apply_writes( $writes );
+		return self::apply_writes_chunked( $writes );
+	}
+
+	/**
+	 * Submit a `writes` batch in lexicon-bounded chunks.
+	 *
+	 * The PDS rejects an `applyWrites` whose `writes` array exceeds 200
+	 * entries (`InvalidRequest`), so a high-traffic post with hundreds of
+	 * outbound comment replies would otherwise fail the entire cascade
+	 * atomically.
+	 *
+	 * Chunks are submitted sequentially. The first chunk failure is
+	 * returned; the operator-visible error code includes how many chunks
+	 * had already succeeded so the partial-success state is visible. The
+	 * caller is responsible for keeping local meta intact on error so a
+	 * retry can complete the remaining chunks.
+	 *
+	 * On success, results from each chunk are concatenated into a single
+	 * `results` array — preserving the shape callers expect from
+	 * `API::apply_writes()`.
+	 *
+	 * @param array $writes Full write batch.
+	 * @return array|\WP_Error
+	 */
+	private static function apply_writes_chunked( array $writes ): array|\WP_Error {
+		if ( \count( $writes ) <= self::APPLY_WRITES_CHUNK_SIZE ) {
+			return API::apply_writes( $writes );
+		}
+
+		$chunks    = \array_chunk( $writes, self::APPLY_WRITES_CHUNK_SIZE );
+		$total     = \count( $chunks );
+		$results   = array();
+		$succeeded = 0;
+
+		foreach ( $chunks as $index => $chunk ) {
+			$response = API::apply_writes( $chunk );
+
+			if ( \is_wp_error( $response ) ) {
+				$response->add_data(
+					array(
+						'chunk_index'      => $index,
+						'chunks_total'     => $total,
+						'chunks_succeeded' => $succeeded,
+					),
+					'atmosphere_chunked_apply_writes'
+				);
+				return $response;
+			}
+
+			if ( isset( $response['results'] ) && \is_array( $response['results'] ) ) {
+				$results = \array_merge( $results, $response['results'] );
+			}
+
+			++$succeeded;
+		}
+
+		return array( 'results' => $results );
 	}
 
 	/**
