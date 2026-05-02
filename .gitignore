@@ -4,3 +4,4 @@ composer.lock
 package-lock.json
 *.zip
 .phpunit.result.cache
+/docs/superpowers/

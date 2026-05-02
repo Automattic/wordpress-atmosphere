@@ -92,3 +92,42 @@ npm run env-test -- --stop-on-failure
 # Run single test method.
 npm run env-test -- --filter=test_specific_method
 ```
+
+## Stubbing `applyWrites` calls
+
+The Publisher test fixture (`Test_Publisher`) exposes `register_capture()` plus `$captured_calls` / `$fail_call_indexes` for asserting on the `writes` batch and forcing per-call failures:
+
+```php
+$this->fail_call_indexes = array(
+    2 => new \WP_Error( 'atmosphere_pds_500', 'PDS rejected.' ),
+);
+$this->register_capture( $post_id );
+// ...exercise...
+$this->assertCount( 3, $this->captured_calls );
+```
+
+Outside the Publisher test, hook the `atmosphere_pre_apply_writes` filter directly (see Publisher::apply_writes — short-circuits before the HTTP layer, so DPoP-less test environments work).
+
+## Simulating in-flight races
+
+To reproduce a "state changed during the API call" race in tests, mutate the WP state from inside the `atmosphere_pre_apply_writes` filter callback and return a synthetic 2xx response. The plugin's hooks fire synchronously in the test process — the filter callback is the analogue of "the API call took long enough for another request to land".
+
+```php
+\add_filter(
+    'atmosphere_pre_apply_writes',
+    static function ( $short, $writes ) use ( $comment_id ) {
+        \wp_set_comment_status( $comment_id, 'hold' );
+        return array( 'results' => array( /* synthetic */ ) );
+    },
+    10,
+    2
+);
+```
+
+Note: `wp_delete_comment( $id, true )` removes commentmeta synchronously, which can erase TIDs the reconcile path needs. Prefer status transitions (`hold`, `spam`) when possible.
+
+## Cron handlers in tests
+
+The plugin's `register_async_hooks()` runs at `plugins_loaded` (via the bootstrap), so cron handlers ARE registered before tests execute. Use `\do_action( 'atmosphere_publish_comment', $comment_id )` to fire a handler synchronously; assert on `\wp_next_scheduled()` for follow-up scheduling.
+
+Always clean up scheduled hooks in `tear_down()` — leftover events from one test become flaky preconditions for the next.

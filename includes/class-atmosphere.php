@@ -10,7 +10,9 @@ namespace Atmosphere;
 \defined( 'ABSPATH' ) || exit;
 
 use Atmosphere\OAuth\Client;
+use Atmosphere\Transformer\Comment;
 use Atmosphere\Transformer\Document;
+use Atmosphere\Transformer\Post;
 use Atmosphere\Transformer\Publication;
 use Atmosphere\Transformer\TID;
 use Atmosphere\Integrations\Load;
@@ -26,6 +28,31 @@ class Atmosphere {
 	 * the matching `atmosphere_long_form_composition` option.
 	 */
 	public const LONG_FORM_STRATEGIES = array( 'link-card', 'truncate-link', 'teaser-thread' );
+
+	/**
+	 * Comment meta key tracking how many times publish has been
+	 * deferred waiting for a parent comment to publish first.
+	 *
+	 * @var string
+	 */
+	private const META_PUBLISH_ATTEMPTS = '_atmosphere_publish_attempts';
+
+	/**
+	 * Maximum re-schedule hops for a child comment waiting on a
+	 * not-yet-published parent. After this many deferrals the child
+	 * publishes as a top-level reply on the post (current fallback
+	 * behavior) so a stuck parent does not block it forever.
+	 *
+	 * @var int
+	 */
+	private const PARENT_DEFER_MAX_ATTEMPTS = 3;
+
+	/**
+	 * Seconds between parent-pending re-schedule hops.
+	 *
+	 * @var int
+	 */
+	private const PARENT_DEFER_DELAY_SECONDS = 30;
 
 	/**
 	 * Wire up all hooks.
@@ -69,6 +96,12 @@ class Atmosphere {
 
 		// Catch permanent deletes (bypassing trash or emptying trash).
 		\add_action( 'before_delete_post', array( $this, 'on_before_delete' ) );
+
+		// Comment lifecycle hooks.
+		\add_action( 'transition_comment_status', array( $this, 'on_comment_status_change' ), 10, 3 );
+		\add_action( 'comment_post', array( $this, 'on_comment_insert' ), 10, 2 );
+		\add_action( 'edit_comment', array( $this, 'on_comment_edit' ) );
+		\add_action( 'delete_comment', array( $this, 'on_comment_before_delete' ) );
 
 		// Auto-sync publication when site identity changes.
 		\add_action( 'update_option_blogname', array( $this, 'schedule_publication_sync' ) );
@@ -319,11 +352,21 @@ class Atmosphere {
 	/**
 	 * Schedule AT Protocol record deletion before a post is permanently deleted.
 	 *
-	 * Captures every Bluesky TID (including thread replies) and the
-	 * document TID from post meta before they're lost, then schedules
-	 * an async delete via cron. Thread-strategy posts: reads
-	 * `Post::META_THREAD_RECORDS` and batches every bsky tid into the
-	 * cron event so a single delete covers root + replies.
+	 * Captures every Bluesky TID (post root + thread replies + outbound
+	 * comment replies) and the document TID from post meta, then
+	 * schedules a single async batch delete via cron. Thread-strategy
+	 * posts read every TID from `Post::META_THREAD_RECORDS`; outbound
+	 * comment replies come from `Publisher::collect_published_comment_tids()`.
+	 *
+	 * Comment TIDs must be collected here, while WP still has the
+	 * comment rows: `wp_delete_post( $id, true )` fires `before_delete_post`
+	 * first and only then iterates child comments, so this is the last
+	 * opportunity to read them.
+	 *
+	 * The trash path (`Publisher::delete_post()`) already cascades
+	 * comment deletes; this keeps the permanent-delete path symmetric
+	 * so unpublishing or hard-deleting a post does not orphan its
+	 * outbound replies on the PDS.
 	 *
 	 * @param int $post_id Post ID being deleted.
 	 */
@@ -366,9 +409,240 @@ class Atmosphere {
 
 		$doc_tid = (string) \get_post_meta( $post_id, Transformer\Document::META_TID, true );
 
-		if ( ! empty( $bsky_tids ) || '' !== $doc_tid ) {
-			\wp_schedule_single_event( \time(), 'atmosphere_delete_records', array( $bsky_tids, $doc_tid ) );
+		$comment_tids = \array_column(
+			Publisher::collect_published_comment_tids( $post_id ),
+			'tid'
+		);
+
+		if ( ! empty( $bsky_tids ) || '' !== $doc_tid || ! empty( $comment_tids ) ) {
+			\wp_schedule_single_event(
+				\time(),
+				'atmosphere_delete_records',
+				array( $bsky_tids, $doc_tid, $comment_tids )
+			);
 		}
+	}
+
+	/**
+	 * Handle a comment transitioning between approval states.
+	 *
+	 * @param string      $new_status New comment_approved value.
+	 * @param string      $old_status Previous comment_approved value.
+	 * @param \WP_Comment $comment    Comment object.
+	 */
+	public function on_comment_status_change( string $new_status, string $old_status, \WP_Comment $comment ): void {
+		if ( $new_status === $old_status ) {
+			return;
+		}
+
+		if ( 'approved' === $new_status ) {
+			$this->schedule_comment_publish( $comment );
+			return;
+		}
+
+		if ( 'approved' === $old_status ) {
+			$this->schedule_comment_delete( $comment );
+		}
+	}
+
+	/**
+	 * Handle a newly-inserted comment.
+	 *
+	 * Covers the case where a comment lands already-approved (trusted
+	 * author), for which transition_comment_status does not fire.
+	 *
+	 * @param int        $comment_id       Comment ID.
+	 * @param int|string $comment_approved Approval status (1, 0, or 'spam').
+	 */
+	public function on_comment_insert( int $comment_id, int|string $comment_approved ): void {
+		if ( 1 !== (int) $comment_approved ) {
+			return;
+		}
+
+		$comment = \get_comment( $comment_id );
+		if ( $comment instanceof \WP_Comment ) {
+			$this->schedule_comment_publish( $comment );
+		}
+	}
+
+	/**
+	 * Handle a comment edit by updating its bsky record.
+	 *
+	 * @param int $comment_id Comment ID.
+	 */
+	public function on_comment_edit( int $comment_id ): void {
+		$comment = \get_comment( $comment_id );
+
+		if ( ! $comment instanceof \WP_Comment ) {
+			return;
+		}
+
+		if ( ! self::should_publish_comment( $comment ) ) {
+			return;
+		}
+
+		$hook = empty( \get_comment_meta( $comment_id, Comment::META_URI, true ) )
+			? 'atmosphere_publish_comment'
+			: 'atmosphere_update_comment';
+
+		if ( ! \wp_next_scheduled( $hook, array( $comment_id ) ) ) {
+			\wp_schedule_single_event( \time(), $hook, array( $comment_id ) );
+		}
+	}
+
+	/**
+	 * Capture a comment's TID before it is permanently deleted.
+	 *
+	 * Runs on delete_comment which fires before the row and meta are
+	 * removed, so the TID is still reachable. META_URI is the only
+	 * reliable signal that a record exists on the PDS — the TID is
+	 * persisted eagerly by Comment::get_rkey() before the applyWrites
+	 * call, so a TID alone matches both the normal pre-publish state
+	 * and a publish that failed after TID allocation; neither should
+	 * schedule a delete. The TID-only cron variant lets the async
+	 * worker issue the PDS delete without re-reading state that no
+	 * longer exists.
+	 *
+	 * @param int $comment_id Comment ID.
+	 */
+	public function on_comment_before_delete( int $comment_id ): void {
+		if ( ! is_connected() ) {
+			return;
+		}
+
+		$uri = \get_comment_meta( $comment_id, Comment::META_URI, true );
+
+		if ( empty( $uri ) ) {
+			return;
+		}
+
+		$tid = \get_comment_meta( $comment_id, Comment::META_TID, true );
+
+		if ( empty( $tid ) ) {
+			return;
+		}
+
+		$tid  = (string) $tid;
+		$args = array( $tid );
+
+		if ( \wp_next_scheduled( 'atmosphere_delete_comment_record', $args ) ) {
+			return;
+		}
+
+		\wp_schedule_single_event( \time(), 'atmosphere_delete_comment_record', $args );
+	}
+
+	/**
+	 * Eligibility gate for outbound comment publishing.
+	 *
+	 * @param \WP_Comment $comment Comment object.
+	 * @return bool
+	 */
+	public static function should_publish_comment( \WP_Comment $comment ): bool {
+		$should = self::is_comment_eligible( $comment );
+
+		/**
+		 * Filters whether a comment should be published to Bluesky.
+		 *
+		 * @param bool        $should  Whether to publish.
+		 * @param \WP_Comment $comment Comment object.
+		 */
+		return (bool) \apply_filters( 'atmosphere_should_publish_comment', $should, $comment );
+	}
+
+	/**
+	 * Core comment eligibility checks, pre-filter.
+	 *
+	 * @param \WP_Comment $comment Comment object.
+	 * @return bool
+	 */
+	private static function is_comment_eligible( \WP_Comment $comment ): bool {
+		if ( ! is_connected() ) {
+			return false;
+		}
+
+		if ( \in_array( (string) $comment->comment_type, array( 'trackback', 'pingback' ), true ) ) {
+			return false;
+		}
+
+		if ( (int) $comment->user_id <= 0 ) {
+			return false;
+		}
+
+		if ( '1' !== (string) $comment->comment_approved ) {
+			return false;
+		}
+
+		if ( 'atproto' === \get_comment_meta( (int) $comment->comment_ID, Reaction_Sync::META_PROTOCOL, true ) ) {
+			return false;
+		}
+
+		/*
+		 * Defence in depth: Reaction_Sync writes META_PROTOCOL after
+		 * wp_insert_comment, so if any caller ever fires comment_post
+		 * between the insert and the meta write, the gate above would
+		 * miss it. The sync always stamps its own agent string, which
+		 * is set before the insert — use it as a belt-and-braces check.
+		 */
+		if ( 0 === \strpos( (string) $comment->comment_agent, 'ATmosphere/' ) ) {
+			return false;
+		}
+
+		$post_id  = (int) $comment->comment_post_ID;
+		$post_uri = \get_post_meta( $post_id, Post::META_URI, true );
+		$post_cid = \get_post_meta( $post_id, Post::META_CID, true );
+
+		// Both URI and CID are required to build a valid reply.root strongRef.
+		if ( empty( $post_uri ) || empty( $post_cid ) ) {
+			return false;
+		}
+
+		return true;
+	}
+
+	/**
+	 * Schedule a publish or update event for a comment.
+	 *
+	 * @param \WP_Comment $comment Comment object.
+	 */
+	private function schedule_comment_publish( \WP_Comment $comment ): void {
+		if ( ! self::should_publish_comment( $comment ) ) {
+			return;
+		}
+
+		$comment_id = (int) $comment->comment_ID;
+		$hook       = empty( \get_comment_meta( $comment_id, Comment::META_URI, true ) )
+			? 'atmosphere_publish_comment'
+			: 'atmosphere_update_comment';
+
+		if ( \wp_next_scheduled( $hook, array( $comment_id ) ) ) {
+			return;
+		}
+
+		\wp_schedule_single_event( \time(), $hook, array( $comment_id ) );
+	}
+
+	/**
+	 * Schedule a delete event when a published comment leaves approved state.
+	 *
+	 * @param \WP_Comment $comment Comment object.
+	 */
+	private function schedule_comment_delete( \WP_Comment $comment ): void {
+		if ( ! is_connected() ) {
+			return;
+		}
+
+		$comment_id = (int) $comment->comment_ID;
+
+		if ( empty( \get_comment_meta( $comment_id, Comment::META_URI, true ) ) ) {
+			return;
+		}
+
+		if ( \wp_next_scheduled( 'atmosphere_delete_comment', array( $comment_id ) ) ) {
+			return;
+		}
+
+		\wp_schedule_single_event( \time(), 'atmosphere_delete_comment', array( $comment_id ) );
 	}
 
 	/**
@@ -444,7 +718,7 @@ class Atmosphere {
 			static function ( int $post_id ): void {
 				$post = \get_post( $post_id );
 				if ( $post && 'publish' === $post->post_status && is_supported_post_type( $post->post_type ) ) {
-					Publisher::publish( $post );
+					Publisher::publish_post( $post );
 				}
 			}
 		);
@@ -454,7 +728,7 @@ class Atmosphere {
 			static function ( int $post_id ): void {
 				$post = \get_post( $post_id );
 				if ( $post && 'publish' === $post->post_status && is_supported_post_type( $post->post_type ) ) {
-					Publisher::update( $post );
+					Publisher::update_post( $post );
 				}
 			}
 		);
@@ -464,7 +738,7 @@ class Atmosphere {
 			static function ( int $post_id ): void {
 				$post = \get_post( $post_id );
 				if ( $post ) {
-					Publisher::delete( $post );
+					Publisher::delete_post( $post );
 				}
 			}
 		);
@@ -478,11 +752,265 @@ class Atmosphere {
 
 		\add_action(
 			'atmosphere_delete_records',
-			static function ( $bsky_tids, string $doc_tid ): void {
-				Publisher::delete_by_tids( $bsky_tids, $doc_tid );
+			static function ( $bsky_tids, string $doc_tid, $comment_tids = array() ): void {
+				$comment_tids = \is_array( $comment_tids ) ? $comment_tids : array();
+				$result       = Publisher::delete_post_by_tids( $bsky_tids, $doc_tid, $comment_tids );
+
+				if ( \is_wp_error( $result ) ) {
+					/*
+					 * One-shot cron event with no retry: dropping this error
+					 * would orphan every record in the cascade (root + thread
+					 * replies + outbound comment replies + document) on the
+					 * PDS with no operator-visible breadcrumb.
+					 */
+					\error_log( // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
+						\sprintf(
+							'[atmosphere] delete_records failed (bsky=%d, doc=%s, comments=%d): %s — %s',
+							\is_array( $bsky_tids ) ? \count( $bsky_tids ) : (int) ! empty( $bsky_tids ),
+							$doc_tid ? 'yes' : 'no',
+							\count( $comment_tids ),
+							$result->get_error_code(),
+							$result->get_error_message()
+						)
+					);
+				}
 			},
 			10,
-			2
+			3
 		);
+
+		/*
+		 * Cron handlers re-evaluate eligibility at fire time so state
+		 * changes between enqueue and execution (approve→unapprove,
+		 * unapprove→re-approve, user deleted, etc.) are respected. The
+		 * separate transition hooks only schedule; they cannot cancel
+		 * an already-queued event, and schedule_comment_delete itself
+		 * bails when META_URI is absent (which it is pre-publish), so
+		 * without these guards a pre-cron unapprove would still
+		 * publish, and a pre-cron re-approve would still delete.
+		 *
+		 * Publisher WP_Error returns are logged rather than silently
+		 * dropped so a flaky PDS window or an expired refresh token
+		 * leaves a breadcrumb operators can find.
+		 */
+		\add_action(
+			'atmosphere_publish_comment',
+			static function ( int $comment_id ): void {
+				$comment = \get_comment( $comment_id );
+				if ( ! $comment instanceof \WP_Comment ) {
+					return;
+				}
+				if ( ! self::should_publish_comment( $comment ) ) {
+					return;
+				}
+				if ( self::defer_when_parent_pending( $comment ) ) {
+					return;
+				}
+				\delete_comment_meta( $comment_id, self::META_PUBLISH_ATTEMPTS );
+
+				$result = Publisher::publish_comment( $comment );
+				self::log_cron_error( 'publish_comment', $comment_id, $result );
+
+				if ( ! \is_wp_error( $result ) ) {
+					self::reconcile_comment_after_publish( $comment_id );
+				}
+			}
+		);
+
+		\add_action(
+			'atmosphere_update_comment',
+			static function ( int $comment_id ): void {
+				$comment = \get_comment( $comment_id );
+				if ( ! $comment instanceof \WP_Comment ) {
+					return;
+				}
+				if ( ! self::should_publish_comment( $comment ) ) {
+					return;
+				}
+
+				$result = Publisher::update_comment( $comment );
+				self::log_cron_error( 'update_comment', $comment_id, $result );
+			}
+		);
+
+		\add_action(
+			'atmosphere_delete_comment',
+			static function ( int $comment_id ): void {
+				$comment = \get_comment( $comment_id );
+				if ( ! $comment instanceof \WP_Comment ) {
+					return;
+				}
+				// If the comment is eligible again by the time cron
+				// fires, another transition has superseded the delete.
+				if ( self::should_publish_comment( $comment ) ) {
+					return;
+				}
+
+				$result = Publisher::delete_comment( $comment );
+				self::log_cron_error( 'delete_comment', $comment_id, $result );
+			}
+		);
+
+		\add_action(
+			'atmosphere_delete_comment_record',
+			static function ( string $tid ): void {
+				if ( '' === $tid ) {
+					return;
+				}
+
+				$result = Publisher::delete_comment_by_tid( $tid );
+
+				if ( \is_wp_error( $result ) ) {
+					// Worst-case path: the WP comment row is already gone,
+					// so operators need the TID to clean up the orphan
+					// record manually.
+					\error_log( // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
+						\sprintf(
+							'[atmosphere] delete_comment_record tid=%s failed: %s — %s',
+							$tid,
+							$result->get_error_code(),
+							$result->get_error_message()
+						)
+					);
+				}
+			},
+			10,
+			1
+		);
+	}
+
+	/**
+	 * Defer a child comment publish when its parent is eligible but
+	 * has not published to the PDS yet.
+	 *
+	 * Comments are scheduled as independent single events with no
+	 * dependency ordering: if a user approves a parent and its reply
+	 * together, the child's cron event can fire first, see
+	 * resolve_parent_ref() return null, and publish flat as a
+	 * top-level reply on the root post. This defers the child a short
+	 * interval (up to PARENT_DEFER_MAX_ATTEMPTS hops) to give the
+	 * parent time to publish first. After the cap the child publishes
+	 * anyway using the root fallback — a stuck parent must not block
+	 * the child forever.
+	 *
+	 * @param \WP_Comment $comment Comment being published.
+	 * @return bool True when the publish was deferred, false to proceed now.
+	 */
+	private static function defer_when_parent_pending( \WP_Comment $comment ): bool {
+		$parent_id = (int) $comment->comment_parent;
+
+		if ( $parent_id <= 0 ) {
+			return false;
+		}
+
+		$parent = \get_comment( $parent_id );
+
+		if ( ! $parent instanceof \WP_Comment ) {
+			return false;
+		}
+
+		if ( ! self::should_publish_comment( $parent ) ) {
+			// Parent is ineligible (anon, rejected, etc.); resolve_parent_ref
+			// will fall back to root, which is the correct behavior.
+			return false;
+		}
+
+		if ( ! empty( \get_comment_meta( $parent_id, Comment::META_URI, true ) ) ) {
+			// Parent is already published — nothing to defer for.
+			return false;
+		}
+
+		$comment_id = (int) $comment->comment_ID;
+		$attempts   = (int) \get_comment_meta( $comment_id, self::META_PUBLISH_ATTEMPTS, true );
+
+		if ( $attempts >= self::PARENT_DEFER_MAX_ATTEMPTS ) {
+			// Give up and publish with root as parent; clear the counter
+			// so a future re-publish gets a fresh deferral budget.
+			\delete_comment_meta( $comment_id, self::META_PUBLISH_ATTEMPTS );
+			return false;
+		}
+
+		\update_comment_meta( $comment_id, self::META_PUBLISH_ATTEMPTS, $attempts + 1 );
+		\wp_schedule_single_event(
+			\time() + self::PARENT_DEFER_DELAY_SECONDS,
+			'atmosphere_publish_comment',
+			array( $comment_id )
+		);
+
+		return true;
+	}
+
+	/**
+	 * Log a WP_Error returned from a comment cron Publisher call.
+	 *
+	 * `wp_schedule_single_event` does not retry, so a silent drop
+	 * here would lose the breadcrumb operators need to diagnose
+	 * auth, transport, or PDS-side failures.
+	 *
+	 * @param string $op         One of 'publish_comment' | 'update_comment' | 'delete_comment'.
+	 * @param int    $comment_id Comment ID.
+	 * @param mixed  $result     Publisher call result.
+	 */
+	private static function log_cron_error( string $op, int $comment_id, $result ): void {
+		if ( ! \is_wp_error( $result ) ) {
+			return;
+		}
+
+		\error_log( // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
+			\sprintf(
+				'[atmosphere] %s %d failed: %s — %s',
+				$op,
+				$comment_id,
+				$result->get_error_code(),
+				$result->get_error_message()
+			)
+		);
+	}
+
+	/**
+	 * Roll back a successful publish if the comment became ineligible
+	 * during the in-flight applyWrites.
+	 *
+	 * The race: `Comment::get_rkey()` persists META_TID before the API
+	 * call, and META_URI is only written after success. Both
+	 * `schedule_comment_delete` and `on_comment_before_delete` require
+	 * META_URI to schedule cleanup. A moderator who deletes or
+	 * unapproves the comment while applyWrites is in flight therefore
+	 * leaves a live Bluesky reply with no scheduled cleanup once
+	 * `store_comment_result()` finally writes META_URI.
+	 *
+	 * Re-checking eligibility after publish closes that race. If the
+	 * comment is gone or no longer eligible, we clear the meta we just
+	 * wrote and schedule the same TID-only delete event the
+	 * permanent-delete path uses, so transient PDS failures retry via
+	 * the standard cleanup channel rather than getting dropped here.
+	 *
+	 * @param int $comment_id Comment ID just published.
+	 */
+	private static function reconcile_comment_after_publish( int $comment_id ): void {
+		$fresh = \get_comment( $comment_id );
+
+		if ( $fresh instanceof \WP_Comment && self::should_publish_comment( $fresh ) ) {
+			return;
+		}
+
+		$tid = (string) \get_comment_meta( $comment_id, Comment::META_TID, true );
+
+		\delete_comment_meta( $comment_id, Comment::META_TID );
+		\delete_comment_meta( $comment_id, Comment::META_URI );
+		\delete_comment_meta( $comment_id, Comment::META_CID );
+		\delete_comment_meta( $comment_id, Reaction_Sync::META_SOURCE_ID );
+
+		if ( '' === $tid ) {
+			return;
+		}
+
+		$args = array( $tid );
+
+		if ( \wp_next_scheduled( 'atmosphere_delete_comment_record', $args ) ) {
+			return;
+		}
+
+		\wp_schedule_single_event( \time(), 'atmosphere_delete_comment_record', $args );
 	}
 }

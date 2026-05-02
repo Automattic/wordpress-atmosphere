@@ -113,3 +113,31 @@ Handle the full PKCE + DPoP + PAR native OAuth flow.
 \apply_filters( 'atmosphere_client_metadata', $metadata );
 \apply_filters( 'atmosphere_syncable_post_types', array( 'post' ) );
 ```
+
+## Cron Lifecycle — three-way symmetry
+
+Every plugin-owned `wp_schedule_*` hook MUST also be in `Atmosphere\get_cron_hooks()` (`includes/functions.php`). That single list drives:
+
+- `Atmosphere\deactivate()` (`atmosphere.php`)
+- `Atmosphere\OAuth\Client::disconnect()` (`includes/oauth/class-client.php`)
+- `uninstall.php`
+
+When adding a new cron hook:
+
+1. Add the hook name to `get_cron_hooks()` — do not duplicate the literal in deactivate / disconnect / uninstall.
+2. If the hook handler issues PDS writes without re-checking `is_connected()` (e.g. `atmosphere_delete_records`, `atmosphere_delete_comment_record`), the symmetry is load-bearing: a queued event from a previous connection would otherwise fire against a different repo on reconnect.
+3. If the handler stores or sweeps commentmeta / postmeta keys, mirror those keys in `uninstall.php`.
+
+This pattern was extracted in PR #32; see review by @kraftbj for the cross-install risk that motivated it.
+
+## Cron Handler Errors — never swallow `WP_Error`
+
+Cron handlers in `register_async_hooks()` MUST surface `Publisher::*` errors via `error_log()` (typically through `log_cron_error()`). `wp_schedule_single_event` does not retry, so a silent drop loses the only signal operators have for transient PDS failures, expired refresh tokens, or DPoP nonce drift.
+
+When the handler operates on records the caller has already lost local state for (e.g. `atmosphere_delete_comment_record` after the WP comment row is gone), include the TID/identifier in the log line so the orphan is recoverable manually.
+
+## Inflight-state Races
+
+When a cron handler writes meta both *before* an `apply_writes` call (e.g. `Comment::get_rkey()` persists META_TID) and *after* (e.g. `store_comment_result()` writes META_URI), and a concurrent state change can short-circuit the cleanup gates that key off the *post-call* meta, the handler MUST re-check eligibility after the call returns and roll back if needed.
+
+Concrete pattern: `atmosphere_publish_comment` → `reconcile_comment_after_publish()`. Re-fetch the WP object, re-run the eligibility gate, schedule the orphan-cleanup cron (not direct delete) so transient PDS failures retry through the standard channel.

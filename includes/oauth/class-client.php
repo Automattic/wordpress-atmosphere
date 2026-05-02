@@ -12,6 +12,8 @@ namespace Atmosphere\OAuth;
 
 \defined( 'ABSPATH' ) || exit;
 
+use function Atmosphere\clear_scheduled_hooks;
+
 /**
  * OAuth client that manages the authorization lifecycle.
  */
@@ -506,10 +508,17 @@ class Client {
 	}
 
 	/**
-	 * Disconnect: remove all stored credentials.
+	 * Disconnect: remove all stored credentials and clear queued cron events.
+	 *
+	 * Queued events (`atmosphere_delete_records`,
+	 * `atmosphere_delete_comment_record`) issue applyWrites without a
+	 * connection check, so a disconnect→reconnect-to-different-account
+	 * cycle would otherwise fire deletes against the new account's repo.
+	 * Mirrors the cleanup performed on plugin deactivate / uninstall.
 	 */
 	public static function disconnect(): void {
 		\delete_option( 'atmosphere_connection' );
+		clear_scheduled_hooks();
 	}
 
 	/**
