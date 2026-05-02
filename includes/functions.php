@@ -130,6 +130,44 @@ function get_pds_endpoint(): string {
 }
 
 /**
+ * Plugin-owned WP-Cron hooks.
+ *
+ * Single source of truth for `deactivate()`, `Client::disconnect()`, and
+ * `uninstall.php`. Keeping the lists in sync prevents queued events from
+ * a previous install/connection from firing against the current one and
+ * (worst case) issuing applyWrites against a different repo.
+ *
+ * @return string[]
+ */
+function get_cron_hooks(): array {
+	return array(
+		'atmosphere_refresh_token',
+		'atmosphere_sync_reactions',
+		'atmosphere_sync_publication',
+		'atmosphere_publish_post',
+		'atmosphere_update_post',
+		'atmosphere_delete_post',
+		'atmosphere_delete_records',
+		'atmosphere_publish_comment',
+		'atmosphere_update_comment',
+		'atmosphere_delete_comment',
+		'atmosphere_delete_comment_record',
+		// Legacy hook from an early build of the comment publisher; cleared
+		// for users upgrading from that snapshot.
+		'atmosphere_sync_comments',
+	);
+}
+
+/**
+ * Clear every plugin-owned scheduled hook.
+ */
+function clear_scheduled_hooks(): void {
+	foreach ( get_cron_hooks() as $hook ) {
+		\wp_clear_scheduled_hook( $hook );
+	}
+}
+
+/**
  * Get post types that publish to AT Protocol.
  *
  * @return string[] Post type slugs.

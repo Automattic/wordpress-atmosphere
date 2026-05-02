@@ -129,7 +129,7 @@ class Backfill {
 				continue;
 			}
 
-			$response = Publisher::publish( $post );
+			$response = Publisher::publish_post( $post );
 
 			if ( \is_wp_error( $response ) ) {
 				$results[] = array(

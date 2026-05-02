@@ -7,9 +7,16 @@
  * @package Atmosphere
  */
 
+use function Atmosphere\clear_scheduled_hooks;
+
 if ( ! defined( 'WP_UNINSTALL_PLUGIN' ) ) {
 	exit;
 }
+
+// Load helpers so the cron-hook list stays in lock-step with deactivate()
+// and Client::disconnect(). uninstall.php is loaded by WordPress without
+// the plugin itself being booted, so this require is necessary.
+require_once __DIR__ . '/includes/functions.php';
 
 // Remove options.
 delete_option( 'atmosphere_connection' );
@@ -17,14 +24,8 @@ delete_option( 'atmosphere_publication_tid' );
 delete_option( 'atmosphere_publication_uri' );
 delete_option( 'atmosphere_auto_publish' );
 
-// Remove scheduled events.
-wp_clear_scheduled_hook( 'atmosphere_refresh_token' );
-wp_clear_scheduled_hook( 'atmosphere_publish_post' );
-wp_clear_scheduled_hook( 'atmosphere_update_post' );
-wp_clear_scheduled_hook( 'atmosphere_delete_post' );
-wp_clear_scheduled_hook( 'atmosphere_delete_records' );
-wp_clear_scheduled_hook( 'atmosphere_sync_publication' );
-wp_clear_scheduled_hook( 'atmosphere_sync_reactions' );
+// Remove scheduled events via the canonical helper.
+clear_scheduled_hooks();
 
 // Remove post meta.
 global $wpdb;
@@ -41,6 +42,18 @@ $atmosphere_meta_keys = array(
 
 foreach ( $atmosphere_meta_keys as $atmosphere_key ) {
 	$wpdb->delete( $wpdb->postmeta, array( 'meta_key' => $atmosphere_key ) ); // phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_key,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching
+}
+
+// Remove comment meta written by the outbound-comment publisher.
+$atmosphere_comment_meta_keys = array(
+	'_atmosphere_bsky_tid',
+	'_atmosphere_bsky_uri',
+	'_atmosphere_bsky_cid',
+	'_atmosphere_publish_attempts',
+);
+
+foreach ( $atmosphere_comment_meta_keys as $atmosphere_key ) {
+	$wpdb->delete( $wpdb->commentmeta, array( 'meta_key' => $atmosphere_key ) ); // phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_key,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching
 }
 
 // Remove transients.
