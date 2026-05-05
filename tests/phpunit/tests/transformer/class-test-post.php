@@ -874,13 +874,15 @@ class Test_Post extends WP_UnitTestCase {
 	}
 
 	/**
-	 * Short post: when the hook absorbs the entire body, the body chunk is
-	 * dropped rather than padded with empty text. The CTA stays terminal
-	 * and still carries the link-card embed.
+	 * Short post with no excerpt: the 2-entry `[ body, default CTA ]`
+	 * fallback collapses to a single record with the body as text and a
+	 * link-card embed. The CTA reply is dropped because it's redundant
+	 * — there's nothing past the hook to "continue reading" to. The
+	 * link-back is preserved via the embed card on the same record.
 	 *
 	 * @covers ::build_long_form_records
 	 */
-	public function test_build_long_form_records_teaser_thread_short_body_falls_back_to_two_entries() {
+	public function test_build_long_form_records_teaser_thread_short_body_collapses_to_single_record() {
 		$post = self::factory()->post->create_and_get(
 			array(
 				'post_title'   => 'Titled',
@@ -893,14 +895,75 @@ class Test_Post extends WP_UnitTestCase {
 
 		$records = ( new Post( $post ) )->build_long_form_records();
 
-		$this->assertCount( 2, $records );
+		$this->assertCount( 1, $records );
 		$this->assertSame( 'A single short sentence.', $records[0]['text'] );
-		$this->assertMatchesRegularExpression( '~^Continue reading: ~', $records[1]['text'] );
 
-		// Embed attaches to the terminal entry: "last entry," not "index 2".
+		// Link-back lives on the embed of the same record now, not on a
+		// separate CTA reply.
+		$this->assertArrayHasKey( 'embed', $records[0] );
+		$this->assertSame( 'app.bsky.embed.external', $records[0]['embed']['$type'] );
+		$this->assertSame( \get_permalink( $post ), $records[0]['embed']['external']['uri'] );
+	}
+
+	/**
+	 * Excerpt-as-hook with a body too short to compose a chunk: the
+	 * 2-entry `[ excerpt, CTA ]` fallback stays — the excerpt and the
+	 * body are separate strings, so the CTA still carries the
+	 * link-back to where the body lives. Only collapse when the hook
+	 * IS the body.
+	 *
+	 * @covers ::build_long_form_records
+	 */
+	public function test_build_long_form_records_teaser_thread_excerpt_with_short_body_stays_two_entries() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'Titled',
+				// 3-char body so chunk_source < 10 char floor → 2-entry fallback.
+				'post_content' => 'Hi.',
+				'post_excerpt' => 'A curated excerpt of decent length.',
+			)
+		);
+
+		\add_filter( 'atmosphere_long_form_composition', fn() => 'teaser-thread' );
+
+		$records = ( new Post( $post ) )->build_long_form_records();
+
+		$this->assertCount( 2, $records );
+		$this->assertSame( 'A curated excerpt of decent length.', $records[0]['text'] );
+		$this->assertMatchesRegularExpression( '~^Continue reading: ~', $records[1]['text'] );
 		$this->assertArrayNotHasKey( 'embed', $records[0] );
 		$this->assertArrayHasKey( 'embed', $records[1] );
-		$this->assertSame( 'app.bsky.embed.external', $records[1]['embed']['$type'] );
+	}
+
+	/**
+	 * Filter override that returns a 2-entry shape with a custom
+	 * (non-default) second entry is preserved — only the default
+	 * `[ body, default CTA ]` shape collapses. Filter authors who
+	 * deliberately ship a custom 2-post thread keep their explicit
+	 * choice.
+	 *
+	 * @covers ::build_long_form_records
+	 */
+	public function test_build_long_form_records_teaser_thread_filter_two_entries_custom_cta_does_not_collapse() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'Titled',
+				'post_content' => 'A single short sentence.',
+				'post_excerpt' => '',
+			)
+		);
+
+		\add_filter( 'atmosphere_long_form_composition', fn() => 'teaser-thread' );
+		\add_filter(
+			'atmosphere_teaser_thread_posts',
+			fn() => array( 'Custom hook', 'Custom second post' )
+		);
+
+		$records = ( new Post( $post ) )->build_long_form_records();
+
+		$this->assertCount( 2, $records );
+		$this->assertSame( 'Custom hook', $records[0]['text'] );
+		$this->assertSame( 'Custom second post', $records[1]['text'] );
 	}
 
 	/**

@@ -388,11 +388,14 @@ class Post extends Base {
 	 *     no embed card.
 	 *   - `'teaser-thread'`: a reply chain of hook + body chunk + CTA
 	 *     (3 records by default; falls back to `[ hook, cta ]` when the
-	 *     post body is too short for a body chunk). The terminal CTA
-	 *     entry carries an `app.bsky.embed.external` link card so the
-	 *     reader has a clear path back to the WordPress post regardless
-	 *     of which entry surfaces. Filterable via
-	 *     `atmosphere_teaser_thread_posts`.
+	 *     post body is too short for a body chunk; collapses further
+	 *     to a single record when that 2-entry fallback would just be
+	 *     `[ entire-body, "Continue reading: <permalink>" ]` — the
+	 *     CTA is redundant when the entire post body is already the
+	 *     hook). The terminal entry carries an `app.bsky.embed.external`
+	 *     link card so the reader has a clear path back to the
+	 *     WordPress post regardless of which entry surfaces. Filterable
+	 *     via `atmosphere_teaser_thread_posts`.
 	 *   - unknown values: treated as `'link-card'`.
 	 *
 	 * Empty-body guard: for `'teaser-thread'` and `'truncate-link'`,
@@ -460,8 +463,32 @@ class Post extends Base {
 					return array( $this->record_for_link_card() );
 				}
 
+				$texts = $this->build_teaser_thread();
+
+				// When the 2-entry fallback would publish the entire
+				// body as the hook followed by a "Continue reading"
+				// CTA, the CTA is redundant — there's nothing past
+				// the hook to "continue reading" to. Collapse to a
+				// single record (body text + link-card embed) so the
+				// reader gets one clean post with a card linking back
+				// to WordPress, instead of a 2-post self-reply where
+				// the reply only restates the link.
+				if ( $this->teaser_thread_two_entry_is_redundant( $texts ) ) {
+					return array(
+						$this->record_for_thread_entry(
+							(string) $texts[0],
+							true,
+							array(
+								'strategy'        => 'teaser-thread',
+								'thread_index'    => 0,
+								'is_thread_reply' => false,
+							),
+							$this->build_embed()
+						),
+					);
+				}
+
 				$records = array();
-				$texts   = $this->build_teaser_thread();
 				$last    = \count( $texts ) - 1;
 				// Attach an `app.bsky.embed.external` link card to the
 				// terminal CTA entry. Without it, even when the thread
@@ -795,6 +822,39 @@ class Post extends Base {
 		}
 
 		return \mb_strlen( $this->render_post_content_plain( $this->object ) ) >= 10;
+	}
+
+	/**
+	 * Whether a 2-entry teaser-thread output is the redundant
+	 * `[ entire-body, default CTA ]` shape.
+	 *
+	 * The default `build_teaser_thread()` falls back to `[ hook, cta ]`
+	 * when the body is exhausted by the hook. When the post has no
+	 * separate `post_excerpt` (so the hook IS the body) AND the second
+	 * entry is the default `Continue reading: <permalink>` text, the
+	 * CTA is purely redundant — the entire post body is already in the
+	 * hook above it. Callers can collapse to a single record (with a
+	 * link-card embed for the link-back) instead.
+	 *
+	 * Guards on the default CTA text rather than just `count === 2` so
+	 * filter authors who deliberately return a 2-entry shape with a
+	 * custom second entry (a related-link, a sign-off, etc.) keep their
+	 * explicit choice — only the default-fallback shape collapses.
+	 *
+	 * @param array $texts Post-filter teaser-thread output.
+	 * @return bool
+	 */
+	private function teaser_thread_two_entry_is_redundant( array $texts ): bool {
+		if ( 2 !== \count( $texts ) ) {
+			return false;
+		}
+
+		$excerpt = sanitize_text( (string) $this->object->post_excerpt );
+		if ( \mb_strlen( $excerpt ) >= 10 ) {
+			return false;
+		}
+
+		return ( $texts[1] ?? '' ) === $this->teaser_thread_cta_text();
 	}
 
 	/**
