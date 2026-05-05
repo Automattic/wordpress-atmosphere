@@ -9,6 +9,7 @@ namespace Atmosphere;
 
 \defined( 'ABSPATH' ) || exit;
 
+use Atmosphere\Content_Parser\Markpub;
 use Atmosphere\OAuth\Client;
 use Atmosphere\Transformer\Comment;
 use Atmosphere\Transformer\Document;
@@ -87,6 +88,9 @@ class Atmosphere {
 
 		// Plugin integrations.
 		Load::init();
+
+		// Default content parser (Markpub).
+		\add_filter( 'atmosphere_content_parser', static fn() => new Markpub() );
 
 		// JSON preview for AT Protocol records.
 		\add_action( 'template_redirect', array( $this, 'preview' ) );
