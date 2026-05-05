@@ -1408,6 +1408,83 @@ class Test_Publisher extends WP_UnitTestCase {
 	}
 
 	/**
+	 * Backward-compat at the publisher level: a post that was published
+	 * BEFORE the redundant-CTA collapse landed has 2 stored thread
+	 * records for content (short body, empty excerpt) that would, on a
+	 * fresh publish today, collapse to a single record. Without the
+	 * `\count(\$stored)` hint passed from `update_post()` to
+	 * `build_long_form_records()`, the new shape would be 1 record vs.
+	 * the stored 2, the count mismatch would fall through to
+	 * `rewrite_thread()`, the original root URI would be deleted, and
+	 * every external Bluesky reply / like / repost would be orphaned.
+	 *
+	 * This test pins the end-to-end path: short-body fixture + 2 stored
+	 * records + teaser-thread strategy → in-place update via a single
+	 * `applyWrites` (2 bsky updates + 1 doc update), URIs preserved.
+	 */
+	public function test_update_thread_short_body_in_place_when_stored_two_records() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'A Long-Form Post',
+				// Short body + empty excerpt = exactly the shape that
+				// would trip the redundant-CTA collapse on a fresh
+				// publish. Backward-compat must keep it at 2 records.
+				'post_content' => 'A short note that absorbs into the hook.',
+				'post_excerpt' => '',
+			)
+		);
+
+		$stored = array(
+			array(
+				'uri' => 'at://did:plc:test123/app.bsky.feed.post/legacy-root',
+				'cid' => 'bafyreiblegacy-root',
+				'tid' => 'legacy-root',
+			),
+			array(
+				'uri' => 'at://did:plc:test123/app.bsky.feed.post/legacy-cta',
+				'cid' => 'bafyreiblegacy-cta',
+				'tid' => 'legacy-cta',
+			),
+		);
+		\update_post_meta( $post->ID, Post::META_THREAD_RECORDS, $stored );
+		\update_post_meta( $post->ID, Post::META_URI, $stored[0]['uri'] );
+		\update_post_meta( $post->ID, Post::META_TID, 'legacy-root' );
+		\update_post_meta( $post->ID, Post::META_CID, 'bafyreiblegacy-root' );
+		\update_post_meta( $post->ID, Document::META_URI, 'at://did:plc:test123/site.standard.document/legacy-doc' );
+		\update_post_meta( $post->ID, Document::META_TID, 'legacy-doc' );
+
+		\add_filter( 'atmosphere_long_form_composition', fn() => 'teaser-thread' );
+
+		$this->fail_call_indexes = array();
+		$this->register_capture( $post->ID );
+
+		$result = Publisher::update( $post );
+
+		$this->assertIsArray( $result );
+		$this->assertCount(
+			1,
+			$this->captured_calls,
+			'In-place update must be a single atomic applyWrites — not delete + republish.'
+		);
+
+		$writes = $this->captured_calls[0]['writes'];
+		$this->assertCount( 3, $writes, '2 bsky updates (root + reply) + 1 doc update.' );
+
+		// Each bsky write must be an `update`, not a `delete` or `create`,
+		// reusing the legacy TIDs (URIs preserved on the network side).
+		$this->assertSame( 'com.atproto.repo.applyWrites#update', $writes[0]['$type'] );
+		$this->assertSame( 'legacy-root', $writes[0]['rkey'] );
+		$this->assertSame( 'com.atproto.repo.applyWrites#update', $writes[1]['$type'] );
+		$this->assertSame( 'legacy-cta', $writes[1]['rkey'] );
+		$this->assertSame( 'site.standard.document', $writes[2]['collection'] );
+
+		// Persisted URIs are unchanged — no rewrite would have orphaned
+		// the external Bluesky engagement attached to legacy-root.
+		$this->assertSame( $stored[0]['uri'], \get_post_meta( $post->ID, Post::META_URI, true ) );
+		$this->assertSame( 'legacy-root', \get_post_meta( $post->ID, Post::META_TID, true ) );
+	}
+
+	/**
 	 * Update with a stored 1-entry link-card but a teaser-thread composition
 	 * deletes the old record + doc atomically, then publishes fresh.
 	 */
