@@ -58,6 +58,31 @@ class Test_Functions extends WP_UnitTestCase {
 	}
 
 	/**
+	 * Unicode whitespace (NBSP, ideographic space) collapses and trims
+	 * just like ASCII whitespace. Without the `/u` regex flag a NBSP-only
+	 * string would survive both the collapse and the trim and leak
+	 * downstream as fake "prose."
+	 */
+	public function test_sanitize_text_normalises_unicode_whitespace() {
+		$this->assertSame( 'A B', sanitize_text( "A\xC2\xA0\xC2\xA0B" ) );
+		$this->assertSame( 'A B', sanitize_text( "A\xE3\x80\x80B" ) );
+		$this->assertSame( '', sanitize_text( "\xC2\xA0\xC2\xA0" ) );
+		$this->assertSame( '', sanitize_text( "\xE3\x80\x80\xE3\x80\x80" ) );
+	}
+
+	/**
+	 * `/u`-mode preg_replace returns null on malformed UTF-8; the
+	 * function must not TypeError when that happens. Locks in the
+	 * defensive `is_string` fallback.
+	 */
+	public function test_sanitize_text_handles_invalid_utf8_without_fataling() {
+		// 0xC3 0x28 is a malformed UTF-8 sequence (continuation byte missing).
+		$result = sanitize_text( "ok \xC3\x28 still here" );
+		$this->assertIsString( $result );
+		$this->assertNotSame( '', $result );
+	}
+
+	/**
 	 * Test truncate_text respects limit.
 	 */
 	public function test_truncate_text_short() {

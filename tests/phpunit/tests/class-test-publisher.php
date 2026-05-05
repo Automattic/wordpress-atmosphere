@@ -884,6 +884,9 @@ class Test_Publisher extends WP_UnitTestCase {
 			array(
 				'post_title'   => 'A Long-Form Post',
 				'post_content' => 'Body content that is enough to compose a hook from.',
+				// Body absorbs entirely into the hook → 2-entry fallback shape,
+				// keeping the publisher protocol assertions below at 2 records.
+				'post_excerpt' => '',
 			)
 		);
 
@@ -935,6 +938,9 @@ class Test_Publisher extends WP_UnitTestCase {
 			array(
 				'post_title'   => 'A Long-Form Post',
 				'post_content' => 'Body content that is enough to compose a hook from.',
+				// Body absorbs entirely into the hook → 2-entry fallback shape,
+				// keeping the publisher protocol assertions below at 2 records.
+				'post_excerpt' => '',
 			)
 		);
 
@@ -966,6 +972,9 @@ class Test_Publisher extends WP_UnitTestCase {
 			array(
 				'post_title'   => 'A Long-Form Post',
 				'post_content' => 'Body content that is enough to compose a hook from.',
+				// Body absorbs entirely into the hook → 2-entry fallback shape,
+				// keeping the publisher protocol assertions below at 2 records.
+				'post_excerpt' => '',
 			)
 		);
 
@@ -1053,7 +1062,10 @@ class Test_Publisher extends WP_UnitTestCase {
 			array(
 				'post_title'   => 'A Long-Form Post',
 				'post_excerpt' => 'A curated excerpt long enough to compose a hook from.',
-				'post_content' => 'Body content that has plenty to teaser from for a thread.',
+				// Empty body: hook comes from the excerpt and there is no
+				// body chunk, so the default shape is [hook, cta] and the
+				// protocol assertions below expect a single reply write.
+				'post_content' => '',
 			)
 		);
 
@@ -1154,6 +1166,9 @@ class Test_Publisher extends WP_UnitTestCase {
 			array(
 				'post_title'   => 'A Long-Form Post',
 				'post_content' => 'Body content that is enough to compose a hook from.',
+				// Body absorbs entirely into the hook → 2-entry fallback shape,
+				// keeping the publisher protocol assertions below at 2 records.
+				'post_excerpt' => '',
 			)
 		);
 
@@ -1213,6 +1228,9 @@ class Test_Publisher extends WP_UnitTestCase {
 			array(
 				'post_title'   => 'A Long-Form Post',
 				'post_content' => 'Body content that is enough to compose a hook from.',
+				// Body absorbs entirely into the hook → 2-entry fallback shape,
+				// keeping the publisher protocol assertions below at 2 records.
+				'post_excerpt' => '',
 			)
 		);
 
@@ -1307,6 +1325,9 @@ class Test_Publisher extends WP_UnitTestCase {
 			array(
 				'post_title'   => 'A Long-Form Post',
 				'post_content' => 'Body content that is enough to compose a hook from.',
+				// Body absorbs entirely into the hook → 2-entry fallback shape,
+				// matching the stored 2-entry meta below for an in-place update.
+				'post_excerpt' => '',
 			)
 		);
 
@@ -1376,6 +1397,9 @@ class Test_Publisher extends WP_UnitTestCase {
 			array(
 				'post_title'   => 'A Long-Form Post',
 				'post_content' => 'Body content that is enough to compose a hook from.',
+				// Body absorbs entirely into the hook → 2-entry fallback shape,
+				// keeping the post-rewrite assertions below at 2 records.
+				'post_excerpt' => '',
 			)
 		);
 

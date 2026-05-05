@@ -386,9 +386,13 @@ class Post extends Base {
 	 *     permalink + app.bsky.embed.external card.
 	 *   - `'truncate-link'`: 1 record, body text + inline permalink,
 	 *     no embed card.
-	 *   - `'teaser-thread'`: 2+ records forming a reply chain
-	 *     (hook + CTA by default; filterable to 3 posts via
-	 *     `atmosphere_teaser_thread_posts`).
+	 *   - `'teaser-thread'`: a reply chain of hook + body chunk + CTA
+	 *     (3 records by default; falls back to `[ hook, cta ]` when the
+	 *     post body is too short for a body chunk). The terminal CTA
+	 *     entry carries an `app.bsky.embed.external` link card so the
+	 *     reader has a clear path back to the WordPress post regardless
+	 *     of which entry surfaces. Filterable via
+	 *     `atmosphere_teaser_thread_posts`.
 	 *   - unknown values: treated as `'link-card'`.
 	 *
 	 * Empty-body guard: for `'teaser-thread'` and `'truncate-link'`,
@@ -457,7 +461,16 @@ class Post extends Base {
 				}
 
 				$records = array();
-				foreach ( $this->build_teaser_thread() as $i => $text ) {
+				$texts   = $this->build_teaser_thread();
+				$last    = \count( $texts ) - 1;
+				// Attach an `app.bsky.embed.external` link card to the
+				// terminal CTA entry. Without it, even when the thread
+				// surfaces, the only link affordance is the URL in the
+				// CTA's text — a card gives the reader title, excerpt,
+				// and thumbnail. The embed attaches to "last entry,"
+				// not "index 2," so a 2-entry fallback or filter
+				// override still ships a CTA-with-card.
+				foreach ( $texts as $i => $text ) {
 					$records[] = $this->record_for_thread_entry(
 						(string) $text,
 						0 === $i,
@@ -465,7 +478,8 @@ class Post extends Base {
 							'strategy'        => 'teaser-thread',
 							'thread_index'    => $i,
 							'is_thread_reply' => 0 !== $i,
-						)
+						),
+						$i === $last ? $this->build_embed() : null
 					);
 				}
 				return $records;
@@ -630,7 +644,13 @@ class Post extends Base {
 	}
 
 	/**
-	 * Compose the default 2-post teaser thread: hook + CTA-with-link.
+	 * Compose the default teaser thread: hook + body chunk + CTA-with-link.
+	 *
+	 * 2-post self-reply threads bundle/hide on bsky.app's profile views
+	 * (`getAuthorFeed?filter=posts_no_replies` drops the root,
+	 * `posts_with_replies` shows the reply but not the root). A 3-post
+	 * thread surfaces normally on the Posts tab, so the default shape is
+	 * 3 entries: a hook, a body chunk continuing the prose, and the CTA.
 	 *
 	 * Hook precedence:
 	 *   1. If the post has a `post_excerpt`, use it (plain-text
@@ -639,47 +659,96 @@ class Post extends Base {
 	 *      at this length, so word-boundary fallback is enough.
 	 *   2. Otherwise, use the first ~280 chars of the body text,
 	 *      cut at a **sentence boundary**. The hook is the final
-	 *      prose shown before the CTA post, so we never end
+	 *      prose shown before the body chunk, so we never end
 	 *      mid-sentence. 280 leaves ~20 chars of headroom for future
 	 *      variants that append trailing content.
 	 *
-	 * CTA is an internationalised `Continue reading: <permalink>`.
+	 * Body chunk:
+	 *   - Excerpt-as-hook: the chunk starts from the start of the body —
+	 *     curated excerpts are not sliding windows over the body.
+	 *   - Body-as-hook: the chunk continues after the hook's cut point;
+	 *     hook and chunk are non-overlapping windows over the same
+	 *     plain-text body.
+	 *   - Same ~280-char sentence-bounded budget as the hook.
+	 *   - Dropped (and the output reduces to `[ hook, cta ]`) when the
+	 *     post body is exhausted or fewer than ~10 chars of prose remain.
 	 *
-	 * Filterable via `atmosphere_teaser_thread_posts`. Downstream
-	 * filters may return 3 entries to extend the thread; in that
-	 * case the intermediate body-to-body cut (entry 1 → entry 2)
-	 * may be at a word boundary, but the final body entry before
-	 * the CTA (entry 2 → entry 3) must still cut at a sentence
-	 * boundary. The return contract does not capture this — it's
-	 * the filter author's responsibility.
+	 * CTA is an internationalised `Continue reading: <permalink>`. The
+	 * link-card embed attached at the call site (`build_long_form_records`)
+	 * applies to whichever entry is terminal — so the 2-entry fallback
+	 * still ships a CTA-with-card.
 	 *
-	 * @return string[] Text of each post in order. At least 2 entries.
+	 * Filterable via `atmosphere_teaser_thread_posts`; the filter is the
+	 * final transformation point and may return any 2..5 string entries.
+	 *
+	 * @return string[] Text of each post in order. 2 or 3 entries by
+	 *                  default; up to 5 when overridden by filter.
 	 */
 	private function build_teaser_thread(): array {
 		$excerpt = sanitize_text( (string) $this->object->post_excerpt );
+		$plain   = $this->render_post_content_plain( $this->object );
 
 		if ( \mb_strlen( $excerpt ) >= 10 ) {
-			$hook = $this->truncate_to_budget( $excerpt, 300, false );
+			$hook         = $this->truncate_to_budget( $excerpt, 300, false );
+			$chunk_source = $plain;
 		} else {
-			$plain = $this->render_post_content_plain( $this->object );
-			$hook  = $this->truncate_to_budget( $plain, 280, true );
+			$hook = $this->truncate_to_budget( $plain, 280, true );
+			// Strip the hard-cap ellipsis (when present) before measuring
+			// how much of the plain body the hook consumed; the
+			// sentence/word-cut paths return clean prefixes so this is a
+			// no-op there. `mb_substr` keeps the strip char-aware —
+			// `rtrim($hook, '…')` would strip individual UTF-8 bytes from
+			// the multi-byte ellipsis sequence and can corrupt the trailing
+			// non-ASCII char before it.
+			$consumed     = '…' === \mb_substr( $hook, -1 )
+				? \mb_substr( $hook, 0, \mb_strlen( $hook ) - 1 )
+				: $hook;
+			$chunk_source = \mb_substr( $plain, \mb_strlen( $consumed ) );
 		}
 
-		$cta = $this->teaser_thread_cta_text();
+		// Unicode-aware leading-whitespace strip: `\ltrim` only handles
+		// ASCII whitespace, so NBSP (U+00A0) and ideographic space
+		// (U+3000) at the start of `$chunk_source` would otherwise leak
+		// into the body chunk as leading invisible whitespace. PCRE in
+		// `/u` mode returns null on invalid UTF-8; fall back to the
+		// pre-strip slice so the `mb_strlen` check below stays string-safe.
+		$stripped     = \preg_replace( '/^\s+/u', '', $chunk_source );
+		$chunk_source = \is_string( $stripped ) ? $stripped : $chunk_source;
+		$cta          = $this->teaser_thread_cta_text();
+
+		$default = \mb_strlen( $chunk_source ) >= 10
+			? array( $hook, $this->truncate_to_budget( $chunk_source, 280, true ), $cta )
+			: array( $hook, $cta );
 
 		/**
 		 * Filters the default teaser-thread post texts.
 		 *
-		 * @param string[] $posts 2-entry array: [ hook, cta ].
+		 * Filtered entries are not shipped verbatim: each string passes
+		 * through `sanitize_text()` and is clamped to 300 chars by
+		 * `truncate_to_budget()`, and the array is silently capped at 5
+		 * entries (PDS rate-limit blast-radius guard for mid-thread
+		 * failures). Returning a non-array, an empty array, or fewer
+		 * than 2 valid string entries triggers `_doing_it_wrong` and
+		 * falls back to the default array.
+		 *
+		 * @param string[] $posts Default array: 2 entries `[ hook, cta ]`
+		 *                        when the body is too short for a body
+		 *                        chunk, otherwise 3 entries
+		 *                        `[ hook, body_chunk, cta ]`.
 		 * @param \WP_Post $post  The post being composed.
 		 */
-		$filtered = \apply_filters( 'atmosphere_teaser_thread_posts', array( $hook, $cta ), $this->object );
+		$filtered = \apply_filters( 'atmosphere_teaser_thread_posts', $default, $this->object );
 
-		// Defensive: a filter that returns a non-iterable or non-string
-		// entries would otherwise fatal on the caller's foreach. Fall
-		// back to the default pair on anything unexpected.
+		// Defensive: a non-iterable or empty filter return would fatal on
+		// the caller's foreach. Surface the misuse so the filter author
+		// notices, then fall back to the default array.
 		if ( ! \is_array( $filtered ) || empty( $filtered ) ) {
-			return array( $hook, $cta );
+			\_doing_it_wrong(
+				'atmosphere_teaser_thread_posts',
+				\esc_html__( 'The atmosphere_teaser_thread_posts filter must return a non-empty array of strings; falling back to the default teaser-thread shape.', 'atmosphere' ),
+				'unreleased'
+			);
+			return $default;
 		}
 
 		$texts = array();
@@ -698,10 +767,10 @@ class Post extends Base {
 		if ( \count( $texts ) < 2 ) {
 			\_doing_it_wrong(
 				'atmosphere_teaser_thread_posts',
-				\esc_html__( 'The atmosphere_teaser_thread_posts filter must return at least 2 string entries; falling back to the default hook + CTA pair.', 'atmosphere' ),
+				\esc_html__( 'The atmosphere_teaser_thread_posts filter must return at least 2 string entries; falling back to the default teaser-thread shape.', 'atmosphere' ),
 				'unreleased'
 			);
-			return array( $hook, $cta );
+			return $default;
 		}
 
 		// Cap at 5 to contain PDS rate-limit blast radius on mid-thread
@@ -739,12 +808,17 @@ class Post extends Base {
 	 * is the indexed representation of the WP post for the Bluesky
 	 * algorithm. Non-root replies are conversational and omit tags.
 	 *
-	 * @param string $text    Pre-composed post text.
-	 * @param bool   $is_root Whether this record is the thread root.
-	 * @param array  $context Additional filter context.
+	 * `$embed` is set only by the teaser-thread caller for the terminal
+	 * CTA entry; `reply` and `embed` are independent fields in
+	 * `app.bsky.feed.post`'s lexicon, so a record carrying both is fine.
+	 *
+	 * @param string     $text    Pre-composed post text.
+	 * @param bool       $is_root Whether this record is the thread root.
+	 * @param array      $context Additional filter context.
+	 * @param array|null $embed   Optional `app.bsky.embed.external` card.
 	 * @return array Bsky post record (no reply).
 	 */
-	private function record_for_thread_entry( string $text, bool $is_root = false, array $context = array() ): array {
+	private function record_for_thread_entry( string $text, bool $is_root = false, array $context = array(), ?array $embed = null ): array {
 		$record = array(
 			'$type'     => 'app.bsky.feed.post',
 			'text'      => $text,
@@ -755,6 +829,10 @@ class Post extends Base {
 		$facets = Facet::extract( $text );
 		if ( ! empty( $facets ) ) {
 			$record['facets'] = $facets;
+		}
+
+		if ( null !== $embed ) {
+			$record['embed'] = $embed;
 		}
 
 		if ( $is_root ) {

@@ -350,7 +350,8 @@ class Test_Post extends WP_UnitTestCase {
 
 		$records = ( new Post( $post ) )->build_long_form_records();
 
-		$this->assertCount( 2, $records );
+		// Default thread shape is hook + body chunk + CTA.
+		$this->assertCount( 3, $records );
 		foreach ( $records as $record ) {
 			$this->assertStringEndsWith( ' __transformed__', $record['text'] );
 		}
@@ -389,14 +390,18 @@ class Test_Post extends WP_UnitTestCase {
 
 		( new Post( $post ) )->build_long_form_records();
 
-		$this->assertCount( 2, $seen );
-		$this->assertNotEmpty( $seen[0]['createdAt'] );
-		$this->assertNotEmpty( $seen[1]['createdAt'] );
-		$this->assertSame( 'teaser-thread', $seen[0]['context']['strategy'] ?? '' );
+		// Default thread shape is hook + body chunk + CTA.
+		$this->assertCount( 3, $seen );
+		foreach ( $seen as $entry ) {
+			$this->assertNotEmpty( $entry['createdAt'] );
+			$this->assertSame( 'teaser-thread', $entry['context']['strategy'] ?? '' );
+		}
 		$this->assertSame( 0, $seen[0]['context']['thread_index'] ?? null );
 		$this->assertFalse( $seen[0]['context']['is_thread_reply'] ?? true );
 		$this->assertSame( 1, $seen[1]['context']['thread_index'] ?? null );
 		$this->assertTrue( $seen[1]['context']['is_thread_reply'] ?? false );
+		$this->assertSame( 2, $seen[2]['context']['thread_index'] ?? null );
+		$this->assertTrue( $seen[2]['context']['is_thread_reply'] ?? false );
 	}
 
 	/**
@@ -499,12 +504,12 @@ class Test_Post extends WP_UnitTestCase {
 	}
 
 	/**
-	 * Teaser-thread default: 2 entries, hook cut at sentence punctuation,
-	 * CTA starts with `Continue reading: <https?://...>`.
+	 * Teaser-thread default: 3 entries — hook (sentence-cut), body chunk
+	 * continuing the prose, and CTA `Continue reading: <https?://...>`.
 	 *
 	 * @covers ::build_long_form_records
 	 */
-	public function test_build_long_form_records_teaser_thread_default_two_entries() {
+	public function test_build_long_form_records_teaser_thread_default_three_entries() {
 		$post = self::factory()->post->create_and_get(
 			array(
 				'post_title'   => 'A Long Post',
@@ -519,7 +524,7 @@ class Test_Post extends WP_UnitTestCase {
 
 		$records = ( new Post( $post ) )->build_long_form_records();
 
-		$this->assertCount( 2, $records );
+		$this->assertCount( 3, $records );
 
 		// Hook.
 		$hook = $records[0]['text'];
@@ -528,12 +533,23 @@ class Test_Post extends WP_UnitTestCase {
 		$this->assertStringNotContainsString( \get_permalink( $post ), $hook );
 		$this->assertArrayNotHasKey( 'embed', $records[0] );
 
+		// Body chunk: non-empty, sentence-bounded, distinct prose from the hook.
+		$chunk = $records[1]['text'];
+		$this->assertNotEmpty( \trim( $chunk ) );
+		$this->assertLessThanOrEqual( 280, \mb_strlen( $chunk ) );
+		$this->assertContains(
+			\substr( \rtrim( $chunk ), -1 ),
+			array( '.', '!', '?' ),
+			'Body chunk should end at sentence punctuation when one is in budget.'
+		);
+		$this->assertArrayNotHasKey( 'embed', $records[1] );
+
 		// CTA.
-		$cta = $records[1]['text'];
+		$cta = $records[2]['text'];
 		$this->assertMatchesRegularExpression( '~^Continue reading: https?://~', $cta );
 
 		$has_cta_link_facet = false;
-		foreach ( $records[1]['facets'] ?? array() as $facet ) {
+		foreach ( $records[2]['facets'] ?? array() as $facet ) {
 			foreach ( $facet['features'] as $feature ) {
 				if ( 'app.bsky.richtext.facet#link' === ( $feature['$type'] ?? '' ) ) {
 					$has_cta_link_facet = true;
@@ -577,6 +593,10 @@ class Test_Post extends WP_UnitTestCase {
 	/**
 	 * Post excerpt, when set, takes precedence over body-derived hooks.
 	 *
+	 * The body chunk continues from the start of the body, not from where
+	 * the excerpt would have ended in the body — the excerpt is curated
+	 * copy, not a sliding window over the body.
+	 *
 	 * @covers ::build_long_form_records
 	 */
 	public function test_build_long_form_records_teaser_thread_uses_excerpt_when_set() {
@@ -592,7 +612,10 @@ class Test_Post extends WP_UnitTestCase {
 
 		$records = ( new Post( $post ) )->build_long_form_records();
 
+		$this->assertCount( 3, $records );
 		$this->assertSame( 'Custom-curated hook copy.', $records[0]['text'] );
+		$this->assertStringContainsString( 'Body sentence one.', $records[1]['text'] );
+		$this->assertStringNotContainsString( 'Custom-curated', $records[1]['text'] );
 	}
 
 	/**
@@ -722,11 +745,13 @@ class Test_Post extends WP_UnitTestCase {
 	}
 
 	/**
-	 * Downstream filters may extend the thread to 3 posts.
+	 * Downstream filters can swap the default 3-entry shape for any 2..5
+	 * string array; the link-card embed still attaches to whatever entry
+	 * is last.
 	 *
 	 * @covers ::build_long_form_records
 	 */
-	public function test_build_long_form_records_teaser_thread_filter_extends_to_three() {
+	public function test_build_long_form_records_teaser_thread_filter_replaces_text_keeping_terminal_embed() {
 		$post = self::factory()->post->create_and_get(
 			array(
 				'post_title'   => 'Titled',
@@ -746,13 +771,18 @@ class Test_Post extends WP_UnitTestCase {
 		$this->assertSame( 'Hook post', $records[0]['text'] );
 		$this->assertSame( 'Key takeaway', $records[1]['text'] );
 		$this->assertSame( 'Call to action link', $records[2]['text'] );
+
+		$this->assertArrayNotHasKey( 'embed', $records[0] );
+		$this->assertArrayNotHasKey( 'embed', $records[1] );
+		$this->assertArrayHasKey( 'embed', $records[2] );
+		$this->assertSame( 'app.bsky.embed.external', $records[2]['embed']['$type'] );
 	}
 
 	/**
 	 * Filter that returns fewer than 2 entries should trigger
-	 * _doing_it_wrong and fall back to the default hook + CTA pair —
-	 * a 1-entry return would silently route to publish_single() and
-	 * drop the CTA.
+	 * _doing_it_wrong and fall back to the default hook + body chunk + CTA
+	 * shape — a 1-entry return would silently route to publish_single()
+	 * and drop the CTA.
 	 *
 	 * @covers ::build_long_form_records
 	 */
@@ -771,9 +801,366 @@ class Test_Post extends WP_UnitTestCase {
 
 		$records = ( new Post( $post ) )->build_long_form_records();
 
-		$this->assertCount( 2, $records );
+		$this->assertCount( 3, $records );
 		$this->assertNotSame( 'Just one entry', $records[0]['text'] );
+		$this->assertMatchesRegularExpression( '~^Continue reading: ~', $records[2]['text'] );
+	}
+
+	/**
+	 * Body-path hook: body chunk continues from where the hook cut off
+	 * — the hook and the chunk are non-overlapping windows over the same
+	 * plain-text body.
+	 *
+	 * @covers ::build_long_form_records
+	 */
+	public function test_build_long_form_records_teaser_thread_body_chunk_continues_after_hook_cut() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'Titled',
+				// 35 sentences × 10 chars = 350 chars; first 28 land in the hook.
+				'post_content' => \str_repeat( 'Hi there. ', 35 ),
+				'post_excerpt' => '',
+			)
+		);
+
+		\add_filter( 'atmosphere_long_form_composition', fn() => 'teaser-thread' );
+
+		$records = ( new Post( $post ) )->build_long_form_records();
+
+		$this->assertCount( 3, $records );
+
+		$hook  = $records[0]['text'];
+		$chunk = $records[1]['text'];
+
+		// The plain text is "Hi there. " repeated; sentence-cut at byte 279
+		// produces a 279-char hook ("Hi there. " * 27 + "Hi there.") and a
+		// chunk continuing with the remaining 7 sentences.
+		$this->assertSame( 279, \mb_strlen( $hook ) );
+		$this->assertNotEmpty( \trim( $chunk ) );
+		$this->assertNotSame( $hook, $chunk, 'Body chunk must not duplicate the hook text.' );
+
+		// Reconstructing hook + chunk in order should yield a prefix of the
+		// underlying plain body — proving non-overlap.
+		$reconstructed = \rtrim( $hook ) . ' ' . \ltrim( $chunk );
+		$this->assertStringStartsWith( $reconstructed, \str_repeat( 'Hi there. ', 35 ) . ' ' );
+	}
+
+	/**
+	 * Excerpt-path hook: body chunk comes from the start of the body, not
+	 * from where the excerpt would have ended in the body. Curated
+	 * excerpts are not sliding windows over the body.
+	 *
+	 * @covers ::build_long_form_records
+	 */
+	public function test_build_long_form_records_teaser_thread_excerpt_hook_chunk_starts_from_body() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'Titled',
+				'post_content' => 'First body sentence. Second body sentence. Third body sentence.',
+				'post_excerpt' => 'A curated standalone teaser.',
+			)
+		);
+
+		\add_filter( 'atmosphere_long_form_composition', fn() => 'teaser-thread' );
+
+		$records = ( new Post( $post ) )->build_long_form_records();
+
+		$this->assertCount( 3, $records );
+		$this->assertSame( 'A curated standalone teaser.', $records[0]['text'] );
+
+		// Body chunk begins with the first body sentence — not a slice that
+		// skipped past the excerpt's char-count.
+		$this->assertStringStartsWith( 'First body sentence.', $records[1]['text'] );
+	}
+
+	/**
+	 * Short post: when the hook absorbs the entire body, the body chunk is
+	 * dropped rather than padded with empty text. The CTA stays terminal
+	 * and still carries the link-card embed.
+	 *
+	 * @covers ::build_long_form_records
+	 */
+	public function test_build_long_form_records_teaser_thread_short_body_falls_back_to_two_entries() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'Titled',
+				'post_content' => 'A single short sentence.',
+				'post_excerpt' => '',
+			)
+		);
+
+		\add_filter( 'atmosphere_long_form_composition', fn() => 'teaser-thread' );
+
+		$records = ( new Post( $post ) )->build_long_form_records();
+
+		$this->assertCount( 2, $records );
+		$this->assertSame( 'A single short sentence.', $records[0]['text'] );
 		$this->assertMatchesRegularExpression( '~^Continue reading: ~', $records[1]['text'] );
+
+		// Embed attaches to the terminal entry: "last entry," not "index 2".
+		$this->assertArrayNotHasKey( 'embed', $records[0] );
+		$this->assertArrayHasKey( 'embed', $records[1] );
+		$this->assertSame( 'app.bsky.embed.external', $records[1]['embed']['$type'] );
+	}
+
+	/**
+	 * The terminal CTA record carries an `app.bsky.embed.external` link
+	 * card pointing at the WP permalink, with the post title as `title`
+	 * and the excerpt as `description`. Locks in the embed default so a
+	 * future refactor that drops it surfaces immediately.
+	 *
+	 * @covers ::build_long_form_records
+	 */
+	public function test_build_long_form_records_teaser_thread_cta_record_carries_link_card_embed() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'Distinct Post Title',
+				'post_content' => 'Body content with enough prose to compose a hook from.',
+				'post_excerpt' => 'Distinct curated excerpt.',
+			)
+		);
+
+		\add_filter( 'atmosphere_long_form_composition', fn() => 'teaser-thread' );
+
+		$records  = ( new Post( $post ) )->build_long_form_records();
+		$terminal = $records[ \count( $records ) - 1 ];
+
+		$this->assertArrayHasKey( 'embed', $terminal );
+		$this->assertSame( 'app.bsky.embed.external', $terminal['embed']['$type'] );
+
+		$external = $terminal['embed']['external'];
+		$this->assertSame( \get_permalink( $post ), $external['uri'] );
+		$this->assertSame( 'Distinct Post Title', $external['title'] );
+		$this->assertSame( 'Distinct curated excerpt.', $external['description'] );
+	}
+
+	/**
+	 * The hook (root) record has no `embed` field — the link card lives
+	 * only on the terminal CTA reply, where it's a useful affordance.
+	 *
+	 * @covers ::build_long_form_records
+	 */
+	public function test_build_long_form_records_teaser_thread_root_record_has_no_embed() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'Titled',
+				'post_content' => 'Body content with enough prose to compose a hook from.',
+				'post_excerpt' => 'Curated excerpt.',
+			)
+		);
+
+		\add_filter( 'atmosphere_long_form_composition', fn() => 'teaser-thread' );
+
+		$records = ( new Post( $post ) )->build_long_form_records();
+
+		$this->assertArrayNotHasKey( 'embed', $records[0] );
+	}
+
+	/**
+	 * Filter override that returns 2 entries reduces the thread to 2
+	 * records; the terminal entry still gets the link-card embed because
+	 * the embed attaches to "last entry," not "index 2."
+	 *
+	 * @covers ::build_long_form_records
+	 */
+	public function test_build_long_form_records_teaser_thread_filter_two_entries_terminal_has_embed() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'Titled',
+				'post_content' => 'Body content with enough prose to compose a hook from.',
+				'post_excerpt' => 'Curated excerpt.',
+			)
+		);
+
+		\add_filter( 'atmosphere_long_form_composition', fn() => 'teaser-thread' );
+		\add_filter(
+			'atmosphere_teaser_thread_posts',
+			fn() => array( 'Custom hook', 'Custom CTA' )
+		);
+
+		$records = ( new Post( $post ) )->build_long_form_records();
+
+		$this->assertCount( 2, $records );
+		$this->assertArrayNotHasKey( 'embed', $records[0] );
+		$this->assertArrayHasKey( 'embed', $records[1] );
+		$this->assertSame( 'app.bsky.embed.external', $records[1]['embed']['$type'] );
+	}
+
+	/**
+	 * Hard-cap multibyte path: a body of unbroken multibyte runs (no
+	 * spaces, no sentence punctuation) forces `truncate_to_budget` into
+	 * the hard-cap branch where the hook ends in `…`. The body chunk
+	 * must continue from the next plain-text codepoint, not corrupt the
+	 * trailing multibyte char of the hook (which `rtrim($hook, '…')`
+	 * would do — this test pins the `mb_substr` safety the PR added).
+	 *
+	 * @covers ::build_long_form_records
+	 */
+	public function test_build_long_form_records_teaser_thread_hook_hard_cap_multibyte_chunk_offset() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'Titled',
+				// 100 × `日本語` = 300 codepoints, no whitespace or sentence
+				// punctuation, forcing the hook into the hard-cap path.
+				'post_content' => \str_repeat( '日本語', 100 ),
+				'post_excerpt' => '',
+			)
+		);
+
+		\add_filter( 'atmosphere_long_form_composition', fn() => 'teaser-thread' );
+
+		$records = ( new Post( $post ) )->build_long_form_records();
+
+		$this->assertCount( 3, $records );
+
+		$hook  = $records[0]['text'];
+		$chunk = $records[1]['text'];
+
+		$this->assertSame( '…', \mb_substr( $hook, -1 ), 'Hard-cap hook should end with the ellipsis marker.' );
+		$this->assertSame( 280, \mb_strlen( $hook ) );
+
+		// First codepoint of the chunk should be the next codepoint of
+		// the original prose — no UTF-8 corruption from a byte-level
+		// rtrim, no overlap with the hook's last consumed codepoint.
+		$consumed = \mb_substr( $hook, 0, 279 );
+		$this->assertSame(
+			\mb_substr( \str_repeat( '日本語', 100 ), \mb_strlen( $consumed ), 1 ),
+			\mb_substr( $chunk, 0, 1 )
+		);
+	}
+
+	/**
+	 * Body chunk falls back to a word boundary when its source has no
+	 * sentence punctuation in the first 280 chars. Pins the chunk's
+	 * truncation contract — the same sentence-preferred /
+	 * word-fallback / hard-cap order as the hook.
+	 *
+	 * @covers ::build_long_form_records
+	 */
+	public function test_build_long_form_records_teaser_thread_body_chunk_word_cut_fallback() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'Titled',
+				// One sentence so the hook lands at the period, then a
+				// long stream of 8-char words separated by spaces but
+				// with no further punctuation — forces the chunk into
+				// the word-boundary fallback branch.
+				'post_content' => 'First sentence. ' . \str_repeat( 'abcdefgh ijklmnop ', 36 ),
+				'post_excerpt' => '',
+			)
+		);
+
+		\add_filter( 'atmosphere_long_form_composition', fn() => 'teaser-thread' );
+
+		$records = ( new Post( $post ) )->build_long_form_records();
+
+		$this->assertCount( 3, $records );
+
+		$chunk = $records[1]['text'];
+
+		$this->assertLessThanOrEqual( 280, \mb_strlen( $chunk ) );
+		$this->assertDoesNotMatchRegularExpression(
+			'~\s\S{1,7}$~',
+			$chunk,
+			'Word-cut chunk should end at a complete word, not mid-word.'
+		);
+		// No sentence punctuation in the chunk source means the chunk
+		// itself should not contain `.`/`!`/`?` either.
+		$this->assertDoesNotMatchRegularExpression( '~[.!?]~', $chunk );
+	}
+
+	/**
+	 * Filter return is silently capped at 5 entries to bound the
+	 * compensating-delete blast radius on a mid-thread publish failure.
+	 *
+	 * @covers ::build_long_form_records
+	 */
+	public function test_build_long_form_records_teaser_thread_filter_caps_at_five_entries() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'Titled',
+				'post_content' => 'Body content with enough prose to compose a hook from.',
+			)
+		);
+
+		\add_filter( 'atmosphere_long_form_composition', fn() => 'teaser-thread' );
+		\add_filter(
+			'atmosphere_teaser_thread_posts',
+			fn() => array( 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven' )
+		);
+
+		$records = ( new Post( $post ) )->build_long_form_records();
+
+		$this->assertCount( 5, $records );
+		$this->assertSame( 'Five', $records[4]['text'] );
+		$this->assertArrayHasKey( 'embed', $records[4], 'Embed still attaches to the last entry after the cap.' );
+	}
+
+	/**
+	 * Filter that returns a non-array value triggers `_doing_it_wrong`
+	 * and falls back to the default — same treatment as the < 2 valid
+	 * entries case, so filter authors get visibility into both misuse
+	 * shapes.
+	 *
+	 * @covers ::build_long_form_records
+	 */
+	public function test_build_long_form_records_teaser_thread_filter_non_array_falls_back() {
+		$this->setExpectedIncorrectUsage( 'atmosphere_teaser_thread_posts' );
+
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'Titled',
+				'post_content' => 'Body content with enough prose to compose a hook from.',
+				'post_excerpt' => 'Curated excerpt.',
+			)
+		);
+
+		\add_filter( 'atmosphere_long_form_composition', fn() => 'teaser-thread' );
+		\add_filter( 'atmosphere_teaser_thread_posts', fn() => null );
+
+		$records = ( new Post( $post ) )->build_long_form_records();
+
+		$this->assertGreaterThanOrEqual( 2, \count( $records ) );
+		$this->assertMatchesRegularExpression(
+			'~^Continue reading: ~',
+			$records[ \count( $records ) - 1 ]['text']
+		);
+	}
+
+	/**
+	 * Filter that returns only whitespace-equivalent entries (NBSP,
+	 * ideographic space) is treated as < 2 valid entries after
+	 * sanitisation. Locks in the Unicode-whitespace behavior of
+	 * `sanitize_text` — without `/u` on its whitespace regex these
+	 * would survive trim and ship as fake records.
+	 *
+	 * @covers ::build_long_form_records
+	 */
+	public function test_build_long_form_records_teaser_thread_filter_whitespace_only_entries_fall_back() {
+		$this->setExpectedIncorrectUsage( 'atmosphere_teaser_thread_posts' );
+
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'Titled',
+				'post_content' => 'Body content with enough prose to compose a hook from.',
+				'post_excerpt' => 'Curated excerpt.',
+			)
+		);
+
+		\add_filter( 'atmosphere_long_form_composition', fn() => 'teaser-thread' );
+		\add_filter(
+			'atmosphere_teaser_thread_posts',
+			fn() => array( "\xC2\xA0\xC2\xA0", "\xE3\x80\x80\xE3\x80\x80" )
+		);
+
+		$records = ( new Post( $post ) )->build_long_form_records();
+
+		// Default (excerpt + body) should resurface; the CTA stays terminal.
+		$this->assertGreaterThanOrEqual( 2, \count( $records ) );
+		$this->assertMatchesRegularExpression(
+			'~^Continue reading: ~',
+			$records[ \count( $records ) - 1 ]['text']
+		);
 	}
 
 	/**
