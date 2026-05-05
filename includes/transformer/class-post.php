@@ -925,9 +925,12 @@ class Post extends Base {
 	 * is the indexed representation of the WP post for the Bluesky
 	 * algorithm. Non-root replies are conversational and omit tags.
 	 *
-	 * `$embed` is set only by the teaser-thread caller for the terminal
-	 * CTA entry; `reply` and `embed` are independent fields in
-	 * `app.bsky.feed.post`'s lexicon, so a record carrying both is fine.
+	 * `$embed` is set by the teaser-thread caller for the terminal CTA
+	 * entry of a multi-record thread, AND for the root of a collapsed
+	 * single-record thread (where the would-be CTA is dropped but the
+	 * link-card embed is preserved on the surviving record). `reply`
+	 * and `embed` are independent fields in `app.bsky.feed.post`'s
+	 * lexicon, so a record carrying both is fine.
 	 *
 	 * @param string     $text    Pre-composed post text.
 	 * @param bool       $is_root Whether this record is the thread root.
