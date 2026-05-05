@@ -638,7 +638,10 @@ class Admin {
 			'grant_types'                => array( 'authorization_code', 'refresh_token' ),
 			'response_types'             => array( 'code' ),
 			'token_endpoint_auth_method' => 'none',
-			'scope'                      => 'atproto transition:generic',
+			// MUST match the scope string requested by Client::authorize().
+			// The auth server validates the request scope against the metadata;
+			// a drift here silently downgrades to the smaller of the two.
+			'scope'                      => 'atproto transition:generic identity:handle',
 			'dpop_bound_access_tokens'   => true,
 			'application_type'           => 'web',
 		);
