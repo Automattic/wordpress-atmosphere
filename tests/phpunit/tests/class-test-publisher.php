@@ -883,10 +883,13 @@ class Test_Publisher extends WP_UnitTestCase {
 		$post = self::factory()->post->create_and_get(
 			array(
 				'post_title'   => 'A Long-Form Post',
-				'post_content' => 'Body content that is enough to compose a hook from.',
-				// Body absorbs entirely into the hook → 2-entry fallback shape,
-				// keeping the publisher protocol assertions below at 2 records.
-				'post_excerpt' => '',
+				'post_content' => 'Hi.',
+				// Excerpt becomes the hook + body too short to form a
+				// chunk → 2-entry `[ excerpt, CTA ]` default. Excerpt
+				// is non-empty so the redundant-CTA collapse in
+				// `build_long_form_records()` does not fire and the
+				// publisher protocol assertions below stay at 2 records.
+				'post_excerpt' => 'A curated standalone excerpt for the test fixture.',
 			)
 		);
 
@@ -937,10 +940,13 @@ class Test_Publisher extends WP_UnitTestCase {
 		$post = self::factory()->post->create_and_get(
 			array(
 				'post_title'   => 'A Long-Form Post',
-				'post_content' => 'Body content that is enough to compose a hook from.',
-				// Body absorbs entirely into the hook → 2-entry fallback shape,
-				// keeping the publisher protocol assertions below at 2 records.
-				'post_excerpt' => '',
+				'post_content' => 'Hi.',
+				// Excerpt becomes the hook + body too short to form a
+				// chunk → 2-entry `[ excerpt, CTA ]` default. Excerpt
+				// is non-empty so the redundant-CTA collapse in
+				// `build_long_form_records()` does not fire and the
+				// publisher protocol assertions below stay at 2 records.
+				'post_excerpt' => 'A curated standalone excerpt for the test fixture.',
 			)
 		);
 
@@ -971,10 +977,13 @@ class Test_Publisher extends WP_UnitTestCase {
 		$post = self::factory()->post->create_and_get(
 			array(
 				'post_title'   => 'A Long-Form Post',
-				'post_content' => 'Body content that is enough to compose a hook from.',
-				// Body absorbs entirely into the hook → 2-entry fallback shape,
-				// keeping the publisher protocol assertions below at 2 records.
-				'post_excerpt' => '',
+				'post_content' => 'Hi.',
+				// Excerpt becomes the hook + body too short to form a
+				// chunk → 2-entry `[ excerpt, CTA ]` default. Excerpt
+				// is non-empty so the redundant-CTA collapse in
+				// `build_long_form_records()` does not fire and the
+				// publisher protocol assertions below stay at 2 records.
+				'post_excerpt' => 'A curated standalone excerpt for the test fixture.',
 			)
 		);
 
@@ -1165,10 +1174,13 @@ class Test_Publisher extends WP_UnitTestCase {
 		$post = self::factory()->post->create_and_get(
 			array(
 				'post_title'   => 'A Long-Form Post',
-				'post_content' => 'Body content that is enough to compose a hook from.',
-				// Body absorbs entirely into the hook → 2-entry fallback shape,
-				// keeping the publisher protocol assertions below at 2 records.
-				'post_excerpt' => '',
+				'post_content' => 'Hi.',
+				// Excerpt becomes the hook + body too short to form a
+				// chunk → 2-entry `[ excerpt, CTA ]` default. Excerpt
+				// is non-empty so the redundant-CTA collapse in
+				// `build_long_form_records()` does not fire and the
+				// publisher protocol assertions below stay at 2 records.
+				'post_excerpt' => 'A curated standalone excerpt for the test fixture.',
 			)
 		);
 
@@ -1227,10 +1239,13 @@ class Test_Publisher extends WP_UnitTestCase {
 		$post = self::factory()->post->create_and_get(
 			array(
 				'post_title'   => 'A Long-Form Post',
-				'post_content' => 'Body content that is enough to compose a hook from.',
-				// Body absorbs entirely into the hook → 2-entry fallback shape,
-				// keeping the publisher protocol assertions below at 2 records.
-				'post_excerpt' => '',
+				'post_content' => 'Hi.',
+				// Excerpt becomes the hook + body too short to form a
+				// chunk → 2-entry `[ excerpt, CTA ]` default. Excerpt
+				// is non-empty so the redundant-CTA collapse in
+				// `build_long_form_records()` does not fire and the
+				// publisher protocol assertions below stay at 2 records.
+				'post_excerpt' => 'A curated standalone excerpt for the test fixture.',
 			)
 		);
 
@@ -1324,10 +1339,14 @@ class Test_Publisher extends WP_UnitTestCase {
 		$post = self::factory()->post->create_and_get(
 			array(
 				'post_title'   => 'A Long-Form Post',
-				'post_content' => 'Body content that is enough to compose a hook from.',
-				// Body absorbs entirely into the hook → 2-entry fallback shape,
-				// matching the stored 2-entry meta below for an in-place update.
-				'post_excerpt' => '',
+				'post_content' => 'Hi.',
+				// Excerpt becomes the hook + body too short to form a
+				// chunk → 2-entry `[ excerpt, CTA ]` default. Excerpt
+				// is non-empty so the redundant-CTA collapse in
+				// `build_long_form_records()` does not fire and the
+				// new record count matches the stored 2-entry meta
+				// below for an in-place update.
+				'post_excerpt' => 'A curated standalone excerpt for the test fixture.',
 			)
 		);
 
@@ -1396,10 +1415,13 @@ class Test_Publisher extends WP_UnitTestCase {
 		$post = self::factory()->post->create_and_get(
 			array(
 				'post_title'   => 'A Long-Form Post',
-				'post_content' => 'Body content that is enough to compose a hook from.',
-				// Body absorbs entirely into the hook → 2-entry fallback shape,
-				// keeping the post-rewrite assertions below at 2 records.
-				'post_excerpt' => '',
+				'post_content' => 'Hi.',
+				// Excerpt becomes the hook + body too short to form a
+				// chunk → 2-entry `[ excerpt, CTA ]` default. Excerpt
+				// is non-empty so the redundant-CTA collapse in
+				// `build_long_form_records()` does not fire and the
+				// post-rewrite assertions below stay at 2 records.
+				'post_excerpt' => 'A curated standalone excerpt for the test fixture.',
 			)
 		);
 

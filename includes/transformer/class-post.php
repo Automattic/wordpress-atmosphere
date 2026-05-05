@@ -414,10 +414,22 @@ class Post extends Base {
 	 * for the short-form path and for any legacy caller on today's
 	 * single-record contract.
 	 *
+	 * @param int $stored_count Number of bsky records currently stored
+	 *                          for this post (from `META_THREAD_RECORDS`).
+	 *                          Defaults to 0 — a fresh publish, no
+	 *                          existing state. Callers updating an
+	 *                          already-published post should pass the
+	 *                          stored count so shape-shrinking optimisations
+	 *                          (e.g. the redundant-CTA collapse) are
+	 *                          skipped when they would force a destructive
+	 *                          rewrite of an existing thread; preserving
+	 *                          the stored shape lets `Publisher::update_post`
+	 *                          take the in-place update path and keep
+	 *                          external Bluesky engagement intact.
 	 * @return array[] Bsky post records, in thread order (index 0 is
 	 *                 the root / parent of any replies).
 	 */
-	public function build_long_form_records(): array {
+	public function build_long_form_records( int $stored_count = 0 ): array {
 		/**
 		 * Filters the long-form composition strategy for this post.
 		 *
@@ -463,9 +475,7 @@ class Post extends Base {
 					return array( $this->record_for_link_card() );
 				}
 
-				$texts = $this->build_teaser_thread();
-
-				// When the 2-entry fallback would publish the entire
+				// When the unfiltered default would publish the entire
 				// body as the hook followed by a "Continue reading"
 				// CTA, the CTA is redundant — there's nothing past
 				// the hook to "continue reading" to. Collapse to a
@@ -473,10 +483,27 @@ class Post extends Base {
 				// reader gets one clean post with a card linking back
 				// to WordPress, instead of a 2-post self-reply where
 				// the reply only restates the link.
-				if ( $this->teaser_thread_two_entry_is_redundant( $texts ) ) {
+				//
+				// Backward-compat: skip the collapse when the post
+				// already has 2+ stored records. `Publisher::update_post`
+				// only takes the in-place update path when stored count
+				// matches new count; a 2→1 shape change otherwise falls
+				// through to `rewrite_thread()`, which deletes the
+				// original root URI and orphans every external Bluesky
+				// reply / like / repost on it. Preserving the stored
+				// shape costs an extra (still-redundant) reply but
+				// keeps engagement intact.
+				//
+				// Decision is made on the unfiltered default so an
+				// `atmosphere_teaser_thread_posts` filter that
+				// legitimately produces a 2-entry custom shape (custom
+				// hook + custom second post) still runs and ships as 2
+				// records.
+				$default_texts = $this->compute_default_teaser_thread();
+				if ( $stored_count < 2 && $this->default_teaser_thread_is_redundant_two_entry( $default_texts ) ) {
 					return array(
 						$this->record_for_thread_entry(
-							(string) $texts[0],
+							(string) $default_texts[0],
 							true,
 							array(
 								'strategy'        => 'teaser-thread',
@@ -488,6 +515,7 @@ class Post extends Base {
 					);
 				}
 
+				$texts   = $this->build_teaser_thread();
 				$records = array();
 				$last    = \count( $texts ) - 1;
 				// Attach an `app.bsky.embed.external` link card to the
@@ -712,40 +740,7 @@ class Post extends Base {
 	 *                  default; up to 5 when overridden by filter.
 	 */
 	private function build_teaser_thread(): array {
-		$excerpt = sanitize_text( (string) $this->object->post_excerpt );
-		$plain   = $this->render_post_content_plain( $this->object );
-
-		if ( \mb_strlen( $excerpt ) >= 10 ) {
-			$hook         = $this->truncate_to_budget( $excerpt, 300, false );
-			$chunk_source = $plain;
-		} else {
-			$hook = $this->truncate_to_budget( $plain, 280, true );
-			// Strip the hard-cap ellipsis (when present) before measuring
-			// how much of the plain body the hook consumed; the
-			// sentence/word-cut paths return clean prefixes so this is a
-			// no-op there. `mb_substr` keeps the strip char-aware —
-			// `rtrim($hook, '…')` would strip individual UTF-8 bytes from
-			// the multi-byte ellipsis sequence and can corrupt the trailing
-			// non-ASCII char before it.
-			$consumed     = '…' === \mb_substr( $hook, -1 )
-				? \mb_substr( $hook, 0, \mb_strlen( $hook ) - 1 )
-				: $hook;
-			$chunk_source = \mb_substr( $plain, \mb_strlen( $consumed ) );
-		}
-
-		// Unicode-aware leading-whitespace strip: `\ltrim` only handles
-		// ASCII whitespace, so NBSP (U+00A0) and ideographic space
-		// (U+3000) at the start of `$chunk_source` would otherwise leak
-		// into the body chunk as leading invisible whitespace. PCRE in
-		// `/u` mode returns null on invalid UTF-8; fall back to the
-		// pre-strip slice so the `mb_strlen` check below stays string-safe.
-		$stripped     = \preg_replace( '/^\s+/u', '', $chunk_source );
-		$chunk_source = \is_string( $stripped ) ? $stripped : $chunk_source;
-		$cta          = $this->teaser_thread_cta_text();
-
-		$default = \mb_strlen( $chunk_source ) >= 10
-			? array( $hook, $this->truncate_to_budget( $chunk_source, 280, true ), $cta )
-			: array( $hook, $cta );
+		$default = $this->compute_default_teaser_thread();
 
 		/**
 		 * Filters the default teaser-thread post texts.
@@ -825,36 +820,98 @@ class Post extends Base {
 	}
 
 	/**
-	 * Whether a 2-entry teaser-thread output is the redundant
-	 * `[ entire-body, default CTA ]` shape.
+	 * Compute the default teaser-thread text array, pre-filter.
 	 *
-	 * The default `build_teaser_thread()` falls back to `[ hook, cta ]`
-	 * when the body is exhausted by the hook. When the post has no
-	 * separate `post_excerpt` (so the hook IS the body) AND the second
-	 * entry is the default `Continue reading: <permalink>` text, the
-	 * CTA is purely redundant — the entire post body is already in the
-	 * hook above it. Callers can collapse to a single record (with a
-	 * link-card embed for the link-back) instead.
+	 * Extracted from `build_teaser_thread()` so callers can inspect the
+	 * unfiltered default before deciding whether to short-circuit (e.g.
+	 * the redundant-2-entry collapse in `build_long_form_records()`)
+	 * without coupling to whatever an `atmosphere_teaser_thread_posts`
+	 * filter might do.
 	 *
-	 * Guards on the default CTA text rather than just `count === 2` so
-	 * filter authors who deliberately return a 2-entry shape with a
-	 * custom second entry (a related-link, a sign-off, etc.) keep their
-	 * explicit choice — only the default-fallback shape collapses.
+	 * Hook precedence:
+	 *   1. If the post has a `post_excerpt`, use it (plain-text
+	 *      normalized, clamped to 300 chars as a safety floor).
+	 *   2. Otherwise, use the first ~280 chars of the body text,
+	 *      cut at a sentence boundary.
 	 *
-	 * @param array $texts Post-filter teaser-thread output.
+	 * Body chunk:
+	 *   - Excerpt-as-hook: chunk_source is the entire body.
+	 *   - Body-as-hook: chunk_source is what remains after the hook
+	 *     consumed its slice.
+	 *   - Dropped (output reduces to `[ hook, cta ]`) when fewer than
+	 *     10 chars of prose remain after Unicode-aware leading-whitespace
+	 *     strip.
+	 *
+	 * @return string[] 2 or 3 entries.
+	 */
+	private function compute_default_teaser_thread(): array {
+		$excerpt = sanitize_text( (string) $this->object->post_excerpt );
+		$plain   = $this->render_post_content_plain( $this->object );
+
+		if ( \mb_strlen( $excerpt ) >= 10 ) {
+			$hook         = $this->truncate_to_budget( $excerpt, 300, false );
+			$chunk_source = $plain;
+		} else {
+			$hook = $this->truncate_to_budget( $plain, 280, true );
+			// Strip the hard-cap ellipsis (when present) before measuring
+			// how much of the plain body the hook consumed; the
+			// sentence/word-cut paths return clean prefixes so this is a
+			// no-op there. `mb_substr` keeps the strip char-aware —
+			// `rtrim($hook, '…')` would strip individual UTF-8 bytes from
+			// the multi-byte ellipsis sequence and can corrupt the trailing
+			// non-ASCII char before it.
+			$consumed     = '…' === \mb_substr( $hook, -1 )
+				? \mb_substr( $hook, 0, \mb_strlen( $hook ) - 1 )
+				: $hook;
+			$chunk_source = \mb_substr( $plain, \mb_strlen( $consumed ) );
+		}
+
+		// Unicode-aware leading-whitespace strip: `\ltrim` only handles
+		// ASCII whitespace, so NBSP (U+00A0) and ideographic space
+		// (U+3000) at the start of `$chunk_source` would otherwise leak
+		// into the body chunk as leading invisible whitespace. PCRE in
+		// `/u` mode returns null on invalid UTF-8; fall back to the
+		// pre-strip slice so the `mb_strlen` check below stays string-safe.
+		$stripped     = \preg_replace( '/^\s+/u', '', $chunk_source );
+		$chunk_source = \is_string( $stripped ) ? $stripped : $chunk_source;
+		$cta          = $this->teaser_thread_cta_text();
+
+		return \mb_strlen( $chunk_source ) >= 10
+			? array( $hook, $this->truncate_to_budget( $chunk_source, 280, true ), $cta )
+			: array( $hook, $cta );
+	}
+
+	/**
+	 * Whether the unfiltered default teaser-thread is the redundant
+	 * `[ entire-body, "Continue reading: <permalink>" ]` shape.
+	 *
+	 * Triggers when the post has no usable `post_excerpt` (so the hook
+	 * IS the body) AND the body fits entirely in the 280-char hook
+	 * budget (so `chunk_source` is below the 10-char floor and the
+	 * default falls back to `[ hook, cta ]`). In that shape, the CTA
+	 * reply is purely redundant — there's nothing past the hook to
+	 * "continue reading" to. Callers can collapse to a single record
+	 * with the body text and a link-card embed instead.
+	 *
+	 * Decision is made on the unfiltered default so filter authors who
+	 * legitimately want a 2-entry custom shape (custom hook + custom
+	 * second post) still see their filter run on the un-collapsed
+	 * default and ship as 2 records.
+	 *
+	 * @param array $default_texts Precomputed default array (pass to
+	 *                             avoid recomputing — this method does
+	 *                             not call `compute_default_teaser_thread()`
+	 *                             itself).
 	 * @return bool
 	 */
-	private function teaser_thread_two_entry_is_redundant( array $texts ): bool {
-		if ( 2 !== \count( $texts ) ) {
+	private function default_teaser_thread_is_redundant_two_entry( array $default_texts ): bool {
+		if ( 2 !== \count( $default_texts ) ) {
 			return false;
 		}
 
 		$excerpt = sanitize_text( (string) $this->object->post_excerpt );
-		if ( \mb_strlen( $excerpt ) >= 10 ) {
-			return false;
-		}
 
-		return ( $texts[1] ?? '' ) === $this->teaser_thread_cta_text();
+		return \mb_strlen( $excerpt ) < 10;
 	}
 
 	/**
