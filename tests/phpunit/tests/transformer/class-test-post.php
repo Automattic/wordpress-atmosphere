@@ -906,6 +906,43 @@ class Test_Post extends WP_UnitTestCase {
 	}
 
 	/**
+	 * Body slightly over the 280-char hook budget with a tail too
+	 * short to form a body chunk: the 2-entry `[ truncated-hook, CTA ]`
+	 * default stays — the hook is NOT the whole body (the trailing
+	 * chars never made it in), so the CTA reply still adds value as
+	 * the only in-text affordance to "there's more in the source." The
+	 * collapse predicate must NOT fire here even though the default is
+	 * 2-entry and there's no excerpt.
+	 *
+	 * @covers ::build_long_form_records
+	 */
+	public function test_build_long_form_records_teaser_thread_truncated_hook_short_tail_does_not_collapse() {
+		// 285-char body: hook truncates to ~280 (sentence-bounded),
+		// chunk_source is the leftover ~5 chars, < 10 floor → 2-entry
+		// fallback `[ truncated-hook, CTA ]`. Hook is NOT the entire
+		// body, so the predicate must short-circuit on body length.
+		$body = \str_repeat( 'word ', 56 ) . '. tail';
+
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'Titled',
+				'post_content' => $body,
+				'post_excerpt' => '',
+			)
+		);
+
+		\add_filter( 'atmosphere_long_form_composition', fn() => 'teaser-thread' );
+
+		$records = ( new Post( $post ) )->build_long_form_records();
+
+		// 2-entry shape preserved; collapse did not fire.
+		$this->assertCount( 2, $records );
+		$this->assertMatchesRegularExpression( '~^Continue reading: ~', $records[1]['text'] );
+		$this->assertArrayNotHasKey( 'embed', $records[0] );
+		$this->assertArrayHasKey( 'embed', $records[1] );
+	}
+
+	/**
 	 * Excerpt-as-hook with a body too short to compose a chunk: the
 	 * 2-entry `[ excerpt, CTA ]` fallback stays — the excerpt and the
 	 * body are separate strings, so the CTA still carries the

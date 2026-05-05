@@ -515,7 +515,7 @@ class Post extends Base {
 					);
 				}
 
-				$texts   = $this->build_teaser_thread();
+				$texts   = $this->build_teaser_thread( $default_texts );
 				$records = array();
 				$last    = \count( $texts ) - 1;
 				// Attach an `app.bsky.embed.external` link card to the
@@ -736,11 +736,22 @@ class Post extends Base {
 	 * Filterable via `atmosphere_teaser_thread_posts`; the filter is the
 	 * final transformation point and may return any 2..5 string entries.
 	 *
+	 * @param array|null $precomputed_default Precomputed default array
+	 *                                        from `compute_default_teaser_thread()`.
+	 *                                        Pass to avoid re-running
+	 *                                        the `render_post_content_plain`
+	 *                                        / `truncate_to_budget`
+	 *                                        pipeline when the caller
+	 *                                        already needed the default
+	 *                                        for its own decision (e.g.
+	 *                                        the redundant-CTA collapse
+	 *                                        predicate). When null,
+	 *                                        computed here.
 	 * @return string[] Text of each post in order. 2 or 3 entries by
 	 *                  default; up to 5 when overridden by filter.
 	 */
-	private function build_teaser_thread(): array {
-		$default = $this->compute_default_teaser_thread();
+	private function build_teaser_thread( ?array $precomputed_default = null ): array {
+		$default = $precomputed_default ?? $this->compute_default_teaser_thread();
 
 		/**
 		 * Filters the default teaser-thread post texts.
@@ -885,13 +896,23 @@ class Post extends Base {
 	 * Whether the unfiltered default teaser-thread is the redundant
 	 * `[ entire-body, "Continue reading: <permalink>" ]` shape.
 	 *
-	 * Triggers when the post has no usable `post_excerpt` (so the hook
-	 * IS the body) AND the body fits entirely in the 280-char hook
-	 * budget (so `chunk_source` is below the 10-char floor and the
-	 * default falls back to `[ hook, cta ]`). In that shape, the CTA
-	 * reply is purely redundant — there's nothing past the hook to
-	 * "continue reading" to. Callers can collapse to a single record
-	 * with the body text and a link-card embed instead.
+	 * Triggers when ALL of:
+	 *   - The post has no usable `post_excerpt` (so the hook IS the
+	 *     body, not a separate curated string).
+	 *   - The body fits entirely in the 280-char hook budget (so the
+	 *     hook is the *whole* body, not a truncated prefix — without
+	 *     this check, a 285-char body produces a hook-truncated
+	 *     `[ first 280 chars, cta ]` default whose collapse would
+	 *     silently drop the trailing 5 chars from bsky output without
+	 *     the reader having any in-text affordance to know there's
+	 *     more).
+	 *   - The default is the 2-entry fallback (so chunk_source ended
+	 *     up below the 10-char floor and the body chunk was dropped).
+	 *
+	 * In that exact shape, the CTA reply is purely redundant — the
+	 * entire post body is already in the hook above it. Callers can
+	 * collapse to a single record with the body text and a link-card
+	 * embed instead.
 	 *
 	 * Decision is made on the unfiltered default so filter authors who
 	 * legitimately want a 2-entry custom shape (custom hook + custom
@@ -910,8 +931,15 @@ class Post extends Base {
 		}
 
 		$excerpt = sanitize_text( (string) $this->object->post_excerpt );
+		if ( \mb_strlen( $excerpt ) >= 10 ) {
+			return false;
+		}
 
-		return \mb_strlen( $excerpt ) < 10;
+		// Confirm the hook IS the whole body, not a truncated prefix.
+		// 280 mirrors `compute_default_teaser_thread()`'s body-as-hook
+		// budget; for a body at or below that length the hook
+		// equals the body verbatim and `chunk_source` is empty.
+		return \mb_strlen( $this->render_post_content_plain( $this->object ) ) <= 280;
 	}
 
 	/**
