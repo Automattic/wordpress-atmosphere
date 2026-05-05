@@ -655,18 +655,20 @@ class Admin {
 
 		$response = new \WP_REST_Response( $metadata, 200 );
 
-		// Prevent intermediate caches (CDN edge, page cache, browser) from
-		// serving stale metadata. AT Protocol auth servers fetch this URL to
-		// validate authorization-request scope; a stale cached version here
-		// rejects every fresh authorize with "Scope X is not declared in
-		// the client metadata" until the cache fills with the current
-		// document. The auth server's own metadata cache (10 min in
-		// Bluesky's reference impl) is still in play, but with no-store we
-		// at least guarantee the path between us and them carries the
-		// current document — without it, hosted environments like wp.com
-		// Atomic edge-cache the endpoint and serve a stale scope to every
-		// auth server that asks.
-		$response->header( 'Cache-Control', 'no-store' );
+		// Cap intermediate-cache TTL well under the AT Protocol auth
+		// server's own metadata cache (10 min in Bluesky's reference impl),
+		// so that when the metadata document changes — e.g. a new OAuth
+		// scope is added in an Atmosphere release — every layer between
+		// us and the auth server has refreshed before the auth server
+		// itself does its next refresh. Without an explicit header,
+		// hosted environments like wp.com Atomic apply their own (much
+		// longer) heuristic-based edge cache and can serve a stale scope
+		// to every auth server that asks, surfacing as "Scope X is not
+		// declared in the client metadata" on every authorization attempt.
+		// 5 minutes gives the auth-server cache cycle plenty of room
+		// without flat-out disabling cheap caching of an otherwise
+		// rarely-changing document.
+		$response->header( 'Cache-Control', 'public, max-age=300' );
 
 		return $response;
 	}
