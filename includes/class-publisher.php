@@ -559,9 +559,16 @@ class Publisher {
 		$bsky_transformer = new Post( $post );
 		$doc_transformer  = new Document( $post );
 
+		// Pass the stored count to `build_long_form_records()` so the
+		// transformer can preserve the existing thread shape on update
+		// instead of triggering a destructive `rewrite_thread()` for
+		// shape-shrinking optimisations like the redundant-CTA collapse
+		// — that path would re-mint the root URI and orphan external
+		// engagement on the original. New posts (no stored records) get
+		// the optimised shape; live posts keep theirs forever.
 		$new_records = $bsky_transformer->is_short_form_post()
 			? array( $bsky_transformer->transform() )
-			: $bsky_transformer->build_long_form_records();
+			: $bsky_transformer->build_long_form_records( \count( $stored ) );
 
 		// In-place update: matching record counts. Strategy is not
 		// compared — a `truncate-link` (count=1) post that switches to
