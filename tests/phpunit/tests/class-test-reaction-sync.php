@@ -28,7 +28,6 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 		\update_post_meta( $post_id, BskyPost::META_URI, $uri );
 
 		$method = new \ReflectionMethod( Reaction_Sync::class, 'find_post_by_bsky_uri' );
-		$method->setAccessible( true );
 
 		$this->assertSame( $post_id, $method->invoke( null, $uri ) );
 	}
@@ -43,7 +42,6 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 		\add_post_meta( $post_id, BskyPost::META_URI_INDEX, $reply_uri );
 
 		$method = new \ReflectionMethod( Reaction_Sync::class, 'find_post_by_bsky_uri' );
-		$method->setAccessible( true );
 
 		$this->assertSame( $post_id, $method->invoke( null, $reply_uri ) );
 	}
@@ -53,7 +51,6 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 	 */
 	public function test_find_post_by_bsky_uri_not_found() {
 		$method = new \ReflectionMethod( Reaction_Sync::class, 'find_post_by_bsky_uri' );
-		$method->setAccessible( true );
 
 		$this->assertFalse( $method->invoke( null, 'at://did:plc:unknown/app.bsky.feed.post/xyz' ) );
 	}
@@ -69,7 +66,6 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 		\update_comment_meta( $comment_id, 'source_id', $uri );
 
 		$method = new \ReflectionMethod( Reaction_Sync::class, 'find_comment_by_source_id' );
-		$method->setAccessible( true );
 
 		$this->assertSame( $comment_id, $method->invoke( null, $uri ) );
 	}
@@ -79,7 +75,6 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 	 */
 	public function test_find_comment_by_source_id_not_found() {
 		$method = new \ReflectionMethod( Reaction_Sync::class, 'find_comment_by_source_id' );
-		$method->setAccessible( true );
 
 		$this->assertFalse( $method->invoke( null, 'at://did:plc:unknown/app.bsky.feed.post/xyz' ) );
 	}
@@ -95,7 +90,6 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 		\update_comment_meta( $comment_id, 'source_id', $uri );
 
 		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_reply' );
-		$method->setAccessible( true );
 
 		$notification = array(
 			'uri'    => $uri,
@@ -126,7 +120,6 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 		\update_post_meta( $post_id, BskyPost::META_URI, $post_uri );
 
 		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_reply' );
-		$method->setAccessible( true );
 
 		$notification = array(
 			'uri'    => 'at://did:plc:replier/app.bsky.feed.post/reply789',
@@ -205,7 +198,6 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 		);
 
 		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_reply' );
-		$method->setAccessible( true );
 
 		$notification = array(
 			'uri'    => 'at://did:plc:replier/app.bsky.feed.post/nested',
@@ -255,7 +247,6 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 		\update_comment_meta( $parent_comment_id, 'source_id', $parent_reply_uri );
 
 		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_reply' );
-		$method->setAccessible( true );
 
 		$notification = array(
 			'uri'    => 'at://did:plc:second/app.bsky.feed.post/nestedreply',
@@ -289,7 +280,6 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 	 */
 	public function test_process_reply_skips_unmatched() {
 		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_reply' );
-		$method->setAccessible( true );
 
 		$notification = array(
 			'uri'    => 'at://did:plc:someone/app.bsky.feed.post/orphan',
@@ -320,7 +310,6 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 		\update_post_meta( $post_id, BskyPost::META_URI, $post_uri );
 
 		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_reply' );
-		$method->setAccessible( true );
 
 		$notification = array(
 			'uri'    => 'at://did:plc:empty/app.bsky.feed.post/emptyreply',
@@ -351,7 +340,6 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 		\update_post_meta( $post_id, BskyPost::META_URI, $post_uri );
 
 		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_subject_reaction' );
-		$method->setAccessible( true );
 
 		$notification = array(
 			'uri'    => 'at://did:plc:liker/app.bsky.feed.like/like1',
@@ -400,7 +388,6 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 	 */
 	public function test_process_like_skips_unknown_subject() {
 		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_subject_reaction' );
-		$method->setAccessible( true );
 
 		$notification = array(
 			'uri'    => 'at://did:plc:liker/app.bsky.feed.like/like2',
@@ -430,7 +417,6 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 		\update_comment_meta( $existing_id, 'source_id', $like_uri );
 
 		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_subject_reaction' );
-		$method->setAccessible( true );
 
 		$notification = array(
 			'uri'    => $like_uri,
@@ -454,7 +440,6 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 		\update_post_meta( $post_id, BskyPost::META_URI, $post_uri );
 
 		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_subject_reaction' );
-		$method->setAccessible( true );
 
 		$notification = array(
 			'uri'    => 'at://did:plc:reposter/app.bsky.feed.repost/rep1',
@@ -502,7 +487,6 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 	 */
 	public function test_process_repost_skips_unknown_subject() {
 		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_subject_reaction' );
-		$method->setAccessible( true );
 
 		$notification = array(
 			'uri'    => 'at://did:plc:reposter/app.bsky.feed.repost/rep2',
@@ -554,7 +538,6 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 		\update_post_meta( $post_id, BskyPost::META_URI, $post_uri );
 
 		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_own_record' );
-		$method->setAccessible( true );
 
 		$record = array(
 			'uri'   => 'at://did:plc:me/app.bsky.feed.like/selflike1',
@@ -588,7 +571,6 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 		$this->seed_self_identity();
 
 		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_own_record' );
-		$method->setAccessible( true );
 
 		$record = array(
 			'uri'   => 'at://did:plc:me/app.bsky.feed.like/selflike2',
@@ -611,7 +593,6 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 		\update_post_meta( $post_id, BskyPost::META_URI, $post_uri );
 
 		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_own_record' );
-		$method->setAccessible( true );
 
 		$record = array(
 			'uri'   => 'at://did:plc:me/app.bsky.feed.post/selfreply1',
@@ -643,7 +624,6 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 		$this->seed_self_identity();
 
 		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_own_record' );
-		$method->setAccessible( true );
 
 		$record = array(
 			'uri'   => 'at://did:plc:me/app.bsky.feed.post/originalpost',
@@ -669,7 +649,6 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 		\update_post_meta( $post_id, BskyPost::META_URI, $post_uri );
 
 		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_reply' );
-		$method->setAccessible( true );
 
 		$notification = array(
 			'uri'    => 'at://did:plc:replier/app.bsky.feed.post/tzreply',
@@ -707,7 +686,6 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 	 */
 	private function invoke_paginate( callable $fetch, string $items_key, string $option_key, callable $process ): void {
 		$method = new \ReflectionMethod( Reaction_Sync::class, 'paginate' );
-		$method->setAccessible( true );
 		$method->invoke( null, $fetch, $items_key, $option_key, $process );
 	}
 
@@ -896,7 +874,6 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 		\update_comment_meta( $local_comment, Reaction_Sync::META_SOURCE_ID, $reply_uri );
 
 		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_reply' );
-		$method->setAccessible( true );
 
 		$notification = array(
 			'uri'    => $reply_uri,
