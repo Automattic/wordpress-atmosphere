@@ -46,7 +46,6 @@ class Test_Post extends WP_UnitTestCase {
 	private function truncate( string $text, int $max, bool $prefer_sentence = true ): string {
 		$post   = self::factory()->post->create_and_get();
 		$method = new \ReflectionMethod( Post::class, 'truncate_to_budget' );
-		$method->setAccessible( true );
 
 		return $method->invoke( new Post( $post ), $text, $max, $prefer_sentence );
 	}
