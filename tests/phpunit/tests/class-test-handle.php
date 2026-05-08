@@ -269,4 +269,53 @@ class Test_Handle extends WP_UnitTestCase {
 		\delete_option( 'atmosphere_connection' );
 		\delete_option( Handle::OPTION_PREVIOUS_HANDLE );
 	}
+
+	/**
+	 * Test that maybe_revert_on_disconnect returns null when the feature is disabled.
+	 */
+	public function test_revert_returns_null_when_disabled(): void {
+		\add_filter( Handle::FILTER_ENABLED, '__return_false' );
+		$this->assertNull( Handle::maybe_revert_on_disconnect() );
+		\remove_filter( Handle::FILTER_ENABLED, '__return_false' );
+	}
+
+	/**
+	 * Test that maybe_revert_on_disconnect returns null when no previous handle is stored.
+	 */
+	public function test_revert_returns_null_when_no_previous_handle(): void {
+		\delete_option( Handle::OPTION_PREVIOUS_HANDLE );
+		$this->assertNull( Handle::maybe_revert_on_disconnect() );
+	}
+
+	/**
+	 * Test that maybe_revert_on_disconnect clears the option on success.
+	 */
+	public function test_revert_clears_option_on_success(): void {
+		\update_option( Handle::OPTION_PREVIOUS_HANDLE, 'alice.bsky.social' );
+		\add_filter( Handle::FILTER_PRE_UPDATE, static fn() => true );
+
+		$result = Handle::maybe_revert_on_disconnect();
+
+		$this->assertTrue( $result );
+		$this->assertFalse( \get_option( Handle::OPTION_PREVIOUS_HANDLE ) );
+
+		\remove_all_filters( Handle::FILTER_PRE_UPDATE );
+	}
+
+	/**
+	 * Test that maybe_revert_on_disconnect keeps the option on failure.
+	 */
+	public function test_revert_keeps_option_on_failure(): void {
+		\update_option( Handle::OPTION_PREVIOUS_HANDLE, 'alice.bsky.social' );
+		$err = new \WP_Error( 'fail', 'nope' );
+		\add_filter( Handle::FILTER_PRE_UPDATE, static fn() => $err );
+
+		$result = Handle::maybe_revert_on_disconnect();
+
+		$this->assertWPError( $result );
+		$this->assertSame( 'alice.bsky.social', \get_option( Handle::OPTION_PREVIOUS_HANDLE ) );
+
+		\remove_all_filters( Handle::FILTER_PRE_UPDATE );
+		\delete_option( Handle::OPTION_PREVIOUS_HANDLE );
+	}
 }

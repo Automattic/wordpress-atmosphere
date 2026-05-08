@@ -179,6 +179,55 @@ class Handle {
 	}
 
 	/**
+	 * Attempt to revert to the previously snapshotted handle.
+	 *
+	 * No-op when the feature is disabled or there is nothing to revert.
+	 * Caller (the disconnect flow) MUST invoke this BEFORE
+	 * `\Atmosphere\OAuth\Client::disconnect()` so the access token is still
+	 * valid for the call.
+	 *
+	 * @return true|\WP_Error|null Null when no revert was attempted.
+	 */
+	public static function maybe_revert_on_disconnect(): true|\WP_Error|null {
+		if ( ! self::is_enabled() ) {
+			return null;
+		}
+
+		$previous = (string) \get_option( self::OPTION_PREVIOUS_HANDLE, '' );
+		if ( '' === $previous ) {
+			return null;
+		}
+
+		$result = self::call_update_handle( $previous );
+
+		if ( \is_wp_error( $result ) ) {
+			self::add_settings_notice(
+				\sprintf(
+					/* translators: 1: previous handle to restore; 2: error message from the PDS. */
+					\__( 'Could not restore your previous Bluesky handle (%1$s): %2$s', 'atmosphere' ),
+					$previous,
+					$result->get_error_message()
+				),
+				'warning'
+			);
+			return $result;
+		}
+
+		\delete_option( self::OPTION_PREVIOUS_HANDLE );
+
+		self::add_settings_notice(
+			\sprintf(
+				/* translators: %s: the handle that was restored (e.g. alice.bsky.social). */
+				\__( 'Restored your previous Bluesky handle: %s.', 'atmosphere' ),
+				$previous
+			),
+			'info'
+		);
+
+		return true;
+	}
+
+	/**
 	 * Issue the `com.atproto.identity.updateHandle` call.
 	 *
 	 * Runs the `atmosphere_pre_update_handle` short-circuit filter first so
