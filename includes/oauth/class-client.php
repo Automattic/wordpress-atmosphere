@@ -22,9 +22,22 @@ class Client {
 	/**
 	 * Scopes requested from the auth server.
 	 *
+	 * `identity:handle` is required for `com.atproto.identity.updateHandle`
+	 * — the canonical AT Protocol permission scope per
+	 * https://atproto.com/specs/permission. `transition:generic` is the
+	 * App Password-equivalent bucket and explicitly does not include
+	 * identity operations, so it must be paired with `identity:handle`
+	 * for any flow that lets users change their handle through the PDS.
+	 *
+	 * MUST stay in lockstep with the `scope` value advertised in the
+	 * client-metadata REST endpoint
+	 * ({@see \Atmosphere\Admin::serve_client_metadata()}). The auth
+	 * server validates the requested scope against the metadata; a drift
+	 * silently downgrades every connection to whichever value is smaller.
+	 *
 	 * @var string
 	 */
-	private const SCOPES = 'atproto transition:generic';
+	private const SCOPES = 'atproto transition:generic identity:handle';
 
 	/**
 	 * Get the client_id URL (= client metadata endpoint).
