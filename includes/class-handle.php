@@ -99,6 +99,150 @@ class Handle {
 	}
 
 	/**
+	 * Replace the connected user's Bluesky handle with the site host.
+	 *
+	 * Caller MUST have verified capability + nonce before invoking. The
+	 * method does not check those preconditions: it snapshots the current
+	 * handle (so disconnect can revert), invokes
+	 * `com.atproto.identity.updateHandle` via Atmosphere's DPoP client,
+	 * and posts a settings notice describing the outcome.
+	 *
+	 * @return true|\WP_Error|null Null when the feature is disabled, the
+	 *                              install is ineligible, the connection
+	 *                              handle already matches the site host,
+	 *                              or no host can be derived. True on
+	 *                              success. WP_Error on failure.
+	 */
+	public static function set_handle(): true|\WP_Error|null {
+		if ( ! self::is_enabled() || ! self::is_root_install() ) {
+			return null;
+		}
+
+		$target = self::get_target_handle();
+		if ( '' === $target ) {
+			return null;
+		}
+
+		if ( ! is_connected() ) {
+			self::add_settings_notice(
+				\__( 'Connect to Bluesky before setting your domain handle.', 'atmosphere' ),
+				'error'
+			);
+			return new \WP_Error(
+				'atmosphere_not_connected',
+				\__( 'Not connected to Bluesky.', 'atmosphere' )
+			);
+		}
+
+		$connection = get_connection();
+		$current    = isset( $connection['handle'] ) ? \strtolower( (string) $connection['handle'] ) : '';
+
+		if ( $current === $target ) {
+			return null;
+		}
+
+		if ( '' !== $current ) {
+			/*
+			 * Snapshot the current handle BEFORE the XRPC call. If the call
+			 * succeeds, the snapshot is what we revert to on disconnect. If it
+			 * fails, the PDS handle is unchanged, so the snapshot still equals
+			 * the user's actual handle and a later revert call is a safe no-op.
+			 */
+			\update_option( self::OPTION_PREVIOUS_HANDLE, $current, false );
+		}
+
+		$result = self::call_update_handle( $target );
+
+		if ( \is_wp_error( $result ) ) {
+			self::add_settings_notice(
+				\sprintf(
+					/* translators: 1: target handle (the site domain); 2: error message from the PDS. */
+					\__( 'Could not set %1$s as your Bluesky handle: %2$s', 'atmosphere' ),
+					$target,
+					$result->get_error_message()
+				),
+				'error'
+			);
+			return $result;
+		}
+
+		self::add_settings_notice(
+			\sprintf(
+				/* translators: %s: the handle the site set itself to (e.g. example.com). */
+				\__( 'Your Bluesky handle is now %s.', 'atmosphere' ),
+				$target
+			),
+			'success'
+		);
+
+		return true;
+	}
+
+	/**
+	 * Issue the `com.atproto.identity.updateHandle` call.
+	 *
+	 * Runs the `atmosphere_pre_update_handle` short-circuit filter first so
+	 * tests and integrations can observe / mock the call without going
+	 * through the DPoP layer (which would otherwise require real encrypted
+	 * keys to even build a request).
+	 *
+	 * @param string $handle Handle to set on the connected account.
+	 * @return true|\WP_Error
+	 */
+	private static function call_update_handle( string $handle ): true|\WP_Error {
+		/**
+		 * Short-circuits the `com.atproto.identity.updateHandle` call.
+		 *
+		 * Return `true` to fake success, a `WP_Error` to fake failure, or
+		 * `null` (the default) to fall through to the real PDS request.
+		 *
+		 * @param null|true|\WP_Error $short_circuit Short-circuit value.
+		 * @param string              $handle        Handle that would be set.
+		 */
+		$short_circuit = \apply_filters( self::FILTER_PRE_UPDATE, null, $handle );
+
+		if ( true === $short_circuit ) {
+			return true;
+		}
+
+		if ( \is_wp_error( $short_circuit ) ) {
+			return $short_circuit;
+		}
+
+		if ( null !== $short_circuit ) {
+			return new \WP_Error(
+				'atmosphere_invalid_pre_update_handle_return',
+				\__( 'atmosphere_pre_update_handle must return null, true, or a WP_Error.', 'atmosphere' )
+			);
+		}
+
+		$response = API::post(
+			'/xrpc/com.atproto.identity.updateHandle',
+			array( 'handle' => $handle )
+		);
+
+		if ( \is_wp_error( $response ) ) {
+			return $response;
+		}
+
+		return true;
+	}
+
+	/**
+	 * Persist a settings notice under the Atmosphere group.
+	 *
+	 * Stores via the `settings_errors` transient so the message survives
+	 * the `wp_safe_redirect` admin-post handlers issue. Does not redirect.
+	 *
+	 * @param string $message Translated message to surface.
+	 * @param string $type    Notice type (`success`, `error`, `warning`, `info`).
+	 */
+	private static function add_settings_notice( string $message, string $type ): void {
+		\add_settings_error( self::NOTICE_SETTING, 'atmosphere_domain_handle', $message, $type );
+		\set_transient( 'settings_errors', \get_settings_errors(), 30 );
+	}
+
+	/**
 	 * Whether the confirm-handle UI should render for the given status.
 	 *
 	 * @param array<string, mixed> $status Connection status snapshot with at

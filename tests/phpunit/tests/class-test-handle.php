@@ -168,4 +168,105 @@ class Test_Handle extends WP_UnitTestCase {
 		);
 		\remove_all_filters( 'home_url' );
 	}
+
+	/**
+	 * Test that set_handle returns null when the feature is disabled.
+	 */
+	public function test_set_handle_returns_null_when_disabled(): void {
+		\add_filter( Handle::FILTER_ENABLED, '__return_false' );
+		$this->assertNull( Handle::set_handle() );
+		\remove_filter( Handle::FILTER_ENABLED, '__return_false' );
+	}
+
+	/**
+	 * Test that set_handle returns null for a subdirectory install.
+	 */
+	public function test_set_handle_returns_null_for_subdir_install(): void {
+		\add_filter( 'home_url', static fn() => 'https://example.com/blog' );
+		$this->assertNull( Handle::set_handle() );
+		\remove_all_filters( 'home_url' );
+	}
+
+	/**
+	 * Test that set_handle returns WP_Error when not connected.
+	 */
+	public function test_set_handle_errors_when_not_connected(): void {
+		\add_filter( 'home_url', static fn() => 'https://example.com' );
+		\delete_option( 'atmosphere_connection' );
+		$result = Handle::set_handle();
+		$this->assertWPError( $result );
+		$this->assertSame( 'atmosphere_not_connected', $result->get_error_code() );
+		\remove_all_filters( 'home_url' );
+	}
+
+	/**
+	 * Test that set_handle returns null when the handle already matches.
+	 */
+	public function test_set_handle_returns_null_when_already_matching(): void {
+		\add_filter( 'home_url', static fn() => 'https://example.com' );
+		\update_option(
+			'atmosphere_connection',
+			array(
+				'handle'       => 'example.com',
+				'did'          => 'did:plc:test',
+				'access_token' => 'tok',
+			)
+		);
+		$this->assertNull( Handle::set_handle() );
+		\delete_option( 'atmosphere_connection' );
+		\remove_all_filters( 'home_url' );
+	}
+
+	/**
+	 * Test that set_handle succeeds via the short-circuit filter.
+	 */
+	public function test_set_handle_succeeds_via_short_circuit_filter(): void {
+		\add_filter( 'home_url', static fn() => 'https://example.com' );
+		\update_option(
+			'atmosphere_connection',
+			array(
+				'handle'       => 'alice.bsky.social',
+				'did'          => 'did:plc:test',
+				'access_token' => 'tok',
+			)
+		);
+		\add_filter( Handle::FILTER_PRE_UPDATE, static fn() => true );
+
+		$result = Handle::set_handle();
+
+		$this->assertTrue( $result );
+		$this->assertSame( 'alice.bsky.social', \get_option( Handle::OPTION_PREVIOUS_HANDLE ) );
+
+		\remove_all_filters( Handle::FILTER_PRE_UPDATE );
+		\remove_all_filters( 'home_url' );
+		\delete_option( 'atmosphere_connection' );
+		\delete_option( Handle::OPTION_PREVIOUS_HANDLE );
+	}
+
+	/**
+	 * Test that set_handle propagates a WP_Error from the short-circuit filter.
+	 */
+	public function test_set_handle_propagates_short_circuit_wp_error(): void {
+		\add_filter( 'home_url', static fn() => 'https://example.com' );
+		\update_option(
+			'atmosphere_connection',
+			array(
+				'handle'       => 'alice.bsky.social',
+				'did'          => 'did:plc:test',
+				'access_token' => 'tok',
+			)
+		);
+		$err = new \WP_Error( 'rate_limited', 'slow down' );
+		\add_filter( Handle::FILTER_PRE_UPDATE, static fn() => $err );
+
+		$result = Handle::set_handle();
+
+		$this->assertWPError( $result );
+		$this->assertSame( 'rate_limited', $result->get_error_code() );
+
+		\remove_all_filters( Handle::FILTER_PRE_UPDATE );
+		\remove_all_filters( 'home_url' );
+		\delete_option( 'atmosphere_connection' );
+		\delete_option( Handle::OPTION_PREVIOUS_HANDLE );
+	}
 }
