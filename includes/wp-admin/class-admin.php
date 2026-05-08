@@ -10,6 +10,7 @@ namespace Atmosphere\WP_Admin;
 \defined( 'ABSPATH' ) || exit;
 
 use Atmosphere\Atmosphere;
+use Atmosphere\Handle;
 use Atmosphere\OAuth\Client;
 use Atmosphere\Post_Types;
 use Atmosphere\Publisher;
@@ -32,6 +33,7 @@ class Admin {
 		\add_action( 'admin_enqueue_scripts', array( self::class, 'enqueue_assets' ) );
 
 		\add_action( 'admin_post_atmosphere_disconnect', array( self::class, 'handle_disconnect' ) );
+		\add_action( 'admin_post_atmosphere_set_domain_handle', array( self::class, 'handle_set_domain_handle' ) );
 
 		// Meta box on syncable post types.
 		\add_action( 'add_meta_boxes', array( self::class, 'add_meta_box' ) );
@@ -219,6 +221,76 @@ class Admin {
 				</td>
 			</tr>
 		</table>
+		<?php
+		self::render_domain_handle_panel( $connection );
+	}
+
+	/**
+	 * Render the "use my domain as my Bluesky handle" confirm panel.
+	 *
+	 * Shows the current handle alongside the target so the user
+	 * understands the trade — clicking the button replaces their handle
+	 * and the previous one stops resolving.
+	 *
+	 * @param array<string, mixed> $connection Connection snapshot.
+	 */
+	public static function render_domain_handle_panel( array $connection ): void {
+		$status = array(
+			'connected' => true,
+			'handle'    => $connection['handle'] ?? '',
+		);
+
+		if ( ! Handle::should_offer( $status ) ) {
+			return;
+		}
+
+		$current = (string) ( $connection['handle'] ?? '' );
+		$target  = Handle::get_target_handle();
+		?>
+		<div class="atmosphere-domain-handle-panel">
+			<h3><?php \esc_html_e( 'Use your domain as your Bluesky handle', 'atmosphere' ); ?></h3>
+			<p>
+				<?php
+				if ( '' !== $current ) {
+					echo \esc_html(
+						\sprintf(
+							/* translators: 1: current Bluesky handle (e.g. alice.bsky.social); 2: target handle = site host (e.g. example.com). */
+							\__( 'Your current Bluesky handle is %1$s. Click the button below to replace it with %2$s.', 'atmosphere' ),
+							$current,
+							$target
+						)
+					);
+				} else {
+					echo \esc_html(
+						\sprintf(
+							/* translators: %s: target handle = site host (e.g. example.com). */
+							\__( 'Click the button below to set your Bluesky handle to %s.', 'atmosphere' ),
+							$target
+						)
+					);
+				}
+				?>
+			</p>
+			<p class="description">
+				<?php \esc_html_e( 'Heads up: replacing your handle is destructive. Your previous handle will stop resolving immediately, and links to it will break. Bluesky verifies the new handle through this site automatically.', 'atmosphere' ); ?>
+			</p>
+			<form method="post" action="<?php echo \esc_url( \admin_url( 'admin-post.php' ) ); ?>">
+				<input type="hidden" name="action" value="atmosphere_set_domain_handle" />
+				<?php \wp_nonce_field( 'atmosphere_set_domain_handle' ); ?>
+				<?php
+				\submit_button(
+					\sprintf(
+						/* translators: %s: target handle = site host (e.g. example.com). */
+						\__( 'Use %s as my Bluesky handle', 'atmosphere' ),
+						$target
+					),
+					'secondary',
+					'submit',
+					false
+				);
+				?>
+			</form>
+		</div>
 		<?php
 	}
 
@@ -548,6 +620,26 @@ class Admin {
 		\set_transient( 'settings_errors', \get_settings_errors(), 30 );
 
 		\wp_safe_redirect( \admin_url( 'options-general.php?page=atmosphere&connected=1' ) );
+		exit;
+	}
+
+	/**
+	 * Handle the explicit "use my domain as my Bluesky handle" submission.
+	 *
+	 * Verifies capability + nonce, defers to {@see Handle::set_handle()} for
+	 * the actual call, then redirects back to the Settings page with a notice
+	 * already populated by Handle.
+	 */
+	public static function handle_set_domain_handle(): void {
+		if ( ! \current_user_can( 'manage_options' ) ) {
+			\wp_die( \esc_html__( 'You do not have permission to do this.', 'atmosphere' ) );
+		}
+
+		\check_admin_referer( 'atmosphere_set_domain_handle' );
+
+		Handle::set_handle();
+
+		\wp_safe_redirect( \admin_url( 'options-general.php?page=atmosphere' ) );
 		exit;
 	}
 
