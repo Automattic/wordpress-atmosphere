@@ -236,6 +236,7 @@ class Test_Handle extends WP_UnitTestCase {
 
 		$this->assertTrue( $result );
 		$this->assertSame( 'alice.bsky.social', \get_option( Handle::OPTION_PREVIOUS_HANDLE ) );
+		$this->assertSame( 'example.com', \get_option( 'atmosphere_connection' )['handle'] );
 
 		\remove_all_filters( Handle::FILTER_PRE_UPDATE );
 		\remove_all_filters( 'home_url' );
@@ -263,6 +264,7 @@ class Test_Handle extends WP_UnitTestCase {
 
 		$this->assertWPError( $result );
 		$this->assertSame( 'rate_limited', $result->get_error_code() );
+		$this->assertSame( 'alice.bsky.social', \get_option( 'atmosphere_connection' )['handle'] );
 
 		\remove_all_filters( Handle::FILTER_PRE_UPDATE );
 		\remove_all_filters( 'home_url' );
@@ -288,18 +290,29 @@ class Test_Handle extends WP_UnitTestCase {
 	}
 
 	/**
-	 * Test that maybe_revert_on_disconnect clears the option on success.
+	 * Test that maybe_revert_on_disconnect clears the option on success
+	 * and mirrors the restored handle into the connection option.
 	 */
 	public function test_revert_clears_option_on_success(): void {
 		\update_option( Handle::OPTION_PREVIOUS_HANDLE, 'alice.bsky.social' );
+		\update_option(
+			'atmosphere_connection',
+			array(
+				'handle'       => 'example.com',
+				'did'          => 'did:plc:test',
+				'access_token' => 'tok',
+			)
+		);
 		\add_filter( Handle::FILTER_PRE_UPDATE, static fn() => true );
 
 		$result = Handle::maybe_revert_on_disconnect();
 
 		$this->assertTrue( $result );
 		$this->assertFalse( \get_option( Handle::OPTION_PREVIOUS_HANDLE ) );
+		$this->assertSame( 'alice.bsky.social', \get_option( 'atmosphere_connection' )['handle'] );
 
 		\remove_all_filters( Handle::FILTER_PRE_UPDATE );
+		\delete_option( 'atmosphere_connection' );
 	}
 
 	/**

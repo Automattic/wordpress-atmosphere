@@ -176,6 +176,27 @@ class Admin {
 			'atmosphere',
 			'atmosphere_publishing'
 		);
+
+		/*
+		 * Register the domain-handle confirm row only when the offer is
+		 * meaningful (root install, feature enabled, current handle differs
+		 * from the site host). Skipping registration is the cleanest way to
+		 * suppress the row entirely without rendering an empty <tr>.
+		 */
+		if ( Handle::should_offer(
+			array(
+				'connected' => true,
+				'handle'    => get_connection()['handle'] ?? '',
+			)
+		) ) {
+			\add_settings_field(
+				'atmosphere_set_domain_handle',
+				\__( 'Domain handle', 'atmosphere' ),
+				array( self::class, 'render_domain_handle_field' ),
+				'atmosphere',
+				'atmosphere_connection'
+			);
+		}
 	}
 
 	/**
@@ -222,75 +243,62 @@ class Admin {
 			</tr>
 		</table>
 		<?php
-		self::render_domain_handle_panel( $connection );
 	}
 
 	/**
-	 * Render the "use my domain as my Bluesky handle" confirm panel.
+	 * Render the "use my domain as my Bluesky handle" confirm field.
 	 *
-	 * Shows the current handle alongside the target so the user
-	 * understands the trade — clicking the button replaces their handle
-	 * and the previous one stops resolving.
-	 *
-	 * @param array<string, mixed> $connection Connection snapshot.
+	 * Registered conditionally on the `atmosphere_connection` section
+	 * via {@see self::register_settings()}; only enqueued when
+	 * {@see Handle::should_offer()} agrees the offer is meaningful.
 	 */
-	public static function render_domain_handle_panel( array $connection ): void {
-		$status = array(
-			'connected' => true,
-			'handle'    => $connection['handle'] ?? '',
-		);
-
-		if ( ! Handle::should_offer( $status ) ) {
-			return;
-		}
-
-		$current = (string) ( $connection['handle'] ?? '' );
+	public static function render_domain_handle_field(): void {
+		$current = (string) ( get_connection()['handle'] ?? '' );
 		$target  = Handle::get_target_handle();
+		$action  = \wp_nonce_url(
+			\admin_url( 'admin-post.php?action=atmosphere_set_domain_handle' ),
+			'atmosphere_set_domain_handle',
+			'atmosphere_nonce'
+		);
 		?>
-		<div class="atmosphere-domain-handle-panel">
-			<h3><?php \esc_html_e( 'Use your domain as your Bluesky handle', 'atmosphere' ); ?></h3>
-			<p>
+		<p>
+			<?php
+			if ( '' !== $current ) {
+				echo \esc_html(
+					\sprintf(
+						/* translators: 1: current Bluesky handle (e.g. alice.bsky.social); 2: target handle = site host (e.g. example.com). */
+						\__( 'Your current Bluesky handle is %1$s. Click the button below to replace it with %2$s.', 'atmosphere' ),
+						$current,
+						$target
+					)
+				);
+			} else {
+				echo \esc_html(
+					\sprintf(
+						/* translators: %s: target handle = site host (e.g. example.com). */
+						\__( 'Click the button below to set your Bluesky handle to %s.', 'atmosphere' ),
+						$target
+					)
+				);
+			}
+			?>
+		</p>
+		<p>
+			<a href="<?php echo \esc_url( $action ); ?>" class="button">
 				<?php
-				if ( '' !== $current ) {
-					echo \esc_html(
-						\sprintf(
-							/* translators: 1: current Bluesky handle (e.g. alice.bsky.social); 2: target handle = site host (e.g. example.com). */
-							\__( 'Your current Bluesky handle is %1$s. Click the button below to replace it with %2$s.', 'atmosphere' ),
-							$current,
-							$target
-						)
-					);
-				} else {
-					echo \esc_html(
-						\sprintf(
-							/* translators: %s: target handle = site host (e.g. example.com). */
-							\__( 'Click the button below to set your Bluesky handle to %s.', 'atmosphere' ),
-							$target
-						)
-					);
-				}
-				?>
-			</p>
-			<p class="description">
-				<?php \esc_html_e( 'Heads up: replacing your handle is destructive. Your previous handle will stop resolving immediately, and links to it will break. Bluesky verifies the new handle through this site automatically.', 'atmosphere' ); ?>
-			</p>
-			<form method="post" action="<?php echo \esc_url( \admin_url( 'admin-post.php' ) ); ?>">
-				<input type="hidden" name="action" value="atmosphere_set_domain_handle" />
-				<?php \wp_nonce_field( 'atmosphere_set_domain_handle' ); ?>
-				<?php
-				\submit_button(
+				echo \esc_html(
 					\sprintf(
 						/* translators: %s: target handle = site host (e.g. example.com). */
 						\__( 'Use %s as my Bluesky handle', 'atmosphere' ),
 						$target
-					),
-					'secondary',
-					'submit',
-					false
+					)
 				);
 				?>
-			</form>
-		</div>
+			</a>
+		</p>
+		<p class="description">
+			<?php \esc_html_e( 'Heads up: replacing your handle is destructive. Your previous handle will stop resolving immediately, and links to it will break. Bluesky verifies the new handle through this site automatically.', 'atmosphere' ); ?>
+		</p>
 		<?php
 	}
 
@@ -635,7 +643,7 @@ class Admin {
 			\wp_die( \esc_html__( 'You do not have permission to do this.', 'atmosphere' ) );
 		}
 
-		\check_admin_referer( 'atmosphere_set_domain_handle' );
+		\check_admin_referer( 'atmosphere_set_domain_handle', 'atmosphere_nonce' );
 
 		Handle::set_handle();
 

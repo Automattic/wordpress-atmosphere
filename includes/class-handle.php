@@ -166,6 +166,8 @@ class Handle {
 			return $result;
 		}
 
+		self::sync_connection_handle( $target );
+
 		self::add_settings_notice(
 			\sprintf(
 				/* translators: %s: the handle the site set itself to (e.g. example.com). */
@@ -214,6 +216,8 @@ class Handle {
 		}
 
 		\delete_option( self::OPTION_PREVIOUS_HANDLE );
+
+		self::sync_connection_handle( $previous );
 
 		self::add_settings_notice(
 			\sprintf(
@@ -275,6 +279,26 @@ class Handle {
 		}
 
 		return true;
+	}
+
+	/**
+	 * Mirror a successful PDS handle change into the local connection option.
+	 *
+	 * The PDS is now serving the new handle, but `atmosphere_connection`
+	 * still holds the value captured at OAuth time. Without this update
+	 * the Settings page shows the stale handle and {@see self::should_offer()}
+	 * keeps offering the panel because `current !== target`.
+	 *
+	 * @param string $handle New handle to record locally.
+	 */
+	private static function sync_connection_handle( string $handle ): void {
+		$connection = get_connection();
+		if ( empty( $connection ) ) {
+			return;
+		}
+
+		$connection['handle'] = $handle;
+		\update_option( 'atmosphere_connection', $connection );
 	}
 
 	/**
