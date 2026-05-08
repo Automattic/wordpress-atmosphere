@@ -663,6 +663,14 @@ class Admin {
 		 */
 		Handle::maybe_revert_on_disconnect();
 
+		/*
+		 * Clear the snapshot regardless of revert outcome so it cannot be
+		 * revived by a future reconnect to a different account. Once the
+		 * OAuth token is gone there is no way to retry a failed revert
+		 * anyway, so the snapshot is dead weight after this point.
+		 */
+		\delete_option( Handle::OPTION_PREVIOUS_HANDLE );
+
 		Client::disconnect();
 
 		\add_settings_error(
