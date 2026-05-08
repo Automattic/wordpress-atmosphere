@@ -638,7 +638,10 @@ class Admin {
 			'grant_types'                => array( 'authorization_code', 'refresh_token' ),
 			'response_types'             => array( 'code' ),
 			'token_endpoint_auth_method' => 'none',
-			'scope'                      => 'atproto transition:generic',
+			// MUST match the scope string requested by Client::authorize().
+			// The auth server validates the request scope against the metadata;
+			// a drift here silently downgrades to the smaller of the two.
+			'scope'                      => 'atproto transition:generic identity:handle',
 			'dpop_bound_access_tokens'   => true,
 			'application_type'           => 'web',
 		);
@@ -650,6 +653,23 @@ class Admin {
 		 */
 		$metadata = \apply_filters( 'atmosphere_client_metadata', $metadata );
 
-		return new \WP_REST_Response( $metadata, 200 );
+		$response = new \WP_REST_Response( $metadata, 200 );
+
+		// Cap intermediate-cache TTL well under the AT Protocol auth
+		// server's own metadata cache (10 min in Bluesky's reference impl),
+		// so that when the metadata document changes — e.g. a new OAuth
+		// scope is added in an Atmosphere release — every layer between
+		// us and the auth server has refreshed before the auth server
+		// itself does its next refresh. Without an explicit header,
+		// hosted environments like wp.com Atomic apply their own (much
+		// longer) heuristic-based edge cache and can serve a stale scope
+		// to every auth server that asks, surfacing as "Scope X is not
+		// declared in the client metadata" on every authorization attempt.
+		// 5 minutes gives the auth-server cache cycle plenty of room
+		// without flat-out disabling cheap caching of an otherwise
+		// rarely-changing document.
+		$response->header( 'Cache-Control', 'public, max-age=300' );
+
+		return $response;
 	}
 }
