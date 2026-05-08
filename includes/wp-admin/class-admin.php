@@ -653,6 +653,16 @@ class Admin {
 
 		\check_admin_referer( 'atmosphere_disconnect', 'atmosphere_nonce' );
 
+		/*
+		 * Best-effort handle revert BEFORE the disconnect drops the OAuth
+		 * token: if the site previously set the handle to its domain, restore
+		 * the snapshotted previous handle while the access token is still
+		 * valid. The call posts a notice on the way out; disconnect proceeds
+		 * regardless of result so a token-revoked or network-failed revert
+		 * can't trap the user in a connected state.
+		 */
+		Handle::maybe_revert_on_disconnect();
+
 		Client::disconnect();
 
 		\add_settings_error(
