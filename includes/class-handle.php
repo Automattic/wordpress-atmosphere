@@ -83,4 +83,51 @@ class Handle {
 
 		return null === $path || '' === $path || '/' === $path;
 	}
+
+	/**
+	 * Compute the handle that the site would advertise.
+	 *
+	 * Reads the host portion of `home_url()`. Returns empty when the host
+	 * cannot be resolved so callers refuse to send an empty payload.
+	 *
+	 * @return string
+	 */
+	public static function get_target_handle(): string {
+		$host = \wp_parse_url( \home_url(), PHP_URL_HOST );
+
+		return \is_string( $host ) ? \strtolower( $host ) : '';
+	}
+
+	/**
+	 * Whether the confirm-handle UI should render for the given status.
+	 *
+	 * @param array<string, mixed> $status Connection status snapshot with at
+	 *                                     least `connected` and `handle`.
+	 * @return bool
+	 */
+	public static function should_offer( array $status ): bool {
+		if ( ! self::is_enabled() ) {
+			return false;
+		}
+
+		if ( ! self::is_root_install() ) {
+			return false;
+		}
+
+		$target = self::get_target_handle();
+		if ( '' === $target ) {
+			return false;
+		}
+
+		if ( empty( $status['connected'] ) ) {
+			return false;
+		}
+
+		$current = isset( $status['handle'] ) ? (string) $status['handle'] : '';
+		if ( '' !== $current && \strtolower( $current ) === $target ) {
+			return false;
+		}
+
+		return true;
+	}
 }

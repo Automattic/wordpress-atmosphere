@@ -69,4 +69,103 @@ class Test_Handle extends WP_UnitTestCase {
 		$this->assertFalse( Handle::is_root_install() );
 		\remove_all_filters( 'home_url' );
 	}
+
+	/**
+	 * Test that get_target_handle lowercases the host.
+	 */
+	public function test_get_target_handle_lowercases_host(): void {
+		\add_filter( 'home_url', static fn() => 'https://Example.COM' );
+		$this->assertSame( 'example.com', Handle::get_target_handle() );
+		\remove_all_filters( 'home_url' );
+	}
+
+	/**
+	 * Test that get_target_handle returns empty string when host is missing.
+	 */
+	public function test_get_target_handle_returns_empty_when_host_missing(): void {
+		\add_filter( 'home_url', static fn() => '/relative/path' );
+		$this->assertSame( '', Handle::get_target_handle() );
+		\remove_all_filters( 'home_url' );
+	}
+
+	/**
+	 * Test that should_offer returns false when the feature is disabled.
+	 */
+	public function test_should_offer_false_when_disabled(): void {
+		\add_filter( Handle::FILTER_ENABLED, '__return_false' );
+		$this->assertFalse(
+			Handle::should_offer(
+				array(
+					'connected' => true,
+					'handle'    => 'alice.bsky.social',
+				)
+			)
+		);
+		\remove_filter( Handle::FILTER_ENABLED, '__return_false' );
+	}
+
+	/**
+	 * Test that should_offer returns false for a subdirectory install.
+	 */
+	public function test_should_offer_false_for_subdir_install(): void {
+		\add_filter( 'home_url', static fn() => 'https://example.com/blog' );
+		$this->assertFalse(
+			Handle::should_offer(
+				array(
+					'connected' => true,
+					'handle'    => 'alice.bsky.social',
+				)
+			)
+		);
+		\remove_all_filters( 'home_url' );
+	}
+
+	/**
+	 * Test that should_offer returns false when not connected.
+	 */
+	public function test_should_offer_false_when_not_connected(): void {
+		\add_filter( 'home_url', static fn() => 'https://example.com' );
+		$this->assertFalse( Handle::should_offer( array( 'connected' => false ) ) );
+		\remove_all_filters( 'home_url' );
+	}
+
+	/**
+	 * Test that should_offer returns false when the handle already matches the domain.
+	 */
+	public function test_should_offer_false_when_handle_already_matches(): void {
+		\add_filter( 'home_url', static fn() => 'https://example.com' );
+		$this->assertFalse(
+			Handle::should_offer(
+				array(
+					'connected' => true,
+					'handle'    => 'example.com',
+				)
+			)
+		);
+		$this->assertFalse(
+			Handle::should_offer(
+				array(
+					'connected' => true,
+					'handle'    => 'EXAMPLE.com',
+				)
+			)
+		);
+		\remove_all_filters( 'home_url' );
+	}
+
+	/**
+	 * Test that should_offer returns true when all conditions are met.
+	 */
+	public function test_should_offer_true_when_eligible(): void {
+		\add_filter( 'home_url', static fn() => 'https://example.com' );
+		$this->assertTrue(
+			Handle::should_offer(
+				array(
+					'connected' => true,
+					'handle'    => 'alice.bsky.social',
+				)
+			)
+		);
+		\remove_all_filters( 'home_url' );
+	}
 }
