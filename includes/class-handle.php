@@ -50,4 +50,37 @@ class Handle {
 	 * @var string
 	 */
 	public const OPTION_PREVIOUS_HANDLE = 'atmosphere_previous_handle';
+
+	/**
+	 * Whether the entire feature is enabled.
+	 *
+	 * @return bool
+	 */
+	public static function is_enabled(): bool {
+		/**
+		 * Filter whether the domain-handle feature is enabled.
+		 *
+		 * Filter to false to fully disable: the Settings panel suppresses
+		 * the confirm button, and disconnect does not attempt to revert.
+		 *
+		 * @param bool $enabled Default true.
+		 */
+		return (bool) \apply_filters( self::FILTER_ENABLED, true );
+	}
+
+	/**
+	 * Whether the site is at the root of its domain.
+	 *
+	 * Subdirectory installs (e.g. `https://example.com/blog/`) cannot serve
+	 * the AT Protocol verification endpoint at the domain root, so the
+	 * feature must skip them — Bluesky's PDS would reject the handle change
+	 * because it cannot fetch `/.well-known/atproto-did` at the host root.
+	 *
+	 * @return bool
+	 */
+	public static function is_root_install(): bool {
+		$path = \wp_parse_url( \home_url(), PHP_URL_PATH );
+
+		return null === $path || '' === $path || '/' === $path;
+	}
 }
