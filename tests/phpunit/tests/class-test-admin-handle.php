@@ -148,14 +148,15 @@ class Test_Admin_Handle extends WP_UnitTestCase {
 	public function test_redirects_to_settings_page_on_success(): void {
 		$this->become_admin();
 
-		$nonce                        = \wp_create_nonce( 'atmosphere_set_domain_handle' );
-		$_POST['atmosphere_nonce']    = $nonce;
+		$nonce = \wp_create_nonce( 'atmosphere_set_domain_handle' );
+
 		/*
 		 * In real requests PHP populates $_REQUEST from $_POST/$_GET on
 		 * script start; in tests we mutate the superglobals directly, so
 		 * mirror the value into $_REQUEST too — that is what
 		 * check_admin_referer() actually reads.
 		 */
+		$_POST['atmosphere_nonce']    = $nonce;
 		$_REQUEST['atmosphere_nonce'] = $nonce;
 
 		/*
