@@ -76,12 +76,39 @@ class Handle {
 	 * feature must skip them — Bluesky's PDS would reject the handle change
 	 * because it cannot fetch `/.well-known/atproto-did` at the host root.
 	 *
+	 * Also rejects split installs where `home_url` is at the host root but
+	 * `site_url` lives in a subdirectory (e.g. `WP_HOME=https://example.com`,
+	 * `WP_SITEURL=https://example.com/wp`). The `.well-known/atproto-did`
+	 * rewrite resolves through WordPress's request parser rooted at
+	 * `site_url`, so the verification fetch would 404 even though `home_url`
+	 * looks correct — and the PDS would have already accepted the new
+	 * handle by the time we found out.
+	 *
 	 * @return bool
 	 */
 	public static function is_root_install(): bool {
-		$path = \wp_parse_url( \home_url(), PHP_URL_PATH );
+		$home = \wp_parse_url( \home_url() );
+		$site = \wp_parse_url( \site_url() );
 
-		return null === $path || '' === $path || '/' === $path;
+		if ( ! \is_array( $home ) || ! \is_array( $site ) ) {
+			return false;
+		}
+
+		$home_path = isset( $home['path'] ) ? (string) $home['path'] : '';
+		$site_path = isset( $site['path'] ) ? (string) $site['path'] : '';
+
+		if ( '' !== $home_path && '/' !== $home_path ) {
+			return false;
+		}
+
+		if ( '' !== $site_path && '/' !== $site_path ) {
+			return false;
+		}
+
+		$home_host = isset( $home['host'] ) ? \strtolower( (string) $home['host'] ) : '';
+		$site_host = isset( $site['host'] ) ? \strtolower( (string) $site['host'] ) : '';
+
+		return '' !== $home_host && $home_host === $site_host;
 	}
 
 	/**
@@ -101,19 +128,30 @@ class Handle {
 	/**
 	 * Replace the connected user's Bluesky handle with the site host.
 	 *
-	 * Caller MUST have verified capability + nonce before invoking. The
-	 * method does not check those preconditions: it snapshots the current
-	 * handle (so disconnect can revert), invokes
-	 * `com.atproto.identity.updateHandle` via Atmosphere's DPoP client,
-	 * and posts a settings notice describing the outcome.
+	 * Fail-safe default: short-circuits when the current user lacks
+	 * `manage_options`. Callers in admin contexts (e.g.
+	 * {@see \Atmosphere\WP_Admin\Admin::handle_set_domain_handle()}) still
+	 * verify nonce themselves; the cap gate here is belt-and-braces so a
+	 * future caller (cron, REST, WP-CLI) cannot accidentally trigger an
+	 * `updateHandle` against the user's connected account without an
+	 * explicit cap-bearing context.
+	 *
+	 * On success: snapshots the current handle (so disconnect can revert),
+	 * invokes `com.atproto.identity.updateHandle` via Atmosphere's DPoP
+	 * client, and posts a settings notice describing the outcome.
 	 *
 	 * @return true|\WP_Error|null Null when the feature is disabled, the
-	 *                              install is ineligible, the connection
-	 *                              handle already matches the site host,
-	 *                              or no host can be derived. True on
-	 *                              success. WP_Error on failure.
+	 *                              install is ineligible, the current user
+	 *                              lacks the required capability, the
+	 *                              connection handle already matches the
+	 *                              site host, or no host can be derived.
+	 *                              True on success. WP_Error on failure.
 	 */
 	public static function set_handle(): true|\WP_Error|null {
+		if ( ! \current_user_can( 'manage_options' ) ) {
+			return null;
+		}
+
 		if ( ! self::is_enabled() || ! self::is_root_install() ) {
 			return null;
 		}
@@ -217,6 +255,14 @@ class Handle {
 
 		\delete_option( self::OPTION_PREVIOUS_HANDLE );
 
+		/*
+		 * Mirror the restored handle into atmosphere_connection. On the
+		 * standard disconnect path Client::disconnect() drops the option
+		 * moments later, so this write is wasted there — but keeping it
+		 * decouples Handle from disconnect ordering, so any future caller
+		 * (e.g. a manual revert action that does not also disconnect) gets
+		 * a consistent local snapshot.
+		 */
 		self::sync_connection_handle( $previous );
 
 		self::add_settings_notice(
