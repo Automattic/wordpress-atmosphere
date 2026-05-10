@@ -72,6 +72,30 @@ class Test_Admin_Handle extends WP_UnitTestCase {
 	}
 
 	/**
+	 * Set up an eligible state where {@see Handle::set_handle()} would
+	 * reach the {@see Handle::FILTER_PRE_UPDATE} short-circuit if
+	 * called: root-install URLs and a connected, non-matching handle.
+	 *
+	 * Without this scaffolding, a `FILTER_PRE_UPDATE` spy can't tell the
+	 * difference between "the handler skipped Handle::set_handle()" and
+	 * "Handle::set_handle() ran but bailed early at !is_connected()".
+	 */
+	private function make_handle_call_observable(): void {
+		$home = static fn() => 'https://example.com';
+		$this->add_filter_tracked( 'home_url', $home );
+		$this->add_filter_tracked( 'site_url', $home );
+
+		\update_option(
+			'atmosphere_connection',
+			array(
+				'handle'       => 'alice.bsky.social',
+				'did'          => 'did:plc:test',
+				'access_token' => 'tok',
+			)
+		);
+	}
+
+	/**
 	 * Test that the handler dies when the current user lacks `manage_options`.
 	 */
 	public function test_dies_without_manage_options_cap(): void {
@@ -85,9 +109,15 @@ class Test_Admin_Handle extends WP_UnitTestCase {
 	/**
 	 * Test that the handler dies when no valid nonce is present, and that
 	 * the underlying `Handle::set_handle()` flow never runs.
+	 *
+	 * Sets up an otherwise-eligible state (root install + connected,
+	 * non-matching handle) so the FILTER_PRE_UPDATE spy is meaningful:
+	 * if `Handle::set_handle()` *were* incorrectly reached, the filter
+	 * would fire and `$called` would be 1.
 	 */
 	public function test_dies_on_missing_nonce_and_skips_handle_call(): void {
 		$this->become_admin();
+		$this->make_handle_call_observable();
 
 		$called = 0;
 		$spy    = static function ( $value ) use ( &$called ) {
@@ -110,11 +140,23 @@ class Test_Admin_Handle extends WP_UnitTestCase {
 	/**
 	 * Test that the handler redirects to the Atmosphere settings page when
 	 * both the capability and nonce gates pass.
+	 *
+	 * The browser-side panel posts to admin-post.php via a form, so the
+	 * nonce is delivered in `$_POST` rather than the URL — the test
+	 * mirrors that.
 	 */
 	public function test_redirects_to_settings_page_on_success(): void {
 		$this->become_admin();
 
-		$_REQUEST['atmosphere_nonce'] = \wp_create_nonce( 'atmosphere_set_domain_handle' );
+		$nonce                        = \wp_create_nonce( 'atmosphere_set_domain_handle' );
+		$_POST['atmosphere_nonce']    = $nonce;
+		/*
+		 * In real requests PHP populates $_REQUEST from $_POST/$_GET on
+		 * script start; in tests we mutate the superglobals directly, so
+		 * mirror the value into $_REQUEST too — that is what
+		 * check_admin_referer() actually reads.
+		 */
+		$_REQUEST['atmosphere_nonce'] = $nonce;
 
 		/*
 		 * Short-circuit `wp_redirect` so the handler's `exit` is preempted

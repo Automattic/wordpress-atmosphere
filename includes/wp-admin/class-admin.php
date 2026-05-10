@@ -253,13 +253,9 @@ class Admin {
 	 * {@see Handle::should_offer()} agrees the offer is meaningful.
 	 */
 	public static function render_domain_handle_field(): void {
-		$current = (string) ( get_connection()['handle'] ?? '' );
-		$target  = Handle::get_target_handle();
-		$action  = \wp_nonce_url(
-			\admin_url( 'admin-post.php?action=atmosphere_set_domain_handle' ),
-			'atmosphere_set_domain_handle',
-			'atmosphere_nonce'
-		);
+		$current  = (string) ( get_connection()['handle'] ?? '' );
+		$target   = Handle::get_target_handle();
+		$post_url = \admin_url( 'admin-post.php?action=atmosphere_set_domain_handle' );
 		?>
 		<p>
 			<?php
@@ -284,7 +280,26 @@ class Admin {
 			?>
 		</p>
 		<p>
-			<a href="<?php echo \esc_url( $action ); ?>" class="button">
+			<?php
+			/*
+			 * The settings page wraps every field in a single outer
+			 * <form action="options.php" method="post">. A nested form
+			 * would be invalid HTML, so the submit button overrides the
+			 * outer form's destination via formaction/formmethod when —
+			 * and only when — this button is the one clicked. The Save
+			 * button at the bottom of the settings page still posts to
+			 * options.php as normal. This keeps the nonce in the request
+			 * body instead of leaking it through the URL / Referer
+			 * header / link prefetching, which an <a> with
+			 * wp_nonce_url() would do.
+			 */
+			\wp_nonce_field( 'atmosphere_set_domain_handle', 'atmosphere_nonce', false );
+			?>
+			<button
+				type="submit"
+				formaction="<?php echo \esc_url( $post_url ); ?>"
+				formmethod="post"
+				class="button">
 				<?php
 				echo \esc_html(
 					\sprintf(
@@ -294,7 +309,7 @@ class Admin {
 					)
 				);
 				?>
-			</a>
+			</button>
 		</p>
 		<p class="description">
 			<?php \esc_html_e( 'Heads up: replacing your handle is destructive. Your previous handle will stop resolving immediately, and links to it will break. Bluesky verifies the new handle through this site automatically.', 'atmosphere' ); ?>
