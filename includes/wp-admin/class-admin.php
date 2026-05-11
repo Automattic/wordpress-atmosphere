@@ -10,6 +10,7 @@ namespace Atmosphere\WP_Admin;
 \defined( 'ABSPATH' ) || exit;
 
 use Atmosphere\Atmosphere;
+use Atmosphere\Handle;
 use Atmosphere\OAuth\Client;
 use Atmosphere\Post_Types;
 use Atmosphere\Publisher;
@@ -32,6 +33,7 @@ class Admin {
 		\add_action( 'admin_enqueue_scripts', array( self::class, 'enqueue_assets' ) );
 
 		\add_action( 'admin_post_atmosphere_disconnect', array( self::class, 'handle_disconnect' ) );
+		\add_action( 'admin_post_atmosphere_set_domain_handle', array( self::class, 'handle_set_domain_handle' ) );
 
 		// Meta box on syncable post types.
 		\add_action( 'add_meta_boxes', array( self::class, 'add_meta_box' ) );
@@ -174,6 +176,27 @@ class Admin {
 			'atmosphere',
 			'atmosphere_publishing'
 		);
+
+		/*
+		 * Register the domain-handle confirm row only when the offer is
+		 * meaningful (root install, feature enabled, current handle differs
+		 * from the site host). Skipping registration is the cleanest way to
+		 * suppress the row entirely without rendering an empty <tr>.
+		 */
+		if ( Handle::should_offer(
+			array(
+				'connected' => true,
+				'handle'    => get_connection()['handle'] ?? '',
+			)
+		) ) {
+			\add_settings_field(
+				'atmosphere_set_domain_handle',
+				\__( 'Domain handle', 'atmosphere' ),
+				array( self::class, 'render_domain_handle_field' ),
+				'atmosphere',
+				'atmosphere_connection'
+			);
+		}
 	}
 
 	/**
@@ -219,6 +242,78 @@ class Admin {
 				</td>
 			</tr>
 		</table>
+		<?php
+	}
+
+	/**
+	 * Render the "use my domain as my Bluesky handle" confirm field.
+	 *
+	 * Registered conditionally on the `atmosphere_connection` section
+	 * via {@see self::register_settings()}; only enqueued when
+	 * {@see Handle::should_offer()} agrees the offer is meaningful.
+	 */
+	public static function render_domain_handle_field(): void {
+		$current  = (string) ( get_connection()['handle'] ?? '' );
+		$target   = Handle::get_target_handle();
+		$post_url = \admin_url( 'admin-post.php?action=atmosphere_set_domain_handle' );
+		?>
+		<p>
+			<?php
+			if ( '' !== $current ) {
+				echo \esc_html(
+					\sprintf(
+						/* translators: 1: current Bluesky handle (e.g. alice.bsky.social); 2: target handle = site host (e.g. example.com). */
+						\__( 'Your current Bluesky handle is %1$s. Click the button below to replace it with %2$s.', 'atmosphere' ),
+						$current,
+						$target
+					)
+				);
+			} else {
+				echo \esc_html(
+					\sprintf(
+						/* translators: %s: target handle = site host (e.g. example.com). */
+						\__( 'Click the button below to set your Bluesky handle to %s.', 'atmosphere' ),
+						$target
+					)
+				);
+			}
+			?>
+		</p>
+		<p>
+			<?php
+			/*
+			 * The settings page wraps every field in a single outer
+			 * <form action="options.php" method="post">. A nested form
+			 * would be invalid HTML, so the submit button overrides the
+			 * outer form's destination via formaction/formmethod when —
+			 * and only when — this button is the one clicked. The Save
+			 * button at the bottom of the settings page still posts to
+			 * options.php as normal. This keeps the nonce in the request
+			 * body instead of leaking it through the URL / Referer
+			 * header / link prefetching, which an <a> with
+			 * wp_nonce_url() would do.
+			 */
+			\wp_nonce_field( 'atmosphere_set_domain_handle', 'atmosphere_nonce', false );
+			?>
+			<button
+				type="submit"
+				formaction="<?php echo \esc_url( $post_url ); ?>"
+				formmethod="post"
+				class="button">
+				<?php
+				echo \esc_html(
+					\sprintf(
+						/* translators: %s: target handle = site host (e.g. example.com). */
+						\__( 'Use %s as my Bluesky handle', 'atmosphere' ),
+						$target
+					)
+				);
+				?>
+			</button>
+		</p>
+		<p class="description">
+			<?php \esc_html_e( 'Heads up: replacing your handle is destructive. Your previous handle will stop resolving immediately, and links to it will break. Bluesky verifies the new handle through this site automatically.', 'atmosphere' ); ?>
+		</p>
 		<?php
 	}
 
@@ -552,6 +647,26 @@ class Admin {
 	}
 
 	/**
+	 * Handle the explicit "use my domain as my Bluesky handle" submission.
+	 *
+	 * Verifies capability + nonce, defers to {@see Handle::set_handle()} for
+	 * the actual call, then redirects back to the Settings page with a notice
+	 * already populated by Handle.
+	 */
+	public static function handle_set_domain_handle(): void {
+		if ( ! \current_user_can( 'manage_options' ) ) {
+			\wp_die( \esc_html__( 'You do not have permission to do this.', 'atmosphere' ) );
+		}
+
+		\check_admin_referer( 'atmosphere_set_domain_handle', 'atmosphere_nonce' );
+
+		Handle::set_handle();
+
+		\wp_safe_redirect( \admin_url( 'options-general.php?page=atmosphere' ) );
+		exit;
+	}
+
+	/**
 	 * Handle the "Disconnect" action.
 	 */
 	public static function handle_disconnect(): void {
@@ -560,6 +675,24 @@ class Admin {
 		}
 
 		\check_admin_referer( 'atmosphere_disconnect', 'atmosphere_nonce' );
+
+		/*
+		 * Best-effort handle revert BEFORE the disconnect drops the OAuth
+		 * token: if the site previously set the handle to its domain, restore
+		 * the snapshotted previous handle while the access token is still
+		 * valid. The call posts a notice on the way out; disconnect proceeds
+		 * regardless of result so a token-revoked or network-failed revert
+		 * can't trap the user in a connected state.
+		 */
+		Handle::maybe_revert_on_disconnect();
+
+		/*
+		 * Clear the snapshot regardless of revert outcome so it cannot be
+		 * revived by a future reconnect to a different account. Once the
+		 * OAuth token is gone there is no way to retry a failed revert
+		 * anyway, so the snapshot is dead weight after this point.
+		 */
+		\delete_option( Handle::OPTION_PREVIOUS_HANDLE );
 
 		Client::disconnect();
 
