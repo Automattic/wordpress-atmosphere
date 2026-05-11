@@ -1876,7 +1876,7 @@ class Test_Publisher extends WP_UnitTestCase {
 	}
 
 	/**
-	 * publish_post fires `atmosphere_publish_post_result` exactly once
+	 * Publish_post fires `atmosphere_publish_post_result` exactly once
 	 * with the post and the final result — even when the underlying
 	 * API call fails.
 	 */
@@ -1908,7 +1908,7 @@ class Test_Publisher extends WP_UnitTestCase {
 	}
 
 	/**
-	 * publish_comment fires `atmosphere_publish_comment_result` exactly
+	 * Publish_comment fires `atmosphere_publish_comment_result` exactly
 	 * once with the comment and the final result — even when the
 	 * underlying API call fails.
 	 */
