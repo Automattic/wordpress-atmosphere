@@ -1,0 +1,4 @@
+Significance: minor
+Type: added
+
+Add `atmosphere_publish_post_result` and `atmosphere_publish_comment_result` actions so subscribers can react to publish success or failure (e.g., for metrics and notifications) without observing internal state.

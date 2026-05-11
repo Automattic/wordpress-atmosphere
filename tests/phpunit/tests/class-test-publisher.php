@@ -1874,4 +1874,76 @@ class Test_Publisher extends WP_UnitTestCase {
 		$this->assertCount( 1, $this->captured_calls );
 		$this->assertCount( 4, $this->captured_calls[0]['writes'] );
 	}
+
+	/**
+	 * publish_post fires `atmosphere_publish_post_result` exactly once
+	 * with the post and the final result — even when the underlying
+	 * API call fails.
+	 */
+	public function test_publish_post_result_action_fires_on_failure() {
+		$post = self::factory()->post->create_and_get( array( 'post_status' => 'publish' ) );
+
+		$captured = array();
+		\add_action(
+			'atmosphere_publish_post_result',
+			static function ( $hooked_post, $hooked_result ) use ( &$captured ) {
+				$captured[] = array(
+					'post'   => $hooked_post,
+					'result' => $hooked_result,
+				);
+			},
+			10,
+			2
+		);
+
+		// No HTTP stub — the bootstrap returns WP_Error from the auth layer.
+		$result = Publisher::publish_post( $post );
+
+		\remove_all_actions( 'atmosphere_publish_post_result' );
+
+		$this->assertCount( 1, $captured, 'action fired exactly once' );
+		$this->assertSame( $post->ID, $captured[0]['post']->ID );
+		$this->assertWPError( $captured[0]['result'] );
+		$this->assertSame( $result, $captured[0]['result'], 'hook receives the same result returned to the caller' );
+	}
+
+	/**
+	 * publish_comment fires `atmosphere_publish_comment_result` exactly
+	 * once with the comment and the final result — even when the
+	 * underlying API call fails.
+	 */
+	public function test_publish_comment_result_action_fires_on_failure() {
+		$post_id    = $this->seed_root_post();
+		$user_id    = self::factory()->user->create();
+		$comment_id = self::factory()->comment->create(
+			array(
+				'comment_post_ID'  => $post_id,
+				'comment_approved' => '1',
+				'user_id'          => $user_id,
+			)
+		);
+
+		$captured = array();
+		\add_action(
+			'atmosphere_publish_comment_result',
+			static function ( $hooked_comment, $hooked_result ) use ( &$captured ) {
+				$captured[] = array(
+					'comment' => $hooked_comment,
+					'result'  => $hooked_result,
+				);
+			},
+			10,
+			2
+		);
+
+		// No HTTP stub — the bootstrap returns WP_Error from the auth layer.
+		$result = Publisher::publish_comment( \get_comment( $comment_id ) );
+
+		\remove_all_actions( 'atmosphere_publish_comment_result' );
+
+		$this->assertCount( 1, $captured, 'action fired exactly once' );
+		$this->assertSame( (int) $comment_id, (int) $captured[0]['comment']->comment_ID );
+		$this->assertWPError( $captured[0]['result'] );
+		$this->assertSame( $result, $captured[0]['result'], 'hook receives the same result returned to the caller' );
+	}
 }
