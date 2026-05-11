@@ -23,6 +23,7 @@ delete_option( 'atmosphere_connection' );
 delete_option( 'atmosphere_publication_tid' );
 delete_option( 'atmosphere_publication_uri' );
 delete_option( 'atmosphere_auto_publish' );
+delete_option( 'atmosphere_previous_handle' );
 
 // Remove scheduled events via the canonical helper.
 clear_scheduled_hooks();
