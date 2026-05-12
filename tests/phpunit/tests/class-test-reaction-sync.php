@@ -372,9 +372,11 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 			),
 		);
 
-		$result = $method->invoke( null, $notification );
-
-		\remove_filter( 'atmosphere_should_sync_reply', $filter, 10 );
+		try {
+			$result = $method->invoke( null, $notification );
+		} finally {
+			\remove_filter( 'atmosphere_should_sync_reply', $filter, 10 );
+		}
 
 		$this->assertFalse( $result );
 		$this->assertTrue( $captured['should'] );
@@ -479,9 +481,11 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 			),
 		);
 
-		$method->invoke( null, $notification );
-
-		\remove_filter( 'atmosphere_should_sync_reply', $filter, 10 );
+		try {
+			$method->invoke( null, $notification );
+		} finally {
+			\remove_filter( 'atmosphere_should_sync_reply', $filter, 10 );
+		}
 
 		$this->assertSame( $post_id, $captured['post_id'] );
 		$this->assertSame( $parent_comment_id, $captured['comment_parent'] );
@@ -521,9 +525,11 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 			),
 		);
 
-		$result = $method->invoke( null, $notification );
-
-		\remove_filter( 'atmosphere_should_sync_reply', $filter );
+		try {
+			$result = $method->invoke( null, $notification );
+		} finally {
+			\remove_filter( 'atmosphere_should_sync_reply', $filter );
+		}
 
 		$this->assertFalse( $result );
 		$this->assertSame( array(), \get_comments( array( 'post_id' => $post_id ) ) );
