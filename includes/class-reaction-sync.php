@@ -414,19 +414,19 @@ class Reaction_Sync {
 			return false;
 		}
 
-		$profile = self::resolve_author( $author['did'] ?? '' );
-
 		/**
 		 * Filters whether a reply should be synced as a WordPress comment.
 		 *
 		 * Fires after the reply's target post and parent comment have been
-		 * resolved, immediately before the comment row is inserted. Return
-		 * false to skip the insert (and the comment-meta writes that follow).
+		 * resolved, immediately before any work that depends on the reply
+		 * being kept (author profile resolution, comment row insert,
+		 * comment-meta writes). Return false to skip the insert.
 		 *
-		 * Use case: the `teaser-thread` long-form strategy emits multiple
-		 * reply records for a single post, and `Reaction_Sync` ingests
-		 * our own records back through this path. Consumers that publish
-		 * threads can register a callback here to suppress those self-replies.
+		 * Use case: consumers publishing multi-record threads from their
+		 * own DID may want to skip the round-tripped self-replies that
+		 * `Reaction_Sync` would otherwise ingest as comments. The filter
+		 * is intentionally policy-free upstream so consumers can express
+		 * whatever discriminator fits their publishing strategy.
 		 *
 		 * @param bool  $should         Whether to sync this reply. Default true.
 		 * @param array $notification   Notification or synthesized own-record.
@@ -444,6 +444,8 @@ class Reaction_Sync {
 		if ( ! $should_sync ) {
 			return false;
 		}
+
+		$profile = self::resolve_author( $author['did'] ?? '' );
 
 		return self::insert_reaction( $post_id, 'comment', $text, $comment_parent, $notification, $profile );
 	}

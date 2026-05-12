@@ -389,17 +389,21 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 
 	/**
 	 * Test that the default filter value is true — no callback registered
-	 * means existing behavior (comment is inserted as before).
+	 * means existing behavior (comment is inserted as before). Mirrors
+	 * the contract assertions of test_process_reply_creates_comment so a
+	 * future regression that changes what insert_reaction writes is
+	 * caught here too.
 	 */
 	public function test_process_reply_defaults_to_syncing() {
-		$post_id  = self::factory()->post->create();
-		$post_uri = 'at://did:plc:me/app.bsky.feed.post/defaultsync';
+		$post_id   = self::factory()->post->create();
+		$post_uri  = 'at://did:plc:me/app.bsky.feed.post/defaultsync';
+		$reply_uri = 'at://did:plc:friend/app.bsky.feed.post/friendreply';
 		\update_post_meta( $post_id, BskyPost::META_URI, $post_uri );
 
 		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_reply' );
 
 		$notification = array(
-			'uri'    => 'at://did:plc:friend/app.bsky.feed.post/friendreply',
+			'uri'    => $reply_uri,
 			'cid'    => 'bafyreifriend',
 			'record' => array(
 				'text'      => 'Nice one.',
@@ -419,6 +423,123 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 
 		$this->assertIsInt( $comment_id );
 		$this->assertGreaterThan( 0, $comment_id );
+
+		$comment = \get_comment( $comment_id );
+
+		$this->assertSame( 'Nice one.', $comment->comment_content );
+		$this->assertSame( 'comment', $comment->comment_type );
+		$this->assertSame( (string) $post_id, $comment->comment_post_ID );
+		$this->assertSame( '0', $comment->comment_parent );
+		$this->assertSame( 'atproto', \get_comment_meta( $comment_id, 'protocol', true ) );
+		$this->assertSame( $reply_uri, \get_comment_meta( $comment_id, 'source_id', true ) );
+		$this->assertSame( 'did:plc:friend', \get_comment_meta( $comment_id, '_atmosphere_author_did', true ) );
+	}
+
+	/**
+	 * Test that the filter receives the resolved nested-parent comment ID
+	 * (not 0) when the reply targets an existing synced comment instead
+	 * of the post itself. Locks in the contract that $comment_parent is
+	 * the resolved local ID, not the AT-URI of the parent record.
+	 */
+	public function test_process_reply_filter_receives_nested_parent_id() {
+		$post_id  = self::factory()->post->create();
+		$post_uri = 'at://did:plc:me/app.bsky.feed.post/parentpost';
+		\update_post_meta( $post_id, BskyPost::META_URI, $post_uri );
+
+		$parent_comment_id = self::factory()->comment->create( array( 'comment_post_ID' => $post_id ) );
+		$parent_reply_uri  = 'at://did:plc:first/app.bsky.feed.post/firstreply';
+		\update_comment_meta( $parent_comment_id, 'source_id', $parent_reply_uri );
+
+		$captured = array();
+		$filter   = function ( $should, $notification, $resolved_post_id, $comment_parent ) use ( &$captured ) {
+			$captured = array(
+				'post_id'        => $resolved_post_id,
+				'comment_parent' => $comment_parent,
+			);
+			return $should;
+		};
+		\add_filter( 'atmosphere_should_sync_reply', $filter, 10, 4 );
+
+		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_reply' );
+
+		$notification = array(
+			'uri'    => 'at://did:plc:second/app.bsky.feed.post/nestedreply',
+			'cid'    => 'bafyreinested',
+			'record' => array(
+				'text'      => 'Replying to the reply.',
+				'createdAt' => '2026-03-21T12:00:00.000Z',
+				'reply'     => array(
+					'parent' => array( 'uri' => $parent_reply_uri ),
+					'root'   => array( 'uri' => $post_uri ),
+				),
+			),
+			'author' => array(
+				'did'    => 'did:plc:second',
+				'handle' => 'second.bsky.social',
+			),
+		);
+
+		$method->invoke( null, $notification );
+
+		\remove_filter( 'atmosphere_should_sync_reply', $filter, 10 );
+
+		$this->assertSame( $post_id, $captured['post_id'] );
+		$this->assertSame( $parent_comment_id, $captured['comment_parent'] );
+	}
+
+	/**
+	 * Filter return values are cast via `(bool)` before deciding whether
+	 * to insert. Lock in that null, 0, and '' suppress; truthy non-bool
+	 * values allow the sync. Protects the cast against accidental removal.
+	 *
+	 * @dataProvider data_filter_falsy_returns
+	 * @param mixed $falsy_return Value the callback returns.
+	 */
+	public function test_process_reply_treats_falsy_filter_returns_as_suppression( $falsy_return ) {
+		$post_id  = self::factory()->post->create();
+		$post_uri = 'at://did:plc:me/app.bsky.feed.post/cast-' . \uniqid();
+		\update_post_meta( $post_id, BskyPost::META_URI, $post_uri );
+
+		$filter = static fn() => $falsy_return;
+		\add_filter( 'atmosphere_should_sync_reply', $filter );
+
+		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_reply' );
+
+		$notification = array(
+			'uri'    => 'at://did:plc:friend/app.bsky.feed.post/falsy-' . \uniqid(),
+			'cid'    => 'bafyreicast',
+			'record' => array(
+				'text'  => 'Should be suppressed.',
+				'reply' => array(
+					'parent' => array( 'uri' => $post_uri ),
+					'root'   => array( 'uri' => $post_uri ),
+				),
+			),
+			'author' => array(
+				'did'    => 'did:plc:friend',
+				'handle' => 'friend.bsky.social',
+			),
+		);
+
+		$result = $method->invoke( null, $notification );
+
+		\remove_filter( 'atmosphere_should_sync_reply', $filter );
+
+		$this->assertFalse( $result );
+		$this->assertSame( array(), \get_comments( array( 'post_id' => $post_id ) ) );
+	}
+
+	/**
+	 * Data provider for falsy `atmosphere_should_sync_reply` returns.
+	 *
+	 * @return array<string, array{0: mixed}>
+	 */
+	public function data_filter_falsy_returns(): array {
+		return array(
+			'null'         => array( null ),
+			'zero'         => array( 0 ),
+			'empty string' => array( '' ),
+		);
 	}
 
 	/**
