@@ -1,0 +1,4 @@
+Significance: minor
+Type: added
+
+Add `atmosphere_should_sync_reply` filter so consumers can suppress specific incoming replies before they become WordPress comments — primarily useful for teaser-thread publishers that don't want their own follow-up records re-ingested as self-replies.

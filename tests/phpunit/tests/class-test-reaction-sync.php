@@ -331,6 +331,97 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 	}
 
 	/**
+	 * Test that a registered `atmosphere_should_sync_reply` callback can
+	 * suppress the comment insert. The filter receives the notification,
+	 * resolved post ID, and resolved parent-comment ID.
+	 */
+	public function test_process_reply_respects_should_sync_filter() {
+		$post_id  = self::factory()->post->create();
+		$post_uri = 'at://did:plc:me/app.bsky.feed.post/filterable';
+		\update_post_meta( $post_id, BskyPost::META_URI, $post_uri );
+
+		$captured = array();
+		$filter   = function ( $should, $notification, $resolved_post_id, $comment_parent ) use ( &$captured ) {
+			$captured = array(
+				'should'         => $should,
+				'notification'   => $notification,
+				'post_id'        => $resolved_post_id,
+				'comment_parent' => $comment_parent,
+			);
+			return false;
+		};
+		\add_filter( 'atmosphere_should_sync_reply', $filter, 10, 4 );
+
+		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_reply' );
+
+		$reply_uri    = 'at://did:plc:me/app.bsky.feed.post/chunk2';
+		$notification = array(
+			'uri'    => $reply_uri,
+			'cid'    => 'bafyreichunk',
+			'record' => array(
+				'text'      => 'Continued thought…',
+				'createdAt' => '2026-03-21T12:00:00.000Z',
+				'reply'     => array(
+					'parent' => array( 'uri' => $post_uri ),
+					'root'   => array( 'uri' => $post_uri ),
+				),
+			),
+			'author' => array(
+				'did'    => 'did:plc:me',
+				'handle' => 'me.example.com',
+			),
+		);
+
+		$result = $method->invoke( null, $notification );
+
+		\remove_filter( 'atmosphere_should_sync_reply', $filter, 10 );
+
+		$this->assertFalse( $result );
+		$this->assertTrue( $captured['should'] );
+		$this->assertSame( $reply_uri, $captured['notification']['uri'] );
+		$this->assertSame( $post_id, $captured['post_id'] );
+		$this->assertSame( 0, $captured['comment_parent'] );
+
+		// No comment was written.
+		$comments = \get_comments( array( 'post_id' => $post_id ) );
+		$this->assertSame( array(), $comments );
+	}
+
+	/**
+	 * Test that the default filter value is true — no callback registered
+	 * means existing behavior (comment is inserted as before).
+	 */
+	public function test_process_reply_defaults_to_syncing() {
+		$post_id  = self::factory()->post->create();
+		$post_uri = 'at://did:plc:me/app.bsky.feed.post/defaultsync';
+		\update_post_meta( $post_id, BskyPost::META_URI, $post_uri );
+
+		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_reply' );
+
+		$notification = array(
+			'uri'    => 'at://did:plc:friend/app.bsky.feed.post/friendreply',
+			'cid'    => 'bafyreifriend',
+			'record' => array(
+				'text'      => 'Nice one.',
+				'createdAt' => '2026-03-21T12:00:00.000Z',
+				'reply'     => array(
+					'parent' => array( 'uri' => $post_uri ),
+					'root'   => array( 'uri' => $post_uri ),
+				),
+			),
+			'author' => array(
+				'did'    => 'did:plc:friend',
+				'handle' => 'friend.bsky.social',
+			),
+		);
+
+		$comment_id = $method->invoke( null, $notification );
+
+		$this->assertIsInt( $comment_id );
+		$this->assertGreaterThan( 0, $comment_id );
+	}
+
+	/**
 	 * Test that process_like creates a like comment.
 	 */
 	public function test_process_like_creates_comment() {
