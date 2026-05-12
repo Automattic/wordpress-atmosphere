@@ -1,0 +1,4 @@
+Significance: patch
+Type: fixed
+
+Short posts under the long-form teaser-thread strategy no longer ship a redundant "continue reading" reply when the entire body already fits in a single Bluesky post. The link-back is preserved as a card on the same post.

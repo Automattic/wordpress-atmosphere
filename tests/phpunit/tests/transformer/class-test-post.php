@@ -873,13 +873,15 @@ class Test_Post extends WP_UnitTestCase {
 	}
 
 	/**
-	 * Short post: when the hook absorbs the entire body, the body chunk is
-	 * dropped rather than padded with empty text. The CTA stays terminal
-	 * and still carries the link-card embed.
+	 * Short post with no excerpt: the 2-entry `[ body, default CTA ]`
+	 * fallback collapses to a single record with the body as text and a
+	 * link-card embed. The CTA reply is dropped because it's redundant
+	 * — there's nothing past the hook to "continue reading" to. The
+	 * link-back is preserved via the embed card on the same record.
 	 *
 	 * @covers ::build_long_form_records
 	 */
-	public function test_build_long_form_records_teaser_thread_short_body_falls_back_to_two_entries() {
+	public function test_build_long_form_records_teaser_thread_short_body_collapses_to_single_record() {
 		$post = self::factory()->post->create_and_get(
 			array(
 				'post_title'   => 'Titled',
@@ -892,14 +894,182 @@ class Test_Post extends WP_UnitTestCase {
 
 		$records = ( new Post( $post ) )->build_long_form_records();
 
+		$this->assertCount( 1, $records );
+		$this->assertSame( 'A single short sentence.', $records[0]['text'] );
+
+		// Link-back lives on the embed of the same record now, not on a
+		// separate CTA reply.
+		$this->assertArrayHasKey( 'embed', $records[0] );
+		$this->assertSame( 'app.bsky.embed.external', $records[0]['embed']['$type'] );
+		$this->assertSame( \get_permalink( $post ), $records[0]['embed']['external']['uri'] );
+	}
+
+	/**
+	 * Body slightly over the 280-char hook budget with a tail too
+	 * short to form a body chunk: the 2-entry `[ truncated-hook, CTA ]`
+	 * default stays — the hook is NOT the whole body (the trailing
+	 * chars never made it in), so the CTA reply still adds value as
+	 * the only in-text affordance to "there's more in the source." The
+	 * collapse predicate must NOT fire here even though the default is
+	 * 2-entry and there's no excerpt.
+	 *
+	 * @covers ::build_long_form_records
+	 */
+	public function test_build_long_form_records_teaser_thread_truncated_hook_short_tail_does_not_collapse() {
+		// 285-char body: hook truncates to ~280 (sentence-bounded),
+		// chunk_source is the leftover ~5 chars, < 10 floor → 2-entry
+		// fallback `[ truncated-hook, CTA ]`. Hook is NOT the entire
+		// body, so the predicate must short-circuit on body length.
+		$body = \str_repeat( 'word ', 56 ) . '. tail';
+
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'Titled',
+				'post_content' => $body,
+				'post_excerpt' => '',
+			)
+		);
+
+		\add_filter( 'atmosphere_long_form_composition', fn() => 'teaser-thread' );
+
+		$records = ( new Post( $post ) )->build_long_form_records();
+
+		// 2-entry shape preserved; collapse did not fire.
+		$this->assertCount( 2, $records );
+		$this->assertMatchesRegularExpression( '~^Continue reading: ~', $records[1]['text'] );
+		$this->assertArrayNotHasKey( 'embed', $records[0] );
+		$this->assertArrayHasKey( 'embed', $records[1] );
+	}
+
+	/**
+	 * Excerpt-as-hook with a body too short to compose a chunk: the
+	 * 2-entry `[ excerpt, CTA ]` fallback stays — the excerpt and the
+	 * body are separate strings, so the CTA still carries the
+	 * link-back to where the body lives. Only collapse when the hook
+	 * IS the body.
+	 *
+	 * @covers ::build_long_form_records
+	 */
+	public function test_build_long_form_records_teaser_thread_excerpt_with_short_body_stays_two_entries() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'Titled',
+				// 3-char body so chunk_source < 10 char floor → 2-entry fallback.
+				'post_content' => 'Hi.',
+				'post_excerpt' => 'A curated excerpt of decent length.',
+			)
+		);
+
+		\add_filter( 'atmosphere_long_form_composition', fn() => 'teaser-thread' );
+
+		$records = ( new Post( $post ) )->build_long_form_records();
+
+		$this->assertCount( 2, $records );
+		$this->assertSame( 'A curated excerpt of decent length.', $records[0]['text'] );
+		$this->assertMatchesRegularExpression( '~^Continue reading: ~', $records[1]['text'] );
+		$this->assertArrayNotHasKey( 'embed', $records[0] );
+		$this->assertArrayHasKey( 'embed', $records[1] );
+	}
+
+	/**
+	 * Collapse decision is made on the unfiltered default — when the
+	 * default would be the redundant `[ body, default CTA ]` shape, the
+	 * `atmosphere_teaser_thread_posts` filter is never reached and the
+	 * output is always a single record. A filter that wants to ship a
+	 * 2-entry custom thread can only do so when the post has enough
+	 * body (or an excerpt) to produce a non-redundant default shape;
+	 * otherwise the collapse pre-empts the filter.
+	 *
+	 * This pins the design choice: the filter operates on the
+	 * un-collapsed default shape only.
+	 *
+	 * @covers ::build_long_form_records
+	 */
+	public function test_build_long_form_records_teaser_thread_short_body_collapse_pre_empts_filter() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'Titled',
+				'post_content' => 'A single short sentence.',
+				'post_excerpt' => '',
+			)
+		);
+
+		$filter_ran = false;
+		\add_filter( 'atmosphere_long_form_composition', fn() => 'teaser-thread' );
+		\add_filter(
+			'atmosphere_teaser_thread_posts',
+			static function () use ( &$filter_ran ) {
+				$filter_ran = true;
+				return array( 'Custom hook', 'Custom second post' );
+			}
+		);
+
+		$records = ( new Post( $post ) )->build_long_form_records();
+
+		$this->assertCount( 1, $records );
+		$this->assertFalse( $filter_ran, 'Filter should not run when collapse fires on the default.' );
+	}
+
+	/**
+	 * Filter override DOES run when the post has a non-redundant
+	 * default (here, a usable excerpt forces the 3-entry shape) — the
+	 * filter can then return any 2..5 entries and that ships verbatim.
+	 *
+	 * @covers ::build_long_form_records
+	 */
+	public function test_build_long_form_records_teaser_thread_filter_runs_when_default_is_not_redundant() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'Titled',
+				// Excerpt becomes the hook → default is 3-entry
+				// (not the redundant 2-entry shape) → no collapse
+				// → filter runs.
+				'post_content' => 'Body content with enough prose to compose a hook from.',
+				'post_excerpt' => 'Curated excerpt.',
+			)
+		);
+
+		\add_filter( 'atmosphere_long_form_composition', fn() => 'teaser-thread' );
+		\add_filter(
+			'atmosphere_teaser_thread_posts',
+			fn() => array( 'Custom hook', 'Custom second post' )
+		);
+
+		$records = ( new Post( $post ) )->build_long_form_records();
+
+		$this->assertCount( 2, $records );
+		$this->assertSame( 'Custom hook', $records[0]['text'] );
+		$this->assertSame( 'Custom second post', $records[1]['text'] );
+	}
+
+	/**
+	 * Backward-compat: when the post already has 2+ stored bsky records
+	 * (passed via the `$stored_count` hint), the collapse is skipped so
+	 * `Publisher::update_post` can take the in-place update path
+	 * instead of falling through to a destructive `rewrite_thread()`
+	 * that would re-mint the root URI and orphan external engagement.
+	 *
+	 * @covers ::build_long_form_records
+	 */
+	public function test_build_long_form_records_teaser_thread_short_body_does_not_collapse_when_stored_count_two() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'Titled',
+				'post_content' => 'A single short sentence.',
+				'post_excerpt' => '',
+			)
+		);
+
+		\add_filter( 'atmosphere_long_form_composition', fn() => 'teaser-thread' );
+
+		$records = ( new Post( $post ) )->build_long_form_records( 2 );
+
+		// Old shape preserved: hook + CTA, embed on terminal.
 		$this->assertCount( 2, $records );
 		$this->assertSame( 'A single short sentence.', $records[0]['text'] );
 		$this->assertMatchesRegularExpression( '~^Continue reading: ~', $records[1]['text'] );
-
-		// Embed attaches to the terminal entry: "last entry," not "index 2".
 		$this->assertArrayNotHasKey( 'embed', $records[0] );
 		$this->assertArrayHasKey( 'embed', $records[1] );
-		$this->assertSame( 'app.bsky.embed.external', $records[1]['embed']['$type'] );
 	}
 
 	/**
@@ -1197,7 +1367,11 @@ class Test_Post extends WP_UnitTestCase {
 		$post = self::factory()->post->create_and_get(
 			array(
 				'post_title'   => 'Titled',
-				'post_content' => 'Read about #testing sensors in this detailed write-up on instrumentation.',
+				// Body long enough that the default is 3-entry (hook +
+				// body chunk + CTA), so the redundant-2-entry collapse
+				// in build_long_form_records() does not fire and the
+				// CTA record exists for the link-facet assertion below.
+				'post_content' => 'Read about #testing sensors in this detailed write-up on instrumentation. ' . \str_repeat( 'Additional analysis follows here. ', 12 ),
 				// Force body-path hook; factory auto-fills "Post excerpt NNN" otherwise.
 				'post_excerpt' => '',
 			)
@@ -1219,8 +1393,11 @@ class Test_Post extends WP_UnitTestCase {
 		}
 		$this->assertTrue( $hook_has_tag, 'Hook text should have a #testing tag facet.' );
 
+		// CTA is the terminal record, not necessarily index 1 — the
+		// thread can be 2 or 3 entries depending on body length.
+		$terminal     = $records[ \count( $records ) - 1 ];
 		$cta_has_link = false;
-		foreach ( $records[1]['facets'] ?? array() as $facet ) {
+		foreach ( $terminal['facets'] ?? array() as $facet ) {
 			foreach ( $facet['features'] as $feature ) {
 				if ( 'app.bsky.richtext.facet#link' === ( $feature['$type'] ?? '' ) ) {
 					$cta_has_link = true;

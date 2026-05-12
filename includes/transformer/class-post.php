@@ -388,11 +388,14 @@ class Post extends Base {
 	 *     no embed card.
 	 *   - `'teaser-thread'`: a reply chain of hook + body chunk + CTA
 	 *     (3 records by default; falls back to `[ hook, cta ]` when the
-	 *     post body is too short for a body chunk). The terminal CTA
-	 *     entry carries an `app.bsky.embed.external` link card so the
-	 *     reader has a clear path back to the WordPress post regardless
-	 *     of which entry surfaces. Filterable via
-	 *     `atmosphere_teaser_thread_posts`.
+	 *     post body is too short for a body chunk; collapses further
+	 *     to a single record when that 2-entry fallback would just be
+	 *     `[ entire-body, "Continue reading: <permalink>" ]` — the
+	 *     CTA is redundant when the entire post body is already the
+	 *     hook). The terminal entry carries an `app.bsky.embed.external`
+	 *     link card so the reader has a clear path back to the
+	 *     WordPress post regardless of which entry surfaces. Filterable
+	 *     via `atmosphere_teaser_thread_posts`.
 	 *   - unknown values: treated as `'link-card'`.
 	 *
 	 * Empty-body guard: for `'teaser-thread'` and `'truncate-link'`,
@@ -411,10 +414,22 @@ class Post extends Base {
 	 * for the short-form path and for any legacy caller on today's
 	 * single-record contract.
 	 *
+	 * @param int $stored_count Number of bsky records currently stored
+	 *                          for this post (from `META_THREAD_RECORDS`).
+	 *                          Defaults to 0 — a fresh publish, no
+	 *                          existing state. Callers updating an
+	 *                          already-published post should pass the
+	 *                          stored count so shape-shrinking optimisations
+	 *                          (e.g. the redundant-CTA collapse) are
+	 *                          skipped when they would force a destructive
+	 *                          rewrite of an existing thread; preserving
+	 *                          the stored shape lets `Publisher::update_post`
+	 *                          take the in-place update path and keep
+	 *                          external Bluesky engagement intact.
 	 * @return array[] Bsky post records, in thread order (index 0 is
 	 *                 the root / parent of any replies).
 	 */
-	public function build_long_form_records(): array {
+	public function build_long_form_records( int $stored_count = 0 ): array {
 		/**
 		 * Filters the long-form composition strategy for this post.
 		 *
@@ -460,8 +475,48 @@ class Post extends Base {
 					return array( $this->record_for_link_card() );
 				}
 
+				// When the unfiltered default would publish the entire
+				// body as the hook followed by a "Continue reading"
+				// CTA, the CTA is redundant — there's nothing past
+				// the hook to "continue reading" to. Collapse to a
+				// single record (body text + link-card embed) so the
+				// reader gets one clean post with a card linking back
+				// to WordPress, instead of a 2-post self-reply where
+				// the reply only restates the link.
+				//
+				// Backward-compat: skip the collapse when the post
+				// already has 2+ stored records. `Publisher::update_post`
+				// only takes the in-place update path when stored count
+				// matches new count; a 2→1 shape change otherwise falls
+				// through to `rewrite_thread()`, which deletes the
+				// original root URI and orphans every external Bluesky
+				// reply / like / repost on it. Preserving the stored
+				// shape costs an extra (still-redundant) reply but
+				// keeps engagement intact.
+				//
+				// Decision is made on the unfiltered default so an
+				// `atmosphere_teaser_thread_posts` filter that
+				// legitimately produces a 2-entry custom shape (custom
+				// hook + custom second post) still runs and ships as 2
+				// records.
+				$default_texts = $this->compute_default_teaser_thread();
+				if ( $stored_count < 2 && $this->default_teaser_thread_is_redundant_two_entry( $default_texts ) ) {
+					return array(
+						$this->record_for_thread_entry(
+							(string) $default_texts[0],
+							true,
+							array(
+								'strategy'        => 'teaser-thread',
+								'thread_index'    => 0,
+								'is_thread_reply' => false,
+							),
+							$this->build_embed()
+						),
+					);
+				}
+
+				$texts   = $this->build_teaser_thread( $default_texts );
 				$records = array();
-				$texts   = $this->build_teaser_thread();
 				$last    = \count( $texts ) - 1;
 				// Attach an `app.bsky.embed.external` link card to the
 				// terminal CTA entry. Without it, even when the thread
@@ -681,44 +736,22 @@ class Post extends Base {
 	 * Filterable via `atmosphere_teaser_thread_posts`; the filter is the
 	 * final transformation point and may return any 2..5 string entries.
 	 *
+	 * @param array|null $precomputed_default Precomputed default array
+	 *                                        from `compute_default_teaser_thread()`.
+	 *                                        Pass to avoid re-running
+	 *                                        the `render_post_content_plain`
+	 *                                        / `truncate_to_budget`
+	 *                                        pipeline when the caller
+	 *                                        already needed the default
+	 *                                        for its own decision (e.g.
+	 *                                        the redundant-CTA collapse
+	 *                                        predicate). When null,
+	 *                                        computed here.
 	 * @return string[] Text of each post in order. 2 or 3 entries by
 	 *                  default; up to 5 when overridden by filter.
 	 */
-	private function build_teaser_thread(): array {
-		$excerpt = sanitize_text( (string) $this->object->post_excerpt );
-		$plain   = $this->render_post_content_plain( $this->object );
-
-		if ( \mb_strlen( $excerpt ) >= 10 ) {
-			$hook         = $this->truncate_to_budget( $excerpt, 300, false );
-			$chunk_source = $plain;
-		} else {
-			$hook = $this->truncate_to_budget( $plain, 280, true );
-			// Strip the hard-cap ellipsis (when present) before measuring
-			// how much of the plain body the hook consumed; the
-			// sentence/word-cut paths return clean prefixes so this is a
-			// no-op there. `mb_substr` keeps the strip char-aware —
-			// `rtrim($hook, '…')` would strip individual UTF-8 bytes from
-			// the multi-byte ellipsis sequence and can corrupt the trailing
-			// non-ASCII char before it.
-			$consumed     = '…' === \mb_substr( $hook, -1 )
-				? \mb_substr( $hook, 0, \mb_strlen( $hook ) - 1 )
-				: $hook;
-			$chunk_source = \mb_substr( $plain, \mb_strlen( $consumed ) );
-		}
-
-		// Unicode-aware leading-whitespace strip: `\ltrim` only handles
-		// ASCII whitespace, so NBSP (U+00A0) and ideographic space
-		// (U+3000) at the start of `$chunk_source` would otherwise leak
-		// into the body chunk as leading invisible whitespace. PCRE in
-		// `/u` mode returns null on invalid UTF-8; fall back to the
-		// pre-strip slice so the `mb_strlen` check below stays string-safe.
-		$stripped     = \preg_replace( '/^\s+/u', '', $chunk_source );
-		$chunk_source = \is_string( $stripped ) ? $stripped : $chunk_source;
-		$cta          = $this->teaser_thread_cta_text();
-
-		$default = \mb_strlen( $chunk_source ) >= 10
-			? array( $hook, $this->truncate_to_budget( $chunk_source, 280, true ), $cta )
-			: array( $hook, $cta );
+	private function build_teaser_thread( ?array $precomputed_default = null ): array {
+		$default = $precomputed_default ?? $this->compute_default_teaser_thread();
 
 		/**
 		 * Filters the default teaser-thread post texts.
@@ -798,6 +831,118 @@ class Post extends Base {
 	}
 
 	/**
+	 * Compute the default teaser-thread text array, pre-filter.
+	 *
+	 * Extracted from `build_teaser_thread()` so callers can inspect the
+	 * unfiltered default before deciding whether to short-circuit (e.g.
+	 * the redundant-2-entry collapse in `build_long_form_records()`)
+	 * without coupling to whatever an `atmosphere_teaser_thread_posts`
+	 * filter might do.
+	 *
+	 * Hook precedence:
+	 *   1. If the post has a `post_excerpt`, use it (plain-text
+	 *      normalized, clamped to 300 chars as a safety floor).
+	 *   2. Otherwise, use the first ~280 chars of the body text,
+	 *      cut at a sentence boundary.
+	 *
+	 * Body chunk:
+	 *   - Excerpt-as-hook: chunk_source is the entire body.
+	 *   - Body-as-hook: chunk_source is what remains after the hook
+	 *     consumed its slice.
+	 *   - Dropped (output reduces to `[ hook, cta ]`) when fewer than
+	 *     10 chars of prose remain after Unicode-aware leading-whitespace
+	 *     strip.
+	 *
+	 * @return string[] 2 or 3 entries.
+	 */
+	private function compute_default_teaser_thread(): array {
+		$excerpt = sanitize_text( (string) $this->object->post_excerpt );
+		$plain   = $this->render_post_content_plain( $this->object );
+
+		if ( \mb_strlen( $excerpt ) >= 10 ) {
+			$hook         = $this->truncate_to_budget( $excerpt, 300, false );
+			$chunk_source = $plain;
+		} else {
+			$hook = $this->truncate_to_budget( $plain, 280, true );
+			// Strip the hard-cap ellipsis (when present) before measuring
+			// how much of the plain body the hook consumed; the
+			// sentence/word-cut paths return clean prefixes so this is a
+			// no-op there. `mb_substr` keeps the strip char-aware —
+			// `rtrim($hook, '…')` would strip individual UTF-8 bytes from
+			// the multi-byte ellipsis sequence and can corrupt the trailing
+			// non-ASCII char before it.
+			$consumed     = '…' === \mb_substr( $hook, -1 )
+				? \mb_substr( $hook, 0, \mb_strlen( $hook ) - 1 )
+				: $hook;
+			$chunk_source = \mb_substr( $plain, \mb_strlen( $consumed ) );
+		}
+
+		// Unicode-aware leading-whitespace strip: `\ltrim` only handles
+		// ASCII whitespace, so NBSP (U+00A0) and ideographic space
+		// (U+3000) at the start of `$chunk_source` would otherwise leak
+		// into the body chunk as leading invisible whitespace. PCRE in
+		// `/u` mode returns null on invalid UTF-8; fall back to the
+		// pre-strip slice so the `mb_strlen` check below stays string-safe.
+		$stripped     = \preg_replace( '/^\s+/u', '', $chunk_source );
+		$chunk_source = \is_string( $stripped ) ? $stripped : $chunk_source;
+		$cta          = $this->teaser_thread_cta_text();
+
+		return \mb_strlen( $chunk_source ) >= 10
+			? array( $hook, $this->truncate_to_budget( $chunk_source, 280, true ), $cta )
+			: array( $hook, $cta );
+	}
+
+	/**
+	 * Whether the unfiltered default teaser-thread is the redundant
+	 * `[ entire-body, "Continue reading: <permalink>" ]` shape.
+	 *
+	 * Triggers when ALL of:
+	 *   - The post has no usable `post_excerpt` (so the hook IS the
+	 *     body, not a separate curated string).
+	 *   - The body fits entirely in the 280-char hook budget (so the
+	 *     hook is the *whole* body, not a truncated prefix — without
+	 *     this check, a 285-char body produces a hook-truncated
+	 *     `[ first 280 chars, cta ]` default whose collapse would
+	 *     silently drop the trailing 5 chars from bsky output without
+	 *     the reader having any in-text affordance to know there's
+	 *     more).
+	 *   - The default is the 2-entry fallback (so chunk_source ended
+	 *     up below the 10-char floor and the body chunk was dropped).
+	 *
+	 * In that exact shape, the CTA reply is purely redundant — the
+	 * entire post body is already in the hook above it. Callers can
+	 * collapse to a single record with the body text and a link-card
+	 * embed instead.
+	 *
+	 * Decision is made on the unfiltered default so filter authors who
+	 * legitimately want a 2-entry custom shape (custom hook + custom
+	 * second post) still see their filter run on the un-collapsed
+	 * default and ship as 2 records.
+	 *
+	 * @param array $default_texts Precomputed default array (pass to
+	 *                             avoid recomputing — this method does
+	 *                             not call `compute_default_teaser_thread()`
+	 *                             itself).
+	 * @return bool
+	 */
+	private function default_teaser_thread_is_redundant_two_entry( array $default_texts ): bool {
+		if ( 2 !== \count( $default_texts ) ) {
+			return false;
+		}
+
+		$excerpt = sanitize_text( (string) $this->object->post_excerpt );
+		if ( \mb_strlen( $excerpt ) >= 10 ) {
+			return false;
+		}
+
+		// Confirm the hook IS the whole body, not a truncated prefix.
+		// 280 mirrors `compute_default_teaser_thread()`'s body-as-hook
+		// budget; for a body at or below that length the hook
+		// equals the body verbatim and `chunk_source` is empty.
+		return \mb_strlen( $this->render_post_content_plain( $this->object ) ) <= 280;
+	}
+
+	/**
 	 * Build one thread-entry record (hook, intermediate, or CTA).
 	 *
 	 * `reply` is intentionally omitted — Publisher stamps it at write
@@ -808,9 +953,12 @@ class Post extends Base {
 	 * is the indexed representation of the WP post for the Bluesky
 	 * algorithm. Non-root replies are conversational and omit tags.
 	 *
-	 * `$embed` is set only by the teaser-thread caller for the terminal
-	 * CTA entry; `reply` and `embed` are independent fields in
-	 * `app.bsky.feed.post`'s lexicon, so a record carrying both is fine.
+	 * `$embed` is set by the teaser-thread caller for the terminal CTA
+	 * entry of a multi-record thread, AND for the root of a collapsed
+	 * single-record thread (where the would-be CTA is dropped but the
+	 * link-card embed is preserved on the surviving record). `reply`
+	 * and `embed` are independent fields in `app.bsky.feed.post`'s
+	 * lexicon, so a record carrying both is fine.
 	 *
 	 * @param string     $text    Pre-composed post text.
 	 * @param bool       $is_root Whether this record is the thread root.
