@@ -86,6 +86,10 @@ class Publisher {
 	/**
 	 * Publish a post to AT Protocol (bsky record(s) + document).
 	 *
+	 * Fires `atmosphere_publish_post_result` once with the final outcome
+	 * regardless of which internal path (short-form, long-form single,
+	 * long-form thread) produced it.
+	 *
 	 * @param \WP_Post $post WordPress post.
 	 * @return array|\WP_Error applyWrites response(s) or error.
 	 */
@@ -95,21 +99,36 @@ class Publisher {
 
 		if ( $bsky_transformer->is_short_form_post() ) {
 			// Short-form path: single record via today's transform().
-			return self::publish_single(
+			$result = self::publish_single(
 				$post,
 				$bsky_transformer->transform(),
 				$bsky_transformer,
 				$doc_transformer
 			);
+		} else {
+			$records = $bsky_transformer->build_long_form_records();
+
+			if ( 1 === \count( $records ) ) {
+				$result = self::publish_single( $post, $records[0], $bsky_transformer, $doc_transformer );
+			} else {
+				$result = self::publish_thread( $post, $records, $bsky_transformer, $doc_transformer );
+			}
 		}
 
-		$records = $bsky_transformer->build_long_form_records();
+		/**
+		 * Fires after a post publish attempt completes, with the final result.
+		 *
+		 * Subscribers can use this to react to success or failure — for
+		 * example, to instrument metrics, surface notifications, or schedule
+		 * follow-up jobs. Fires exactly once per `publish_post()` invocation
+		 * regardless of which internal path produced the result.
+		 *
+		 * @param \WP_Post        $post   The post that was published.
+		 * @param array|\WP_Error $result `applyWrites` response on success, `WP_Error` on failure.
+		 */
+		\do_action( 'atmosphere_publish_post_result', $post, $result );
 
-		if ( 1 === \count( $records ) ) {
-			return self::publish_single( $post, $records[0], $bsky_transformer, $doc_transformer );
-		}
-
-		return self::publish_thread( $post, $records, $bsky_transformer, $doc_transformer );
+		return $result;
 	}
 
 	/**
@@ -1175,6 +1194,8 @@ class Publisher {
 	/**
 	 * Publish a WordPress comment as an app.bsky.feed.post reply.
 	 *
+	 * Fires `atmosphere_publish_comment_result` once with the final outcome.
+	 *
 	 * @param \WP_Comment $comment WordPress comment.
 	 * @return array|\WP_Error applyWrites response or error.
 	 */
@@ -1194,14 +1215,24 @@ class Publisher {
 
 		$result = API::apply_writes( $writes );
 
-		if ( \is_wp_error( $result ) ) {
-			return $result;
+		if ( ! \is_wp_error( $result ) ) {
+			$stored = self::store_comment_result( (int) $comment->comment_ID, $result );
+			if ( \is_wp_error( $stored ) ) {
+				$result = $stored;
+			}
 		}
 
-		$stored = self::store_comment_result( (int) $comment->comment_ID, $result );
-		if ( \is_wp_error( $stored ) ) {
-			return $stored;
-		}
+		/**
+		 * Fires after a comment publish attempt completes, with the final result.
+		 *
+		 * Mirrors `atmosphere_publish_post_result`. Fires exactly once per
+		 * `publish_comment()` invocation regardless of whether the underlying
+		 * API call or the post-publish bookkeeping was the failure.
+		 *
+		 * @param \WP_Comment     $comment The comment that was published.
+		 * @param array|\WP_Error $result  `applyWrites` response on success, `WP_Error` on failure.
+		 */
+		\do_action( 'atmosphere_publish_comment_result', $comment, $result );
 
 		return $result;
 	}
