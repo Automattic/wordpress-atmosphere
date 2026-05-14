@@ -252,6 +252,47 @@ class Test_Publisher extends WP_UnitTestCase {
 	}
 
 	/**
+	 * A pristine post (never attempted, never published) skips the
+	 * fallback fresh-publish path. Auto-publishing edits of legacy
+	 * content is the documented bug the skip addresses: routine edits
+	 * of pre-connection posts must not silently mint Bluesky records.
+	 * The user-facing path for syncing legacy posts is Backfill.
+	 *
+	 * Asserts the skip return shape (empty array), the
+	 * `atmosphere_update_skipped_unsynced_post` action fires with the
+	 * post, and no `Post::META_TID` is written (which would prove
+	 * `publish_post()` reached `get_rkey()`).
+	 */
+	public function test_update_skips_post_with_no_publication_history() {
+		$post = self::factory()->post->create_and_get(
+			array( 'post_status' => 'publish' )
+		);
+
+		$skipped = array();
+		\add_action(
+			'atmosphere_update_skipped_unsynced_post',
+			static function ( \WP_Post $skipped_post ) use ( &$skipped ): void {
+				$skipped[] = $skipped_post->ID;
+			}
+		);
+
+		// Capture any applyWrites attempt so a regression that retries
+		// publish_post() trips an assertion rather than going to the
+		// network. The short-circuit returns an empty applyWrites response
+		// to keep the publish path from erroring out before we check.
+		$this->fail_call_indexes = array();
+		$this->register_capture( $post->ID );
+
+		$result = Publisher::update_post( $post );
+
+		$this->assertSame( array(), $result );
+		$this->assertSame( array( $post->ID ), $skipped );
+		$this->assertSame( array(), $this->captured_calls, 'No applyWrites should be attempted for a pristine post.' );
+		$this->assertSame( '', \get_post_meta( $post->ID, Post::META_TID, true ), 'No bsky TID should be reserved.' );
+		$this->assertSame( '', \get_post_meta( $post->ID, Document::META_TID, true ), 'No document TID should be reserved.' );
+	}
+
+	/**
 	 * Test that update() sends applyWrites#update when URIs and TIDs exist.
 	 *
 	 * Uses the `atmosphere_pre_apply_writes` short-circuit so the test
