@@ -26,7 +26,7 @@ class API {
 	 *
 	 * @param string      $method   HTTP method.
 	 * @param string      $endpoint XRPC path, e.g. /xrpc/com.atproto.repo.createRecord.
-	 * @param array       $args     wp_remote_request() arguments.
+	 * @param array       $args     wp_safe_remote_request() arguments.
 	 * @param string|null $nonce    Explicit DPoP nonce (used on retry).
 	 * @return array|\WP_Error Decoded JSON body or error.
 	 */
@@ -73,7 +73,7 @@ class API {
 			$args['body'] = \wp_json_encode( $args['body'] );
 		}
 
-		$response = \wp_remote_request( $url, $args );
+		$response = \wp_safe_remote_request( $url, $args );
 
 		if ( \is_wp_error( $response ) ) {
 			return $response;
@@ -178,10 +178,10 @@ class API {
 		 * actually hitting the PDS.
 		 *
 		 * A common use is `pre_http_request`, but that filter fires
-		 * inside `wp_remote_request`, which is only reached after the
-		 * DPoP proof has been built — so in test environments without
-		 * a real DPoP JWK, the call errors out first. This filter runs
-		 * before any of that.
+		 * inside `wp_safe_remote_request`, which is only reached after
+		 * the DPoP proof has been built — so in test environments
+		 * without a real DPoP JWK, the call errors out first. This
+		 * filter runs before any of that.
 		 *
 		 * @param null|array|\WP_Error $short_circuit Short-circuit value. Return null to skip.
 		 * @param array                $writes        The write batch about to be sent.

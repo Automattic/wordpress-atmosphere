@@ -24,6 +24,13 @@ class Resolver {
 	 * @return string|\WP_Error DID string or error.
 	 */
 	public static function handle_to_did( string $handle ): string|\WP_Error {
+		if ( ! self::is_valid_handle( $handle ) ) {
+			return new \WP_Error(
+				'atmosphere_invalid_handle',
+				\__( 'Handle is not a valid DNS-style identifier.', 'atmosphere' )
+			);
+		}
+
 		// Try DNS TXT first: _atproto.<handle>.
 		$records = @\dns_get_record( '_atproto.' . $handle, DNS_TXT ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
 
@@ -36,7 +43,7 @@ class Resolver {
 		}
 
 		// Fallback: HTTPS well-known.
-		$response = \wp_remote_get(
+		$response = \wp_safe_remote_get(
 			'https://' . $handle . '/.well-known/atproto-did',
 			array( 'timeout' => 10 )
 		);
@@ -71,7 +78,13 @@ class Resolver {
 			$url = 'https://plc.directory/' . $did;
 		} elseif ( \str_starts_with( $did, 'did:web:' ) ) {
 			$domain = \substr( $did, 8 );
-			$url    = 'https://' . $domain . '/.well-known/did.json';
+			if ( ! self::is_valid_handle( $domain ) ) {
+				return new \WP_Error(
+					'atmosphere_invalid_did',
+					\__( 'did:web identifier is not a valid DNS-style host.', 'atmosphere' )
+				);
+			}
+			$url = 'https://' . $domain . '/.well-known/did.json';
 		} else {
 			return new \WP_Error(
 				'atmosphere_unsupported_did',
@@ -79,7 +92,7 @@ class Resolver {
 			);
 		}
 
-		$response = \wp_remote_get( $url, array( 'timeout' => 10 ) );
+		$response = \wp_safe_remote_get( $url, array( 'timeout' => 10 ) );
 
 		if ( \is_wp_error( $response ) ) {
 			return $response;
@@ -100,7 +113,12 @@ class Resolver {
 	/**
 	 * Extract the PDS endpoint from a DID document.
 	 *
-	 * Looks for the #atproto_pds service entry.
+	 * Looks for the #atproto_pds service entry. The serviceEndpoint is
+	 * attacker-controlled (anyone can publish a DID doc on plc.directory
+	 * pointing at any URL), so we reject anything that isn't a plain
+	 * HTTPS URL pointing at a publicly-routable host. `wp_http_validate_url()`
+	 * does the host-reachability gate; the explicit `https` check rules
+	 * out `http://` and exotic schemes that the spec doesn't allow.
 	 *
 	 * @param array $did_doc DID document.
 	 * @return string|\WP_Error PDS URL or error.
@@ -111,7 +129,16 @@ class Resolver {
 			$type = $service['type'] ?? '';
 
 			if ( '#atproto_pds' === $id && 'AtprotoPersonalDataServer' === $type && ! empty( $service['serviceEndpoint'] ) ) {
-				return $service['serviceEndpoint'];
+				$endpoint = $service['serviceEndpoint'];
+
+				if ( ! \is_string( $endpoint ) || ! self::is_safe_https_url( $endpoint ) ) {
+					return new \WP_Error(
+						'atmosphere_unsafe_pds',
+						\__( 'PDS endpoint in DID document is not a safe HTTPS URL.', 'atmosphere' )
+					);
+				}
+
+				return $endpoint;
 			}
 		}
 
@@ -126,13 +153,18 @@ class Resolver {
 	 *
 	 * Fetches /.well-known/oauth-protected-resource, then
 	 * /.well-known/oauth-authorization-server from the indicated issuer.
+	 * Every URL produced by the response chain is re-validated before it
+	 * is fetched — the DID-doc PDS endpoint, the issuer URL inside
+	 * `authorization_servers`, and the `token_endpoint` /
+	 * `authorization_endpoint` advertised by the auth server are all
+	 * attacker-controlled in the worst case.
 	 *
 	 * @param string $pds_url PDS base URL.
 	 * @return array|\WP_Error Authorization server metadata or error.
 	 */
 	public static function discover_auth_server( string $pds_url ): array|\WP_Error {
 		$resource_url = \rtrim( $pds_url, '/' ) . '/.well-known/oauth-protected-resource';
-		$response     = \wp_remote_get( $resource_url, array( 'timeout' => 10 ) );
+		$response     = \wp_safe_remote_get( $resource_url, array( 'timeout' => 10 ) );
 
 		if ( \is_wp_error( $response ) ) {
 			return $response;
@@ -140,16 +172,24 @@ class Resolver {
 
 		$resource = \json_decode( \wp_remote_retrieve_body( $response ), true );
 
-		if ( empty( $resource['authorization_servers'][0] ) ) {
+		if ( empty( $resource['authorization_servers'][0] ) || ! \is_string( $resource['authorization_servers'][0] ) ) {
 			return new \WP_Error(
 				'atmosphere_no_auth_server',
 				\__( 'PDS did not advertise an authorization server.', 'atmosphere' )
 			);
 		}
 
-		$issuer   = $resource['authorization_servers'][0];
+		$issuer = $resource['authorization_servers'][0];
+
+		if ( ! self::is_safe_https_url( $issuer ) ) {
+			return new \WP_Error(
+				'atmosphere_unsafe_auth_server',
+				\__( 'Authorization server issuer is not a safe HTTPS URL.', 'atmosphere' )
+			);
+		}
+
 		$meta_url = \rtrim( $issuer, '/' ) . '/.well-known/oauth-authorization-server';
-		$response = \wp_remote_get( $meta_url, array( 'timeout' => 10 ) );
+		$response = \wp_safe_remote_get( $meta_url, array( 'timeout' => 10 ) );
 
 		if ( \is_wp_error( $response ) ) {
 			return $response;
@@ -161,6 +201,30 @@ class Resolver {
 			return new \WP_Error(
 				'atmosphere_incomplete_auth_meta',
 				\__( 'Authorization server metadata is incomplete.', 'atmosphere' )
+			);
+		}
+
+		if ( ! \is_string( $meta['token_endpoint'] ) || ! self::is_safe_https_url( $meta['token_endpoint'] ) ) {
+			return new \WP_Error(
+				'atmosphere_unsafe_token_endpoint',
+				\__( 'Authorization server token endpoint is not a safe HTTPS URL.', 'atmosphere' )
+			);
+		}
+
+		if ( ! \is_string( $meta['authorization_endpoint'] ) || ! self::is_safe_https_url( $meta['authorization_endpoint'] ) ) {
+			return new \WP_Error(
+				'atmosphere_unsafe_auth_endpoint',
+				\__( 'Authorization server authorization endpoint is not a safe HTTPS URL.', 'atmosphere' )
+			);
+		}
+
+		if ( ! empty( $meta['pushed_authorization_request_endpoint'] )
+			&& ( ! \is_string( $meta['pushed_authorization_request_endpoint'] )
+				|| ! self::is_safe_https_url( $meta['pushed_authorization_request_endpoint'] ) )
+		) {
+			return new \WP_Error(
+				'atmosphere_unsafe_par_endpoint',
+				\__( 'Authorization server PAR endpoint is not a safe HTTPS URL.', 'atmosphere' )
 			);
 		}
 
@@ -201,5 +265,59 @@ class Resolver {
 			'pds_endpoint' => $pds,
 			'auth_server'  => $auth_server,
 		);
+	}
+
+	/**
+	 * Validate an AT Protocol handle or `did:web` host against
+	 * RFC 1035-style DNS name rules.
+	 *
+	 * Rejects empty strings, oversized labels, leading/trailing
+	 * hyphens, single-label hosts (`localhost`), and characters
+	 * outside `[A-Za-z0-9-]`. This is the first line of defence
+	 * against percent-encoded host bypasses and SSRF via crafted
+	 * DIDs — the regex never matches anything that contains a `%`
+	 * or other reserved URL characters.
+	 *
+	 * @param string $host Hostname (handle or did:web domain).
+	 * @return bool
+	 */
+	private static function is_valid_handle( string $host ): bool {
+		if ( '' === $host || \strlen( $host ) > 253 ) {
+			return false;
+		}
+
+		$label = '[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?';
+
+		return (bool) \preg_match( '/^' . $label . '(?:\.' . $label . ')+$/', $host );
+	}
+
+	/**
+	 * Validate that a URL is safe to persist or hand off downstream.
+	 *
+	 * `wp_safe_remote_*` already validates URLs at fetch time. This
+	 * helper exists for the cases where we are about to *persist* a
+	 * URL pulled from a response body (the PDS `serviceEndpoint`, the
+	 * auth-server `token_endpoint`, etc.) — there we want a clean
+	 * error at the resolution step rather than a generic
+	 * `http_request_not_executed` later on every API call.
+	 *
+	 * It also enforces `https://` specifically. `wp_http_validate_url()`
+	 * accepts `http` / `https` / `ssl` by default; the AT Protocol
+	 * spec requires HTTPS, so we narrow further here.
+	 *
+	 * @param mixed $url URL to validate.
+	 * @return bool
+	 */
+	private static function is_safe_https_url( $url ): bool {
+		if ( ! \is_string( $url ) || '' === $url ) {
+			return false;
+		}
+
+		$scheme = \wp_parse_url( $url, PHP_URL_SCHEME );
+		if ( 'https' !== $scheme ) {
+			return false;
+		}
+
+		return false !== \wp_http_validate_url( $url );
 	}
 }
