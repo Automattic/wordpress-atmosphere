@@ -14,9 +14,8 @@
 
 namespace Atmosphere\Tests\WP_Admin;
 
-use WP_REST_Request;
 use WP_UnitTestCase;
-use Atmosphere\Admin;
+use Atmosphere\WP_Admin\Admin;
 
 /**
  * Client metadata filter validation tests.
