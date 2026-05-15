@@ -90,7 +90,12 @@ class Test_Transform_Filter_Validation extends WP_UnitTestCase {
 	public function test_publication_transform_falls_back_on_scalar() {
 		\add_filter( 'atmosphere_transform_publication', static fn() => 42 );
 
-		$transformer = new Publication();
+		// `Publication::transform()` doesn't read the constructor
+		// argument — it pulls everything from site options — but the
+		// inherited `Base` constructor requires one. Pattern matches
+		// the existing `Test_Publication` fixture and
+		// `Publisher::sync_publication()`.
+		$transformer = new Publication( null );
 		$record      = $transformer->transform();
 
 		$this->assertIsArray( $record );
