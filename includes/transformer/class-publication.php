@@ -65,9 +65,14 @@ class Publication extends Base {
 		/**
 		 * Filters the site.standard.publication record.
 		 *
+		 * Filters that return a non-array fall back to the pre-filter
+		 * record.
+		 *
 		 * @param array $record Publication record.
 		 */
-		return \apply_filters( 'atmosphere_transform_publication', $record );
+		$filtered = \apply_filters( 'atmosphere_transform_publication', $record );
+
+		return \is_array( $filtered ) ? $filtered : $record;
 	}
 
 	/**

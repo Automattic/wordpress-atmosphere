@@ -51,6 +51,26 @@ class Test_Facet extends WP_UnitTestCase {
 	}
 
 	/**
+	 * A `@bareword` with no dot is not a valid AT Protocol handle
+	 * and must not produce a mention facet. The regex in
+	 * `Facet::mentions()` already requires ≥2 labels; this test
+	 * pins that user-visible behaviour so a future loosening of
+	 * the regex doesn't accidentally start emitting mention facets
+	 * with empty DIDs (or trigger DNS lookups on bareword handles).
+	 */
+	public function test_single_label_mention_produces_no_facet() {
+		$text   = 'Hello @notadomain over there';
+		$facets = Facet::extract( $text );
+
+		$mention_facets = \array_filter(
+			$facets,
+			static fn( $facet ) => 'app.bsky.richtext.facet#mention' === ( $facet['features'][0]['$type'] ?? '' )
+		);
+
+		$this->assertCount( 0, $mention_facets );
+	}
+
+	/**
 	 * Test that trailing punctuation is stripped from URLs.
 	 */
 	public function test_link_strips_trailing_punctuation() {

@@ -364,7 +364,42 @@ class Admin {
 			return '';
 		}
 
-		\wp_redirect( $auth_url ); // phpcs:ignore WordPress.Security.SafeRedirect.wp_redirect_wp_redirect
+		/*
+		 * `$auth_url` is built from the auth-server metadata returned
+		 * by the resolution chain. The resolver validates each URL it
+		 * persists, but defence-in-depth: re-check the scheme + host
+		 * before redirecting an admin so a misconfigured filter or
+		 * future code path can't slip a `javascript:` / `data:` URI
+		 * through.
+		 *
+		 * `wp_safe_redirect` would normally reject this destination —
+		 * it's intentionally off-site (the AT Protocol auth server).
+		 * Add the auth-server host to `allowed_redirect_hosts` for the
+		 * lifetime of this dying request so `wp_safe_redirect` lets
+		 * the redirect through; the `exit` below means the filter
+		 * never affects any subsequent request.
+		 */
+		$auth_host   = \is_string( $auth_url ) ? \wp_parse_url( $auth_url, PHP_URL_HOST ) : '';
+		$auth_scheme = \is_string( $auth_url ) ? \wp_parse_url( $auth_url, PHP_URL_SCHEME ) : '';
+
+		if ( empty( $auth_host ) || 'https' !== $auth_scheme ) {
+			\add_settings_error(
+				'atmosphere',
+				'auth_failed',
+				\__( 'Authorization URL is not a safe HTTPS target.', 'atmosphere' )
+			);
+			return '';
+		}
+
+		\add_filter(
+			'allowed_redirect_hosts',
+			static function ( $hosts ) use ( $auth_host ) {
+				$hosts[] = $auth_host;
+				return $hosts;
+			}
+		);
+
+		\wp_safe_redirect( $auth_url );
 		exit;
 	}
 
@@ -771,9 +806,13 @@ class Admin {
 			'grant_types'                => array( 'authorization_code', 'refresh_token' ),
 			'response_types'             => array( 'code' ),
 			'token_endpoint_auth_method' => 'none',
-			// MUST match the scope string requested by Client::authorize().
-			// The auth server validates the request scope against the metadata;
-			// a drift here silently downgrades to the smaller of the two.
+
+			/*
+			 * MUST match the scope string requested by
+			 * Client::authorize(). The auth server validates the
+			 * request scope against the metadata; a drift here
+			 * silently downgrades to the smaller of the two.
+			 */
 			'scope'                      => 'atproto transition:generic identity:handle',
 			'dpop_bound_access_tokens'   => true,
 			'application_type'           => 'web',
@@ -782,9 +821,21 @@ class Admin {
 		/**
 		 * Filters the OAuth client metadata served at the REST endpoint.
 		 *
+		 * Filters MUST return an array containing at minimum the
+		 * `client_id` and `redirect_uris` keys; otherwise the original
+		 * unfiltered metadata is served so the OAuth flow keeps
+		 * working even with a misbehaving listener.
+		 *
 		 * @param array $metadata Client metadata.
 		 */
-		$metadata = \apply_filters( 'atmosphere_client_metadata', $metadata );
+		$filtered = \apply_filters( 'atmosphere_client_metadata', $metadata );
+
+		if ( \is_array( $filtered )
+			&& ! empty( $filtered['client_id'] )
+			&& ! empty( $filtered['redirect_uris'] )
+		) {
+			$metadata = $filtered;
+		}
 
 		$response = new \WP_REST_Response( $metadata, 200 );
 
