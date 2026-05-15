@@ -2,6 +2,7 @@
 /.agents         export-ignore
 /.claude         export-ignore
 /.github         export-ignore
+/.wordpress-org  export-ignore
 /bin             export-ignore
 /vendor          export-ignore
 /docs            export-ignore
