@@ -45,12 +45,21 @@ Tests live in `tests/phpunit/tests/` with a directory structure mirroring `inclu
 
 ```
 tests/phpunit/tests/
+├── class-test-admin-handle.php
+├── class-test-atmosphere.php
+├── class-test-dpop.php
 ├── class-test-functions.php
-├── transformer/
-│   ├── class-test-tid.php
-│   ├── class-test-facet.php
-│   └── class-test-publication.php
-└── ...
+├── class-test-handle.php
+├── class-test-long-form-composition-setting.php
+├── class-test-post-types.php
+├── class-test-publisher.php          # Largest fixture; exposes register_capture() etc.
+├── class-test-reaction-sync.php
+├── oauth/
+└── transformer/
+    ├── class-test-facet.php
+    ├── class-test-post.php
+    ├── class-test-publication.php
+    └── class-test-tid.php
 ```
 
 Test files are prefixed with `class-test-` and the class name is `Test_` + feature name.
@@ -131,3 +140,8 @@ Note: `wp_delete_comment( $id, true )` removes commentmeta synchronously, which 
 The plugin's `register_async_hooks()` runs at `plugins_loaded` (via the bootstrap), so cron handlers ARE registered before tests execute. Use `\do_action( 'atmosphere_publish_comment', $comment_id )` to fire a handler synchronously; assert on `\wp_next_scheduled()` for follow-up scheduling.
 
 Always clean up scheduled hooks in `tear_down()` — leftover events from one test become flaky preconditions for the next.
+
+## See Also
+
+- [`docs/development-environment.md`](../../../docs/development-environment.md) — PHPUnit argument reference, coverage reports, troubleshooting wp-env.
+- [`docs/php-coding-standards.md → Cron-Specific Rules`](../../../docs/php-coding-standards.md#cron-specific-rules) — the publish/update/delete patterns the tests are exercising.

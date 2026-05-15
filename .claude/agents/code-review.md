@@ -59,11 +59,44 @@ Apply the **code-style** skill standards when reviewing. In addition, check for:
 - Record keys (rkeys) follow AT Protocol conventions
 
 ### Compatibility
-- PHP 8.1+ compatible syntax
-- No breaking changes to public APIs without deprecation path
+- PHP 8.2+ compatible syntax (matches `Requires PHP` in `atmosphere.php` and `composer.json`).
+- WordPress 6.2+ compatible (matches `Requires at least` in `readme.txt`).
+- No breaking changes to public APIs (filters, actions, REST shape) without a deprecation path.
 
 ### Tests
 - Apply the **test** skill patterns to evaluate test coverage for new/changed code.
+
+### Performance
+- N+1 query patterns where one query per row would batch.
+- Uncached repeated lookups in a request (use a static cache or transient).
+- Unbounded loops or result sets — every list operation should have a hard cap.
+- Synchronous PDS calls from a user-facing request path (should be cron-scheduled).
+- Heavy work inside hooks that fire often (`the_content`, `init`, `wp_loaded`).
+
+### Common Review Prompts
+
+Phrase findings as one of these patterns so authors can recognise the class of feedback:
+
+**Code quality**
+- "Please add error handling here." — surface `WP_Error`, don't swallow.
+- "This could use a comment explaining why." — non-obvious behaviour or hidden constraints.
+- "Consider extracting this." — long methods, repeated patterns.
+- "Please add type hints." — match the rest of the file's strictness.
+
+**Testing**
+- "Please add a test for this edge case."
+- "Can you verify this works with [scenario]?"
+- "What happens when [condition]?"
+
+**Documentation**
+- "Please update the docblock."
+- "The changelog entry needs more detail."
+- "Can you add an example?"
+
+**Performance**
+- "This could cause N+1 queries."
+- "Consider caching this result."
+- "This might be expensive for large datasets."
 
 ## Output Format
 
