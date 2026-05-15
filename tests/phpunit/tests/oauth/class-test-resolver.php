@@ -347,4 +347,40 @@ class Test_Resolver extends WP_UnitTestCase {
 		$this->assertWPError( $result );
 		$this->assertSame( 'atmosphere_unsafe_pds', $result->get_error_code() );
 	}
+
+	/**
+	 * `discover_auth_server` doesn't fatal when the
+	 * `oauth-protected-resource` body decodes to a non-array
+	 * (e.g. a JSON string `"foo"` or `null`). Returns the same
+	 * `atmosphere_no_auth_server` error as a missing
+	 * `authorization_servers` field.
+	 */
+	public function test_discover_auth_server_tolerates_scalar_json_resource() {
+		$this->stub_response( 'oauth-protected-resource', 200, 'just-a-string-not-an-object' );
+
+		$result = Resolver::discover_auth_server( 'https://pds.example.com' );
+
+		$this->assertWPError( $result );
+		$this->assertSame( 'atmosphere_no_auth_server', $result->get_error_code() );
+	}
+
+	/**
+	 * `discover_auth_server` doesn't fatal when the
+	 * `oauth-authorization-server` body decodes to a non-array.
+	 * Returns `atmosphere_incomplete_auth_meta`.
+	 */
+	public function test_discover_auth_server_tolerates_scalar_json_meta() {
+		$this->stub_response(
+			'oauth-protected-resource',
+			200,
+			array( 'authorization_servers' => array( 'https://auth.example.com' ) )
+		);
+
+		$this->stub_response( 'oauth-authorization-server', 200, 'malformed' );
+
+		$result = Resolver::discover_auth_server( 'https://pds.example.com' );
+
+		$this->assertWPError( $result );
+		$this->assertSame( 'atmosphere_incomplete_auth_meta', $result->get_error_code() );
+	}
 }

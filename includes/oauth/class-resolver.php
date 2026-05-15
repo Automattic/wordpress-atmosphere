@@ -172,7 +172,15 @@ class Resolver {
 
 		$resource = \json_decode( \wp_remote_retrieve_body( $response ), true );
 
-		if ( empty( $resource['authorization_servers'][0] ) || ! \is_string( $resource['authorization_servers'][0] ) ) {
+		/*
+		 * Malformed JSON (or a valid scalar/null payload like
+		 * `"foo"` or `null`) decodes to a non-array. Bail before
+		 * indexing so PHP 8 doesn't TypeError on offset access.
+		 */
+		if ( ! \is_array( $resource )
+			|| empty( $resource['authorization_servers'][0] )
+			|| ! \is_string( $resource['authorization_servers'][0] )
+		) {
 			return new \WP_Error(
 				'atmosphere_no_auth_server',
 				\__( 'PDS did not advertise an authorization server.', 'atmosphere' )
@@ -197,7 +205,14 @@ class Resolver {
 
 		$meta = \json_decode( \wp_remote_retrieve_body( $response ), true );
 
-		if ( empty( $meta['token_endpoint'] ) || empty( $meta['authorization_endpoint'] ) ) {
+		/*
+		 * Same guard as above — a scalar / null payload would
+		 * TypeError on the indexing checks below.
+		 */
+		if ( ! \is_array( $meta )
+			|| empty( $meta['token_endpoint'] )
+			|| empty( $meta['authorization_endpoint'] )
+		) {
 			return new \WP_Error(
 				'atmosphere_incomplete_auth_meta',
 				\__( 'Authorization server metadata is incomplete.', 'atmosphere' )
