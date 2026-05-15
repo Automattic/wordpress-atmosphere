@@ -15,11 +15,13 @@ WordPress plugin that publishes posts to AT Protocol in both `app.bsky.feed.post
 ```
 atmosphere.php                  # Main plugin file.
 includes/
-├── class-*.php                 # Core classes (Atmosphere, API, Publisher, Backfill).
+├── class-*.php                 # Core classes (Atmosphere, API, Publisher, Backfill, Handle, Post_Types, Reaction_Sync).
 ├── functions.php               # Helper functions.
+├── content-parser/             # Pluggable content formats for site.standard.document (interface only by default).
 ├── oauth/                      # OAuth flow (Client, DPoP, Encryption, Resolver, Nonce).
-├── transformer/                # AT Protocol record transformers (Post, Document, Publication, Facet, TID).
-└── wp-admin/                   # Admin UI (settings page, meta box).
+├── transformer/                # AT Protocol record transformers (Post, Document, Publication, Comment, Facet, TID).
+└── wp-admin/                   # Admin UI (settings page, sidebar panel).
+integrations/                   # Plugin-specific content-parser integrations (stubs).
 templates/                      # PHP template files.
 assets/                         # CSS and JS.
 tests/
@@ -50,7 +52,7 @@ composer changelog:add          # Add a changelog entry.
 composer changelog:write        # Write entries to CHANGELOG.md.
 
 # Release
-bin/release.sh [version]        # Build release ZIP with production deps only.
+npm run release                 # Interactive release: bumps version, regenerates CHANGELOG/readme.txt, pushes a release/X.Y.Z PR.
 ```
 
 ## Common Pitfalls
@@ -92,21 +94,50 @@ Test files live in `tests/phpunit/tests/` mirroring `includes/` structure. Files
 
 **Well-known endpoints** — Rewrite rules + `template_redirect` handlers in `Atmosphere` class serve `/.well-known/atproto-did` (domain handle verification) and `/.well-known/site.standard.publication` (publication AT-URI). All share the `atmosphere_wellknown` query var.
 
-## Release Process
+## Documentation Index
 
-Build a release ZIP with only production dependencies:
+```
+README.md                          — public-facing repo entry point (lean: intro + docs links).
+readme.txt                         — WordPress.org plugin readme (end-user friendly description, FAQ, changelog).
 
-```bash
-bin/release.sh [version]
+docs/developer-docs.md             — developer entry doc; index over the rest of docs/.
+docs/development-environment.md    — wp-env setup, prerequisites, troubleshooting, coverage.
+docs/php-coding-standards.md       — naming, escaping, error handling, performance, cron rules.
+docs/php-class-structure.md        — directory layout, namespaces, architectural patterns.
+docs/code-linting.md               — PHPCS rules and common fixes.
+docs/pull-request.md               — branching, pre-PR checklist, commit format, special situations.
+docs/release-process.md            — `npm run release`, patch releases, GitHub Release UI.
+docs/translations.md               — text domain, GlotPress, translator-friendly strings.
+docs/content-formats.md            — survey of AT Protocol `content` types for site.standard.document.
+docs/org.wordpress.html.md         — Lexicon for the org.wordpress.html content type.
+
+integrations/README.md             — registering custom Content_Parser implementations from third-party plugins.
+.github/PULL_REQUEST_TEMPLATE.md   — PR template (changelog block + testing instructions).
 ```
 
-This runs `git archive` (respects `.gitattributes export-ignore`), installs `--no-dev` Composer dependencies with an optimised autoloader, and produces `atmosphere-{version}.zip`.
+The skills under `.agents/skills/` are quick-references that link into these docs. Update the docs when conventions change; the skills inherit the change.
+
+## Release Process
+
+```bash
+npm run release
+```
+
+The release script (`bin/release.js`) does all of the version bookkeeping in one step:
+
+1. Runs `composer changelog:write` to roll up `.github/changelog/` entries into `CHANGELOG.md` (the next semver version is inferred from the entries' significance).
+2. Creates a `release/X.Y.Z` branch.
+3. Updates the version in `atmosphere.php` (header + `ATMOSPHERE_VERSION`), `readme.txt` (`Stable tag`), and `package.json`.
+4. Mirrors the new changelog section into `readme.txt` (same major-version history, with a link to the full GitHub `CHANGELOG.md`).
+5. Replaces `@since unreleased` / `@deprecated unreleased` and the equivalent `_deprecated_*` / `_doing_it_wrong` literals in PHP files with the new version.
+6. Optionally prompts for an Upgrade Notice.
+7. Pushes the branch and opens a PR titled `Release X.Y.Z` against `trunk`.
 
 The `.gitattributes` file controls what's excluded from `git archive` exports and GitHub release tarballs.
 
 ## Skills and Agents
 
-Skills are complex procedures loaded on demand. Canonical files live in `.claude/skills/`.
+Skills are complex procedures loaded on demand. Canonical files live in `.agents/skills/`; `.claude/skills/*/SKILL.md` are 1-line stubs that point at them so both Claude Code and other agents pick up the same instructions.
 
 | Skill | Use when… |
 |-------|-----------|
