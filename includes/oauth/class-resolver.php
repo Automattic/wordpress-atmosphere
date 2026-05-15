@@ -124,7 +124,26 @@ class Resolver {
 	 * @return string|\WP_Error PDS URL or error.
 	 */
 	public static function pds_from_did_doc( array $did_doc ): string|\WP_Error {
-		foreach ( $did_doc['service'] ?? array() as $service ) {
+		$services = $did_doc['service'] ?? array();
+
+		/*
+		 * The DID document is remote/untrusted. A malformed `service`
+		 * field that decodes to a scalar (or to a list of scalars
+		 * rather than a list of objects) would TypeError on the
+		 * `$service['id']` offset access below. Bail cleanly instead.
+		 */
+		if ( ! \is_array( $services ) ) {
+			return new \WP_Error(
+				'atmosphere_invalid_did_doc',
+				\__( 'DID document `service` field is malformed.', 'atmosphere' )
+			);
+		}
+
+		foreach ( $services as $service ) {
+			if ( ! \is_array( $service ) ) {
+				continue;
+			}
+
 			$id   = $service['id'] ?? '';
 			$type = $service['type'] ?? '';
 

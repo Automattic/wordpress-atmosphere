@@ -383,4 +383,39 @@ class Test_Resolver extends WP_UnitTestCase {
 		$this->assertWPError( $result );
 		$this->assertSame( 'atmosphere_incomplete_auth_meta', $result->get_error_code() );
 	}
+
+	/**
+	 * `pds_from_did_doc` doesn't fatal when `service` is a scalar
+	 * (rather than the expected list of objects). Returns
+	 * `atmosphere_invalid_did_doc`.
+	 */
+	public function test_pds_from_did_doc_tolerates_non_array_service_field() {
+		$did_doc = array(
+			'id'      => 'did:plc:test',
+			'service' => 'not-an-array',
+		);
+
+		$result = Resolver::pds_from_did_doc( $did_doc );
+
+		$this->assertWPError( $result );
+		$this->assertSame( 'atmosphere_invalid_did_doc', $result->get_error_code() );
+	}
+
+	/**
+	 * `pds_from_did_doc` skips entries inside `service` that aren't
+	 * themselves arrays (e.g. a malformed DID doc that's a list of
+	 * scalars instead of a list of objects). Falls through to
+	 * `atmosphere_no_pds` rather than TypeErroring on `$service['id']`.
+	 */
+	public function test_pds_from_did_doc_tolerates_scalar_service_entries() {
+		$did_doc = array(
+			'id'      => 'did:plc:test',
+			'service' => array( 'string-entry-1', 42, null ),
+		);
+
+		$result = Resolver::pds_from_did_doc( $did_doc );
+
+		$this->assertWPError( $result );
+		$this->assertSame( 'atmosphere_no_pds', $result->get_error_code() );
+	}
 }
