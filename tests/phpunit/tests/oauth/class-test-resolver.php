@@ -323,4 +323,28 @@ class Test_Resolver extends WP_UnitTestCase {
 
 		$this->assertWPError( $result );
 	}
+
+	/**
+	 * `pds_from_did_doc` rejects a `serviceEndpoint` that contains
+	 * embedded HTTP credentials. URLs with `user:pass@host` are a
+	 * known injection vector — the credentials would otherwise be
+	 * persisted into the connection and sent on every request.
+	 */
+	public function test_pds_from_did_doc_rejects_credentials_in_url() {
+		$did_doc = array(
+			'id'      => 'did:plc:test',
+			'service' => array(
+				array(
+					'id'              => '#atproto_pds',
+					'type'            => 'AtprotoPersonalDataServer',
+					'serviceEndpoint' => 'https://attacker:secret@pds.example.com',
+				),
+			),
+		);
+
+		$result = Resolver::pds_from_did_doc( $did_doc );
+
+		$this->assertWPError( $result );
+		$this->assertSame( 'atmosphere_unsafe_pds', $result->get_error_code() );
+	}
 }

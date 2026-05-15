@@ -292,18 +292,27 @@ class Resolver {
 	}
 
 	/**
-	 * Validate that a URL is safe to persist or hand off downstream.
+	 * Validate that a URL is well-formed, https-only, and safe to
+	 * persist or hand off downstream.
 	 *
-	 * `wp_safe_remote_*` already validates URLs at fetch time. This
-	 * helper exists for the cases where we are about to *persist* a
-	 * URL pulled from a response body (the PDS `serviceEndpoint`, the
-	 * auth-server `token_endpoint`, etc.) — there we want a clean
-	 * error at the resolution step rather than a generic
-	 * `http_request_not_executed` later on every API call.
+	 * The actual host-safety gate (private-IP, loopback, link-local)
+	 * lives in `wp_safe_remote_*`, which the resolver uses on every
+	 * outbound request. This helper deliberately does NOT call
+	 * `wp_http_validate_url()` — that function does a `gethostbyname`
+	 * lookup, which is unreliable in CI (test domains like
+	 * `pds.example.com` may not resolve) and redundant with the
+	 * fetch-time check.
 	 *
-	 * It also enforces `https://` specifically. `wp_http_validate_url()`
-	 * accepts `http` / `https` / `ssl` by default; the AT Protocol
-	 * spec requires HTTPS, so we narrow further here.
+	 * What this helper does enforce:
+	 *
+	 *  - non-empty string input
+	 *  - parses as a URL
+	 *  - scheme is exactly `https` (the spec requires HTTPS; we narrow
+	 *    further than WordPress's `http`/`https`/`ssl` allowlist)
+	 *  - has a host
+	 *  - no embedded `user:pass@` credentials (a known URL-injection
+	 *    vector that would otherwise be carried into the persisted
+	 *    connection)
 	 *
 	 * @param mixed $url URL to validate.
 	 * @return bool
@@ -313,11 +322,23 @@ class Resolver {
 			return false;
 		}
 
-		$scheme = \wp_parse_url( $url, PHP_URL_SCHEME );
-		if ( 'https' !== $scheme ) {
+		$parts = \wp_parse_url( $url );
+		if ( ! \is_array( $parts ) ) {
 			return false;
 		}
 
-		return false !== \wp_http_validate_url( $url );
+		if ( ( $parts['scheme'] ?? '' ) !== 'https' ) {
+			return false;
+		}
+
+		if ( empty( $parts['host'] ) ) {
+			return false;
+		}
+
+		if ( isset( $parts['user'] ) || isset( $parts['pass'] ) ) {
+			return false;
+		}
+
+		return true;
 	}
 }
