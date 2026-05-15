@@ -542,7 +542,49 @@ class Publisher {
 		$stored = self::stored_thread_records( $post->ID );
 
 		if ( empty( $stored ) ) {
-			// Never successfully published — do a fresh publish.
+			/*
+			 * Two cases reach this branch:
+			 *
+			 *   1. Pristine post — `Post::META_TID` is also unset. The
+			 *      post was published in WordPress before Atmosphere was
+			 *      ever connected (or before its post type became
+			 *      supported) and `publish_post()` has never run for it.
+			 *      Auto-publishing now would silently turn routine edits
+			 *      of legacy content into fresh Bluesky records, which
+			 *      consistently surprises users. The deliberate path for
+			 *      retro-syncing existing posts is the Backfill admin
+			 *      workflow.
+			 *
+			 *   2. Failed prior publish — `Post::META_TID` is set (the
+			 *      rkey was reserved by `Transformer::get_rkey()` during
+			 *      a previous attempt) but `META_URI` is empty so
+			 *      `stored_thread_records()` returns empty. The reserved
+			 *      TID must be reused on the next attempt, so retry as a
+			 *      fresh publish.
+			 *
+			 * The `META_TID` check is the marker between the two: it is
+			 * only ever written by `get_rkey()` once `publish_post()` (or
+			 * `rewrite_thread()`) has started running.
+			 */
+			$had_publish_attempt = (bool) \get_post_meta( $post->ID, Post::META_TID, true );
+
+			if ( ! $had_publish_attempt ) {
+				/**
+				 * Fires when `update_post()` skips a post that has no
+				 * Atmosphere publication history.
+				 *
+				 * Subscribers can use this to surface the skip (e.g. an
+				 * admin notice nudging the user toward Backfill) or to
+				 * instrument metrics. Fires exactly once per skipped
+				 * update.
+				 *
+				 * @param \WP_Post $post The post whose update was skipped.
+				 */
+				\do_action( 'atmosphere_update_skipped_unsynced_post', $post );
+
+				return array();
+			}
+
 			return self::publish_post( $post );
 		}
 

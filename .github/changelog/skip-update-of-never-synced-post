@@ -1,0 +1,4 @@
+Significance: patch
+Type: fixed
+
+Editing a WordPress post that was published before connecting to Bluesky no longer creates a new Bluesky post on save. Use the Backfill tool to sync existing posts on purpose.
