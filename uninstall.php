@@ -115,10 +115,36 @@ foreach ( $atmosphere_transients as $atmosphere_transient ) {
  *  - atmosphere_last_seen_own_<col> — reaction-sync watermarks per
  *                                     collection (likes, reposts, posts).
  *
- * Direct DB delete is the only way to wildcard-match these. The
- * `_transient_` / `_transient_timeout_` rows for any object-cache-backed
- * site fall through to the DB anyway, since uninstall runs without the
- * plugin loaded.
+ * Query for matching option names first, then route deletion through
+ * `delete_transient()` / `delete_option()` so the object cache
+ * (Redis, Memcached, `alloptions`) is invalidated alongside the
+ * underlying `wp_options` row. A plain SQL `DELETE` against the
+ * options table would leave stale values in any persistent cache,
+ * so a subsequent reinstall could read them back.
  */
-$wpdb->query( "DELETE FROM {$wpdb->options} WHERE option_name LIKE '\_transient\_atmo\_dpop\_nonce\_%' OR option_name LIKE '\_transient\_timeout\_atmo\_dpop\_nonce\_%'" ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.DirectDatabaseQuery.SchemaChange
-$wpdb->query( "DELETE FROM {$wpdb->options} WHERE option_name LIKE 'atmosphere\_last\_seen\_own\_%'" ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.DirectDatabaseQuery.SchemaChange
+// phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching
+$atmosphere_transient_rows = $wpdb->get_col(
+	"SELECT option_name FROM {$wpdb->options}
+	 WHERE option_name LIKE '\_transient\_atmo\_dpop\_nonce\_%'
+	    OR option_name LIKE '\_transient\_timeout\_atmo\_dpop\_nonce\_%'"
+);
+
+$atmosphere_option_rows = $wpdb->get_col(
+	"SELECT option_name FROM {$wpdb->options}
+	 WHERE option_name LIKE 'atmosphere\_last\_seen\_own\_%'"
+);
+// phpcs:enable
+
+foreach ( $atmosphere_transient_rows as $atmosphere_row ) {
+	// Strip `_transient_` or `_transient_timeout_` prefix to feed
+	// `delete_transient()` the bare key.
+	if ( 0 === strpos( $atmosphere_row, '_transient_timeout_' ) ) {
+		delete_transient( substr( $atmosphere_row, strlen( '_transient_timeout_' ) ) );
+	} elseif ( 0 === strpos( $atmosphere_row, '_transient_' ) ) {
+		delete_transient( substr( $atmosphere_row, strlen( '_transient_' ) ) );
+	}
+}
+
+foreach ( $atmosphere_option_rows as $atmosphere_row ) {
+	delete_option( $atmosphere_row );
+}

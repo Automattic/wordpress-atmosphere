@@ -821,17 +821,21 @@ class Admin {
 		/**
 		 * Filters the OAuth client metadata served at the REST endpoint.
 		 *
-		 * Filters MUST return an array containing at minimum the
-		 * `client_id` and `redirect_uris` keys; otherwise the original
-		 * unfiltered metadata is served so the OAuth flow keeps
-		 * working even with a misbehaving listener.
+		 * Filters MUST return an array containing a non-empty
+		 * `client_id` string and a non-empty `redirect_uris` array;
+		 * otherwise the original unfiltered metadata is served so the
+		 * OAuth flow keeps working even with a misbehaving listener.
 		 *
 		 * @param array $metadata Client metadata.
 		 */
 		$filtered = \apply_filters( 'atmosphere_client_metadata', $metadata );
 
 		if ( \is_array( $filtered )
-			&& ! empty( $filtered['client_id'] )
+			&& isset( $filtered['client_id'] )
+			&& \is_string( $filtered['client_id'] )
+			&& '' !== $filtered['client_id']
+			&& isset( $filtered['redirect_uris'] )
+			&& \is_array( $filtered['redirect_uris'] )
 			&& ! empty( $filtered['redirect_uris'] )
 		) {
 			$metadata = $filtered;
