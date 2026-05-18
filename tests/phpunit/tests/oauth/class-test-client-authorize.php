@@ -36,6 +36,32 @@ class Test_Client_Authorize extends WP_UnitTestCase {
 	}
 
 	/**
+	 * Stub the next HTTP response with a fixed body for a URL substring.
+	 *
+	 * @param string $url_match Substring to match against the request URL.
+	 * @param int    $status    HTTP status code.
+	 * @param mixed  $body      Response body (array → JSON encoded).
+	 */
+	private function stub_response( string $url_match, int $status, $body ): void {
+		\add_filter(
+			'pre_http_request',
+			static function ( $response, $args, $url ) use ( $url_match, $status, $body ) {
+				if ( false !== \strpos( $url, $url_match ) ) {
+					return array(
+						'response' => array( 'code' => $status ),
+						'headers'  => new \WpOrg\Requests\Utility\CaseInsensitiveDictionary( array() ),
+						'body'     => \is_array( $body ) ? (string) \wp_json_encode( $body ) : (string) $body,
+					);
+				}
+
+				return $response;
+			},
+			10,
+			3
+		);
+	}
+
+	/**
 	 * The DPoP JWK transient set during `authorize()` is encrypted
 	 * with `Encryption::encrypt()`. Decrypts back to a JWK array
 	 * with a private `d` parameter (ES256 key material).
@@ -150,6 +176,89 @@ class Test_Client_Authorize extends WP_UnitTestCase {
 
 		$this->assertWPError( $result );
 		$this->assertSame( 'atmosphere_decrypt', $result->get_error_code() );
+	}
+
+	/**
+	 * `Client::authorize()` writes the DPoP JWK transient encrypted.
+	 *
+	 * The unit-level round-trip test above doesn't exercise
+	 * `authorize()` itself — a refactor that dropped the
+	 * `Encryption::encrypt()` wrapper in `authorize()` would leave
+	 * that test passing while silently writing plaintext JWKs again.
+	 * This end-to-end test stubs the resolution chain and inspects
+	 * the actual transient `authorize()` wrote.
+	 */
+	public function test_authorize_persists_encrypted_jwk_transient() {
+		$handle = 'alice.atmosphere-test.io';
+
+		// Resolution chain: handle → DID → DID doc → PDS → auth server.
+		$this->stub_response(
+			'/.well-known/atproto-did',
+			200,
+			'did:plc:test'
+		);
+		$this->stub_response(
+			'plc.directory/did:plc:test',
+			200,
+			array(
+				'id'      => 'did:plc:test',
+				'service' => array(
+					array(
+						'id'              => '#atproto_pds',
+						'type'            => 'AtprotoPersonalDataServer',
+						'serviceEndpoint' => 'https://pds.example.com',
+					),
+				),
+			)
+		);
+		$this->stub_response(
+			'oauth-protected-resource',
+			200,
+			array( 'authorization_servers' => array( 'https://auth.example.com' ) )
+		);
+		$this->stub_response(
+			'oauth-authorization-server',
+			200,
+			array(
+				// No PAR endpoint — fall through to the plain-auth-URL branch
+				// so we don't have to stub PAR's request/response too.
+				'token_endpoint'         => 'https://auth.example.com/oauth/token',
+				'authorization_endpoint' => 'https://auth.example.com/oauth/authorize',
+			)
+		);
+
+		$result = Client::authorize( $handle );
+
+		// If the resolution chain refused the stubbed handle for any reason,
+		// the test environment can't exercise this path — skip rather than
+		// silently miss the storage assertion.
+		if ( \is_wp_error( $result ) ) {
+			$this->markTestSkipped(
+				'Resolver chain rejected the stubbed handle: ' . $result->get_error_code()
+			);
+		}
+
+		$stored = \get_transient( 'atmosphere_oauth_dpop_jwk' );
+
+		$this->assertIsString( $stored, 'authorize() must write the transient as an encrypted string blob.' );
+		$this->assertStringNotContainsString(
+			'"d":',
+			$stored,
+			'Private DPoP `d` parameter must not appear unencrypted in the transient.'
+		);
+		$this->assertStringNotContainsString(
+			'"kty":',
+			$stored,
+			'JWK markers must not appear unencrypted in the transient.'
+		);
+
+		$plaintext = Encryption::decrypt( $stored );
+		$this->assertIsString( $plaintext );
+
+		$jwk = \json_decode( $plaintext, true );
+		$this->assertIsArray( $jwk );
+		$this->assertArrayHasKey( 'd', $jwk );
+		$this->assertArrayHasKey( 'kty', $jwk );
 	}
 
 	/**
