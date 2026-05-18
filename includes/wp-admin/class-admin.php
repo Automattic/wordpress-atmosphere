@@ -375,9 +375,11 @@ class Admin {
 		 * `wp_safe_redirect` would normally reject this destination —
 		 * it's intentionally off-site (the AT Protocol auth server).
 		 * Add the auth-server host to `allowed_redirect_hosts` for the
-		 * lifetime of this dying request so `wp_safe_redirect` lets
-		 * the redirect through; the `exit` below means the filter
-		 * never affects any subsequent request.
+		 * `wp_safe_redirect` call, then immediately detach the filter
+		 * so it can't affect any subsequent redirect — the `exit`
+		 * makes that production-redundant, but pinning the invariant
+		 * here keeps it intact if a test or a `wp_die()` handler ever
+		 * intercepts the redirect before `exit` fires.
 		 */
 		$auth_host   = \is_string( $auth_url ) ? \wp_parse_url( $auth_url, PHP_URL_HOST ) : '';
 		$auth_scheme = \is_string( $auth_url ) ? \wp_parse_url( $auth_url, PHP_URL_SCHEME ) : '';
@@ -391,15 +393,14 @@ class Admin {
 			return '';
 		}
 
-		\add_filter(
-			'allowed_redirect_hosts',
-			static function ( $hosts ) use ( $auth_host ) {
-				$hosts[] = $auth_host;
-				return $hosts;
-			}
-		);
+		$allow_auth_host = static function ( $hosts ) use ( $auth_host ) {
+			$hosts[] = $auth_host;
+			return $hosts;
+		};
 
+		\add_filter( 'allowed_redirect_hosts', $allow_auth_host );
 		\wp_safe_redirect( $auth_url );
+		\remove_filter( 'allowed_redirect_hosts', $allow_auth_host );
 		exit;
 	}
 
