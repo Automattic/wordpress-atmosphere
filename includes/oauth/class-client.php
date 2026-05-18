@@ -238,6 +238,9 @@ class Client {
 
 		$status = \wp_remote_retrieve_response_code( $response );
 		$data   = \json_decode( \wp_remote_retrieve_body( $response ), true );
+		if ( ! \is_array( $data ) ) {
+			$data = array();
+		}
 
 		// Retry once with nonce on use_dpop_nonce error.
 		if ( \in_array( $status, array( 400, 401 ), true )
@@ -273,6 +276,9 @@ class Client {
 
 			$status = \wp_remote_retrieve_response_code( $response );
 			$data   = \json_decode( \wp_remote_retrieve_body( $response ), true );
+			if ( ! \is_array( $data ) ) {
+				$data = array();
+			}
 		}
 
 		if ( $status >= 400 || empty( $data['request_uri'] ) ) {
@@ -381,6 +387,9 @@ class Client {
 		$nonce  = \wp_remote_retrieve_header( $response, 'dpop-nonce' );
 		$status = \wp_remote_retrieve_response_code( $response );
 		$data   = \json_decode( \wp_remote_retrieve_body( $response ), true );
+		if ( ! \is_array( $data ) ) {
+			$data = array();
+		}
 
 		if ( $nonce ) {
 			DPoP::persist_nonce( $dpop_jwk, $token_endpoint, $nonce );
@@ -413,6 +422,9 @@ class Client {
 
 			$status = \wp_remote_retrieve_response_code( $response );
 			$data   = \json_decode( \wp_remote_retrieve_body( $response ), true );
+			if ( ! \is_array( $data ) ) {
+				$data = array();
+			}
 		}
 
 		if ( $status >= 400 || empty( $data['access_token'] ) ) {
@@ -493,6 +505,9 @@ class Client {
 		$nonce  = \wp_remote_retrieve_header( $response, 'dpop-nonce' );
 		$status = \wp_remote_retrieve_response_code( $response );
 		$data   = \json_decode( \wp_remote_retrieve_body( $response ), true );
+		if ( ! \is_array( $data ) ) {
+			$data = array();
+		}
 
 		if ( $nonce ) {
 			DPoP::persist_nonce( $dpop_jwk, $token_endpoint, $nonce );
@@ -526,6 +541,9 @@ class Client {
 
 			$status = \wp_remote_retrieve_response_code( $response );
 			$data   = \json_decode( \wp_remote_retrieve_body( $response ), true );
+			if ( ! \is_array( $data ) ) {
+				$data = array();
+			}
 		}
 
 		if ( $status >= 400 || empty( $data['access_token'] ) ) {

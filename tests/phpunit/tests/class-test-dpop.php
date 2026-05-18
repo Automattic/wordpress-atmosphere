@@ -67,6 +67,8 @@ class Test_DPoP extends WP_UnitTestCase {
 		$this->assertSame( 'test-nonce', $payload['nonce'] );
 		$this->assertArrayHasKey( 'jti', $payload );
 		$this->assertArrayHasKey( 'iat', $payload );
+		$this->assertArrayHasKey( 'exp', $payload );
+		$this->assertSame( $payload['iat'] + 60, $payload['exp'] );
 
 		// Verify the ES256 signature with OpenSSL.
 		$signing_input = $parts[0] . '.' . $parts[1];
