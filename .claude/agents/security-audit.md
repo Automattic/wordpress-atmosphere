@@ -82,6 +82,22 @@ The AT Protocol identity resolution chain (handle → DID → PDS → auth serve
 - Verify that redirect responses (3xx) are not blindly followed to internal hosts.
 - Check well-known endpoint handlers for open redirect or SSRF via query parameters.
 
+**Don't rely on `wp_safe_remote_*` alone for URLs that don't hit the HTTP layer.** The fetch-time safety gate doesn't run on URLs that are *redirected* to (e.g. `wp_redirect`-ing the OAuth `authorization_endpoint`), *returned* from a REST endpoint, or simply *persisted* into a connection record. Apply an explicit URL-safety gate in plugin code at any boundary where the URL leaves plugin control but doesn't go through `wp_safe_remote_*`.
+
+**URL-safety gate composition.** A "safe HTTPS URL" check must include:
+
+- Non-empty string.
+- Parses via `wp_parse_url()`.
+- Scheme is `https` (case-insensitive — `parse_url()` doesn't normalize case; lowercase before comparing).
+- Host is present.
+- Host is NOT an IP literal — `FILTER_VALIDATE_IP` catches IPv4 (`127.0.0.1`, `169.254.169.254`, RFC1918), IPv6 (`[::1]`, ULAs). `parse_url()` keeps the brackets on IPv6 hosts, so `trim($host, '[]')` before validating.
+- No `user:pass@` embedded credentials.
+
+**AT Protocol handle validation (RFC + spec).** Beyond the RFC 1035 DNS-label regex, the AT Protocol handle spec additionally requires:
+
+- TLD must not start with a digit and must not be entirely digits (numeric TLDs collide with IP-literal addressing).
+- Reserved TLDs are rejected: `.alt`, `.arpa`, `.example`, `.internal`, `.invalid`, `.local`, `.localhost`, `.onion`, `.test`. These are private-use or reserved and can't host a publicly-routable handle.
+
 **IPv6 coverage:** WordPress core's safe-remote helpers block IPv4 private ranges by default, but ATmosphere must verify the resolver itself rejects IPv6-only payloads pointing at:
 
 - IPv6 loopback (`::1`).
@@ -151,6 +167,22 @@ Files: `uninstall.php` (or deactivation hooks)
 - Verify no sensitive data remains in `wp_options` or `wp_postmeta` after uninstall
 - Check that scheduled cron events are properly cleaned up on deactivation
 
+**Object-cache awareness in transient sweeps.** Hosts with a persistent object cache (Redis, Memcached) write transients to the cache, not `wp_options`. A `SELECT … LIKE '_transient_…%'` query returns zero rows on those installs, so a wildcard sweep that uses raw SQL won't clean object-cache-only keys. Two acceptable resolutions:
+
+1. Track dynamic keys at write time via a registry pattern and iterate that on uninstall.
+2. Document the residual explicitly, audit that residual keys hold no decryptable secrets, and confirm short TTLs (so keys age out quickly).
+
+Whichever path is chosen, route deletion through `delete_transient()` / `delete_option()` — never raw `DELETE FROM wp_options` — so the object cache is invalidated alongside the row when both layers exist.
+
+**Constant references in pre-bootstrap code.** `uninstall.php` runs before the plugin autoloader. Referencing `Nonce_Storage::PREFIX` directly would require bootstrapping the autoloader (complexity). The lighter pattern: keep the literal in `uninstall.php` AND a `MUST stay in lock-step with X::Y` comment that anchors the constant's source location, so anyone renaming the constant finds the literal via grep. Without that anchor, a constant rename silently orphans dynamic-key rows the sweep can no longer match.
+
+**Multisite explicit support stance.** Every operation in a typical `uninstall.php` runs against the current blog (`delete_option`, `$wpdb->postmeta`, etc.). On a network-activated install, deleting the plugin leaves every other blog with full state — encrypted credentials and all. Two acceptable resolutions:
+
+1. Wrap the cleanup body in `is_multisite()` / `get_sites()` / `switch_to_blog()`.
+2. Document multisite as unsupported in `readme.txt` (and verify the rest of the plugin makes no multisite assumptions either — otherwise multisite users get a partially-broken install).
+
+A plugin that has no `switch_to_blog()` anywhere in `includes/` is implicitly path 2; the fix is documentation, not code.
+
 ### 10. Supply Chain & Dependency Audit
 
 Files: `composer.json`, `package.json`
@@ -170,6 +202,12 @@ Files: all PHP files
 - Check that filter return values are validated after `apply_filters()` — a third-party filter returning unexpected types could cause type confusion.
 - Verify that hooks processing sensitive data (tokens, keys) cannot be observed by lower-privilege code.
 - For boolean-valued filters that gate sensitive behaviour (e.g. `atmosphere_should_publish_comment`), confirm the call site explicitly casts to `bool` so a filter returning a truthy string doesn't expand the gate semantics.
+
+**Container validation is NOT content validation.** A filter that builds OAuth client metadata or any other security-sensitive structure must validate every entry inside the container, not just the container's shape. `is_array($filtered) && !empty($filtered['redirect_uris'])` accepts `['']`, `[null]`, `[['nested']]`, `['https://evil.example/cb']` — the parent is a non-empty array in every case. For public-client metadata especially (where `token_endpoint_auth_method: 'none'` lets anyone use the advertised `client_id`), an off-site `redirect_uris` entry is a token-leak primitive. Walk every entry through the same gate the equivalent inbound filter applies (e.g. `admin_url('')` prefix match).
+
+**Surface filter-contract violations via `_doing_it_wrong`.** Silent fallback when a filter returns the wrong shape leaves third-party developers staring at a no-op with no logs. `_doing_it_wrong()` is the WordPress idiom: visible in `WP_DEBUG`, silent in production, zero runtime cost. Apply it to every `apply_filters` site whose contract validates the return shape and falls back on mismatch.
+
+**Scope filter additions to the call they protect.** `add_filter('allowed_redirect_hosts', $closure)` immediately before `wp_safe_redirect()` and `remove_filter(...)` immediately after, instead of relying on the script-ending `exit` for cleanup. Production behaviour is identical; tests or unusual `wp_die()` handlers that intercept the redirect can't leak the filter into subsequent same-request redirects.
 
 ### 12. Rate Limiting & Abuse Prevention
 
@@ -199,6 +237,19 @@ Files: `includes/class-api.php`, `includes/oauth/class-resolver.php`, anywhere t
 - Defend against unexpected nesting: deeply nested attacker-controlled JSON can exhaust memory. Use a sane depth limit on `json_decode` (third arg) and reject oversized payloads at the HTTP layer (`max_input_vars`, body-size caps).
 - Cap large list fields. If a PDS response contains a list of records / reactions / facets and the plugin walks it, enforce a hard upper bound (e.g. 100 items). An attacker-controlled PDS could otherwise return a 50k-element list and OOM the WordPress process.
 
+**PHP 8.1+ offset access on scalars.** `empty($x['a']['b'])` does NOT short-circuit before the inner offset access. If `$x['a']` is a scalar (string, int) — which happens when an attacker-controlled JSON returns `{"a": "scalar"}` for a field the code expected to be an array — PHP emits a "Trying to access array offset on value of type X" warning on PHP 8.1+. Guard the parent with `is_array()` before indexing:
+
+```php
+// BAD on PHP 8.1+: warning if authorization_servers is a string
+if ( empty( $resource['authorization_servers'][0] ) ) { … }
+
+// GOOD: parent guarded first
+if ( ! isset( $resource['authorization_servers'] )
+    || ! is_array( $resource['authorization_servers'] )
+    || empty( $resource['authorization_servers'][0] )
+) { … }
+```
+
 ### 15. Visibility & Authorization on Public Surfaces
 
 Files: well-known handlers, REST controllers, anywhere that exposes post / publication data unauthenticated.
@@ -226,8 +277,21 @@ Files: `includes/oauth/class-client.php` (`disconnect()`), `uninstall.php`, dele
 
 ## Recently Noted Patterns
 
-Findings from sister-plugin audits (ActivityPub 8.1.x–8.2.x and parallel) that ATmosphere should be checked against. Treat each as a question to answer in the audit, not a pre-confirmed bug.
+Findings from sister-plugin audits (ActivityPub 8.1.x–8.2.x and parallel) and from in-house pre-launch audits that ATmosphere should be checked against. Treat each as a question to answer in the audit, not a pre-confirmed bug.
 
+- **IP-literal rejection at the URL gate** — `wp_safe_remote_*` catches RFC1918 + loopback but is IPv4-centric. Any URL that *doesn't* go through that gate (a `wp_redirect()` target, a value persisted into an option, a value handed off to a third-party SDK) needs an explicit `FILTER_VALIDATE_IP` check, with IPv6 brackets stripped first.
+- **Scheme-comparison case-sensitivity** — `parse_url()` preserves the original scheme casing. Compare lowercased: `\strtolower($parts['scheme'] ?? '') !== 'https'`.
+- **AT Protocol handle TLD spec** — beyond DNS-label syntax, reject TLDs that start with a digit, are entirely digits, or appear on the reserved list (`alt`, `arpa`, `example`, `internal`, `invalid`, `local`, `localhost`, `onion`, `test`).
+- **Container vs content validation in filters** — see Section 11. A filter return that's an array is not a filter return whose entries are individually valid.
+- **`_doing_it_wrong` on silent filter fallback** — see Section 11. Surface contract violations in `WP_DEBUG` even when the production fallback is correct.
+- **Distinct error codes for distinct failure modes** — one error code reused across three branches (transient missing, legacy session shape, decrypt-success-with-malformed-plaintext) hurts both support diagnostics and end-user remediation guidance. Split aggressively.
+- **Compute crypto outputs before writing partial state** — `Encryption::encrypt()` can throw (`random_bytes`, `sodium_crypto_secretbox`). If the call is inlined into the third `set_transient()` argument, a throw leaves the first two transients orphaned for the full TTL. Build ciphertexts into locals first; only after every encrypt succeeds, write the transients.
+- **Pre-bootstrap code (`uninstall.php`) can't reference constants** — anchor the literal via a `MUST stay in lock-step with X::Y` docblock comment so a rename via grep finds both sites.
+- **Object-cache transient sweeps** — see Section 9. Raw SQL `SELECT … LIKE '_transient_…%'` misses every transient that lives only in the object cache (Redis, Memcached).
+- **Multisite as supported / unsupported configuration** — see Section 9. A plugin with no `switch_to_blog()` anywhere is implicitly single-site; document it in `readme.txt` or wrap the cleanup body in a `get_sites()` loop.
+- **DNS egress via mention / handle resolution** — `dns_get_record()` on a user-supplied handle reaches the handle's authoritative DNS server with no PHP-level timeout. If the entry point is commenter-controlled, every publish triggers attacker-DNS lookups. The fix is at the threat-model layer (commenter-path gating, allowlist, DoH-with-timeout), not at the syntactic regex.
+- **Scoped filter add/remove** — see Section 11. Pair `add_filter` / `remove_filter` around the call that needs them; don't lean on `exit`.
+- **Test patterns for code that calls `exit`** — capture redirect targets via `add_filter('wp_redirect', …)` that throws `WPDieException`, then `try` / `catch` in the test. Pattern lives in `tests/phpunit/tests/class-test-admin-handle.php`.
 - **IPv6 SSRF coverage** — outbound safety must cover IPv6 loopback, link-local, ULA, and IPv4-mapped-IPv6 addresses, not just IPv4 private ranges.
 - **Percent-encoded host bypasses** — URL safety checks that string-match `localhost` are bypassed by `%6c%6f%63%61%6c%68%6f%73%74`. Decode before checking.
 - **Route-layer SSRF** — handlers that *receive* a URL (OAuth callback, well-known) must reject internal-network targets before invoking `wp_safe_remote_*`.
