@@ -182,12 +182,25 @@ class Document extends Base {
 	 * {@inheritDoc}
 	 */
 	public function get_rkey(): string {
+		/*
+		 * Refresh DID provenance on every call so reconnect-to-a-
+		 * different-account flows update the recorded origin. See the
+		 * full rationale on `\Atmosphere\Transformer\Post::get_rkey()`.
+		 *
+		 * Compare before writing so `wp_head`-time callers don't issue
+		 * a DB write on every pageload.
+		 */
+		$current_did = \Atmosphere\get_did();
+		$stored_did  = (string) \get_post_meta( $this->object->ID, self::META_DID, true );
+		if ( $stored_did !== $current_did ) {
+			\update_post_meta( $this->object->ID, self::META_DID, $current_did );
+		}
+
 		$rkey = \get_post_meta( $this->object->ID, self::META_TID, true );
 
 		if ( empty( $rkey ) ) {
 			$rkey = TID::generate();
 			\update_post_meta( $this->object->ID, self::META_TID, $rkey );
-			\update_post_meta( $this->object->ID, self::META_DID, \Atmosphere\get_did() );
 		}
 
 		return $rkey;

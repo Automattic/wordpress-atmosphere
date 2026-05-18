@@ -158,6 +158,7 @@ function get_cron_hooks(): array {
 		'atmosphere_update_comment',
 		'atmosphere_delete_comment',
 		'atmosphere_delete_comment_record',
+		'atmosphere_run_historical_visibility_cleanup',
 		// Legacy hook from an early build of the comment publisher; cleared
 		// for users upgrading from that snapshot.
 		'atmosphere_sync_comments',

@@ -242,12 +242,36 @@ class Post extends Base {
 	 * {@inheritDoc}
 	 */
 	public function get_rkey(): string {
+		/*
+		 * Persist DID provenance on every call, not only on first
+		 * reservation. After a disconnect+reconnect-to-different-DID,
+		 * `META_TID` already exists from the prior account, so a
+		 * one-shot reservation guard would never refresh `META_DID`
+		 * to the current account — letting the mismatch guard in
+		 * `delete_post()` later block a legitimate cleanup against
+		 * the current account.
+		 *
+		 * Written BEFORE `META_TID` so a partial-failure between the
+		 * two writes leaves the row in "DID set, no TID" state. The
+		 * cleanup gates skip that state cleanly; the inverse ("TID
+		 * set, no DID") would let the mismatch guard fall through to
+		 * `get_did()` and re-open the wrong-repo-delete bypass.
+		 *
+		 * Compare before writing so the read-path callers (the
+		 * `wp_head` document-link renderer) don't issue a DB write on
+		 * every pageload — only on the actual transition.
+		 */
+		$current_did = \Atmosphere\get_did();
+		$stored_did  = (string) \get_post_meta( $this->object->ID, self::META_DID, true );
+		if ( $stored_did !== $current_did ) {
+			\update_post_meta( $this->object->ID, self::META_DID, $current_did );
+		}
+
 		$rkey = \get_post_meta( $this->object->ID, self::META_TID, true );
 
 		if ( empty( $rkey ) ) {
 			$rkey = TID::generate();
 			\update_post_meta( $this->object->ID, self::META_TID, $rkey );
-			\update_post_meta( $this->object->ID, self::META_DID, \Atmosphere\get_did() );
 		}
 
 		return $rkey;

@@ -33,6 +33,7 @@ $atmosphere_options = array(
 	'atmosphere_last_seen_notification',
 	'atmosphere_visibility_cleanup_migrated',
 	'atmosphere_visibility_cleanup_migrated_offset',
+	'atmosphere_visibility_cleanup_last_id',
 );
 
 foreach ( $atmosphere_options as $atmosphere_option ) {

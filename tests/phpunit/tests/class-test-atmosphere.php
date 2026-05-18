@@ -234,6 +234,7 @@ class Test_Atmosphere extends WP_UnitTestCase {
 	 */
 	public function test_historical_visibility_cleanup_schedules_existing_non_public_records() {
 		\delete_option( 'atmosphere_visibility_cleanup_migrated' );
+		\delete_option( 'atmosphere_visibility_cleanup_last_id' );
 
 		$protected = self::factory()->post->create_and_get(
 			array(
@@ -248,6 +249,7 @@ class Test_Atmosphere extends WP_UnitTestCase {
 		\update_post_meta( $public->ID, Post::META_TID, 'public-bsky-tid' );
 		\update_post_meta( $public->ID, Document::META_TID, 'public-doc-tid' );
 
+		// First batch returns both posts; flips the cursor and schedules cleanups.
 		$this->atmosphere->run_historical_visibility_cleanup();
 
 		$this->assertNotFalse(
@@ -258,7 +260,18 @@ class Test_Atmosphere extends WP_UnitTestCase {
 			\wp_next_scheduled( 'atmosphere_delete_post', array( $public->ID ) ),
 			'Publishable records must not be scheduled by the historical cleanup.'
 		);
+
+		// Migration is only marked complete on the terminal empty batch —
+		// keyset paging cannot distinguish "walk exhausted" from "transient
+		// empty" without a confirmed empty fetch.
+		$this->assertFalse( \get_option( 'atmosphere_visibility_cleanup_migrated' ) );
+
+		// Second invocation hits an empty result set (cursor is past the
+		// max ID), which flips the migrated flag and clears the cursor.
+		$this->atmosphere->run_historical_visibility_cleanup();
+
 		$this->assertSame( '1', \get_option( 'atmosphere_visibility_cleanup_migrated' ) );
+		$this->assertFalse( \get_option( 'atmosphere_visibility_cleanup_last_id' ) );
 	}
 
 	/**

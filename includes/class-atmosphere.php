@@ -14,7 +14,6 @@ use Atmosphere\Transformer\Comment;
 use Atmosphere\Transformer\Document;
 use Atmosphere\Transformer\Post;
 use Atmosphere\Transformer\Publication;
-use Atmosphere\Transformer\TID;
 use Atmosphere\Integrations\Load;
 use Atmosphere\WP_Admin\Admin;
 
@@ -51,6 +50,15 @@ class Atmosphere {
 	 * @var string
 	 */
 	private const OPTION_VISIBILITY_CLEANUP_MIGRATED = 'atmosphere_visibility_cleanup_migrated';
+
+	/**
+	 * Option storing the highest post ID processed by the historical
+	 * visibility-cleanup migration. Used for keyset (ID > last_seen)
+	 * pagination so concurrent deletes don't shift the cursor.
+	 *
+	 * @var string
+	 */
+	private const OPTION_VISIBILITY_CLEANUP_LAST_ID = 'atmosphere_visibility_cleanup_last_id';
 
 	/**
 	 * Post IDs currently being handled by on_status_change().
@@ -182,13 +190,16 @@ class Atmosphere {
 			return;
 		}
 
-		// Use existing TID or lazily generate one.
-		$doc_tid = \get_post_meta( $post->ID, Document::META_TID, true );
-
-		if ( empty( $doc_tid ) ) {
-			$doc_tid = TID::generate();
-			\update_post_meta( $post->ID, Document::META_TID, $doc_tid );
-		}
+		/*
+		 * Route the TID lookup through `Document::get_rkey()` so the
+		 * lazy mint here writes `META_DID` alongside `META_TID`. The
+		 * inlined fallback that used to live here would have left the
+		 * row in a "TID set, no DID" state, which the mismatch guard
+		 * in `Publisher::delete_post()` treats as "DID unknown, fall
+		 * through to `get_did()`" — re-opening the wrong-repo-delete
+		 * bypass after a reconnect-to-different-account.
+		 */
+		$doc_tid = ( new Document( $post ) )->get_rkey();
 
 		$uri = build_at_uri( get_did(), 'site.standard.document', $doc_tid );
 
@@ -425,56 +436,74 @@ class Atmosphere {
 	 * Cron handler: walk a single batch of historical posts and queue
 	 * cleanup for those that lost public visibility.
 	 *
-	 * Reschedules itself for the next batch until the walk returns
-	 * fewer results than `VISIBILITY_CLEANUP_BATCH_SIZE`, at which
-	 * point it claims the one-shot migration option. The option is
-	 * only set after the final empty walk — partial completion (a
-	 * fatal mid-walk, an `wp_schedule_single_event` rejection)
-	 * leaves the option unset so the next admin_init will requeue
-	 * the cron and the walk picks up where it left off.
+	 * Uses keyset (ID > last_seen) paging rather than `offset` — once
+	 * a post's records are deleted, the migration's `meta_query` no
+	 * longer matches it, so offset-paged windows would skip ahead by
+	 * roughly the number of completed deletes per batch. Keyset
+	 * paging is stable against in-flight deletes.
+	 *
+	 * Reschedules itself for the next batch BEFORE processing so a
+	 * mid-batch fatal (OOM, listener fatal) still leaves a recovery
+	 * breadcrumb — the next cron tick picks up at the persisted
+	 * cursor. An empty batch terminates the walk and sets the
+	 * one-shot migration option.
 	 */
 	public function run_historical_visibility_cleanup(): void {
 		if ( \get_option( self::OPTION_VISIBILITY_CLEANUP_MIGRATED ) ) {
 			return;
 		}
 
-		$offset = (int) \get_option( self::OPTION_VISIBILITY_CLEANUP_MIGRATED . '_offset', 0 );
+		$last_id = (int) \get_option( self::OPTION_VISIBILITY_CLEANUP_LAST_ID, 0 );
 
-		$post_ids = \get_posts(
-			array(
-				'fields'         => 'ids',
-				'post_type'      => 'any',
-				'post_status'    => \array_values( \get_post_stati( array(), 'names' ) ),
-				'posts_per_page' => self::VISIBILITY_CLEANUP_BATCH_SIZE,
-				'offset'         => $offset,
-				'orderby'        => 'ID',
-				'order'          => 'ASC',
-				'no_found_rows'  => true,
-				'meta_query'     => array( // phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_query
-					'relation' => 'OR',
-					array(
-						'key'     => Post::META_TID,
-						'compare' => 'EXISTS',
-					),
-					array(
-						'key'     => Post::META_URI,
-						'compare' => 'EXISTS',
-					),
-					array(
-						'key'     => Post::META_THREAD_RECORDS,
-						'compare' => 'EXISTS',
-					),
-					array(
-						'key'     => Document::META_TID,
-						'compare' => 'EXISTS',
-					),
-					array(
-						'key'     => Document::META_URI,
-						'compare' => 'EXISTS',
-					),
-				),
+		global $wpdb;
+
+		/*
+		 * Raw query because WP_Query's `offset` is unstable under
+		 * concurrent deletes (see method docblock). The meta-key list
+		 * mirrors the OR EXISTS branches the original `meta_query`
+		 * used; `DISTINCT` collapses posts that match on multiple
+		 * keys (very common — most synced posts have both `bsky_tid`
+		 * and `doc_tid`).
+		 */
+		// phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.SlowDBQuery.slow_db_query_meta_key
+		$post_ids = $wpdb->get_col(
+			$wpdb->prepare(
+				"SELECT DISTINCT p.ID
+				 FROM {$wpdb->posts} p
+				 INNER JOIN {$wpdb->postmeta} pm ON pm.post_id = p.ID
+				 WHERE p.ID > %d
+				   AND pm.meta_key IN (%s, %s, %s, %s, %s)
+				 ORDER BY p.ID ASC
+				 LIMIT %d",
+				$last_id,
+				Post::META_TID,
+				Post::META_URI,
+				Post::META_THREAD_RECORDS,
+				Document::META_TID,
+				Document::META_URI,
+				self::VISIBILITY_CLEANUP_BATCH_SIZE
 			)
 		);
+		// phpcs:enable
+
+		if ( empty( $post_ids ) ) {
+			\delete_option( self::OPTION_VISIBILITY_CLEANUP_LAST_ID );
+			\update_option( self::OPTION_VISIBILITY_CLEANUP_MIGRATED, '1', false );
+			return;
+		}
+
+		/*
+		 * Persist the cursor BEFORE processing the batch and queue
+		 * the next run BEFORE the foreach. A fatal mid-batch then
+		 * leaves a recovery breadcrumb (the next cron pulls up at
+		 * the cursor we've already advanced past in the DB query but
+		 * not in the persisted state) rather than stranding the
+		 * migration until a manage_options admin hits admin_init.
+		 */
+		$max_id = (int) \end( $post_ids );
+		\update_option( self::OPTION_VISIBILITY_CLEANUP_LAST_ID, $max_id, false );
+
+		\wp_schedule_single_event( \time() + 60, 'atmosphere_run_historical_visibility_cleanup' );
 
 		foreach ( $post_ids as $post_id ) {
 			$post = \get_post( (int) $post_id );
@@ -495,15 +524,6 @@ class Atmosphere {
 
 			\wp_schedule_single_event( \time(), 'atmosphere_delete_post', array( $post->ID ) );
 		}
-
-		if ( \count( $post_ids ) < self::VISIBILITY_CLEANUP_BATCH_SIZE ) {
-			\delete_option( self::OPTION_VISIBILITY_CLEANUP_MIGRATED . '_offset' );
-			\update_option( self::OPTION_VISIBILITY_CLEANUP_MIGRATED, '1', false );
-			return;
-		}
-
-		\update_option( self::OPTION_VISIBILITY_CLEANUP_MIGRATED . '_offset', $offset + self::VISIBILITY_CLEANUP_BATCH_SIZE, false );
-		\wp_schedule_single_event( \time() + 60, 'atmosphere_run_historical_visibility_cleanup' );
 	}
 
 	/**

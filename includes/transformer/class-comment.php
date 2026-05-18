@@ -67,9 +67,27 @@ class Comment extends Base {
 		$parent_post = \get_post( (int) $comment->comment_post_ID );
 		$redacted    = ! $parent_post instanceof \WP_Post || $this->is_post_redacted( $parent_post );
 
-		$text = $redacted
-			? ''
-			: truncate_text( sanitize_text( (string) $comment->comment_content ), 300 );
+		if ( $redacted ) {
+			/*
+			 * Skip `build_reply_ref()` entirely on redaction. The
+			 * parent post's `Post::META_URI` / `Post::META_CID` may
+			 * be empty (cleanup already cascaded, or the parent
+			 * never published) which would otherwise emit
+			 * `{ root: { uri:'', cid:'' } }` — an invalid strongRef
+			 * that breaks any direct caller of `Comment::transform()`
+			 * (preview, third-party listener). An empty placeholder
+			 * record signals "do not publish" without a malformed
+			 * sub-structure.
+			 */
+			return array(
+				'$type'     => 'app.bsky.feed.post',
+				'text'      => '',
+				'createdAt' => $this->to_iso8601( $comment->comment_date_gmt ),
+				'langs'     => $this->get_langs(),
+			);
+		}
+
+		$text = truncate_text( sanitize_text( (string) $comment->comment_content ), 300 );
 
 		$record = array(
 			'$type'     => 'app.bsky.feed.post',
@@ -78,10 +96,6 @@ class Comment extends Base {
 			'langs'     => $this->get_langs(),
 			'reply'     => $this->build_reply_ref( $comment ),
 		);
-
-		if ( $redacted ) {
-			return $record;
-		}
 
 		$facets = Facet::extract( $text );
 		if ( ! empty( $facets ) ) {
