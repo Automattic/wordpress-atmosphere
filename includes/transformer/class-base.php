@@ -149,7 +149,7 @@ abstract class Base {
 	 * @return bool
 	 */
 	protected function is_post_redacted( \WP_Post $post ): bool {
-		if ( ! empty( $post->post_password ) ) {
+		if ( '' !== (string) $post->post_password ) {
 			return true;
 		}
 
