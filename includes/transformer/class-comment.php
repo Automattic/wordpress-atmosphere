@@ -55,7 +55,21 @@ class Comment extends Base {
 	public function transform(): array {
 		$comment = $this->object;
 
-		$text = truncate_text( sanitize_text( (string) $comment->comment_content ), 300 );
+		/*
+		 * Mirror the defense-in-depth `is_post_redacted` check the
+		 * Post and Document transformers apply. If the cron handler's
+		 * cached `WP_Post` is stale and the parent has become
+		 * non-public mid-flight, the reply's `text` is emptied so a
+		 * direct caller (preview, third-party listener of
+		 * `atmosphere_transform_comment`) can't leak comment content
+		 * by federating against a redacted parent.
+		 */
+		$parent_post = \get_post( (int) $comment->comment_post_ID );
+		$redacted    = ! $parent_post instanceof \WP_Post || $this->is_post_redacted( $parent_post );
+
+		$text = $redacted
+			? ''
+			: truncate_text( sanitize_text( (string) $comment->comment_content ), 300 );
 
 		$record = array(
 			'$type'     => 'app.bsky.feed.post',
@@ -64,6 +78,10 @@ class Comment extends Base {
 			'langs'     => $this->get_langs(),
 			'reply'     => $this->build_reply_ref( $comment ),
 		);
+
+		if ( $redacted ) {
+			return $record;
+		}
 
 		$facets = Facet::extract( $text );
 		if ( ! empty( $facets ) ) {

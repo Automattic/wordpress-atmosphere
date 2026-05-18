@@ -115,7 +115,18 @@ class Atmosphere {
 
 		// Post lifecycle hooks.
 		\add_action( 'transition_post_status', array( $this, 'on_status_change' ), 10, 3 );
-		\add_action( 'admin_init', array( $this, 'schedule_historical_visibility_cleanup' ) );
+
+		/*
+		 * Historical visibility-cleanup migration is queued (not run)
+		 * on admin_init by a `manage_options`-capable user, and the
+		 * actual batched walk runs in a single-event cron handler.
+		 * Splitting the trigger from the work keeps subscribers from
+		 * driving the full `posts_per_page => -1` walk on their first
+		 * /wp-admin/* hit, and the cron context decouples the long
+		 * walk from any specific admin pageload's timeout budget.
+		 */
+		\add_action( 'admin_init', array( $this, 'maybe_queue_historical_visibility_cleanup' ) );
+		\add_action( 'atmosphere_run_historical_visibility_cleanup', array( $this, 'run_historical_visibility_cleanup' ) );
 
 		// Catch permanent deletes (bypassing trash or emptying trash).
 		\add_action( 'before_delete_post', array( $this, 'on_before_delete' ) );
@@ -370,9 +381,31 @@ class Atmosphere {
 	}
 
 	/**
-	 * Schedule cleanup for records leaked before the visibility gate existed.
+	 * Max posts the historical migration scans per cron tick.
+	 *
+	 * Bounded so a site with thousands of historical Atmosphere
+	 * records can't blow the cron handler's execution-time budget on
+	 * a single fire. The handler reschedules itself until the walk is
+	 * exhausted, then sets `OPTION_VISIBILITY_CLEANUP_MIGRATED`.
+	 *
+	 * @var int
 	 */
-	public function schedule_historical_visibility_cleanup(): void {
+	private const VISIBILITY_CLEANUP_BATCH_SIZE = 200;
+
+	/**
+	 * Queue the historical visibility-cleanup walk if needed.
+	 *
+	 * Runs on `admin_init`. Bails on subscriber-level users so the
+	 * cron event is only ever scheduled by an actual administrator,
+	 * even though the walk itself runs in cron context. Bails on
+	 * any other condition that would re-schedule the same event,
+	 * keeping concurrent admin pageloads from queuing duplicates.
+	 */
+	public function maybe_queue_historical_visibility_cleanup(): void {
+		if ( ! \current_user_can( 'manage_options' ) ) {
+			return;
+		}
+
 		if ( ! is_connected() ) {
 			return;
 		}
@@ -381,12 +414,41 @@ class Atmosphere {
 			return;
 		}
 
+		if ( \wp_next_scheduled( 'atmosphere_run_historical_visibility_cleanup' ) ) {
+			return;
+		}
+
+		\wp_schedule_single_event( \time(), 'atmosphere_run_historical_visibility_cleanup' );
+	}
+
+	/**
+	 * Cron handler: walk a single batch of historical posts and queue
+	 * cleanup for those that lost public visibility.
+	 *
+	 * Reschedules itself for the next batch until the walk returns
+	 * fewer results than `VISIBILITY_CLEANUP_BATCH_SIZE`, at which
+	 * point it claims the one-shot migration option. The option is
+	 * only set after the final empty walk — partial completion (a
+	 * fatal mid-walk, an `wp_schedule_single_event` rejection)
+	 * leaves the option unset so the next admin_init will requeue
+	 * the cron and the walk picks up where it left off.
+	 */
+	public function run_historical_visibility_cleanup(): void {
+		if ( \get_option( self::OPTION_VISIBILITY_CLEANUP_MIGRATED ) ) {
+			return;
+		}
+
+		$offset = (int) \get_option( self::OPTION_VISIBILITY_CLEANUP_MIGRATED . '_offset', 0 );
+
 		$post_ids = \get_posts(
 			array(
 				'fields'         => 'ids',
 				'post_type'      => 'any',
 				'post_status'    => \array_values( \get_post_stati( array(), 'names' ) ),
-				'posts_per_page' => -1,
+				'posts_per_page' => self::VISIBILITY_CLEANUP_BATCH_SIZE,
+				'offset'         => $offset,
+				'orderby'        => 'ID',
+				'order'          => 'ASC',
 				'no_found_rows'  => true,
 				'meta_query'     => array( // phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_query
 					'relation' => 'OR',
@@ -434,7 +496,14 @@ class Atmosphere {
 			\wp_schedule_single_event( \time(), 'atmosphere_delete_post', array( $post->ID ) );
 		}
 
-		\update_option( self::OPTION_VISIBILITY_CLEANUP_MIGRATED, '1', false );
+		if ( \count( $post_ids ) < self::VISIBILITY_CLEANUP_BATCH_SIZE ) {
+			\delete_option( self::OPTION_VISIBILITY_CLEANUP_MIGRATED . '_offset' );
+			\update_option( self::OPTION_VISIBILITY_CLEANUP_MIGRATED, '1', false );
+			return;
+		}
+
+		\update_option( self::OPTION_VISIBILITY_CLEANUP_MIGRATED . '_offset', $offset + self::VISIBILITY_CLEANUP_BATCH_SIZE, false );
+		\wp_schedule_single_event( \time() + 60, 'atmosphere_run_historical_visibility_cleanup' );
 	}
 
 	/**
@@ -722,7 +791,18 @@ class Atmosphere {
 		}
 
 		$post_id = (int) $comment->comment_post_ID;
-		$post    = \get_post( $post_id );
+
+		/*
+		 * Drop the in-process `WP_Post` cache so a concurrent web
+		 * request that just password-protected the parent is visible
+		 * to this worker. Same exposure as the publisher reconcile
+		 * path on installs without a persistent object cache: without
+		 * this invalidation, the cron handler would publish the reply
+		 * against a now-protected parent.
+		 */
+		\clean_post_cache( $post_id );
+		$post = \get_post( $post_id );
+
 		if ( ! $post instanceof \WP_Post || ! is_post_publishable( $post ) ) {
 			return false;
 		}
@@ -1132,10 +1212,20 @@ class Atmosphere {
 	 * @param int    $object_id Post or comment ID.
 	 * @param mixed  $result    Publisher call result.
 	 */
-	private static function log_cron_error( string $op, int $object_id, $result ): void {
+	public static function log_cron_error( string $op, int $object_id, $result ): void {
 		if ( ! \is_wp_error( $result ) ) {
 			return;
 		}
+
+		/*
+		 * PDS error messages flow through `WP_Error::get_error_message()`
+		 * via `API::apply_writes` and can include attacker-controlled
+		 * bytes (CRLF, ANSI escapes, fake `[atmosphere]` prefixes that
+		 * imitate other log lines). `error_log` does not escape them,
+		 * so a misbehaving PDS could otherwise smuggle multiline noise
+		 * into log-shipping pipelines that parse line prefixes.
+		 */
+		$message = \str_replace( array( "\r", "\n" ), ' ', $result->get_error_message() );
 
 		\error_log( // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
 			\sprintf(
@@ -1143,9 +1233,22 @@ class Atmosphere {
 				$op,
 				$object_id,
 				$result->get_error_code(),
-				$result->get_error_message()
+				$message
 			)
 		);
+	}
+
+	/**
+	 * Public alias for {@see Atmosphere::log_cron_error()} used by the
+	 * Publisher reconcile path. Routes the cleanup-delete failure
+	 * through a stable op label (`reconcile_cleanup`) so monitors do
+	 * not confuse it with the original publish failure.
+	 *
+	 * @param int   $post_id Post ID whose reconcile cleanup failed.
+	 * @param mixed $result  `WP_Error` from `Publisher::delete_post()`.
+	 */
+	public static function log_reconcile_cleanup_error( int $post_id, $result ): void {
+		self::log_cron_error( 'reconcile_cleanup', $post_id, $result );
 	}
 
 	/**

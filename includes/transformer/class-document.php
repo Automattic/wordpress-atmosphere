@@ -31,6 +31,18 @@ class Document extends Base {
 	public const META_TID = '_atmosphere_doc_tid';
 
 	/**
+	 * Post meta key for the DID that minted the document TID.
+	 *
+	 * Companion to `META_TID` so cleanup paths can detect when the
+	 * record was written under a different connected account. See
+	 * `\Atmosphere\Transformer\Post::META_DID` for the matching key on
+	 * the bsky side and the rationale.
+	 *
+	 * @var string
+	 */
+	public const META_DID = '_atmosphere_doc_did';
+
+	/**
 	 * Post meta key for the document AT-URI.
 	 *
 	 * @var string
@@ -175,6 +187,7 @@ class Document extends Base {
 		if ( empty( $rkey ) ) {
 			$rkey = TID::generate();
 			\update_post_meta( $this->object->ID, self::META_TID, $rkey );
+			\update_post_meta( $this->object->ID, self::META_DID, \Atmosphere\get_did() );
 		}
 
 		return $rkey;

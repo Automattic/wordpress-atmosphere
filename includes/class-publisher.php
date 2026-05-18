@@ -156,6 +156,17 @@ class Publisher {
 			return $result;
 		}
 
+		/*
+		 * `get_post()` returns the in-process `WP_Object_Cache` copy on
+		 * installs without a persistent object cache drop-in (the
+		 * WordPress default). A concurrent web request that just
+		 * password-protected the post calls `clean_post_cache()` only
+		 * in its own process, so without an explicit invalidation here
+		 * the worker would still see the pre-protect snapshot and
+		 * `is_post_publishable( $fresh )` would return true — letting
+		 * the just-committed records sit live on the PDS.
+		 */
+		\clean_post_cache( $post->ID );
 		$fresh = \get_post( $post->ID );
 
 		if ( $fresh instanceof \WP_Post && is_post_publishable( $fresh ) ) {
@@ -168,7 +179,26 @@ class Publisher {
 
 		Atmosphere::mark_visibility_cleanup( $fresh );
 
-		return self::delete_post( $fresh );
+		$cleanup = self::delete_post( $fresh );
+
+		if ( \is_wp_error( $cleanup ) ) {
+			/*
+			 * The publish itself succeeded — records are live and meta
+			 * references them. The cleanup-delete failed transiently
+			 * (PDS 429 / network blip / expired refresh token). Surface
+			 * the cleanup failure on its own op label so monitors don't
+			 * mislabel it as a publish failure, but return the original
+			 * publish `$result` so `atmosphere_publish_post_result`
+			 * fires with the publish outcome the caller expects.
+			 * `mark_visibility_cleanup` above leaves the marker in
+			 * place so the next status transition or the historical
+			 * migration revisits the record.
+			 */
+			Atmosphere::log_reconcile_cleanup_error( $fresh->ID, $cleanup );
+			return $result;
+		}
+
+		return $cleanup;
 	}
 
 	/**
@@ -1023,6 +1053,36 @@ class Publisher {
 			);
 		}
 
+		/*
+		 * `applyWrites#delete` always targets the currently-connected
+		 * repo. If the post's records were minted under a different
+		 * DID (disconnect → reconnect-to-different-account, atproto
+		 * account migration), issuing the delete against the current
+		 * DID would silently no-op while leaving the original records
+		 * orphaned on the previous account's PDS. Bail with an
+		 * operator-visible error so the situation is at least logged
+		 * rather than masked behind a successful-looking cleanup.
+		 */
+		$bsky_origin_did = (string) \get_post_meta( $post->ID, Post::META_DID, true );
+		$doc_origin_did  = (string) \get_post_meta( $post->ID, Document::META_DID, true );
+		$current_did     = get_did();
+
+		$bsky_skip = '' !== $bsky_origin_did && '' !== $current_did && $bsky_origin_did !== $current_did;
+		$doc_skip  = '' !== $doc_origin_did && '' !== $current_did && $doc_origin_did !== $current_did;
+
+		if ( ( $bsky_skip && ! empty( $stored ) ) || ( $doc_skip && $doc_tid ) ) {
+			return new \WP_Error(
+				'atmosphere_did_mismatch',
+				\__( 'Cannot delete records that were created under a different connected account.', 'atmosphere' ),
+				array(
+					'post_id'         => $post->ID,
+					'current_did'     => $current_did,
+					'bsky_origin_did' => $bsky_origin_did,
+					'doc_origin_did'  => $doc_origin_did,
+				)
+			);
+		}
+
 		$writes = array();
 		foreach ( $stored as $record ) {
 			if ( empty( $record['tid'] ) ) {
@@ -1635,7 +1695,18 @@ class Publisher {
 		}
 
 		if ( ! $uri && $tid ) {
-			$uri = build_at_uri( get_did(), 'app.bsky.feed.post', (string) $tid );
+			/*
+			 * Synthesize the URI from the DID that minted the TID, not
+			 * the currently-connected DID. After a disconnect+reconnect
+			 * to a different account, `get_did()` would otherwise build
+			 * an AT-URI pointing at the new account's repo for a record
+			 * that lives (or never landed) under the previous account.
+			 */
+			$origin_did = (string) \get_post_meta( $post_id, Post::META_DID, true );
+			if ( '' === $origin_did ) {
+				$origin_did = get_did();
+			}
+			$uri = build_at_uri( $origin_did, 'app.bsky.feed.post', (string) $tid );
 		}
 
 		return array(

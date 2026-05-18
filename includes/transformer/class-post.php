@@ -30,6 +30,22 @@ class Post extends Base {
 	public const META_TID = '_atmosphere_bsky_tid';
 
 	/**
+	 * Post meta key for the DID that minted the bsky TID.
+	 *
+	 * Persisted at the same time as `META_TID` so cleanup paths can
+	 * detect when a post's record was written under a different
+	 * account (disconnect → reconnect-to-different-DID flow,
+	 * `updateHandle` that triggered a migration, atproto account
+	 * migration). Without this, `applyWrites#delete` against the
+	 * currently-connected DID's repo silently succeeds for a TID that
+	 * doesn't exist there — leaving the original record orphaned on
+	 * the previous DID's PDS with no local pointer.
+	 *
+	 * @var string
+	 */
+	public const META_DID = '_atmosphere_bsky_did';
+
+	/**
 	 * Post meta key for the bsky post AT-URI.
 	 *
 	 * @var string
@@ -231,6 +247,7 @@ class Post extends Base {
 		if ( empty( $rkey ) ) {
 			$rkey = TID::generate();
 			\update_post_meta( $this->object->ID, self::META_TID, $rkey );
+			\update_post_meta( $this->object->ID, self::META_DID, \Atmosphere\get_did() );
 		}
 
 		return $rkey;

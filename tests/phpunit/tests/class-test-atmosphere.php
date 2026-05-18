@@ -248,7 +248,7 @@ class Test_Atmosphere extends WP_UnitTestCase {
 		\update_post_meta( $public->ID, Post::META_TID, 'public-bsky-tid' );
 		\update_post_meta( $public->ID, Document::META_TID, 'public-doc-tid' );
 
-		$this->atmosphere->schedule_historical_visibility_cleanup();
+		$this->atmosphere->run_historical_visibility_cleanup();
 
 		$this->assertNotFalse(
 			\wp_next_scheduled( 'atmosphere_delete_post', array( $protected->ID ) ),

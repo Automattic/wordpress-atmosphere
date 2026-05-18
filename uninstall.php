@@ -32,6 +32,7 @@ $atmosphere_options = array(
 	'atmosphere_support_post_types',
 	'atmosphere_last_seen_notification',
 	'atmosphere_visibility_cleanup_migrated',
+	'atmosphere_visibility_cleanup_migrated_offset',
 );
 
 foreach ( $atmosphere_options as $atmosphere_option ) {
@@ -46,12 +47,14 @@ global $wpdb;
 // Remove post meta written by the publisher and document transformer.
 $atmosphere_meta_keys = array(
 	'_atmosphere_bsky_tid',
+	'_atmosphere_bsky_did',
 	'_atmosphere_bsky_uri',
 	'_atmosphere_bsky_cid',
 	'_atmosphere_bsky_thread_records',
 	'_atmosphere_bsky_uri_index',
 	'_atmosphere_bsky_orphan_records',
 	'_atmosphere_doc_tid',
+	'_atmosphere_doc_did',
 	'_atmosphere_doc_uri',
 	'_atmosphere_doc_cid',
 	'_atmosphere_doc_ref_pending',
