@@ -117,10 +117,27 @@ class Client {
 		// State for CSRF.
 		$state = \wp_generate_password( 40, false );
 
-		// Persist transient data needed for callback.
+		/*
+		 * Persist transient data needed for callback. The DPoP JWK
+		 * contains the ES256 private `d` parameter and must never sit
+		 * in plaintext in `wp_options` — encrypt it the same way the
+		 * persisted connection encrypts the key after callback
+		 * (`Encryption::encrypt()` below at the option write).
+		 *
+		 * Compute the ciphertext BEFORE writing any transients.
+		 * `Encryption::encrypt()` ultimately calls `random_bytes()`
+		 * and `sodium_crypto_secretbox()`, both of which can throw.
+		 * If we wrote verifier + state first and the encrypt then
+		 * threw, those transients would sit orphaned for an hour and
+		 * the user would see `atmosphere_expired` on retry until they
+		 * expired naturally. Doing the encrypt first means a thrown
+		 * exception bubbles up cleanly with no orphans.
+		 */
+		$dpop_jwk_ciphertext = Encryption::encrypt( (string) \wp_json_encode( $dpop_jwk ) );
+
 		\set_transient( 'atmosphere_oauth_verifier', $verifier, HOUR_IN_SECONDS );
 		\set_transient( 'atmosphere_oauth_state', $state, HOUR_IN_SECONDS );
-		\set_transient( 'atmosphere_oauth_dpop_jwk', $dpop_jwk, HOUR_IN_SECONDS );
+		\set_transient( 'atmosphere_oauth_dpop_jwk', $dpop_jwk_ciphertext, HOUR_IN_SECONDS );
 		\set_transient(
 			'atmosphere_oauth_resolved',
 			array(
@@ -197,7 +214,7 @@ class Client {
 			'login_hint'            => $did,
 		);
 
-		$response = \wp_remote_post(
+		$response = \wp_safe_remote_post(
 			$par_url,
 			array(
 				'headers' => array(
@@ -233,7 +250,7 @@ class Client {
 				return new \WP_Error( 'atmosphere_dpop', \__( 'DPoP nonce retry failed.', 'atmosphere' ) );
 			}
 
-			$response = \wp_remote_post(
+			$response = \wp_safe_remote_post(
 				$par_url,
 				array(
 					'headers' => array(
@@ -292,13 +309,40 @@ class Client {
 		}
 		\delete_transient( 'atmosphere_oauth_verifier' );
 
-		$dpop_jwk = \get_transient( 'atmosphere_oauth_dpop_jwk' );
-		$resolved = \get_transient( 'atmosphere_oauth_resolved' );
+		$dpop_jwk_blob = \get_transient( 'atmosphere_oauth_dpop_jwk' );
+		$resolved      = \get_transient( 'atmosphere_oauth_resolved' );
 		\delete_transient( 'atmosphere_oauth_dpop_jwk' );
 		\delete_transient( 'atmosphere_oauth_resolved' );
 
-		if ( ! $dpop_jwk || ! $resolved ) {
+		if ( ! $dpop_jwk_blob || ! $resolved ) {
 			return new \WP_Error( 'atmosphere_expired', \__( 'OAuth session data missing. Please try again.', 'atmosphere' ) );
+		}
+
+		/*
+		 * Pre-encryption versions of the plugin stored the DPoP JWK as
+		 * a plain array in the transient. A user who started OAuth on
+		 * the old code and completes the callback after upgrading
+		 * sees a non-string value here. Distinct error code from
+		 * "transient expired" so support can tell the two cases apart.
+		 */
+		if ( ! \is_string( $dpop_jwk_blob ) ) {
+			return new \WP_Error(
+				'atmosphere_legacy_session',
+				\__( 'OAuth session predates the latest update. Please try connecting again.', 'atmosphere' )
+			);
+		}
+
+		$dpop_jwk_json = Encryption::decrypt( $dpop_jwk_blob );
+		if ( false === $dpop_jwk_json ) {
+			return new \WP_Error( 'atmosphere_decrypt', \__( 'Failed to decrypt OAuth session key.', 'atmosphere' ) );
+		}
+
+		$dpop_jwk = \json_decode( $dpop_jwk_json, true );
+		if ( ! \is_array( $dpop_jwk ) ) {
+			return new \WP_Error(
+				'atmosphere_session_malformed',
+				\__( 'OAuth session key is malformed. Please try again.', 'atmosphere' )
+			);
 		}
 
 		$token_endpoint = $resolved['auth_server']['token_endpoint'];
@@ -317,7 +361,7 @@ class Client {
 			'code_verifier' => $verifier,
 		);
 
-		$response = \wp_remote_post(
+		$response = \wp_safe_remote_post(
 			$token_endpoint,
 			array(
 				'headers' => array(
@@ -351,7 +395,7 @@ class Client {
 				return new \WP_Error( 'atmosphere_dpop', \__( 'DPoP nonce retry failed during token exchange.', 'atmosphere' ) );
 			}
 
-			$response = \wp_remote_post(
+			$response = \wp_safe_remote_post(
 				$token_endpoint,
 				array(
 					'headers' => array(
@@ -430,7 +474,7 @@ class Client {
 			'client_id'     => self::client_id(),
 		);
 
-		$response = \wp_remote_post(
+		$response = \wp_safe_remote_post(
 			$token_endpoint,
 			array(
 				'headers' => array(
@@ -464,7 +508,7 @@ class Client {
 				return new \WP_Error( 'atmosphere_dpop', \__( 'DPoP nonce retry failed during refresh.', 'atmosphere' ) );
 			}
 
-			$response = \wp_remote_post(
+			$response = \wp_safe_remote_post(
 				$token_endpoint,
 				array(
 					'headers' => array(

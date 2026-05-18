@@ -24,6 +24,13 @@ class Resolver {
 	 * @return string|\WP_Error DID string or error.
 	 */
 	public static function handle_to_did( string $handle ): string|\WP_Error {
+		if ( ! self::is_valid_handle( $handle ) ) {
+			return new \WP_Error(
+				'atmosphere_invalid_handle',
+				\__( 'Handle is not a valid DNS-style identifier.', 'atmosphere' )
+			);
+		}
+
 		// Try DNS TXT first: _atproto.<handle>.
 		$records = @\dns_get_record( '_atproto.' . $handle, DNS_TXT ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
 
@@ -36,7 +43,7 @@ class Resolver {
 		}
 
 		// Fallback: HTTPS well-known.
-		$response = \wp_remote_get(
+		$response = \wp_safe_remote_get(
 			'https://' . $handle . '/.well-known/atproto-did',
 			array( 'timeout' => 10 )
 		);
@@ -71,7 +78,13 @@ class Resolver {
 			$url = 'https://plc.directory/' . $did;
 		} elseif ( \str_starts_with( $did, 'did:web:' ) ) {
 			$domain = \substr( $did, 8 );
-			$url    = 'https://' . $domain . '/.well-known/did.json';
+			if ( ! self::is_valid_handle( $domain ) ) {
+				return new \WP_Error(
+					'atmosphere_invalid_did',
+					\__( 'did:web identifier is not a valid DNS-style host.', 'atmosphere' )
+				);
+			}
+			$url = 'https://' . $domain . '/.well-known/did.json';
 		} else {
 			return new \WP_Error(
 				'atmosphere_unsupported_did',
@@ -79,7 +92,7 @@ class Resolver {
 			);
 		}
 
-		$response = \wp_remote_get( $url, array( 'timeout' => 10 ) );
+		$response = \wp_safe_remote_get( $url, array( 'timeout' => 10 ) );
 
 		if ( \is_wp_error( $response ) ) {
 			return $response;
@@ -100,18 +113,51 @@ class Resolver {
 	/**
 	 * Extract the PDS endpoint from a DID document.
 	 *
-	 * Looks for the #atproto_pds service entry.
+	 * Looks for the #atproto_pds service entry. The serviceEndpoint is
+	 * attacker-controlled (anyone can publish a DID doc on plc.directory
+	 * pointing at any URL), so we reject anything that isn't a plain
+	 * HTTPS URL pointing at a publicly-routable host. `wp_http_validate_url()`
+	 * does the host-reachability gate; the explicit `https` check rules
+	 * out `http://` and exotic schemes that the spec doesn't allow.
 	 *
 	 * @param array $did_doc DID document.
 	 * @return string|\WP_Error PDS URL or error.
 	 */
 	public static function pds_from_did_doc( array $did_doc ): string|\WP_Error {
-		foreach ( $did_doc['service'] ?? array() as $service ) {
+		$services = $did_doc['service'] ?? array();
+
+		/*
+		 * The DID document is remote/untrusted. A malformed `service`
+		 * field that decodes to a scalar (or to a list of scalars
+		 * rather than a list of objects) would TypeError on the
+		 * `$service['id']` offset access below. Bail cleanly instead.
+		 */
+		if ( ! \is_array( $services ) ) {
+			return new \WP_Error(
+				'atmosphere_invalid_did_doc',
+				\__( 'DID document `service` field is malformed.', 'atmosphere' )
+			);
+		}
+
+		foreach ( $services as $service ) {
+			if ( ! \is_array( $service ) ) {
+				continue;
+			}
+
 			$id   = $service['id'] ?? '';
 			$type = $service['type'] ?? '';
 
 			if ( '#atproto_pds' === $id && 'AtprotoPersonalDataServer' === $type && ! empty( $service['serviceEndpoint'] ) ) {
-				return $service['serviceEndpoint'];
+				$endpoint = $service['serviceEndpoint'];
+
+				if ( ! \is_string( $endpoint ) || ! self::is_safe_https_url( $endpoint ) ) {
+					return new \WP_Error(
+						'atmosphere_unsafe_pds',
+						\__( 'PDS endpoint in DID document is not a safe HTTPS URL.', 'atmosphere' )
+					);
+				}
+
+				return $endpoint;
 			}
 		}
 
@@ -126,13 +172,18 @@ class Resolver {
 	 *
 	 * Fetches /.well-known/oauth-protected-resource, then
 	 * /.well-known/oauth-authorization-server from the indicated issuer.
+	 * Every URL produced by the response chain is re-validated before it
+	 * is fetched — the DID-doc PDS endpoint, the issuer URL inside
+	 * `authorization_servers`, and the `token_endpoint` /
+	 * `authorization_endpoint` advertised by the auth server are all
+	 * attacker-controlled in the worst case.
 	 *
 	 * @param string $pds_url PDS base URL.
 	 * @return array|\WP_Error Authorization server metadata or error.
 	 */
 	public static function discover_auth_server( string $pds_url ): array|\WP_Error {
 		$resource_url = \rtrim( $pds_url, '/' ) . '/.well-known/oauth-protected-resource';
-		$response     = \wp_remote_get( $resource_url, array( 'timeout' => 10 ) );
+		$response     = \wp_safe_remote_get( $resource_url, array( 'timeout' => 10 ) );
 
 		if ( \is_wp_error( $response ) ) {
 			return $response;
@@ -140,16 +191,41 @@ class Resolver {
 
 		$resource = \json_decode( \wp_remote_retrieve_body( $response ), true );
 
-		if ( empty( $resource['authorization_servers'][0] ) ) {
+		/*
+		 * Malformed JSON (or a valid scalar/null payload like
+		 * `"foo"` or `null`) decodes to a non-array. Bail before
+		 * indexing so PHP 8 doesn't TypeError on offset access.
+		 *
+		 * Guard the parent `authorization_servers` separately: on
+		 * PHP 8.1+ `empty( $resource['authorization_servers'][0] )`
+		 * still evaluates the inner offset access first, and if the
+		 * value is a scalar (`'foo'`, `42`) the offset read emits a
+		 * warning before `empty()` short-circuits. Checking
+		 * `is_array()` on the parent first sidesteps that.
+		 */
+		if ( ! \is_array( $resource )
+			|| ! isset( $resource['authorization_servers'] )
+			|| ! \is_array( $resource['authorization_servers'] )
+			|| empty( $resource['authorization_servers'][0] )
+			|| ! \is_string( $resource['authorization_servers'][0] )
+		) {
 			return new \WP_Error(
 				'atmosphere_no_auth_server',
 				\__( 'PDS did not advertise an authorization server.', 'atmosphere' )
 			);
 		}
 
-		$issuer   = $resource['authorization_servers'][0];
+		$issuer = $resource['authorization_servers'][0];
+
+		if ( ! self::is_safe_https_url( $issuer ) ) {
+			return new \WP_Error(
+				'atmosphere_unsafe_auth_server',
+				\__( 'Authorization server issuer is not a safe HTTPS URL.', 'atmosphere' )
+			);
+		}
+
 		$meta_url = \rtrim( $issuer, '/' ) . '/.well-known/oauth-authorization-server';
-		$response = \wp_remote_get( $meta_url, array( 'timeout' => 10 ) );
+		$response = \wp_safe_remote_get( $meta_url, array( 'timeout' => 10 ) );
 
 		if ( \is_wp_error( $response ) ) {
 			return $response;
@@ -157,10 +233,41 @@ class Resolver {
 
 		$meta = \json_decode( \wp_remote_retrieve_body( $response ), true );
 
-		if ( empty( $meta['token_endpoint'] ) || empty( $meta['authorization_endpoint'] ) ) {
+		/*
+		 * Same guard as above — a scalar / null payload would
+		 * TypeError on the indexing checks below.
+		 */
+		if ( ! \is_array( $meta )
+			|| empty( $meta['token_endpoint'] )
+			|| empty( $meta['authorization_endpoint'] )
+		) {
 			return new \WP_Error(
 				'atmosphere_incomplete_auth_meta',
 				\__( 'Authorization server metadata is incomplete.', 'atmosphere' )
+			);
+		}
+
+		if ( ! \is_string( $meta['token_endpoint'] ) || ! self::is_safe_https_url( $meta['token_endpoint'] ) ) {
+			return new \WP_Error(
+				'atmosphere_unsafe_token_endpoint',
+				\__( 'Authorization server token endpoint is not a safe HTTPS URL.', 'atmosphere' )
+			);
+		}
+
+		if ( ! \is_string( $meta['authorization_endpoint'] ) || ! self::is_safe_https_url( $meta['authorization_endpoint'] ) ) {
+			return new \WP_Error(
+				'atmosphere_unsafe_auth_endpoint',
+				\__( 'Authorization server authorization endpoint is not a safe HTTPS URL.', 'atmosphere' )
+			);
+		}
+
+		if ( ! empty( $meta['pushed_authorization_request_endpoint'] )
+			&& ( ! \is_string( $meta['pushed_authorization_request_endpoint'] )
+				|| ! self::is_safe_https_url( $meta['pushed_authorization_request_endpoint'] ) )
+		) {
+			return new \WP_Error(
+				'atmosphere_unsafe_par_endpoint',
+				\__( 'Authorization server PAR endpoint is not a safe HTTPS URL.', 'atmosphere' )
 			);
 		}
 
@@ -201,5 +308,149 @@ class Resolver {
 			'pds_endpoint' => $pds,
 			'auth_server'  => $auth_server,
 		);
+	}
+
+	/**
+	 * Reserved TLDs the AT Protocol handle spec explicitly disallows.
+	 *
+	 * Sourced from https://atproto.com/specs/handle — reserved or
+	 * private-use TLDs that cannot resolve publicly and therefore
+	 * cannot host a valid handle.
+	 *
+	 * @var array<int, string>
+	 */
+	private const RESERVED_TLDS = array(
+		'alt',
+		'arpa',
+		'example',
+		'internal',
+		'invalid',
+		'local',
+		'localhost',
+		'onion',
+		'test',
+	);
+
+	/**
+	 * Validate an AT Protocol handle or `did:web` host against the
+	 * AT Protocol handle spec.
+	 *
+	 * Rejects empty strings, oversized labels, leading/trailing
+	 * hyphens, single-label hosts (`localhost`), and characters
+	 * outside `[A-Za-z0-9-]`. Also rejects per the handle spec:
+	 *
+	 *  - TLDs starting with a digit, or composed entirely of digits
+	 *    (numeric-only TLDs aren't real TLDs and overlap with the
+	 *    IP-literal class).
+	 *  - Reserved TLDs (`.local`, `.localhost`, `.arpa`,
+	 *    `.internal`, `.invalid`, `.onion`, `.test`, `.example`,
+	 *    `.alt`) — these are private-use / reserved and can't host
+	 *    a routable handle.
+	 *
+	 * Public so the facet / mention code in `Transformer\Facet` can
+	 * reuse the same validation rules — keeping both paths in lock-step
+	 * avoids the case where the mention path accepts a handle the
+	 * resolver path then rejects (or vice versa).
+	 *
+	 * @param string $host Hostname (handle or did:web domain).
+	 * @return bool
+	 */
+	public static function is_valid_handle( string $host ): bool {
+		if ( '' === $host || \strlen( $host ) > 253 ) {
+			return false;
+		}
+
+		$label = '[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?';
+
+		if ( ! \preg_match( '/^' . $label . '(?:\.' . $label . ')+$/', $host ) ) {
+			return false;
+		}
+
+		$labels = \explode( '.', $host );
+		$tld    = \strtolower( \end( $labels ) );
+
+		// TLD must not start with a digit, must not be all digits.
+		if ( \ctype_digit( $tld[0] ) ) {
+			return false;
+		}
+
+		if ( \in_array( $tld, self::RESERVED_TLDS, true ) ) {
+			return false;
+		}
+
+		return true;
+	}
+
+	/**
+	 * Validate that a URL is well-formed, https-only, and safe to
+	 * persist or hand off downstream.
+	 *
+	 * The actual host-safety gate (private-IP, loopback, link-local)
+	 * lives in `wp_safe_remote_*`, which the resolver uses on every
+	 * outbound request. This helper deliberately does NOT call
+	 * `wp_http_validate_url()` — that function does a `gethostbyname`
+	 * lookup, which is unreliable in CI (test domains like
+	 * `pds.example.com` may not resolve) and redundant with the
+	 * fetch-time check.
+	 *
+	 * What this helper does enforce:
+	 *
+	 *  - non-empty string input
+	 *  - parses as a URL
+	 *  - scheme is exactly `https` (the spec requires HTTPS; we narrow
+	 *    further than WordPress's `http`/`https`/`ssl` allowlist)
+	 *  - has a host
+	 *  - host is NOT a raw IP literal — IPv4 (`127.0.0.1`,
+	 *    `169.254.169.254`), IPv6 (`[::1]`, `[fd00::1]`), and any
+	 *    other `FILTER_VALIDATE_IP`-recognised form. `wp_safe_remote_*`
+	 *    catches RFC1918 and loopback but is IPv4-centric, and the
+	 *    `authorization_endpoint` URL is handed straight to
+	 *    `wp_redirect()` with no host-safety net at all. Rejecting IP
+	 *    literals here closes both gaps in one place.
+	 *  - no embedded `user:pass@` credentials (a known URL-injection
+	 *    vector that would otherwise be carried into the persisted
+	 *    connection)
+	 *
+	 * Public so other components that consume attacker-controlled
+	 * URLs (e.g. facet / mention construction in `Transformer\Facet`)
+	 * can share the same gate.
+	 *
+	 * @param mixed $url URL to validate.
+	 * @return bool
+	 */
+	public static function is_safe_https_url( $url ): bool {
+		if ( ! \is_string( $url ) || '' === $url ) {
+			return false;
+		}
+
+		$parts = \wp_parse_url( $url );
+		if ( ! \is_array( $parts ) ) {
+			return false;
+		}
+
+		if ( \strtolower( $parts['scheme'] ?? '' ) !== 'https' ) {
+			return false;
+		}
+
+		if ( empty( $parts['host'] ) ) {
+			return false;
+		}
+
+		/*
+		 * PHP's parse_url() preserves the brackets around IPv6 hosts
+		 * (host is `[::1]` for `https://[::1]/`), and
+		 * FILTER_VALIDATE_IP rejects bracketed forms — strip them
+		 * before validating.
+		 */
+		$host_candidate = \trim( $parts['host'], '[]' );
+		if ( false !== \filter_var( $host_candidate, FILTER_VALIDATE_IP ) ) {
+			return false;
+		}
+
+		if ( isset( $parts['user'] ) || isset( $parts['pass'] ) ) {
+			return false;
+		}
+
+		return true;
 	}
 }
