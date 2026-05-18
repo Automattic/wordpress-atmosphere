@@ -111,9 +111,17 @@ foreach ( $atmosphere_transients as $atmosphere_transient ) {
 
 /*
  * Remove transient + option families that use dynamic keys:
+ *
  *  - atmo_dpop_nonce_<md5>          — per-URL DPoP nonces (5 min TTL).
+ *    Wildcard MUST stay in lock-step with `Nonce_Storage::PREFIX`
+ *    ({@see \Atmosphere\OAuth\Nonce_Storage}). uninstall.php runs
+ *    pre-bootstrap, so we can't reference the constant directly
+ *    without loading the autoloader here. Anyone renaming the
+ *    constant should grep for `atmo_dpop_nonce_` and update both.
  *  - atmosphere_last_seen_own_<col> — reaction-sync watermarks per
- *                                     collection (likes, reposts, posts).
+ *    collection (likes, reposts, posts). Wildcard MUST stay in
+ *    lock-step with `Reaction_Sync::OPTION_LAST_SEEN_OWN_PREFIX`
+ *    ({@see \Atmosphere\Reaction_Sync}).
  *
  * Query for matching option names first, then route deletion through
  * `delete_transient()` / `delete_option()` so the object cache
