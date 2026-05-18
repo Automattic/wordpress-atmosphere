@@ -72,7 +72,16 @@ class Publication extends Base {
 		 */
 		$filtered = \apply_filters( 'atmosphere_transform_publication', $record );
 
-		return \is_array( $filtered ) ? $filtered : $record;
+		if ( ! \is_array( $filtered ) ) {
+			\_doing_it_wrong(
+				__METHOD__,
+				\esc_html__( 'atmosphere_transform_publication must return an array; falling back to the unfiltered record.', 'atmosphere' ),
+				'0.1.0'
+			);
+			return $record;
+		}
+
+		return $filtered;
 	}
 
 	/**

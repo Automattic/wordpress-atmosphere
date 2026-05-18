@@ -192,7 +192,16 @@ class Post extends Base {
 			)
 		);
 
-		return \is_array( $filtered ) ? $filtered : $record;
+		if ( ! \is_array( $filtered ) ) {
+			\_doing_it_wrong(
+				__METHOD__,
+				\esc_html__( 'atmosphere_transform_bsky_post must return an array; falling back to the unfiltered record.', 'atmosphere' ),
+				'0.1.0'
+			);
+			return $record;
+		}
+
+		return $filtered;
 	}
 
 	/**
@@ -1008,7 +1017,16 @@ class Post extends Base {
 		/** This filter is documented in Post::transform() above. */
 		$filtered = \apply_filters( 'atmosphere_transform_bsky_post', $record, $this->object, $context );
 
-		return \is_array( $filtered ) ? $filtered : $record;
+		if ( ! \is_array( $filtered ) ) {
+			\_doing_it_wrong(
+				__METHOD__,
+				\esc_html__( 'atmosphere_transform_bsky_post must return an array; falling back to the unfiltered record.', 'atmosphere' ),
+				'0.1.0'
+			);
+			return $record;
+		}
+
+		return $filtered;
 	}
 
 	/**

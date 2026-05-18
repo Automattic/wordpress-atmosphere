@@ -847,6 +847,19 @@ class Admin {
 
 		if ( self::client_metadata_filter_is_valid( $filtered ) ) {
 			$metadata = $filtered;
+		} elseif ( $filtered !== $metadata ) {
+			/*
+			 * Surface only when the filter actually fired and returned
+			 * something that failed validation — without this guard
+			 * every page load on a site with no filter would trip the
+			 * notice because the equality check above is the cheap
+			 * shorthand for "nothing changed".
+			 */
+			\_doing_it_wrong(
+				__METHOD__,
+				\esc_html__( 'atmosphere_client_metadata must return an array with a non-empty string client_id and a redirect_uris list of admin URLs; falling back to the unfiltered metadata.', 'atmosphere' ),
+				'0.1.0'
+			);
 		}
 
 		$response = new \WP_REST_Response( $metadata, 200 );
