@@ -366,29 +366,41 @@ class Atmosphere {
 		}
 
 		self::$publishing_post_ids[ $post->ID ] = true;
-		\do_action( 'atmosphere_publishing', $post );
 
-		if ( $is_publishable ) {
-			\wp_clear_scheduled_hook( 'atmosphere_delete_post', array( $post->ID ) );
+		/*
+		 * Wrap in try/finally so a throwing listener on
+		 * `atmosphere_publishing` (Sentry SDK, JSON_THROW_ON_ERROR in
+		 * a webhook sink, etc.) can't strand the per-post guard. A
+		 * stuck entry silently no-ops every subsequent transition of
+		 * the same post ID in the current PHP process — especially
+		 * painful for WP-CLI bulk imports where one fatal early in
+		 * the run poisons every later transition of that ID.
+		 */
+		try {
+			\do_action( 'atmosphere_publishing', $post );
+
+			if ( $is_publishable ) {
+				\wp_clear_scheduled_hook( 'atmosphere_delete_post', array( $post->ID ) );
+			}
+
+			if ( $is_new_publish ) {
+				\wp_schedule_single_event( \time(), 'atmosphere_publish_post', array( $post->ID ) );
+			} elseif ( $is_update ) {
+				\wp_schedule_single_event( \time(), 'atmosphere_update_post', array( $post->ID ) );
+			} else {
+				self::mark_visibility_cleanup( $post );
+
+				/*
+				 * Genuine unpublish — use atmosphere_delete_post (not
+				 * delete_records) so post meta is cleaned up on success,
+				 * allowing a subsequent restore (trash → publish) to
+				 * republish correctly.
+				 */
+				\wp_schedule_single_event( \time(), 'atmosphere_delete_post', array( $post->ID ) );
+			}
+		} finally {
+			unset( self::$publishing_post_ids[ $post->ID ] );
 		}
-
-		if ( $is_new_publish ) {
-			\wp_schedule_single_event( \time(), 'atmosphere_publish_post', array( $post->ID ) );
-		} elseif ( $is_update ) {
-			\wp_schedule_single_event( \time(), 'atmosphere_update_post', array( $post->ID ) );
-		} else {
-			self::mark_visibility_cleanup( $post );
-
-			/*
-			 * Genuine unpublish — use atmosphere_delete_post (not
-			 * delete_records) so post meta is cleaned up on success,
-			 * allowing a subsequent restore (trash → publish) to
-			 * republish correctly.
-			 */
-			\wp_schedule_single_event( \time(), 'atmosphere_delete_post', array( $post->ID ) );
-		}
-
-		unset( self::$publishing_post_ids[ $post->ID ] );
 	}
 
 	/**
