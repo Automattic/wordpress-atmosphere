@@ -119,4 +119,72 @@ class Test_Client_Authorize extends WP_UnitTestCase {
 		$this->assertWPError( $result );
 		$this->assertSame( 'atmosphere_legacy_session', $result->get_error_code() );
 	}
+
+	/**
+	 * If the DPoP JWK transient holds a string that won't decrypt —
+	 * the real-world trigger is AUTH_KEY / AUTH_SALT rotating between
+	 * the `authorize()` call and the callback — `handle_callback()`
+	 * surfaces `atmosphere_decrypt` rather than fatalling or
+	 * masking the failure as expiry.
+	 */
+	public function test_handle_callback_returns_decrypt_error_on_corrupted_jwk() {
+		\set_transient( 'atmosphere_oauth_state', 'state-abc', HOUR_IN_SECONDS );
+		\set_transient( 'atmosphere_oauth_verifier', 'verifier-xyz', HOUR_IN_SECONDS );
+		// String, passes `is_string`, but isn't a real ciphertext we can decrypt.
+		\set_transient( 'atmosphere_oauth_dpop_jwk', 'not-real-ciphertext', HOUR_IN_SECONDS );
+		\set_transient(
+			'atmosphere_oauth_resolved',
+			array(
+				'did'          => 'did:plc:test',
+				'pds_endpoint' => 'https://pds.example.com',
+				'auth_server'  => array(
+					'token_endpoint' => 'https://auth.example.com/oauth/token',
+					'issuer_url'     => 'https://auth.example.com',
+				),
+				'handle'       => 'alice.example.com',
+			),
+			HOUR_IN_SECONDS
+		);
+
+		$result = Client::handle_callback( 'code-123', 'state-abc' );
+
+		$this->assertWPError( $result );
+		$this->assertSame( 'atmosphere_decrypt', $result->get_error_code() );
+	}
+
+	/**
+	 * If decryption succeeds but the plaintext doesn't JSON-decode to
+	 * an array (storage corruption, key/value swap, etc.),
+	 * `handle_callback()` surfaces `atmosphere_session_malformed`
+	 * rather than falling through to DPoP proof generation with
+	 * garbage key material.
+	 */
+	public function test_handle_callback_returns_malformed_error_on_non_json_plaintext() {
+		\set_transient( 'atmosphere_oauth_state', 'state-abc', HOUR_IN_SECONDS );
+		\set_transient( 'atmosphere_oauth_verifier', 'verifier-xyz', HOUR_IN_SECONDS );
+		// Encrypts cleanly, but the decrypted plaintext isn't valid JSON.
+		\set_transient(
+			'atmosphere_oauth_dpop_jwk',
+			Encryption::encrypt( 'not-json' ),
+			HOUR_IN_SECONDS
+		);
+		\set_transient(
+			'atmosphere_oauth_resolved',
+			array(
+				'did'          => 'did:plc:test',
+				'pds_endpoint' => 'https://pds.example.com',
+				'auth_server'  => array(
+					'token_endpoint' => 'https://auth.example.com/oauth/token',
+					'issuer_url'     => 'https://auth.example.com',
+				),
+				'handle'       => 'alice.example.com',
+			),
+			HOUR_IN_SECONDS
+		);
+
+		$result = Client::handle_callback( 'code-123', 'state-abc' );
+
+		$this->assertWPError( $result );
+		$this->assertSame( 'atmosphere_session_malformed', $result->get_error_code() );
+	}
 }
