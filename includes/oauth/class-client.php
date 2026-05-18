@@ -51,6 +51,15 @@ class Client {
 	/**
 	 * OAuth callback URI (admin page with special query param).
 	 *
+	 * The return value of this method is sent to the auth server as
+	 * `redirect_uri` in the PAR / authorize request and also baked into
+	 * the public client metadata document. If a third-party filter
+	 * returns a non-admin URL, the auth server happily redirects the
+	 * authorization code to that destination on completion — which is
+	 * an OAuth token-leak primitive. We validate the filter return is
+	 * a string pointing at this site's admin and fall back to the
+	 * default URI on anything else.
+	 *
 	 * @return string
 	 */
 	public static function redirect_uri(): string {
@@ -61,11 +70,24 @@ class Client {
 		 *
 		 * Allows consumers (e.g. wrapper plugins) to set their own callback
 		 * URL so the OAuth flow returns to their admin page instead of the
-		 * default Atmosphere settings page.
+		 * default Atmosphere settings page. The return MUST be a string
+		 * pointing at this site's admin area — anything else is rejected
+		 * to prevent a malicious or buggy filter from redirecting OAuth
+		 * codes off-site.
 		 *
 		 * @param string $uri Default redirect URI.
 		 */
-		return \apply_filters( 'atmosphere_oauth_redirect_uri', $uri );
+		$filtered = \apply_filters( 'atmosphere_oauth_redirect_uri', $uri );
+
+		if ( ! \is_string( $filtered ) || '' === $filtered ) {
+			return $uri;
+		}
+
+		if ( ! \str_starts_with( $filtered, \admin_url( '' ) ) ) {
+			return $uri;
+		}
+
+		return $filtered;
 	}
 
 	/**

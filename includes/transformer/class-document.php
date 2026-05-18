@@ -123,10 +123,24 @@ class Document extends Base {
 		/**
 		 * Filters the site.standard.document record before publishing.
 		 *
+		 * Filters that return a non-array fall back to the pre-filter
+		 * record.
+		 *
 		 * @param array    $record Document record.
 		 * @param \WP_Post $post   WordPress post.
 		 */
-		return \apply_filters( 'atmosphere_transform_document', $record, $this->object );
+		$filtered = \apply_filters( 'atmosphere_transform_document', $record, $this->object );
+
+		if ( ! \is_array( $filtered ) ) {
+			\_doing_it_wrong(
+				__METHOD__,
+				\esc_html__( 'atmosphere_transform_document must return an array; falling back to the unfiltered record.', 'atmosphere' ),
+				'0.1.0'
+			);
+			return $record;
+		}
+
+		return $filtered;
 	}
 
 	/**

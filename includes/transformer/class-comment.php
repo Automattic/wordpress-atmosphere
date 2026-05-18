@@ -73,10 +73,24 @@ class Comment extends Base {
 		/**
 		 * Filters the app.bsky.feed.post comment reply record before publishing.
 		 *
+		 * Filters that return a non-array fall back to the pre-filter
+		 * record.
+		 *
 		 * @param array       $record  Bsky post record.
 		 * @param \WP_Comment $comment WordPress comment.
 		 */
-		return \apply_filters( 'atmosphere_transform_comment', $record, $comment );
+		$filtered = \apply_filters( 'atmosphere_transform_comment', $record, $comment );
+
+		if ( ! \is_array( $filtered ) ) {
+			\_doing_it_wrong(
+				__METHOD__,
+				\esc_html__( 'atmosphere_transform_comment must return an array; falling back to the unfiltered record.', 'atmosphere' ),
+				'0.1.0'
+			);
+			return $record;
+		}
+
+		return $filtered;
 	}
 
 	/**

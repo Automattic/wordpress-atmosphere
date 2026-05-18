@@ -85,6 +85,10 @@ By default, only new posts are shared. You can publish older ones on demand with
 
 Yes. If you delete or unpublish a WordPress post, the matching Bluesky post and AT Protocol records are removed too. If you trash a post and then restore it, ATmosphere re-publishes it.
 
+= Does ATmosphere support WordPress Multisite? =
+
+Not at this time. ATmosphere is designed for a single WordPress site. On a Network-activated install only the current site's data is read and written, and uninstall only cleans the current site — credentials and records on other sites in the network are left intact.
+
 == Changelog ==
 
 = 0.1.0 =

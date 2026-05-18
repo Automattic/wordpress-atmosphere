@@ -173,11 +173,15 @@ class Post extends Base {
 		 * lint hooks) should use the `$context` array to distinguish
 		 * single-post output from teaser-thread entries.
 		 *
+		 * Filters that return a non-array fall back to the pre-filter
+		 * record — protects the applyWrites batch from a misbehaving
+		 * listener.
+		 *
 		 * @param array    $record Bsky post record.
 		 * @param \WP_Post $post   WordPress post.
 		 * @param array    $context Additional composition context.
 		 */
-		return \apply_filters(
+		$filtered = \apply_filters(
 			'atmosphere_transform_bsky_post',
 			$record,
 			$this->object,
@@ -187,6 +191,17 @@ class Post extends Base {
 				'is_thread_reply' => false,
 			)
 		);
+
+		if ( ! \is_array( $filtered ) ) {
+			\_doing_it_wrong(
+				__METHOD__,
+				\esc_html__( 'atmosphere_transform_bsky_post must return an array; falling back to the unfiltered record.', 'atmosphere' ),
+				'0.1.0'
+			);
+			return $record;
+		}
+
+		return $filtered;
 	}
 
 	/**
@@ -1000,7 +1015,18 @@ class Post extends Base {
 		);
 
 		/** This filter is documented in Post::transform() above. */
-		return \apply_filters( 'atmosphere_transform_bsky_post', $record, $this->object, $context );
+		$filtered = \apply_filters( 'atmosphere_transform_bsky_post', $record, $this->object, $context );
+
+		if ( ! \is_array( $filtered ) ) {
+			\_doing_it_wrong(
+				__METHOD__,
+				\esc_html__( 'atmosphere_transform_bsky_post must return an array; falling back to the unfiltered record.', 'atmosphere' ),
+				'0.1.0'
+			);
+			return $record;
+		}
+
+		return $filtered;
 	}
 
 	/**
@@ -1039,7 +1065,7 @@ class Post extends Base {
 		}
 
 		/** This filter is documented in Post::transform() above. */
-		return \apply_filters(
+		$filtered = \apply_filters(
 			'atmosphere_transform_bsky_post',
 			$record,
 			$this->object,
@@ -1049,5 +1075,7 @@ class Post extends Base {
 				'is_thread_reply' => false,
 			)
 		);
+
+		return \is_array( $filtered ) ? $filtered : $record;
 	}
 }
