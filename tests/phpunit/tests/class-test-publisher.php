@@ -326,6 +326,76 @@ class Test_Publisher extends WP_UnitTestCase {
 	}
 
 	/**
+	 * Direct publish calls defensively reject password-protected posts.
+	 */
+	public function test_publish_rejects_password_protected_post() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_status'   => 'publish',
+				'post_password' => 'secret',
+			)
+		);
+
+		$this->register_capture( $post->ID );
+
+		$captured = array();
+		\add_action(
+			'atmosphere_publish_post_result',
+			static function ( $hooked_post, $hooked_result ) use ( &$captured ): void {
+				$captured[] = array(
+					'post'   => $hooked_post,
+					'result' => $hooked_result,
+				);
+			},
+			10,
+			2
+		);
+
+		$result = Publisher::publish_post( $post );
+
+		\remove_all_actions( 'atmosphere_publish_post_result' );
+
+		$this->assertWPError( $result );
+		$this->assertSame( 'atmosphere_post_not_publishable', $result->get_error_code() );
+		$this->assertSame( array(), $this->captured_calls, 'Protected publish must not call applyWrites.' );
+		$this->assertCount( 1, $captured, 'Rejected publish must still fire the result action.' );
+		$this->assertSame( $post->ID, $captured[0]['post']->ID );
+		$this->assertSame( $result, $captured[0]['result'] );
+	}
+
+	/**
+	 * Direct update calls for now-protected posts clean up existing
+	 * records instead of writing protected content.
+	 */
+	public function test_update_password_protected_post_deletes_existing_records() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_status'   => 'publish',
+				'post_password' => 'secret',
+			)
+		);
+
+		\update_post_meta( $post->ID, Post::META_TID, 'bsky-tid-123' );
+		\update_post_meta( $post->ID, Post::META_URI, 'at://did:plc:test123/app.bsky.feed.post/bsky-tid-123' );
+		\update_post_meta( $post->ID, Document::META_TID, 'doc-tid-456' );
+
+		$this->register_capture( $post->ID );
+
+		$result = Publisher::update_post( $post );
+
+		$this->assertIsArray( $result );
+		$this->assertCount( 1, $this->captured_calls );
+
+		$writes = $this->captured_calls[0]['writes'];
+		$this->assertSame( 'com.atproto.repo.applyWrites#delete', $writes[0]['$type'] );
+		$this->assertSame( 'app.bsky.feed.post', $writes[0]['collection'] );
+		$this->assertSame( 'bsky-tid-123', $writes[0]['rkey'] );
+		$this->assertSame( 'com.atproto.repo.applyWrites#delete', $writes[1]['$type'] );
+		$this->assertSame( 'site.standard.document', $writes[1]['collection'] );
+		$this->assertSame( 'doc-tid-456', $writes[1]['rkey'] );
+	}
+
+	/**
 	 * Test that delete() returns error when not connected.
 	 *
 	 * The API layer requires a valid OAuth connection. Without one,

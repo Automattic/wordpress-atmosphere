@@ -13,6 +13,7 @@ require_once __DIR__ . '/class-stub-parser.php';
 
 use WP_UnitTestCase;
 use Atmosphere\Transformer\Document;
+use Atmosphere\Transformer\Post;
 
 /**
  * Document transformer tests.
@@ -52,6 +53,45 @@ class Test_Document extends WP_UnitTestCase {
 		$this->assertArrayHasKey( 'content', $record );
 		$this->assertSame( 'test.stub.parser', $record['content']['$type'] );
 		$this->assertSame( 'Hello world.', $record['content']['text'] );
+
+		\remove_all_filters( 'atmosphere_content_parser' );
+	}
+
+	/**
+	 * Password-protected posts must not expose protected fields through
+	 * document records, even when the transformer is called directly.
+	 */
+	public function test_password_protected_document_is_redacted() {
+		\add_filter(
+			'atmosphere_content_parser',
+			static fn() => new Stub_Parser()
+		);
+
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_status'   => 'publish',
+				'post_title'    => 'CONFIDENTIAL-TITLE',
+				'post_content'  => 'CONFIDENTIAL-BODY',
+				'post_excerpt'  => 'CONFIDENTIAL-EXCERPT',
+				'post_password' => 'secret',
+			)
+		);
+		\wp_set_post_tags( $post->ID, array( 'CONFIDENTIAL-TAG' ) );
+
+		\update_post_meta( $post->ID, Post::META_URI, 'at://did:plc:test/app.bsky.feed.post/secret' );
+		\update_post_meta( $post->ID, Post::META_CID, 'bafysecret' );
+
+		$record = ( new Document( $post ) )->transform();
+		$json   = (string) \wp_json_encode( $record );
+
+		$this->assertSame( '', $record['title'] );
+		$this->assertArrayNotHasKey( 'path', $record );
+		$this->assertArrayNotHasKey( 'description', $record );
+		$this->assertArrayNotHasKey( 'textContent', $record );
+		$this->assertArrayNotHasKey( 'content', $record );
+		$this->assertArrayNotHasKey( 'tags', $record );
+		$this->assertArrayNotHasKey( 'bskyPostRef', $record );
+		$this->assertStringNotContainsString( 'CONFIDENTIAL', $json );
 
 		\remove_all_filters( 'atmosphere_content_parser' );
 	}

@@ -110,6 +110,8 @@ class Post extends Base {
 	 * @return array app.bsky.feed.post record.
 	 */
 	public function transform(): array {
+		$redacted = $this->is_redacted();
+
 		/**
 		 * Filters whether the post should be treated as short-form for Bluesky.
 		 *
@@ -124,18 +126,21 @@ class Post extends Base {
 		 * @param bool     $is_short Whether the post should be treated as short-form.
 		 * @param \WP_Post $post     The post being transformed.
 		 */
-		$is_short = \wp_validate_boolean(
-			\apply_filters(
-				'atmosphere_is_short_form_post',
-				$this->is_short_form( $this->object ),
-				$this->object
-			)
-		);
+		$is_short = true;
+		if ( ! $redacted ) {
+			$is_short = \wp_validate_boolean(
+				\apply_filters(
+					'atmosphere_is_short_form_post',
+					$this->is_short_form( $this->object ),
+					$this->object
+				)
+			);
+		}
 
-		$text  = $is_short ? $this->build_short_form_text() : '';
+		$text  = $redacted ? '' : ( $is_short ? $this->build_short_form_text() : '' );
 		$embed = null;
 
-		if ( '' === $text ) {
+		if ( ! $redacted && '' === $text ) {
 			$text  = $this->build_text();
 			$embed = $this->build_embed();
 		}
@@ -156,9 +161,11 @@ class Post extends Base {
 			$record['embed'] = $embed;
 		}
 
-		$tags = $this->collect_tags( $this->object );
-		if ( ! empty( $tags ) ) {
-			$record['tags'] = $tags;
+		if ( ! $redacted ) {
+			$tags = $this->collect_tags( $this->object );
+			if ( ! empty( $tags ) ) {
+				$record['tags'] = $tags;
+			}
 		}
 
 		/**
@@ -196,7 +203,7 @@ class Post extends Base {
 			\_doing_it_wrong(
 				__METHOD__,
 				\esc_html__( 'atmosphere_transform_bsky_post must return an array; falling back to the unfiltered record.', 'atmosphere' ),
-				'0.1.0'
+				'unreleased'
 			);
 			return $record;
 		}
@@ -231,6 +238,10 @@ class Post extends Base {
 	 * @return string
 	 */
 	private function build_text(): string {
+		if ( $this->is_redacted() ) {
+			return '';
+		}
+
 		$title     = sanitize_text( \get_the_title( $this->object ) );
 		$excerpt   = $this->get_excerpt( $this->object );
 		$permalink = \get_permalink( $this->object );
@@ -268,6 +279,10 @@ class Post extends Base {
 	 * @return array|null
 	 */
 	private function build_embed(): ?array {
+		if ( $this->is_redacted() ) {
+			return null;
+		}
+
 		$permalink   = \get_permalink( $this->object );
 		$title       = sanitize_text( \get_the_title( $this->object ) );
 		$description = $this->get_excerpt( $this->object, 55 );
@@ -370,6 +385,10 @@ class Post extends Base {
 	 * @return string
 	 */
 	private function build_short_form_text(): string {
+		if ( $this->is_redacted() ) {
+			return '';
+		}
+
 		return truncate_text( $this->render_post_content_plain( $this->object ), 300 );
 	}
 
@@ -381,9 +400,17 @@ class Post extends Base {
 	 * Publisher branch on short vs. long without reaching into the
 	 * transformer's private state.
 	 *
+	 * Redacted posts return true without invoking the filter so direct
+	 * transformer callers do not expose protected post objects to
+	 * subscribers.
+	 *
 	 * @return bool
 	 */
 	public function is_short_form_post(): bool {
+		if ( $this->is_redacted() ) {
+			return true;
+		}
+
 		return \wp_validate_boolean(
 			\apply_filters(
 				'atmosphere_is_short_form_post',
@@ -445,6 +472,20 @@ class Post extends Base {
 	 *                 the root / parent of any replies).
 	 */
 	public function build_long_form_records( int $stored_count = 0 ): array {
+		if ( $this->is_redacted() ) {
+			return array(
+				$this->record_for_thread_entry(
+					'',
+					true,
+					array(
+						'strategy'        => 'redacted',
+						'thread_index'    => 0,
+						'is_thread_reply' => false,
+					)
+				),
+			);
+		}
+
 		/**
 		 * Filters the long-form composition strategy for this post.
 		 *
@@ -836,6 +877,10 @@ class Post extends Base {
 	 * @return bool
 	 */
 	private function has_composable_body(): bool {
+		if ( $this->is_redacted() ) {
+			return false;
+		}
+
 		if ( ! empty( $this->object->post_excerpt )
 			&& \mb_strlen( sanitize_text( $this->object->post_excerpt ) ) >= 10
 		) {
@@ -843,6 +888,15 @@ class Post extends Base {
 		}
 
 		return \mb_strlen( $this->render_post_content_plain( $this->object ) ) >= 10;
+	}
+
+	/**
+	 * Whether this post's fields must be redacted from AT Protocol records.
+	 *
+	 * @return bool
+	 */
+	private function is_redacted(): bool {
+		return $this->is_post_redacted( $this->object );
 	}
 
 	/**
@@ -998,7 +1052,7 @@ class Post extends Base {
 			$record['embed'] = $embed;
 		}
 
-		if ( $is_root ) {
+		if ( $is_root && ! $this->is_redacted() ) {
 			$tags = $this->collect_tags( $this->object );
 			if ( ! empty( $tags ) ) {
 				$record['tags'] = $tags;
@@ -1021,7 +1075,7 @@ class Post extends Base {
 			\_doing_it_wrong(
 				__METHOD__,
 				\esc_html__( 'atmosphere_transform_bsky_post must return an array; falling back to the unfiltered record.', 'atmosphere' ),
-				'0.1.0'
+				'unreleased'
 			);
 			return $record;
 		}
@@ -1040,8 +1094,9 @@ class Post extends Base {
 	 * @return array Bsky post record.
 	 */
 	private function record_for_link_card(): array {
-		$text  = $this->build_text();
-		$embed = $this->build_embed();
+		$text     = $this->build_text();
+		$embed    = $this->build_embed();
+		$redacted = $this->is_redacted();
 
 		$record = array(
 			'$type'     => 'app.bsky.feed.post',
@@ -1059,9 +1114,11 @@ class Post extends Base {
 			$record['embed'] = $embed;
 		}
 
-		$tags = $this->collect_tags( $this->object );
-		if ( ! empty( $tags ) ) {
-			$record['tags'] = $tags;
+		if ( ! $redacted ) {
+			$tags = $this->collect_tags( $this->object );
+			if ( ! empty( $tags ) ) {
+				$record['tags'] = $tags;
+			}
 		}
 
 		/** This filter is documented in Post::transform() above. */
@@ -1076,6 +1133,15 @@ class Post extends Base {
 			)
 		);
 
-		return \is_array( $filtered ) ? $filtered : $record;
+		if ( ! \is_array( $filtered ) ) {
+			\_doing_it_wrong(
+				__METHOD__,
+				\esc_html__( 'atmosphere_transform_bsky_post must return an array; falling back to the unfiltered record.', 'atmosphere' ),
+				'unreleased'
+			);
+			return $record;
+		}
+
+		return $filtered;
 	}
 }

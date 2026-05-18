@@ -191,3 +191,19 @@ function get_supported_post_types(): array {
 function is_supported_post_type( string $post_type ): bool {
 	return Post_Types::supports( $post_type );
 }
+
+/**
+ * Whether a post is currently eligible for AT Protocol publishing.
+ *
+ * Federation output is remote, site-wide state. Do not use
+ * post_password_required() here: it depends on the current visitor's
+ * unlock cookie and can leak protected content into PDS records.
+ *
+ * @param \WP_Post $post Post object.
+ * @return bool
+ */
+function is_post_publishable( \WP_Post $post ): bool {
+	return 'publish' === $post->post_status
+		&& '' === (string) $post->post_password
+		&& is_supported_post_type( $post->post_type );
+}

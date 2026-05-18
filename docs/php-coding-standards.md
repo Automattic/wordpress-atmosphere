@@ -387,6 +387,18 @@ if ( ! \current_user_can( 'edit_post', $post_id ) ) {
 
 OAuth tokens, DPoP private keys, and refresh tokens **must** go through `Atmosphere\OAuth\Encryption`. Never store or log them in plaintext.
 
+### Post Visibility in Federation
+
+AT Protocol records are remote, site-wide state. Treat a post as publishable only when all three checks pass:
+
+- `post_status === 'publish'`.
+- The post type is supported by ATmosphere.
+- `post_password` is empty.
+
+Do **not** use `post_password_required()` for federation output. It depends on the current visitor's unlock cookie, so an editor who has unlocked a protected post locally could cause protected fields to be serialized into PDS records.
+
+Previously-published posts that leave public visibility must delete remote records, not send an update carrying redacted content. This includes draft, pending, private, trash, custom non-public statuses, applying a password, and removing post type support after records already exist. A status transition may queue the normal delete event; a stale publish/update cron callback must re-check visibility and call `Publisher::delete_post( $post )` directly when local record metadata exists.
+
 ## Performance Considerations
 
 ### Cache Expensive Lookups

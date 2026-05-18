@@ -67,6 +67,12 @@ Always reserve the rkey via meta in `get_rkey()` — that meta key is the marker
 
 Full signatures and docblocks: [`docs/php-coding-standards.md → Hook Patterns`](../../../docs/php-coding-standards.md#hook-patterns).
 
+## Post Visibility and Federation Cleanup
+
+Federation output is remote, site-wide state. Treat a post as publishable only when it is `publish`, its post type is supported, and `post_password` is empty. Do not use `post_password_required()` for AT Protocol records: it depends on the current visitor's unlock cookie and can leak protected content into PDS records.
+
+When a previously-published post leaves public visibility (draft, pending, private, trash, custom non-public status, password applied, or post type support removed), delete remote records rather than updating them with redacted content. Status transitions may queue the normal delete event, but stale publish/update cron handlers must re-check visibility at fire time and call `Publisher::delete_post( $post )` directly when local record metadata exists.
+
 ## Cron Lifecycle — Three-Way Symmetry
 
 Every plugin-owned `wp_schedule_*` hook MUST appear in `Atmosphere\get_cron_hooks()` (`includes/functions.php`). That list drives:

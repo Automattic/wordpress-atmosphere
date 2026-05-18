@@ -38,6 +38,14 @@ class Atmosphere {
 	private const META_PUBLISH_ATTEMPTS = '_atmosphere_publish_attempts';
 
 	/**
+	 * Post meta marker set when remote records were removed because a
+	 * previously public post left public visibility.
+	 *
+	 * @var string
+	 */
+	private const META_VISIBILITY_CLEANUP = '_atmosphere_visibility_cleanup';
+
+	/**
 	 * Maximum re-schedule hops for a child comment waiting on a
 	 * not-yet-published parent. After this many deferrals the child
 	 * publishes as a top-level reply on the post (current fallback
@@ -144,7 +152,7 @@ class Atmosphere {
 			return;
 		}
 
-		if ( ! is_supported_post_type( $post->post_type ) ) {
+		if ( ! is_post_publishable( $post ) ) {
 			return;
 		}
 
@@ -297,36 +305,25 @@ class Atmosphere {
 			return;
 		}
 
-		$is_new_publish = 'publish' === $new_status && 'publish' !== $old_status;
-		$is_update      = 'publish' === $new_status && 'publish' === $old_status;
-		$is_unpublish   = 'publish' === $old_status && 'publish' !== $new_status;
+		$is_publishable         = is_post_publishable( $post );
+		$has_records            = self::has_post_records( $post );
+		$had_visibility_cleanup = self::has_visibility_cleanup_marker( $post );
+		$is_new_publish         = $is_publishable && ! $has_records && ( 'publish' !== $old_status || $had_visibility_cleanup );
+		$is_update              = $is_publishable && ! $is_new_publish;
+		$is_cleanup             = 'publish' === $old_status && ! $is_publishable && $has_records;
 
-		if ( ! $is_new_publish && ! $is_update && ! $is_unpublish ) {
+		if ( ! $is_new_publish && ! $is_update && ! $is_cleanup ) {
 			// Transition between two non-publish states; nothing to schedule.
 			return;
 		}
 
 		/*
-		 * Publish-time decisions respect the supported list so sites
-		 * only sync the post types they've opted into. Unpublish is a
-		 * cleanup path for records that were already synced, so
-		 * narrowing support later must not orphan those remote records:
-		 * unpublish defers to publication metadata (TIDs on the post)
-		 * instead of the current support list.
+		 * Publish-time decisions respect current public visibility.
+		 * Cleanup is different: if a previously-published post becomes
+		 * non-public (draft/private/trash, password-protected, or no
+		 * longer supported), remote records must be removed even though
+		 * the post is no longer publishable.
 		 */
-		if ( ( $is_new_publish || $is_update ) && ! is_supported_post_type( $post->post_type ) ) {
-			return;
-		}
-
-		if ( $is_unpublish ) {
-			$bsky_tid = \get_post_meta( $post->ID, Transformer\Post::META_TID, true );
-			$doc_tid  = \get_post_meta( $post->ID, Transformer\Document::META_TID, true );
-			if ( ! $bsky_tid && ! $doc_tid ) {
-				// Unpublish of a post that was never synced — nothing to clean up.
-				return;
-			}
-		}
-
 		// Prevent infinite loops from meta updates.
 		if ( \did_action( 'atmosphere_publishing' ) ) {
 			return;
@@ -334,11 +331,17 @@ class Atmosphere {
 
 		\do_action( 'atmosphere_publishing' );
 
+		if ( $is_publishable ) {
+			\wp_clear_scheduled_hook( 'atmosphere_delete_post', array( $post->ID ) );
+		}
+
 		if ( $is_new_publish ) {
 			\wp_schedule_single_event( \time(), 'atmosphere_publish_post', array( $post->ID ) );
 		} elseif ( $is_update ) {
 			\wp_schedule_single_event( \time(), 'atmosphere_update_post', array( $post->ID ) );
 		} else {
+			self::mark_visibility_cleanup( $post );
+
 			/*
 			 * Genuine unpublish — use atmosphere_delete_post (not
 			 * delete_records) so post meta is cleaned up on success,
@@ -347,6 +350,51 @@ class Atmosphere {
 			 */
 			\wp_schedule_single_event( \time(), 'atmosphere_delete_post', array( $post->ID ) );
 		}
+	}
+
+	/**
+	 * Whether the post has local metadata for remote records.
+	 *
+	 * Used to distinguish a cleanup-worthy post from a non-public post
+	 * that never reached the PDS.
+	 *
+	 * @param \WP_Post $post Post object.
+	 * @return bool
+	 */
+	private static function has_post_records( \WP_Post $post ): bool {
+		return ! empty( \get_post_meta( $post->ID, Transformer\Post::META_TID, true ) )
+			|| ! empty( \get_post_meta( $post->ID, Transformer\Post::META_URI, true ) )
+			|| ! empty( \get_post_meta( $post->ID, Transformer\Post::META_THREAD_RECORDS, true ) )
+			|| ! empty( \get_post_meta( $post->ID, Transformer\Document::META_TID, true ) )
+			|| ! empty( \get_post_meta( $post->ID, Transformer\Document::META_URI, true ) );
+	}
+
+	/**
+	 * Whether this post previously had records removed for visibility.
+	 *
+	 * @param \WP_Post $post Post object.
+	 * @return bool
+	 */
+	private static function has_visibility_cleanup_marker( \WP_Post $post ): bool {
+		return (bool) \get_post_meta( $post->ID, self::META_VISIBILITY_CLEANUP, true );
+	}
+
+	/**
+	 * Mark a post as needing fresh publish if it becomes public again.
+	 *
+	 * @param \WP_Post $post Post object.
+	 */
+	private static function mark_visibility_cleanup( \WP_Post $post ): void {
+		\update_post_meta( $post->ID, self::META_VISIBILITY_CLEANUP, '1' );
+	}
+
+	/**
+	 * Clear the visibility-cleanup marker after a successful publish/update.
+	 *
+	 * @param \WP_Post $post Post object.
+	 */
+	private static function clear_visibility_cleanup_marker( \WP_Post $post ): void {
+		\delete_post_meta( $post->ID, self::META_VISIBILITY_CLEANUP );
 	}
 
 	/**
@@ -706,19 +754,34 @@ class Atmosphere {
 	 */
 	public static function register_async_hooks(): void {
 		/*
-		 * Publish/update cron callbacks re-check post-type support.
-		 * A user (or downstream filter) can disable a post type after a
-		 * cron event was queued, and we must not still publish it.
+		 * Publish/update cron callbacks re-check post visibility.
+		 * A user (or downstream filter) can password-protect a post,
+		 * unpublish it, or disable its post type after a cron event was
+		 * queued, and we must not still publish it.
 		 *
-		 * The delete callback intentionally skips this check so cleanup
-		 * still runs after support is removed.
+		 * The delete callback uses the inverse gate: if the post has
+		 * become publishable again, update the existing records instead
+		 * of deleting them; otherwise clean up any existing remote records.
 		 */
 		\add_action(
 			'atmosphere_publish_post',
 			static function ( int $post_id ): void {
 				$post = \get_post( $post_id );
-				if ( $post && 'publish' === $post->post_status && is_supported_post_type( $post->post_type ) ) {
-					Publisher::publish_post( $post );
+				if ( ! $post ) {
+					return;
+				}
+				if ( is_post_publishable( $post ) ) {
+					$result = self::has_post_records( $post )
+						? Publisher::update_post( $post )
+						: Publisher::publish_post( $post );
+					if ( ! \is_wp_error( $result ) ) {
+						self::clear_visibility_cleanup_marker( $post );
+					}
+					return;
+				}
+				if ( self::has_post_records( $post ) ) {
+					self::mark_visibility_cleanup( $post );
+					Publisher::delete_post( $post );
 				}
 			}
 		);
@@ -727,8 +790,19 @@ class Atmosphere {
 			'atmosphere_update_post',
 			static function ( int $post_id ): void {
 				$post = \get_post( $post_id );
-				if ( $post && 'publish' === $post->post_status && is_supported_post_type( $post->post_type ) ) {
-					Publisher::update_post( $post );
+				if ( ! $post ) {
+					return;
+				}
+				if ( is_post_publishable( $post ) ) {
+					$result = Publisher::update_post( $post );
+					if ( ! \is_wp_error( $result ) ) {
+						self::clear_visibility_cleanup_marker( $post );
+					}
+					return;
+				}
+				if ( self::has_post_records( $post ) ) {
+					self::mark_visibility_cleanup( $post );
+					Publisher::delete_post( $post );
 				}
 			}
 		);
@@ -738,6 +812,16 @@ class Atmosphere {
 			static function ( int $post_id ): void {
 				$post = \get_post( $post_id );
 				if ( $post ) {
+					if ( is_post_publishable( $post ) ) {
+						$result = Publisher::update_post( $post );
+						if ( ! \is_wp_error( $result ) ) {
+							self::clear_visibility_cleanup_marker( $post );
+						}
+						return;
+					}
+					if ( self::has_post_records( $post ) ) {
+						self::mark_visibility_cleanup( $post );
+					}
 					Publisher::delete_post( $post );
 				}
 			}

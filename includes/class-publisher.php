@@ -94,6 +94,17 @@ class Publisher {
 	 * @return array|\WP_Error applyWrites response(s) or error.
 	 */
 	public static function publish_post( \WP_Post $post ): array|\WP_Error {
+		if ( ! is_post_publishable( $post ) ) {
+			$result = new \WP_Error(
+				'atmosphere_post_not_publishable',
+				\__( 'Post is not eligible for AT Protocol publishing.', 'atmosphere' )
+			);
+
+			\do_action( 'atmosphere_publish_post_result', $post, $result );
+
+			return $result;
+		}
+
 		$bsky_transformer = new Post( $post );
 		$doc_transformer  = new Document( $post );
 
@@ -539,6 +550,10 @@ class Publisher {
 	 * @return array|\WP_Error
 	 */
 	public static function update_post( \WP_Post $post ): array|\WP_Error {
+		if ( ! is_post_publishable( $post ) ) {
+			return self::delete_post( $post );
+		}
+
 		$stored = self::stored_thread_records( $post->ID );
 
 		if ( empty( $stored ) ) {

@@ -50,9 +50,16 @@ class Document extends Base {
 	 * @return array site.standard.document record.
 	 */
 	public function transform(): array {
+		$redacted = $this->is_post_redacted( $this->object );
+
+		/*
+		 * Redacted records are defense-in-depth output for authorized
+		 * previews/direct callers. Publisher rejects or deletes
+		 * non-publishable posts before this placeholder reaches the PDS.
+		 */
 		$record = array(
 			'$type'       => 'site.standard.document',
-			'title'       => sanitize_text( \get_the_title( $this->object ) ),
+			'title'       => $redacted ? '' : sanitize_text( \get_the_title( $this->object ) ),
 			'publishedAt' => $this->to_iso8601( $this->object->post_date_gmt ),
 		);
 
@@ -65,59 +72,61 @@ class Document extends Base {
 			$record['site'] = \untrailingslashit( \get_home_url() );
 		}
 
-		// Relative path.
-		$permalink = \get_permalink( $this->object );
-		$relative  = \wp_make_link_relative( $permalink );
-		if ( $relative ) {
-			$record['path'] = $relative;
-		}
-
-		// Description.
-		$excerpt = $this->get_excerpt( $this->object, 55 );
-		if ( ! empty( $excerpt ) ) {
-			$record['description'] = $excerpt;
-		}
-
-		// Cover image.
-		$thumb_id = \get_post_thumbnail_id( $this->object );
-		if ( $thumb_id ) {
-			$blob = Post::upload_thumbnail( $thumb_id );
-			if ( $blob ) {
-				$record['coverImage'] = $blob;
+		if ( ! $redacted ) {
+			// Relative path.
+			$permalink = \get_permalink( $this->object );
+			$relative  = \wp_make_link_relative( $permalink );
+			if ( $relative ) {
+				$record['path'] = $relative;
 			}
-		}
 
-		// Full text content.
-		$text_content = $this->get_text_content();
-		if ( ! empty( $text_content ) ) {
-			$record['textContent'] = $text_content;
-		}
+			// Description.
+			$excerpt = $this->get_excerpt( $this->object, 55 );
+			if ( ! empty( $excerpt ) ) {
+				$record['description'] = $excerpt;
+			}
 
-		// Parsed rich content (open union).
-		$content = $this->get_content();
-		if ( ! empty( $content ) ) {
-			$record['content'] = $content;
-		}
+			// Cover image.
+			$thumb_id = \get_post_thumbnail_id( $this->object );
+			if ( $thumb_id ) {
+				$blob = Post::upload_thumbnail( $thumb_id );
+				if ( $blob ) {
+					$record['coverImage'] = $blob;
+				}
+			}
 
-		// Tags.
-		$tags = $this->collect_tags( $this->object );
-		if ( ! empty( $tags ) ) {
-			$record['tags'] = $tags;
-		}
+			// Full text content.
+			$text_content = $this->get_text_content();
+			if ( ! empty( $text_content ) ) {
+				$record['textContent'] = $text_content;
+			}
 
-		// Bluesky cross-reference (populated after initial publish).
-		$bsky_uri = \get_post_meta( $this->object->ID, Post::META_URI, true );
-		$bsky_cid = \get_post_meta( $this->object->ID, Post::META_CID, true );
-		if ( $bsky_uri && $bsky_cid ) {
-			$record['bskyPostRef'] = array(
-				'uri' => $bsky_uri,
-				'cid' => $bsky_cid,
-			);
-		}
+			// Parsed rich content (open union).
+			$content = $this->get_content();
+			if ( ! empty( $content ) ) {
+				$record['content'] = $content;
+			}
 
-		// Updated timestamp.
-		if ( $this->object->post_modified_gmt !== $this->object->post_date_gmt ) {
-			$record['updatedAt'] = $this->to_iso8601( $this->object->post_modified_gmt );
+			// Tags.
+			$tags = $this->collect_tags( $this->object );
+			if ( ! empty( $tags ) ) {
+				$record['tags'] = $tags;
+			}
+
+			// Bluesky cross-reference (populated after initial publish).
+			$bsky_uri = \get_post_meta( $this->object->ID, Post::META_URI, true );
+			$bsky_cid = \get_post_meta( $this->object->ID, Post::META_CID, true );
+			if ( $bsky_uri && $bsky_cid ) {
+				$record['bskyPostRef'] = array(
+					'uri' => $bsky_uri,
+					'cid' => $bsky_cid,
+				);
+			}
+
+			// Updated timestamp.
+			if ( $this->object->post_modified_gmt !== $this->object->post_date_gmt ) {
+				$record['updatedAt'] = $this->to_iso8601( $this->object->post_modified_gmt );
+			}
 		}
 
 		/**
@@ -135,7 +144,7 @@ class Document extends Base {
 			\_doing_it_wrong(
 				__METHOD__,
 				\esc_html__( 'atmosphere_transform_document must return an array; falling back to the unfiltered record.', 'atmosphere' ),
-				'0.1.0'
+				'unreleased'
 			);
 			return $record;
 		}
