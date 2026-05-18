@@ -821,23 +821,30 @@ class Admin {
 		/**
 		 * Filters the OAuth client metadata served at the REST endpoint.
 		 *
-		 * Filters MUST return an array containing a non-empty
-		 * `client_id` string and a non-empty `redirect_uris` array;
-		 * otherwise the original unfiltered metadata is served so the
-		 * OAuth flow keeps working even with a misbehaving listener.
+		 * Filters MUST return an array containing:
+		 *
+		 *  - `client_id`: non-empty string (advertised as the OAuth client
+		 *    identifier; should match `Client::client_id()`).
+		 *  - `redirect_uris`: non-empty list of non-empty strings, where
+		 *    every entry is rooted at this site's admin
+		 *    (`admin_url('')` prefix). Off-site / empty / non-string /
+		 *    nested-array entries cause the entire filter result to be
+		 *    rejected.
+		 *
+		 * Anything else falls back to the unfiltered metadata. The
+		 * metadata endpoint is public and the document advertises
+		 * `token_endpoint_auth_method: 'none'` (public client), so an
+		 * attacker-supplied `redirect_uris` entry would let them drive
+		 * this site's `client_id` with their own redirect target. Gate
+		 * entries individually, matching the validation
+		 * {@see \Atmosphere\OAuth\Client::redirect_uri()} applies to
+		 * the inbound `atmosphere_oauth_redirect_uri` filter.
 		 *
 		 * @param array $metadata Client metadata.
 		 */
 		$filtered = \apply_filters( 'atmosphere_client_metadata', $metadata );
 
-		if ( \is_array( $filtered )
-			&& isset( $filtered['client_id'] )
-			&& \is_string( $filtered['client_id'] )
-			&& '' !== $filtered['client_id']
-			&& isset( $filtered['redirect_uris'] )
-			&& \is_array( $filtered['redirect_uris'] )
-			&& ! empty( $filtered['redirect_uris'] )
-		) {
+		if ( self::client_metadata_filter_is_valid( $filtered ) ) {
 			$metadata = $filtered;
 		}
 
@@ -859,5 +866,62 @@ class Admin {
 		$response->header( 'Cache-Control', 'public, max-age=300' );
 
 		return $response;
+	}
+
+	/**
+	 * Validate the return value of the `atmosphere_client_metadata` filter.
+	 *
+	 * Container shape:
+	 *
+	 *  - Must be an array.
+	 *  - `client_id` present, non-empty string.
+	 *  - `redirect_uris` present, non-empty array (list of strings).
+	 *
+	 * Per-entry `redirect_uris` rules:
+	 *
+	 *  - Each entry is a non-empty string.
+	 *  - Each entry begins with this site's admin URL prefix
+	 *    (`admin_url('')`), the same gate
+	 *    {@see \Atmosphere\OAuth\Client::redirect_uri()} applies to
+	 *    the inbound filter. An off-site / scheme-mismatched / empty
+	 *    entry disqualifies the entire filter result.
+	 *
+	 * Returns true only if every check passes; the caller falls back
+	 * to the unfiltered metadata on false.
+	 *
+	 * @param mixed $filtered Filter return value.
+	 * @return bool
+	 */
+	private static function client_metadata_filter_is_valid( $filtered ): bool {
+		if ( ! \is_array( $filtered ) ) {
+			return false;
+		}
+
+		if ( ! isset( $filtered['client_id'] )
+			|| ! \is_string( $filtered['client_id'] )
+			|| '' === $filtered['client_id']
+		) {
+			return false;
+		}
+
+		if ( ! isset( $filtered['redirect_uris'] )
+			|| ! \is_array( $filtered['redirect_uris'] )
+			|| array() === $filtered['redirect_uris']
+		) {
+			return false;
+		}
+
+		$admin_prefix = \admin_url( '' );
+
+		foreach ( $filtered['redirect_uris'] as $uri ) {
+			if ( ! \is_string( $uri )
+				|| '' === $uri
+				|| ! \str_starts_with( $uri, $admin_prefix )
+			) {
+				return false;
+			}
+		}
+
+		return true;
 	}
 }
