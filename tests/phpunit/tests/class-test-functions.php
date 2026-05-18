@@ -136,6 +136,14 @@ class Test_Functions extends WP_UnitTestCase {
 			)
 		);
 
+		$zero_string_password = self::factory()->post->create_and_get(
+			array(
+				'post_status'   => 'publish',
+				'post_type'     => 'post',
+				'post_password' => '0',
+			)
+		);
+
 		$page = self::factory()->post->create_and_get(
 			array(
 				'post_status' => 'publish',
@@ -146,6 +154,7 @@ class Test_Functions extends WP_UnitTestCase {
 		$this->assertTrue( is_post_publishable( $public ) );
 		$this->assertFalse( is_post_publishable( $draft ) );
 		$this->assertFalse( is_post_publishable( $protected ) );
+		$this->assertFalse( is_post_publishable( $zero_string_password ) );
 		$this->assertFalse( is_post_publishable( $page ) );
 	}
 }

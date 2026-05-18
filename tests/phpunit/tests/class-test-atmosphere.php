@@ -59,18 +59,17 @@ class Test_Atmosphere extends WP_UnitTestCase {
 		\wp_clear_scheduled_hook( 'atmosphere_update_post' );
 		\wp_clear_scheduled_hook( 'atmosphere_delete_post' );
 		\wp_clear_scheduled_hook( 'atmosphere_delete_records' );
+		\wp_clear_scheduled_hook( 'atmosphere_delete_comment_record' );
 
 		\remove_all_filters( 'atmosphere_should_publish_comment' );
+		\remove_all_filters( 'atmosphere_pre_apply_writes' );
+		\delete_option( 'atmosphere_visibility_cleanup_migrated' );
 
 		parent::tear_down();
 	}
 
 	/**
-	 * Reset the atmosphere_publishing action counter.
-	 *
-	 * The plugin's own transition_post_status hook fires when the
-	 * factory creates a test post, incrementing the counter. Reset
-	 * it before calling on_status_change() directly.
+	 * Reset the legacy atmosphere_publishing action counter.
 	 */
 	private function reset_publishing_action(): void {
 		global $wp_actions;
@@ -191,6 +190,75 @@ class Test_Atmosphere extends WP_UnitTestCase {
 			\wp_next_scheduled( 'atmosphere_delete_post', array( $post->ID ) ),
 			'Password-protected update for a synced post must schedule remote cleanup.'
 		);
+	}
+
+	/**
+	 * Multiple visibility transitions in one request each schedule cleanup.
+	 */
+	public function test_bulk_password_protected_updates_schedule_cleanup_for_each_post() {
+		$posts = array(
+			self::factory()->post->create_and_get(
+				array(
+					'post_status'   => 'publish',
+					'post_password' => 'secret',
+				)
+			),
+			self::factory()->post->create_and_get(
+				array(
+					'post_status'   => 'publish',
+					'post_password' => 'secret',
+				)
+			),
+		);
+
+		foreach ( $posts as $post ) {
+			\update_post_meta( $post->ID, Post::META_TID, 'bsky-tid-' . $post->ID );
+			\update_post_meta( $post->ID, Document::META_TID, 'doc-tid-' . $post->ID );
+		}
+
+		$this->atmosphere->on_status_change( 'publish', 'publish', $posts[0] );
+		$this->atmosphere->on_status_change( 'publish', 'publish', $posts[1] );
+
+		$this->assertNotFalse(
+			\wp_next_scheduled( 'atmosphere_delete_post', array( $posts[0]->ID ) ),
+			'First protected post must schedule cleanup.'
+		);
+		$this->assertNotFalse(
+			\wp_next_scheduled( 'atmosphere_delete_post', array( $posts[1]->ID ) ),
+			'Second protected post must also schedule cleanup.'
+		);
+	}
+
+	/**
+	 * Historical leaks are scheduled once for cleanup on admin requests.
+	 */
+	public function test_historical_visibility_cleanup_schedules_existing_non_public_records() {
+		\delete_option( 'atmosphere_visibility_cleanup_migrated' );
+
+		$protected = self::factory()->post->create_and_get(
+			array(
+				'post_status'   => 'publish',
+				'post_password' => 'secret',
+			)
+		);
+		\update_post_meta( $protected->ID, Post::META_TID, 'protected-bsky-tid' );
+		\update_post_meta( $protected->ID, Document::META_TID, 'protected-doc-tid' );
+
+		$public = self::factory()->post->create_and_get( array( 'post_status' => 'publish' ) );
+		\update_post_meta( $public->ID, Post::META_TID, 'public-bsky-tid' );
+		\update_post_meta( $public->ID, Document::META_TID, 'public-doc-tid' );
+
+		$this->atmosphere->schedule_historical_visibility_cleanup();
+
+		$this->assertNotFalse(
+			\wp_next_scheduled( 'atmosphere_delete_post', array( $protected->ID ) ),
+			'Existing protected records must be scheduled for cleanup.'
+		);
+		$this->assertFalse(
+			\wp_next_scheduled( 'atmosphere_delete_post', array( $public->ID ) ),
+			'Publishable records must not be scheduled by the historical cleanup.'
+		);
+		$this->assertSame( '1', \get_option( 'atmosphere_visibility_cleanup_migrated' ) );
 	}
 
 	/**
@@ -550,6 +618,22 @@ class Test_Atmosphere extends WP_UnitTestCase {
 	}
 
 	/**
+	 * Comments on non-public parent posts are skipped even when stale
+	 * root URI/CID meta still exists.
+	 */
+	public function test_comment_on_password_protected_post_is_skipped() {
+		$comment = $this->make_eligible_comment();
+		\wp_update_post(
+			array(
+				'ID'            => (int) $comment->comment_post_ID,
+				'post_password' => 'secret',
+			)
+		);
+
+		$this->assertFalse( Atmosphere::should_publish_comment( \get_comment( $comment->comment_ID ) ) );
+	}
+
+	/**
 	 * When the plugin is not connected, comments do not publish.
 	 */
 	public function test_disconnected_state_skips_comment_publish() {
@@ -754,6 +838,44 @@ class Test_Atmosphere extends WP_UnitTestCase {
 			\wp_next_scheduled( 'atmosphere_delete_post', array( $post->ID ) ),
 			'Stale update cron performs cleanup directly instead of deferring to another cron tick.'
 		);
+	}
+
+	/**
+	 * If cleanup succeeded before a stale update event fires, a restored
+	 * post with the visibility-cleanup marker must publish fresh records.
+	 */
+	public function test_update_post_cron_publishes_when_cleanup_removed_records() {
+		$post = self::factory()->post->create_and_get( array( 'post_status' => 'publish' ) );
+		Atmosphere::mark_visibility_cleanup( $post );
+
+		$captured_writes = array();
+		\add_filter(
+			'atmosphere_pre_apply_writes',
+			static function ( $short, $writes ) use ( &$captured_writes ) {
+				$captured_writes[] = $writes;
+
+				return array(
+					'results' => \array_map(
+						static fn ( $write ) => array(
+							'uri' => 'at://did:plc:test123/' . $write['collection'] . '/' . $write['rkey'],
+							'cid' => 'bafy' . $write['rkey'],
+						),
+						$writes
+					),
+				);
+			},
+			10,
+			2
+		);
+
+		\do_action( 'atmosphere_update_post', $post->ID );
+		\remove_all_filters( 'atmosphere_pre_apply_writes' );
+
+		$this->assertNotEmpty( $captured_writes, 'Stale update cron must write fresh records.' );
+		$this->assertSame( 'com.atproto.repo.applyWrites#create', $captured_writes[0][0]['$type'] );
+		$this->assertSame( 'app.bsky.feed.post', $captured_writes[0][0]['collection'] );
+		$this->assertSame( 'com.atproto.repo.applyWrites#create', $captured_writes[0][1]['$type'] );
+		$this->assertSame( 'site.standard.document', $captured_writes[0][1]['collection'] );
 	}
 
 	/**

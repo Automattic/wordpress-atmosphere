@@ -61,7 +61,7 @@ Always reserve the rkey via meta in `get_rkey()` — that meta key is the marker
 
 **Gating:** `atmosphere_syncable_post_types`, `atmosphere_should_publish_comment`, `atmosphere_should_sync_reply`, `atmosphere_backfill_limit`, `atmosphere_oauth_redirect_uri`, `atmosphere_client_metadata`.
 
-**Actions:** `atmosphere_publishing`, `atmosphere_publish_post_result`, `atmosphere_publish_comment_result`, `atmosphere_update_skipped_unsynced_post`, `atmosphere_long_form_strategy_downgraded`, `atmosphere_reaction_synced`.
+**Actions:** `atmosphere_publishing`, `atmosphere_publish_post_result`, `atmosphere_publish_comment_result`, `atmosphere_update_skipped_unsynced_post`, `atmosphere_long_form_strategy_downgraded`, `atmosphere_reaction_synced`. `atmosphere_publishing` receives the current `WP_Post` and is not a request-wide guard.
 
 **Test-only:** `atmosphere_pre_apply_writes` — Publisher fixture uses this to short-circuit `apply_writes` before the HTTP layer.
 

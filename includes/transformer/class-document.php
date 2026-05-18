@@ -58,10 +58,13 @@ class Document extends Base {
 		 * non-publishable posts before this placeholder reaches the PDS.
 		 */
 		$record = array(
-			'$type'       => 'site.standard.document',
-			'title'       => $redacted ? '' : sanitize_text( \get_the_title( $this->object ) ),
-			'publishedAt' => $this->to_iso8601( $this->object->post_date_gmt ),
+			'$type' => 'site.standard.document',
+			'title' => $redacted ? '' : sanitize_text( \get_the_title( $this->object ) ),
 		);
+
+		if ( ! $redacted ) {
+			$record['publishedAt'] = $this->to_iso8601( $this->object->post_date_gmt );
+		}
 
 		// Publication reference (required by spec).
 		$pub_tid = \get_option( 'atmosphere_publication_tid' );
@@ -127,6 +130,10 @@ class Document extends Base {
 			if ( $this->object->post_modified_gmt !== $this->object->post_date_gmt ) {
 				$record['updatedAt'] = $this->to_iso8601( $this->object->post_modified_gmt );
 			}
+		}
+
+		if ( $redacted ) {
+			return $record;
 		}
 
 		/**

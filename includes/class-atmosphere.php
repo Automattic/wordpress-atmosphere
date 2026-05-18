@@ -46,6 +46,20 @@ class Atmosphere {
 	private const META_VISIBILITY_CLEANUP = '_atmosphere_visibility_cleanup';
 
 	/**
+	 * Option marking that the historical visibility cleanup migration ran.
+	 *
+	 * @var string
+	 */
+	private const OPTION_VISIBILITY_CLEANUP_MIGRATED = 'atmosphere_visibility_cleanup_migrated';
+
+	/**
+	 * Post IDs currently being handled by on_status_change().
+	 *
+	 * @var array<int,bool>
+	 */
+	private static array $publishing_post_ids = array();
+
+	/**
 	 * Maximum re-schedule hops for a child comment waiting on a
 	 * not-yet-published parent. After this many deferrals the child
 	 * publishes as a top-level reply on the post (current fallback
@@ -101,6 +115,7 @@ class Atmosphere {
 
 		// Post lifecycle hooks.
 		\add_action( 'transition_post_status', array( $this, 'on_status_change' ), 10, 3 );
+		\add_action( 'admin_init', array( $this, 'schedule_historical_visibility_cleanup' ) );
 
 		// Catch permanent deletes (bypassing trash or emptying trash).
 		\add_action( 'before_delete_post', array( $this, 'on_before_delete' ) );
@@ -324,12 +339,12 @@ class Atmosphere {
 		 * longer supported), remote records must be removed even though
 		 * the post is no longer publishable.
 		 */
-		// Prevent infinite loops from meta updates.
-		if ( \did_action( 'atmosphere_publishing' ) ) {
+		if ( isset( self::$publishing_post_ids[ $post->ID ] ) ) {
 			return;
 		}
 
-		\do_action( 'atmosphere_publishing' );
+		self::$publishing_post_ids[ $post->ID ] = true;
+		\do_action( 'atmosphere_publishing', $post );
 
 		if ( $is_publishable ) {
 			\wp_clear_scheduled_hook( 'atmosphere_delete_post', array( $post->ID ) );
@@ -350,6 +365,76 @@ class Atmosphere {
 			 */
 			\wp_schedule_single_event( \time(), 'atmosphere_delete_post', array( $post->ID ) );
 		}
+
+		unset( self::$publishing_post_ids[ $post->ID ] );
+	}
+
+	/**
+	 * Schedule cleanup for records leaked before the visibility gate existed.
+	 */
+	public function schedule_historical_visibility_cleanup(): void {
+		if ( ! is_connected() ) {
+			return;
+		}
+
+		if ( \get_option( self::OPTION_VISIBILITY_CLEANUP_MIGRATED ) ) {
+			return;
+		}
+
+		$post_ids = \get_posts(
+			array(
+				'fields'         => 'ids',
+				'post_type'      => 'any',
+				'post_status'    => \array_values( \get_post_stati( array(), 'names' ) ),
+				'posts_per_page' => -1,
+				'no_found_rows'  => true,
+				'meta_query'     => array( // phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_query
+					'relation' => 'OR',
+					array(
+						'key'     => Post::META_TID,
+						'compare' => 'EXISTS',
+					),
+					array(
+						'key'     => Post::META_URI,
+						'compare' => 'EXISTS',
+					),
+					array(
+						'key'     => Post::META_THREAD_RECORDS,
+						'compare' => 'EXISTS',
+					),
+					array(
+						'key'     => Document::META_TID,
+						'compare' => 'EXISTS',
+					),
+					array(
+						'key'     => Document::META_URI,
+						'compare' => 'EXISTS',
+					),
+				),
+			)
+		);
+
+		foreach ( $post_ids as $post_id ) {
+			$post = \get_post( (int) $post_id );
+
+			if ( ! $post instanceof \WP_Post ) {
+				continue;
+			}
+
+			if ( is_post_publishable( $post ) || ! self::has_post_records( $post ) ) {
+				continue;
+			}
+
+			self::mark_visibility_cleanup( $post );
+
+			if ( \wp_next_scheduled( 'atmosphere_delete_post', array( $post->ID ) ) ) {
+				continue;
+			}
+
+			\wp_schedule_single_event( \time(), 'atmosphere_delete_post', array( $post->ID ) );
+		}
+
+		\update_option( self::OPTION_VISIBILITY_CLEANUP_MIGRATED, '1', false );
 	}
 
 	/**
@@ -384,7 +469,7 @@ class Atmosphere {
 	 *
 	 * @param \WP_Post $post Post object.
 	 */
-	private static function mark_visibility_cleanup( \WP_Post $post ): void {
+	public static function mark_visibility_cleanup( \WP_Post $post ): void {
 		\update_post_meta( $post->ID, self::META_VISIBILITY_CLEANUP, '1' );
 	}
 
@@ -636,7 +721,12 @@ class Atmosphere {
 			return false;
 		}
 
-		$post_id  = (int) $comment->comment_post_ID;
+		$post_id = (int) $comment->comment_post_ID;
+		$post    = \get_post( $post_id );
+		if ( ! $post instanceof \WP_Post || ! is_post_publishable( $post ) ) {
+			return false;
+		}
+
 		$post_uri = \get_post_meta( $post_id, Post::META_URI, true );
 		$post_cid = \get_post_meta( $post_id, Post::META_CID, true );
 
@@ -774,6 +864,7 @@ class Atmosphere {
 					$result = self::has_post_records( $post )
 						? Publisher::update_post( $post )
 						: Publisher::publish_post( $post );
+					self::log_cron_error( 'publish_post', $post_id, $result );
 					if ( ! \is_wp_error( $result ) ) {
 						self::clear_visibility_cleanup_marker( $post );
 					}
@@ -781,7 +872,7 @@ class Atmosphere {
 				}
 				if ( self::has_post_records( $post ) ) {
 					self::mark_visibility_cleanup( $post );
-					Publisher::delete_post( $post );
+					self::log_cron_error( 'delete_post', $post_id, Publisher::delete_post( $post ) );
 				}
 			}
 		);
@@ -794,7 +885,10 @@ class Atmosphere {
 					return;
 				}
 				if ( is_post_publishable( $post ) ) {
-					$result = Publisher::update_post( $post );
+					$result = self::has_post_records( $post ) || ! self::has_visibility_cleanup_marker( $post )
+						? Publisher::update_post( $post )
+						: Publisher::publish_post( $post );
+					self::log_cron_error( 'update_post', $post_id, $result );
 					if ( ! \is_wp_error( $result ) ) {
 						self::clear_visibility_cleanup_marker( $post );
 					}
@@ -802,7 +896,7 @@ class Atmosphere {
 				}
 				if ( self::has_post_records( $post ) ) {
 					self::mark_visibility_cleanup( $post );
-					Publisher::delete_post( $post );
+					self::log_cron_error( 'delete_post', $post_id, Publisher::delete_post( $post ) );
 				}
 			}
 		);
@@ -813,7 +907,10 @@ class Atmosphere {
 				$post = \get_post( $post_id );
 				if ( $post ) {
 					if ( is_post_publishable( $post ) ) {
-						$result = Publisher::update_post( $post );
+						$result = self::has_post_records( $post ) || ! self::has_visibility_cleanup_marker( $post )
+							? Publisher::update_post( $post )
+							: Publisher::publish_post( $post );
+						self::log_cron_error( 'delete_post_publishable_reconcile', $post_id, $result );
 						if ( ! \is_wp_error( $result ) ) {
 							self::clear_visibility_cleanup_marker( $post );
 						}
@@ -821,8 +918,8 @@ class Atmosphere {
 					}
 					if ( self::has_post_records( $post ) ) {
 						self::mark_visibility_cleanup( $post );
+						self::log_cron_error( 'delete_post', $post_id, Publisher::delete_post( $post ) );
 					}
-					Publisher::delete_post( $post );
 				}
 			}
 		);
@@ -1031,11 +1128,11 @@ class Atmosphere {
 	 * here would lose the breadcrumb operators need to diagnose
 	 * auth, transport, or PDS-side failures.
 	 *
-	 * @param string $op         One of 'publish_comment' | 'update_comment' | 'delete_comment'.
-	 * @param int    $comment_id Comment ID.
-	 * @param mixed  $result     Publisher call result.
+	 * @param string $op        Operation name.
+	 * @param int    $object_id Post or comment ID.
+	 * @param mixed  $result    Publisher call result.
 	 */
-	private static function log_cron_error( string $op, int $comment_id, $result ): void {
+	private static function log_cron_error( string $op, int $object_id, $result ): void {
 		if ( ! \is_wp_error( $result ) ) {
 			return;
 		}
@@ -1044,7 +1141,7 @@ class Atmosphere {
 			\sprintf(
 				'[atmosphere] %s %d failed: %s — %s',
 				$op,
-				$comment_id,
+				$object_id,
 				$result->get_error_code(),
 				$result->get_error_message()
 			)

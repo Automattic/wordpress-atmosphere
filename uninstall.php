@@ -31,6 +31,7 @@ $atmosphere_options = array(
 	'atmosphere_long_form_composition',
 	'atmosphere_support_post_types',
 	'atmosphere_last_seen_notification',
+	'atmosphere_visibility_cleanup_migrated',
 );
 
 foreach ( $atmosphere_options as $atmosphere_option ) {
@@ -54,6 +55,7 @@ $atmosphere_meta_keys = array(
 	'_atmosphere_doc_uri',
 	'_atmosphere_doc_cid',
 	'_atmosphere_doc_ref_pending',
+	'_atmosphere_visibility_cleanup',
 	'_atmosphere_blob_ref',
 );
 

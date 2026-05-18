@@ -126,6 +126,8 @@ class Publisher {
 			}
 		}
 
+		$result = self::reconcile_post_after_write( $post, $result );
+
 		/**
 		 * Fires after a post publish attempt completes, with the final result.
 		 *
@@ -140,6 +142,33 @@ class Publisher {
 		\do_action( 'atmosphere_publish_post_result', $post, $result );
 
 		return $result;
+	}
+
+	/**
+	 * Remove records that became ineligible while applyWrites was in flight.
+	 *
+	 * @param \WP_Post        $post   Post just written.
+	 * @param array|\WP_Error $result Publisher result.
+	 * @return array|\WP_Error
+	 */
+	private static function reconcile_post_after_write( \WP_Post $post, array|\WP_Error $result ): array|\WP_Error {
+		if ( \is_wp_error( $result ) ) {
+			return $result;
+		}
+
+		$fresh = \get_post( $post->ID );
+
+		if ( $fresh instanceof \WP_Post && is_post_publishable( $fresh ) ) {
+			return $result;
+		}
+
+		if ( ! $fresh instanceof \WP_Post ) {
+			return $result;
+		}
+
+		Atmosphere::mark_visibility_cleanup( $fresh );
+
+		return self::delete_post( $fresh );
 	}
 
 	/**
@@ -741,7 +770,7 @@ class Publisher {
 			return $doc_ref_result;
 		}
 
-		return $result;
+		return self::reconcile_post_after_write( $post, $result );
 	}
 
 	/**
@@ -842,7 +871,7 @@ class Publisher {
 			return $doc_ref_result;
 		}
 
-		return $result;
+		return self::reconcile_post_after_write( $post, $result );
 	}
 
 	/**
@@ -982,7 +1011,7 @@ class Publisher {
 	 * @return array|\WP_Error
 	 */
 	public static function delete_post( \WP_Post $post ): array|\WP_Error {
-		$stored  = self::stored_thread_records( $post->ID );
+		$stored  = self::stored_thread_records( $post->ID, true );
 		$doc_tid = \get_post_meta( $post->ID, Document::META_TID, true );
 
 		$comment_tids = self::collect_published_comment_tids( $post->ID );
@@ -1581,10 +1610,11 @@ class Publisher {
 	 * meta so posts published before this key existed still delete/update
 	 * correctly.
 	 *
-	 * @param int $post_id Post ID.
+	 * @param int  $post_id          Post ID.
+	 * @param bool $include_bare_tid Include a reserved TID even when URI is absent.
 	 * @return array[] Array of { uri, cid, tid } triples, possibly empty.
 	 */
-	private static function stored_thread_records( int $post_id ): array {
+	private static function stored_thread_records( int $post_id, bool $include_bare_tid = false ): array {
 		$stored = \get_post_meta( $post_id, Post::META_THREAD_RECORDS, true );
 		if ( \is_array( $stored ) && ! empty( $stored ) ) {
 			return $stored;
@@ -1600,8 +1630,12 @@ class Publisher {
 		// republish failed). Treat that as "nothing published" so the
 		// caller falls back to a fresh publish and the reserved TID is
 		// reused on the next attempt.
-		if ( ! $uri ) {
+		if ( ! $uri && ( ! $include_bare_tid || ! $tid ) ) {
 			return array();
+		}
+
+		if ( ! $uri && $tid ) {
+			$uri = build_at_uri( get_did(), 'app.bsky.feed.post', (string) $tid );
 		}
 
 		return array(

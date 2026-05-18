@@ -168,6 +168,10 @@ class Post extends Base {
 			}
 		}
 
+		if ( $redacted ) {
+			return $record;
+		}
+
 		/**
 		 * Filters the app.bsky.feed.post record before publishing.
 		 *
@@ -1059,6 +1063,10 @@ class Post extends Base {
 			}
 		}
 
+		if ( $this->is_redacted() ) {
+			return $record;
+		}
+
 		$context = \wp_parse_args(
 			$context,
 			array(
@@ -1119,6 +1127,10 @@ class Post extends Base {
 			if ( ! empty( $tags ) ) {
 				$record['tags'] = $tags;
 			}
+		}
+
+		if ( $redacted ) {
+			return $record;
 		}
 
 		/** This filter is documented in Post::transform() above. */

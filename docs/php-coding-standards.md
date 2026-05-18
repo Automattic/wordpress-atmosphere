@@ -227,7 +227,7 @@ use function Atmosphere\is_connected;
 
 **Actions:**
 ```php
-\do_action( 'atmosphere_publishing' );                                            // Once per publish/update/delete cycle (loop guard).
+\do_action( 'atmosphere_publishing', $post );                                     // Once per post publish/update/delete schedule.
 \do_action( 'atmosphere_publish_post_result',          $post, $result );
 \do_action( 'atmosphere_publish_comment_result',       $comment, $result );
 \do_action( 'atmosphere_update_skipped_unsynced_post', $post );
