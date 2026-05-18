@@ -364,7 +364,43 @@ class Admin {
 			return '';
 		}
 
-		\wp_redirect( $auth_url ); // phpcs:ignore WordPress.Security.SafeRedirect.wp_redirect_wp_redirect
+		/*
+		 * `$auth_url` is built from the auth-server metadata returned
+		 * by the resolution chain. The resolver validates each URL it
+		 * persists, but defence-in-depth: re-check the scheme + host
+		 * before redirecting an admin so a misconfigured filter or
+		 * future code path can't slip a `javascript:` / `data:` URI
+		 * through.
+		 *
+		 * `wp_safe_redirect` would normally reject this destination —
+		 * it's intentionally off-site (the AT Protocol auth server).
+		 * Add the auth-server host to `allowed_redirect_hosts` for the
+		 * `wp_safe_redirect` call, then immediately detach the filter
+		 * so it can't affect any subsequent redirect — the `exit`
+		 * makes that production-redundant, but pinning the invariant
+		 * here keeps it intact if a test or a `wp_die()` handler ever
+		 * intercepts the redirect before `exit` fires.
+		 */
+		$auth_host   = \is_string( $auth_url ) ? \wp_parse_url( $auth_url, PHP_URL_HOST ) : '';
+		$auth_scheme = \is_string( $auth_url ) ? \wp_parse_url( $auth_url, PHP_URL_SCHEME ) : '';
+
+		if ( empty( $auth_host ) || 'https' !== $auth_scheme ) {
+			\add_settings_error(
+				'atmosphere',
+				'auth_failed',
+				\__( 'Authorization URL is not a safe HTTPS target.', 'atmosphere' )
+			);
+			return '';
+		}
+
+		$allow_auth_host = static function ( $hosts ) use ( $auth_host ) {
+			$hosts[] = $auth_host;
+			return $hosts;
+		};
+
+		\add_filter( 'allowed_redirect_hosts', $allow_auth_host );
+		\wp_safe_redirect( $auth_url );
+		\remove_filter( 'allowed_redirect_hosts', $allow_auth_host );
 		exit;
 	}
 
@@ -771,9 +807,13 @@ class Admin {
 			'grant_types'                => array( 'authorization_code', 'refresh_token' ),
 			'response_types'             => array( 'code' ),
 			'token_endpoint_auth_method' => 'none',
-			// MUST match the scope string requested by Client::authorize().
-			// The auth server validates the request scope against the metadata;
-			// a drift here silently downgrades to the smaller of the two.
+
+			/*
+			 * MUST match the scope string requested by
+			 * Client::authorize(). The auth server validates the
+			 * request scope against the metadata; a drift here
+			 * silently downgrades to the smaller of the two.
+			 */
 			'scope'                      => 'atproto transition:generic identity:handle',
 			'dpop_bound_access_tokens'   => true,
 			'application_type'           => 'web',
@@ -782,9 +822,45 @@ class Admin {
 		/**
 		 * Filters the OAuth client metadata served at the REST endpoint.
 		 *
+		 * Filters MUST return an array containing:
+		 *
+		 *  - `client_id`: non-empty string (advertised as the OAuth client
+		 *    identifier; should match `Client::client_id()`).
+		 *  - `redirect_uris`: non-empty list of non-empty strings, where
+		 *    every entry is rooted at this site's admin
+		 *    (`admin_url('')` prefix). Off-site / empty / non-string /
+		 *    nested-array entries cause the entire filter result to be
+		 *    rejected.
+		 *
+		 * Anything else falls back to the unfiltered metadata. The
+		 * metadata endpoint is public and the document advertises
+		 * `token_endpoint_auth_method: 'none'` (public client), so an
+		 * attacker-supplied `redirect_uris` entry would let them drive
+		 * this site's `client_id` with their own redirect target. Gate
+		 * entries individually, matching the validation
+		 * {@see \Atmosphere\OAuth\Client::redirect_uri()} applies to
+		 * the inbound `atmosphere_oauth_redirect_uri` filter.
+		 *
 		 * @param array $metadata Client metadata.
 		 */
-		$metadata = \apply_filters( 'atmosphere_client_metadata', $metadata );
+		$filtered = \apply_filters( 'atmosphere_client_metadata', $metadata );
+
+		if ( self::client_metadata_filter_is_valid( $filtered ) ) {
+			$metadata = $filtered;
+		} elseif ( $filtered !== $metadata ) {
+			/*
+			 * Surface only when the filter actually fired and returned
+			 * something that failed validation — without this guard
+			 * every page load on a site with no filter would trip the
+			 * notice because the equality check above is the cheap
+			 * shorthand for "nothing changed".
+			 */
+			\_doing_it_wrong(
+				__METHOD__,
+				\esc_html__( 'atmosphere_client_metadata must return an array with a non-empty string client_id and a redirect_uris list of admin URLs; falling back to the unfiltered metadata.', 'atmosphere' ),
+				'0.1.0'
+			);
+		}
 
 		$response = new \WP_REST_Response( $metadata, 200 );
 
@@ -804,5 +880,62 @@ class Admin {
 		$response->header( 'Cache-Control', 'public, max-age=300' );
 
 		return $response;
+	}
+
+	/**
+	 * Validate the return value of the `atmosphere_client_metadata` filter.
+	 *
+	 * Container shape:
+	 *
+	 *  - Must be an array.
+	 *  - `client_id` present, non-empty string.
+	 *  - `redirect_uris` present, non-empty array (list of strings).
+	 *
+	 * Per-entry `redirect_uris` rules:
+	 *
+	 *  - Each entry is a non-empty string.
+	 *  - Each entry begins with this site's admin URL prefix
+	 *    (`admin_url('')`), the same gate
+	 *    {@see \Atmosphere\OAuth\Client::redirect_uri()} applies to
+	 *    the inbound filter. An off-site / scheme-mismatched / empty
+	 *    entry disqualifies the entire filter result.
+	 *
+	 * Returns true only if every check passes; the caller falls back
+	 * to the unfiltered metadata on false.
+	 *
+	 * @param mixed $filtered Filter return value.
+	 * @return bool
+	 */
+	private static function client_metadata_filter_is_valid( $filtered ): bool {
+		if ( ! \is_array( $filtered ) ) {
+			return false;
+		}
+
+		if ( ! isset( $filtered['client_id'] )
+			|| ! \is_string( $filtered['client_id'] )
+			|| '' === $filtered['client_id']
+		) {
+			return false;
+		}
+
+		if ( ! isset( $filtered['redirect_uris'] )
+			|| ! \is_array( $filtered['redirect_uris'] )
+			|| array() === $filtered['redirect_uris']
+		) {
+			return false;
+		}
+
+		$admin_prefix = \admin_url( '' );
+
+		foreach ( $filtered['redirect_uris'] as $uri ) {
+			if ( ! \is_string( $uri )
+				|| '' === $uri
+				|| ! \str_starts_with( $uri, $admin_prefix )
+			) {
+				return false;
+			}
+		}
+
+		return true;
 	}
 }

@@ -132,6 +132,16 @@ class Facet {
 
 			$did = self::resolve_mention( $handle );
 
+			/*
+			 * `resolve_mention()` returns an empty string when the
+			 * handle fails its (defence-in-depth) syntax check. Skip
+			 * the facet entirely in that case — sending an empty
+			 * `did` to Bluesky would have the PDS reject the record.
+			 */
+			if ( '' === $did ) {
+				continue;
+			}
+
 			$facets[] = array(
 				'index'    => array(
 					'byteStart' => $start,
@@ -188,15 +198,34 @@ class Facet {
 	/**
 	 * Resolve a handle to a DID for mention facets.
 	 *
-	 * Falls back to did:web if DNS resolution fails.
+	 * Falls back to `did:web` if DNS resolution fails. The
+	 * `is_valid_handle()` gate below ensures only DNS-syntactically
+	 * valid handles reach `dns_get_record()` — that closes the
+	 * "malformed handle as DNS query smuggling" angle (e.g. control
+	 * characters or percent-encoded segments injected through a
+	 * regex relaxation), it does NOT block lookups against
+	 * attacker-controlled but well-formed domains.
+	 *
+	 * That broader exposure is by design: mention resolution requires
+	 * a DNS lookup against the mentioned handle's authoritative server,
+	 * and any user (commenter included) can mention any well-formed
+	 * domain. If that DNS-egress surface becomes a concern, the right
+	 * fix is at the threat-model layer (skip mention resolution on
+	 * the commenter path, allowlist mention authorities, or move to
+	 * DoH with a hard timeout) rather than tightening the syntactic
+	 * gate further.
 	 *
 	 * @param string $handle AT Protocol handle.
-	 * @return string DID string.
+	 * @return string DID string, or empty string if the handle is malformed.
 	 */
 	private static function resolve_mention( string $handle ): string {
 		$conn = get_connection();
 		if ( ! empty( $conn['handle'] ) && \strtolower( $handle ) === \strtolower( $conn['handle'] ) ) {
 			return $conn['did'];
+		}
+
+		if ( ! self::is_valid_handle( $handle ) ) {
+			return '';
 		}
 
 		$records = @\dns_get_record( '_atproto.' . $handle, DNS_TXT ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
@@ -210,5 +239,25 @@ class Facet {
 		}
 
 		return 'did:web:' . $handle;
+	}
+
+	/**
+	 * RFC 1035-style DNS-name validation, mirroring
+	 * `Resolver::is_valid_handle()`. Rejects empty strings, oversized
+	 * labels, leading/trailing hyphens, single-label hosts, and any
+	 * character outside `[A-Za-z0-9-]` — including percent-encoded
+	 * forms.
+	 *
+	 * @param string $host Handle to validate.
+	 * @return bool
+	 */
+	private static function is_valid_handle( string $host ): bool {
+		if ( '' === $host || \strlen( $host ) > 253 ) {
+			return false;
+		}
+
+		$label = '[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?';
+
+		return (bool) \preg_match( '/^' . $label . '(?:\.' . $label . ')+$/', $host );
 	}
 }
