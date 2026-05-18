@@ -195,8 +195,17 @@ class Resolver {
 		 * Malformed JSON (or a valid scalar/null payload like
 		 * `"foo"` or `null`) decodes to a non-array. Bail before
 		 * indexing so PHP 8 doesn't TypeError on offset access.
+		 *
+		 * Guard the parent `authorization_servers` separately: on
+		 * PHP 8.1+ `empty( $resource['authorization_servers'][0] )`
+		 * still evaluates the inner offset access first, and if the
+		 * value is a scalar (`'foo'`, `42`) the offset read emits a
+		 * warning before `empty()` short-circuits. Checking
+		 * `is_array()` on the parent first sidesteps that.
 		 */
 		if ( ! \is_array( $resource )
+			|| ! isset( $resource['authorization_servers'] )
+			|| ! \is_array( $resource['authorization_servers'] )
 			|| empty( $resource['authorization_servers'][0] )
 			|| ! \is_string( $resource['authorization_servers'][0] )
 		) {

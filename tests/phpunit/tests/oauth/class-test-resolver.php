@@ -535,6 +535,26 @@ class Test_Resolver extends WP_UnitTestCase {
 	}
 
 	/**
+	 * `discover_auth_server` doesn't emit a PHP 8.1+ offset-access
+	 * warning when `authorization_servers` is itself a scalar
+	 * (`"foo"` rather than `["https://…"]`). `empty()` on the inner
+	 * index would otherwise force PHP to read offset `0` of a scalar
+	 * before short-circuiting.
+	 */
+	public function test_discover_auth_server_tolerates_scalar_authorization_servers() {
+		$this->stub_response(
+			'oauth-protected-resource',
+			200,
+			array( 'authorization_servers' => 'not-a-list' )
+		);
+
+		$result = Resolver::discover_auth_server( 'https://pds.example.com' );
+
+		$this->assertWPError( $result );
+		$this->assertSame( 'atmosphere_no_auth_server', $result->get_error_code() );
+	}
+
+	/**
 	 * `discover_auth_server` doesn't fatal when the
 	 * `oauth-authorization-server` body decodes to a non-array.
 	 * Returns `atmosphere_incomplete_auth_meta`.
