@@ -56,6 +56,7 @@ class Test_Client_Refresh extends WP_UnitTestCase {
 	 */
 	public function tear_down(): void {
 		\delete_option( 'atmosphere_connection' );
+		\delete_option( 'atmosphere_refresh_lock' );
 		\remove_all_filters( 'pre_http_request' );
 
 		parent::tear_down();

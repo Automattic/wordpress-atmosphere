@@ -31,6 +31,8 @@ $atmosphere_options = array(
 	'atmosphere_long_form_composition',
 	'atmosphere_support_post_types',
 	'atmosphere_last_seen_notification',
+	'atmosphere_tid_last_ts',
+	'atmosphere_refresh_lock',
 );
 
 foreach ( $atmosphere_options as $atmosphere_option ) {
@@ -118,6 +120,8 @@ foreach ( $atmosphere_transients as $atmosphere_transient ) {
  *    pre-bootstrap, so we can't reference the constant directly
  *    without loading the autoloader here. Anyone renaming the
  *    constant should grep for `atmo_dpop_nonce_` and update both.
+ *  - atmosphere_oauth_rate_<user_id>
+ *    — per-user OAuth rate-limit counter (15 min TTL).
  *  - atmosphere_profile_<md5>       — reaction-sync profile cache
  *    written by `Reaction_Sync::resolve_author()`. No constant —
  *    grep for `atmosphere_profile_` in includes/.
@@ -151,7 +155,9 @@ $atmosphere_transient_rows = $wpdb->get_col(
 	 WHERE option_name LIKE '\_transient\_atmo\_dpop\_nonce\_%'
 	    OR option_name LIKE '\_transient\_timeout\_atmo\_dpop\_nonce\_%'
 	    OR option_name LIKE '\_transient\_atmosphere\_profile\_%'
-	    OR option_name LIKE '\_transient\_timeout\_atmosphere\_profile\_%'"
+	    OR option_name LIKE '\_transient\_timeout\_atmosphere\_profile\_%'
+	    OR option_name LIKE '\_transient\_atmosphere\_oauth\_%'
+	    OR option_name LIKE '\_transient\_timeout\_atmosphere\_oauth\_%'"
 );
 
 $atmosphere_option_rows = $wpdb->get_col(

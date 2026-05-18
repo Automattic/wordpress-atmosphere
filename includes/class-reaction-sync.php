@@ -504,6 +504,15 @@ class Reaction_Sync {
 		array $notification,
 		array $profile
 	): int|false {
+		/*
+		 * Respect the post-level comments-open policy. If the site
+		 * admin closed comments on a post, an inbound Bluesky like /
+		 * repost / reply should not appear as a fresh comment row.
+		 */
+		if ( ! \comments_open( $post_id ) ) {
+			return false;
+		}
+
 		$uri    = $notification['uri'] ?? '';
 		$cid    = $notification['cid'] ?? '';
 		$author = $notification['author'] ?? array();
@@ -515,6 +524,16 @@ class Reaction_Sync {
 		$timestamp = \strtotime( $record['createdAt'] ?? '' );
 		$gm_date   = \gmdate( 'Y-m-d H:i:s', false === $timestamp ? 0 : $timestamp );
 
+		/*
+		 * Honour the global "moderate before publishing" setting. The
+		 * `ATmosphere/` agent stamp keeps the comment-publish cron
+		 * (`atmosphere_publish_comment`) from picking this row back up
+		 * regardless of its approval state, so a held reaction can be
+		 * approved in wp-admin later without being written back to the
+		 * Bluesky PDS.
+		 */
+		$comment_approved = (int) \get_option( 'comment_moderation' ) ? 0 : 1;
+
 		$comment_data = array(
 			'comment_post_ID'      => $post_id,
 			'comment_parent'       => $comment_parent,
@@ -525,7 +544,7 @@ class Reaction_Sync {
 			'comment_date'         => \get_date_from_gmt( $gm_date ),
 			'comment_date_gmt'     => $gm_date,
 			'comment_type'         => $comment_type,
-			'comment_approved'     => 1,
+			'comment_approved'     => $comment_approved,
 			'comment_agent'        => 'ATmosphere/' . ATMOSPHERE_VERSION,
 		);
 

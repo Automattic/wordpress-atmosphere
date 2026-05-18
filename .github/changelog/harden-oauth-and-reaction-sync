@@ -1,0 +1,4 @@
+Significance: patch
+Type: changed
+
+Tighten OAuth token lifecycle, harden TID generation against cross-worker collisions, and respect WordPress comment moderation when importing Bluesky reactions.

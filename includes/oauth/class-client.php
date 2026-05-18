@@ -100,6 +100,11 @@ class Client {
 	 * @return string|\WP_Error Authorization URL or error.
 	 */
 	public static function authorize( string $handle ): string|\WP_Error {
+		$rate_limit = self::rate_limit_check();
+		if ( \is_wp_error( $rate_limit ) ) {
+			return $rate_limit;
+		}
+
 		$resolved = Resolver::resolve( $handle );
 		if ( \is_wp_error( $resolved ) ) {
 			return $resolved;
@@ -296,6 +301,11 @@ class Client {
 	 * @return true|\WP_Error
 	 */
 	public static function handle_callback( string $code, string $state ): true|\WP_Error {
+		$rate_limit = self::rate_limit_check();
+		if ( \is_wp_error( $rate_limit ) ) {
+			return $rate_limit;
+		}
+
 		// Verify state.
 		$stored_state = \get_transient( 'atmosphere_oauth_state' );
 		if ( ! $stored_state || ! \hash_equals( $stored_state, $state ) ) {
@@ -422,15 +432,18 @@ class Client {
 
 		// Persist connection.
 		$connection = array(
-			'did'            => $resolved['did'],
-			'handle'         => $resolved['handle'],
-			'pds_endpoint'   => $resolved['pds_endpoint'],
-			'auth_server'    => $resolved['auth_server']['issuer_url'],
-			'token_endpoint' => $token_endpoint,
-			'access_token'   => Encryption::encrypt( $data['access_token'] ),
-			'refresh_token'  => ! empty( $data['refresh_token'] ) ? Encryption::encrypt( $data['refresh_token'] ) : '',
-			'dpop_jwk'       => Encryption::encrypt( (string) \wp_json_encode( $dpop_jwk ) ),
-			'expires_at'     => \time() + ( $data['expires_in'] ?? 3600 ),
+			'did'                 => $resolved['did'],
+			'handle'              => $resolved['handle'],
+			'pds_endpoint'        => $resolved['pds_endpoint'],
+			'auth_server'         => $resolved['auth_server']['issuer_url'],
+			'token_endpoint'      => $token_endpoint,
+			'revocation_endpoint' => isset( $resolved['auth_server']['revocation_endpoint'] )
+				? (string) $resolved['auth_server']['revocation_endpoint']
+				: '',
+			'access_token'        => Encryption::encrypt( $data['access_token'] ),
+			'refresh_token'       => ! empty( $data['refresh_token'] ) ? Encryption::encrypt( $data['refresh_token'] ) : '',
+			'dpop_jwk'            => Encryption::encrypt( (string) \wp_json_encode( $dpop_jwk ) ),
+			'expires_at'          => \time() + ( $data['expires_in'] ?? 3600 ),
 		);
 
 		\update_option( 'atmosphere_connection', $connection );
@@ -439,7 +452,25 @@ class Client {
 	}
 
 	/**
+	 * Maximum lifetime (seconds) of the refresh lock before it is
+	 * presumed stale and reclaimed. One refresh roundtrip is typically
+	 * sub-second; the buffer covers the slowest reasonable network
+	 * timeout (15s) plus a margin for the request that set the lock to
+	 * actually finish.
+	 *
+	 * @var int
+	 */
+	private const REFRESH_LOCK_TTL = 30;
+
+	/**
 	 * Refresh the access token.
+	 *
+	 * Guarded by an `add_option`-backed lock so two concurrent workers
+	 * (cron + admin click, two cron events firing in the same tick,
+	 * etc.) cannot both POST the same refresh token to the auth server.
+	 * The auth server consumes the refresh token on first success and
+	 * the loser would otherwise receive `invalid_grant`, which used to
+	 * delete a perfectly-working connection.
 	 *
 	 * @return true|\WP_Error
 	 */
@@ -450,6 +481,75 @@ class Client {
 			return new \WP_Error( 'atmosphere_no_refresh', \__( 'No refresh token available.', 'atmosphere' ) );
 		}
 
+		/*
+		 * Reclaim a lock left by a crashed worker. Two workers can
+		 * race the reclaim+`add_option` pair and both succeed, but
+		 * that only happens after the locked worker actually crashed
+		 * (i.e. the in-flight request never finished). At that point
+		 * both winners just re-issue the refresh; the second to talk
+		 * to the auth server gets `invalid_grant` and the connection
+		 * is reset.
+		 */
+		$existing_lock = (int) \get_option( 'atmosphere_refresh_lock', 0 );
+		if ( $existing_lock > 0 && $existing_lock < \time() - self::REFRESH_LOCK_TTL ) {
+			\delete_option( 'atmosphere_refresh_lock' );
+		}
+
+		/*
+		 * `add_option` is atomic at the SQL layer (INSERT IGNORE).
+		 * Fourth arg `'no'` disables autoload so the lock value does
+		 * not bloat the always-loaded options cache. When another
+		 * worker holds the lock the call returns false and we fall
+		 * through to the re-read path: if that worker already updated
+		 * `atmosphere_connection` with a fresh token, the caller's
+		 * `access_token()` will see it without us issuing a second
+		 * refresh.
+		 */
+		if ( ! \add_option( 'atmosphere_refresh_lock', (string) \time(), '', 'no' ) ) {
+			$conn = \get_option( 'atmosphere_connection', array() );
+			if ( \is_array( $conn ) && ! empty( $conn['expires_at'] ) && $conn['expires_at'] > \time() + 300 ) {
+				return true;
+			}
+			return new \WP_Error(
+				'atmosphere_refresh_locked',
+				\__( 'Another worker is refreshing the access token. Try again shortly.', 'atmosphere' )
+			);
+		}
+
+		/*
+		 * Re-read the connection under the lock — between the initial
+		 * read above and the lock acquisition, the previous lock-holder
+		 * (which we may have just reclaimed as stale, or whose work
+		 * landed mid-execution) could have stored a fresh token. Using
+		 * the post-lock snapshot avoids POSTing an already-consumed
+		 * refresh token.
+		 */
+		$conn = \get_option( 'atmosphere_connection', array() );
+
+		if ( ! \is_array( $conn ) || empty( $conn['refresh_token'] ) ) {
+			\delete_option( 'atmosphere_refresh_lock' );
+			return new \WP_Error( 'atmosphere_no_refresh', \__( 'No refresh token available.', 'atmosphere' ) );
+		}
+
+		try {
+			return self::do_refresh( $conn );
+		} finally {
+			\delete_option( 'atmosphere_refresh_lock' );
+		}
+	}
+
+	/**
+	 * Issue the actual token-refresh request.
+	 *
+	 * Split from `refresh()` so the surrounding lock acquire/release in
+	 * `refresh()` has a single, easy-to-follow critical section. Don't
+	 * call this directly — concurrent callers will burn the refresh
+	 * token. Always go through `refresh()` which holds the lock.
+	 *
+	 * @param array $conn Decoded `atmosphere_connection` option payload.
+	 * @return true|\WP_Error
+	 */
+	private static function do_refresh( array $conn ): true|\WP_Error {
 		$refresh_token = Encryption::decrypt( $conn['refresh_token'] );
 		if ( false === $refresh_token ) {
 			return new \WP_Error( 'atmosphere_decrypt', \__( 'Failed to decrypt refresh token.', 'atmosphere' ) );
@@ -594,10 +694,195 @@ class Client {
 	 * connection check, so a disconnect→reconnect-to-different-account
 	 * cycle would otherwise fire deletes against the new account's repo.
 	 * Mirrors the cleanup performed on plugin deactivate / uninstall.
+	 *
+	 * Best-effort revokes the refresh token at the auth server before
+	 * deleting local state (RFC 7009). A leaked refresh token therefore
+	 * stops working server-side even though disconnect already removed
+	 * it locally. Revocation failures are logged but do not block the
+	 * local cleanup.
 	 */
 	public static function disconnect(): void {
+		self::revoke_refresh_token();
 		\delete_option( 'atmosphere_connection' );
 		clear_scheduled_hooks();
+	}
+
+	/**
+	 * Best-effort revoke the stored refresh token at the auth server.
+	 *
+	 * Reads the live `atmosphere_connection` option, decrypts the
+	 * refresh token + DPoP JWK, and POSTs the token to the auth
+	 * server's `revocation_endpoint` per RFC 7009. AT Protocol auth
+	 * servers require DPoP-bound revocation, so the request carries a
+	 * DPoP proof and retries once on `use_dpop_nonce` exactly like
+	 * `refresh()` does. Any failure path returns silently after
+	 * logging — disconnect must not be gated on the auth server being
+	 * reachable.
+	 */
+	private static function revoke_refresh_token(): void {
+		$conn = \get_option( 'atmosphere_connection', array() );
+
+		if ( ! \is_array( $conn ) ) {
+			return;
+		}
+
+		$revocation_endpoint = isset( $conn['revocation_endpoint'] ) ? (string) $conn['revocation_endpoint'] : '';
+		if ( '' === $revocation_endpoint ) {
+			return;
+		}
+
+		if ( empty( $conn['refresh_token'] ) || empty( $conn['dpop_jwk'] ) ) {
+			return;
+		}
+
+		$refresh_token = Encryption::decrypt( $conn['refresh_token'] );
+		$dpop_jwk_json = Encryption::decrypt( $conn['dpop_jwk'] );
+		if ( false === $refresh_token || false === $dpop_jwk_json ) {
+			return;
+		}
+
+		$dpop_jwk = \json_decode( $dpop_jwk_json, true );
+		if ( ! \is_array( $dpop_jwk ) ) {
+			return;
+		}
+
+		$body = array(
+			'token'           => $refresh_token,
+			'token_type_hint' => 'refresh_token',
+			'client_id'       => self::client_id(),
+		);
+
+		$dpop_proof = DPoP::create_proof( $dpop_jwk, 'POST', $revocation_endpoint );
+		if ( false === $dpop_proof ) {
+			return;
+		}
+
+		$response = \wp_safe_remote_post(
+			$revocation_endpoint,
+			array(
+				'headers' => array(
+					'Content-Type' => 'application/x-www-form-urlencoded',
+					'DPoP'         => $dpop_proof,
+				),
+				'body'    => $body,
+				'timeout' => 10,
+			)
+		);
+
+		if ( \is_wp_error( $response ) ) {
+			\error_log( // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
+				\sprintf(
+					'[atmosphere] refresh-token revocation failed: %s',
+					$response->get_error_message()
+				)
+			);
+			return;
+		}
+
+		$nonce = \wp_remote_retrieve_header( $response, 'dpop-nonce' );
+		if ( $nonce ) {
+			DPoP::persist_nonce( $dpop_jwk, $revocation_endpoint, $nonce );
+		}
+
+		$status = \wp_remote_retrieve_response_code( $response );
+		$data   = \json_decode( \wp_remote_retrieve_body( $response ), true );
+		if ( ! \is_array( $data ) ) {
+			$data = array();
+		}
+
+		if ( \in_array( $status, array( 400, 401 ), true )
+			&& ( $data['error'] ?? '' ) === 'use_dpop_nonce'
+			&& $nonce
+		) {
+			$dpop_proof = DPoP::create_proof( $dpop_jwk, 'POST', $revocation_endpoint, $nonce );
+			if ( false === $dpop_proof ) {
+				return;
+			}
+
+			$response = \wp_safe_remote_post(
+				$revocation_endpoint,
+				array(
+					'headers' => array(
+						'Content-Type' => 'application/x-www-form-urlencoded',
+						'DPoP'         => $dpop_proof,
+					),
+					'body'    => $body,
+					'timeout' => 10,
+				)
+			);
+
+			if ( \is_wp_error( $response ) ) {
+				\error_log( // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
+					\sprintf(
+						'[atmosphere] refresh-token revocation retry failed: %s',
+						$response->get_error_message()
+					)
+				);
+				return;
+			}
+
+			$status = \wp_remote_retrieve_response_code( $response );
+		}
+
+		/*
+		 * RFC 7009 §2.2: revocation responses are 200 even when the
+		 * token is unknown to the auth server. A 4xx/5xx generally
+		 * indicates a misconfigured client or a server outage; either
+		 * way disconnect proceeds.
+		 */
+		if ( $status >= 400 ) {
+			\error_log( // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
+				\sprintf(
+					'[atmosphere] refresh-token revocation returned status %d',
+					$status
+				)
+			);
+		}
+	}
+
+	/**
+	 * Maximum OAuth attempts (authorize + callback combined) per user
+	 * inside a single rate-limit window.
+	 *
+	 * @var int
+	 */
+	private const RATE_LIMIT_MAX = 10;
+
+	/**
+	 * Rate-limit window in seconds.
+	 *
+	 * @var int
+	 */
+	private const RATE_LIMIT_WINDOW = 900;
+
+	/**
+	 * Throttle OAuth start and callback per WordPress user.
+	 *
+	 * The admin-only capability gate keeps the surface narrow, but a
+	 * compromised admin or a chain that survives the nonce check (a
+	 * settings-screen XSS in another plugin, for example) could
+	 * otherwise drive unbounded outbound requests to an attacker-chosen
+	 * auth server via the handle field. The counter is cheap, scoped to
+	 * the current user (or a shared `0` bucket for unauthenticated
+	 * callers, which the admin nonce normally rejects anyway), and
+	 * naturally resets when the window expires.
+	 *
+	 * @return true|\WP_Error
+	 */
+	private static function rate_limit_check(): true|\WP_Error {
+		$key      = \sprintf( 'atmosphere_oauth_rate_%d', \get_current_user_id() );
+		$attempts = (int) \get_transient( $key );
+
+		if ( $attempts >= self::RATE_LIMIT_MAX ) {
+			return new \WP_Error(
+				'atmosphere_rate_limited',
+				\__( 'Too many OAuth attempts. Please wait a few minutes and try again.', 'atmosphere' )
+			);
+		}
+
+		\set_transient( $key, $attempts + 1, self::RATE_LIMIT_WINDOW );
+
+		return true;
 	}
 
 	/**
