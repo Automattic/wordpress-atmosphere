@@ -827,10 +827,10 @@ class Admin {
 		 *  - `client_id`: non-empty string (advertised as the OAuth client
 		 *    identifier; should match `Client::client_id()`).
 		 *  - `redirect_uris`: non-empty list of non-empty strings, where
-		 *    every entry is rooted at this site's admin
-		 *    (`admin_url('')` prefix). Off-site / empty / non-string /
-		 *    nested-array entries cause the entire filter result to be
-		 *    rejected.
+		 *    every entry is rooted at this site's admin over HTTPS
+		 *    (`admin_url('', 'https')` prefix). Off-site / empty /
+		 *    non-string / HTTP-scheme / nested-array entries cause the
+		 *    entire filter result to be rejected.
 		 *
 		 * Anything else falls back to the unfiltered metadata. The
 		 * metadata endpoint is public and the document advertises
@@ -894,11 +894,12 @@ class Admin {
 	 * Per-entry `redirect_uris` rules:
 	 *
 	 *  - Each entry is a non-empty string.
-	 *  - Each entry begins with this site's admin URL prefix
-	 *    (`admin_url('')`), the same gate
+	 *  - Each entry begins with this site's HTTPS admin URL prefix
+	 *    (`admin_url('', 'https')`), the same gate
 	 *    {@see \Atmosphere\OAuth\Client::redirect_uri()} applies to
-	 *    the inbound filter. An off-site / scheme-mismatched / empty
-	 *    entry disqualifies the entire filter result.
+	 *    the inbound filter. An off-site / HTTP-scheme /
+	 *    scheme-mismatched / empty entry disqualifies the entire
+	 *    filter result.
 	 *
 	 * Returns true only if every check passes; the caller falls back
 	 * to the unfiltered metadata on false.
@@ -925,11 +926,18 @@ class Admin {
 			return false;
 		}
 
-		$admin_prefix = \admin_url( '' );
+		/*
+		 * Match the HTTPS scheme `Client::redirect_uri()` produces. The
+		 * OAuth code is delivered to the browser via this URL and must
+		 * not travel in cleartext, even if `admin_url()` itself defaults
+		 * to HTTP on the host.
+		 */
+		$admin_prefix = \admin_url( '', 'https' );
 
 		foreach ( $filtered['redirect_uris'] as $uri ) {
 			if ( ! \is_string( $uri )
 				|| '' === $uri
+				|| ! \str_starts_with( $uri, 'https://' )
 				|| ! \str_starts_with( $uri, $admin_prefix )
 			) {
 				return false;

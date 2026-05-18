@@ -1,0 +1,4 @@
+Significance: patch
+Type: changed
+
+Always use HTTPS for the AT Protocol OAuth callback URL, and keep encrypted connection tokens out of the always-loaded options cache.

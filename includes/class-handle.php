@@ -344,7 +344,7 @@ class Handle {
 		}
 
 		$connection['handle'] = $handle;
-		\update_option( 'atmosphere_connection', $connection );
+		\update_option( 'atmosphere_connection', $connection, false );
 	}
 
 	/**
