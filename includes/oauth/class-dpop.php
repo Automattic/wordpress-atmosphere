@@ -79,11 +79,20 @@ class DPoP {
 				'jwk' => $public_jwk,
 			);
 
+			$iat = \time();
+
+			/*
+			 * `exp` is OPTIONAL in RFC 9449 but bounds the replay window
+			 * regardless of how lenient the receiving server is about
+			 * proof age. Sixty seconds matches common server-side caps
+			 * and leaves room for clock skew + transport latency.
+			 */
 			$payload = array(
 				'jti' => self::base64url( \random_bytes( 16 ) ),
 				'htm' => \strtoupper( $method ),
 				'htu' => $url,
-				'iat' => \time(),
+				'iat' => $iat,
+				'exp' => $iat + 60,
 			);
 
 			if ( null !== $nonce ) {

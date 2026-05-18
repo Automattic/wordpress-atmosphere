@@ -1,0 +1,4 @@
+Significance: patch
+Type: security
+
+Tighten DPoP proof lifetime when talking to the AT Protocol auth server and PDS, and harden the OAuth and PDS HTTP paths against malformed server responses.
