@@ -101,14 +101,21 @@ class Client {
 		 * in plaintext in `wp_options` — encrypt it the same way the
 		 * persisted connection encrypts the key after callback
 		 * (`Encryption::encrypt()` below at the option write).
+		 *
+		 * Compute the ciphertext BEFORE writing any transients.
+		 * `Encryption::encrypt()` ultimately calls `random_bytes()`
+		 * and `sodium_crypto_secretbox()`, both of which can throw.
+		 * If we wrote verifier + state first and the encrypt then
+		 * threw, those transients would sit orphaned for an hour and
+		 * the user would see `atmosphere_expired` on retry until they
+		 * expired naturally. Doing the encrypt first means a thrown
+		 * exception bubbles up cleanly with no orphans.
 		 */
+		$dpop_jwk_ciphertext = Encryption::encrypt( (string) \wp_json_encode( $dpop_jwk ) );
+
 		\set_transient( 'atmosphere_oauth_verifier', $verifier, HOUR_IN_SECONDS );
 		\set_transient( 'atmosphere_oauth_state', $state, HOUR_IN_SECONDS );
-		\set_transient(
-			'atmosphere_oauth_dpop_jwk',
-			Encryption::encrypt( (string) \wp_json_encode( $dpop_jwk ) ),
-			HOUR_IN_SECONDS
-		);
+		\set_transient( 'atmosphere_oauth_dpop_jwk', $dpop_jwk_ciphertext, HOUR_IN_SECONDS );
 		\set_transient(
 			'atmosphere_oauth_resolved',
 			array(
