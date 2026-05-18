@@ -344,6 +344,13 @@ class Resolver {
 	 *  - scheme is exactly `https` (the spec requires HTTPS; we narrow
 	 *    further than WordPress's `http`/`https`/`ssl` allowlist)
 	 *  - has a host
+	 *  - host is NOT a raw IP literal — IPv4 (`127.0.0.1`,
+	 *    `169.254.169.254`), IPv6 (`[::1]`, `[fd00::1]`), and any
+	 *    other `FILTER_VALIDATE_IP`-recognised form. `wp_safe_remote_*`
+	 *    catches RFC1918 and loopback but is IPv4-centric, and the
+	 *    `authorization_endpoint` URL is handed straight to
+	 *    `wp_redirect()` with no host-safety net at all. Rejecting IP
+	 *    literals here closes both gaps in one place.
 	 *  - no embedded `user:pass@` credentials (a known URL-injection
 	 *    vector that would otherwise be carried into the persisted
 	 *    connection)
@@ -366,6 +373,17 @@ class Resolver {
 		}
 
 		if ( empty( $parts['host'] ) ) {
+			return false;
+		}
+
+		/*
+		 * PHP's parse_url() preserves the brackets around IPv6 hosts
+		 * (host is `[::1]` for `https://[::1]/`), and
+		 * FILTER_VALIDATE_IP rejects bracketed forms — strip them
+		 * before validating.
+		 */
+		$host_candidate = \trim( $parts['host'], '[]' );
+		if ( false !== \filter_var( $host_candidate, FILTER_VALIDATE_IP ) ) {
 			return false;
 		}
 

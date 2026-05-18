@@ -325,6 +325,89 @@ class Test_Resolver extends WP_UnitTestCase {
 	}
 
 	/**
+	 * `pds_from_did_doc` rejects HTTPS URLs whose host is a raw IPv4
+	 * literal — including link-local cloud-metadata addresses that
+	 * sit outside WordPress's IPv4 private-range blocklist.
+	 *
+	 * @dataProvider provide_ipv4_literal_endpoints
+	 *
+	 * @param string $endpoint serviceEndpoint URL under test.
+	 */
+	public function test_pds_from_did_doc_rejects_ipv4_literal_endpoint( string $endpoint ) {
+		$did_doc = array(
+			'id'      => 'did:plc:test',
+			'service' => array(
+				array(
+					'id'              => '#atproto_pds',
+					'type'            => 'AtprotoPersonalDataServer',
+					'serviceEndpoint' => $endpoint,
+				),
+			),
+		);
+
+		$result = Resolver::pds_from_did_doc( $did_doc );
+
+		$this->assertWPError( $result );
+		$this->assertSame( 'atmosphere_unsafe_pds', $result->get_error_code() );
+	}
+
+	/**
+	 * Data provider — IPv4 literals that must never be accepted as a
+	 * PDS / auth-server endpoint.
+	 *
+	 * @return array<string, array{0:string}>
+	 */
+	public function provide_ipv4_literal_endpoints(): array {
+		return array(
+			'loopback'        => array( 'https://127.0.0.1' ),
+			'aws-metadata'    => array( 'https://169.254.169.254/latest/meta-data/' ),
+			'rfc1918-10/8'    => array( 'https://10.0.0.1' ),
+			'rfc1918-192.168' => array( 'https://192.168.1.1' ),
+			'unspecified'     => array( 'https://0.0.0.0' ),
+		);
+	}
+
+	/**
+	 * `pds_from_did_doc` rejects HTTPS URLs whose host is a raw IPv6
+	 * literal. PHP's `parse_url()` returns IPv6 hosts wrapped in
+	 * brackets, so the IP-literal gate has to strip them before
+	 * handing off to `FILTER_VALIDATE_IP`.
+	 *
+	 * @dataProvider provide_ipv6_literal_endpoints
+	 *
+	 * @param string $endpoint serviceEndpoint URL under test.
+	 */
+	public function test_pds_from_did_doc_rejects_ipv6_literal_endpoint( string $endpoint ) {
+		$did_doc = array(
+			'id'      => 'did:plc:test',
+			'service' => array(
+				array(
+					'id'              => '#atproto_pds',
+					'type'            => 'AtprotoPersonalDataServer',
+					'serviceEndpoint' => $endpoint,
+				),
+			),
+		);
+
+		$result = Resolver::pds_from_did_doc( $did_doc );
+
+		$this->assertWPError( $result );
+		$this->assertSame( 'atmosphere_unsafe_pds', $result->get_error_code() );
+	}
+
+	/**
+	 * Data provider — IPv6 literals (loopback + unique-local).
+	 *
+	 * @return array<string, array{0:string}>
+	 */
+	public function provide_ipv6_literal_endpoints(): array {
+		return array(
+			'loopback'     => array( 'https://[::1]' ),
+			'unique-local' => array( 'https://[fd00::1]' ),
+		);
+	}
+
+	/**
 	 * `pds_from_did_doc` rejects a `serviceEndpoint` that contains
 	 * embedded HTTP credentials. URLs with `user:pass@host` are a
 	 * known injection vector — the credentials would otherwise be
