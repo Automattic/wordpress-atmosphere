@@ -43,6 +43,8 @@ class Test_Transform_Filter_Validation extends WP_UnitTestCase {
 	 * third-party filter returns a non-array.
 	 */
 	public function test_post_transform_falls_back_when_filter_returns_non_array() {
+		$this->setExpectedIncorrectUsage( 'Atmosphere\\Transformer\\Post::transform' );
+
 		$post_id = self::factory()->post->create(
 			array(
 				'post_title'   => 'Hello',
@@ -66,6 +68,8 @@ class Test_Transform_Filter_Validation extends WP_UnitTestCase {
 	 * `Document::transform()` falls back when the filter returns null.
 	 */
 	public function test_document_transform_falls_back_on_null() {
+		$this->setExpectedIncorrectUsage( 'Atmosphere\\Transformer\\Document::transform' );
+
 		$post_id = self::factory()->post->create(
 			array(
 				'post_title'  => 'Hello',
@@ -88,6 +92,8 @@ class Test_Transform_Filter_Validation extends WP_UnitTestCase {
 	 * scalar.
 	 */
 	public function test_publication_transform_falls_back_on_scalar() {
+		$this->setExpectedIncorrectUsage( 'Atmosphere\\Transformer\\Publication::transform' );
+
 		\add_filter( 'atmosphere_transform_publication', static fn() => 42 );
 
 		/*
@@ -109,6 +115,8 @@ class Test_Transform_Filter_Validation extends WP_UnitTestCase {
 	 * object.
 	 */
 	public function test_comment_transform_falls_back_on_object() {
+		$this->setExpectedIncorrectUsage( 'Atmosphere\\Transformer\\Comment::transform' );
+
 		$post_id = self::factory()->post->create(
 			array(
 				'post_title'  => 'Hello',

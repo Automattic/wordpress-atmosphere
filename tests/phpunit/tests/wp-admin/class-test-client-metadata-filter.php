@@ -52,6 +52,8 @@ class Test_Client_Metadata_Filter extends WP_UnitTestCase {
 	 * Regression for Copilot inline finding on class-admin.php:836.
 	 */
 	public function test_scalar_redirect_uris_falls_back_to_default() {
+		$this->setExpectedIncorrectUsage( 'Atmosphere\\WP_Admin\\Admin::serve_client_metadata' );
+
 		\add_filter(
 			'atmosphere_client_metadata',
 			static function ( $metadata ) {
@@ -71,6 +73,8 @@ class Test_Client_Metadata_Filter extends WP_UnitTestCase {
 	 * A filter that returns a non-string `client_id` is rejected.
 	 */
 	public function test_non_string_client_id_falls_back_to_default() {
+		$this->setExpectedIncorrectUsage( 'Atmosphere\\WP_Admin\\Admin::serve_client_metadata' );
+
 		\add_filter(
 			'atmosphere_client_metadata',
 			static function ( $metadata ) {
@@ -89,6 +93,8 @@ class Test_Client_Metadata_Filter extends WP_UnitTestCase {
 	 * A filter that returns a non-array entirely is rejected.
 	 */
 	public function test_non_array_filter_return_falls_back_to_default() {
+		$this->setExpectedIncorrectUsage( 'Atmosphere\\WP_Admin\\Admin::serve_client_metadata' );
+
 		\add_filter( 'atmosphere_client_metadata', static fn() => 'string-instead-of-array' );
 
 		$response = Admin::serve_client_metadata();
@@ -105,6 +111,8 @@ class Test_Client_Metadata_Filter extends WP_UnitTestCase {
 	 * off-site URI would be a token-leak primitive.
 	 */
 	public function test_offsite_redirect_uri_falls_back_to_default() {
+		$this->setExpectedIncorrectUsage( 'Atmosphere\\WP_Admin\\Admin::serve_client_metadata' );
+
 		\add_filter(
 			'atmosphere_client_metadata',
 			static function ( $metadata ) {
@@ -125,6 +133,8 @@ class Test_Client_Metadata_Filter extends WP_UnitTestCase {
 	 * not "partial use the valid ones."
 	 */
 	public function test_mixed_valid_invalid_redirect_uris_falls_back_to_default() {
+		$this->setExpectedIncorrectUsage( 'Atmosphere\\WP_Admin\\Admin::serve_client_metadata' );
+
 		\add_filter(
 			'atmosphere_client_metadata',
 			static function ( $metadata ) {
@@ -150,6 +160,8 @@ class Test_Client_Metadata_Filter extends WP_UnitTestCase {
 	 * the parent array because the array itself has one element.
 	 */
 	public function test_empty_string_redirect_uri_falls_back_to_default() {
+		$this->setExpectedIncorrectUsage( 'Atmosphere\\WP_Admin\\Admin::serve_client_metadata' );
+
 		\add_filter(
 			'atmosphere_client_metadata',
 			static function ( $metadata ) {
@@ -173,6 +185,8 @@ class Test_Client_Metadata_Filter extends WP_UnitTestCase {
 	 * @param mixed $bad_entry Entry to inject.
 	 */
 	public function test_non_string_redirect_uri_entry_falls_back_to_default( $bad_entry ) {
+		$this->setExpectedIncorrectUsage( 'Atmosphere\\WP_Admin\\Admin::serve_client_metadata' );
+
 		\add_filter(
 			'atmosphere_client_metadata',
 			static function ( $metadata ) use ( $bad_entry ) {

@@ -37,6 +37,23 @@ class Test_Sanitize_Handle extends WP_UnitTestCase {
 	private array $tracked_filters = array();
 
 	/**
+	 * Reset settings-error global before each test.
+	 *
+	 * `$wp_settings_errors` is a PHP global that persists across
+	 * tests in the same process. Earlier suites (notably
+	 * `Test_Admin_Handle`) write notices keyed on the same
+	 * `'atmosphere'` setting slug we read here, so without an
+	 * explicit reset our `$errors[0]['code']` assertion would pick
+	 * up a leaked notice rather than the one this test produced.
+	 */
+	public function set_up(): void {
+		parent::set_up();
+
+		global $wp_settings_errors;
+		$wp_settings_errors = array(); // phpcs:ignore WordPress.WP.GlobalVariablesOverride.Prohibited
+	}
+
+	/**
 	 * Drop tracked filters and settings errors between tests.
 	 */
 	public function tear_down(): void {
