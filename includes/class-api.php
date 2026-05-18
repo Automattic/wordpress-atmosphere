@@ -81,6 +81,9 @@ class API {
 
 		$status = \wp_remote_retrieve_response_code( $response );
 		$body   = \json_decode( \wp_remote_retrieve_body( $response ), true );
+		if ( ! \is_array( $body ) ) {
+			$body = array();
+		}
 
 		// Persist any nonce the server sends back.
 		$response_nonce = \wp_remote_retrieve_header( $response, 'dpop-nonce' );
