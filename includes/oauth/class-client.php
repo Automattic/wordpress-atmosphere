@@ -465,14 +465,20 @@ class Client {
 
 	/**
 	 * Maximum lifetime (seconds) of the refresh lock before it is
-	 * presumed stale and reclaimed. One refresh roundtrip is typically
-	 * sub-second; the buffer covers the slowest reasonable network
-	 * timeout (15s) plus a margin for the request that set the lock to
-	 * actually finish.
+	 * presumed stale and reclaimed.
+	 *
+	 * `do_refresh()` can issue up to two HTTP POSTs sequentially when
+	 * the auth server requires a `use_dpop_nonce` retry — each with a
+	 * 15-second `wp_safe_remote_post` timeout, plus encryption /
+	 * option I/O overhead. A TTL shorter than that worst case would
+	 * let a second worker reclaim a lock the first worker is still
+	 * legitimately holding, which reintroduces the concurrent-refresh
+	 * race the lock exists to close. 90 seconds covers 2 × 15s
+	 * timeouts plus ample margin.
 	 *
 	 * @var int
 	 */
-	private const REFRESH_LOCK_TTL = 30;
+	private const REFRESH_LOCK_TTL = 90;
 
 	/**
 	 * Refresh the access token.
