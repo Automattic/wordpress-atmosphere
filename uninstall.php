@@ -118,6 +118,9 @@ foreach ( $atmosphere_transients as $atmosphere_transient ) {
  *    pre-bootstrap, so we can't reference the constant directly
  *    without loading the autoloader here. Anyone renaming the
  *    constant should grep for `atmo_dpop_nonce_` and update both.
+ *  - atmosphere_profile_<md5>       — reaction-sync profile cache
+ *    written by `Reaction_Sync::resolve_author()`. No constant —
+ *    grep for `atmosphere_profile_` in includes/.
  *  - atmosphere_last_seen_own_<col> — reaction-sync watermarks per
  *    collection (likes, reposts, posts). Wildcard MUST stay in
  *    lock-step with `Reaction_Sync::OPTION_LAST_SEEN_OWN_PREFIX`
@@ -129,12 +132,26 @@ foreach ( $atmosphere_transients as $atmosphere_transient ) {
  * underlying `wp_options` row. A plain SQL `DELETE` against the
  * options table would leave stale values in any persistent cache,
  * so a subsequent reinstall could read them back.
+ *
+ * Persistent-object-cache caveat: on installs with a drop-in object
+ * cache (Redis, Memcached, etc.) `set_transient()` writes to the
+ * object cache and bypasses `wp_options` entirely — so the LIKE
+ * queries below return zero rows on those installs, and the only
+ * dynamic transients that get cleaned are the ones the cache layer
+ * has already evicted to the database. The remaining keys age out
+ * naturally on their TTL (DPoP nonces: 5 min; profile cache: 1 hr)
+ * and contain no decryptable secrets — DPoP nonces are server-issued
+ * opaque tokens, profile data is public — so the residual is
+ * acceptable. If a future dynamic-key transient is long-lived or
+ * holds secret material, switch to a write-time registry pattern.
  */
 // phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching
 $atmosphere_transient_rows = $wpdb->get_col(
 	"SELECT option_name FROM {$wpdb->options}
 	 WHERE option_name LIKE '\_transient\_atmo\_dpop\_nonce\_%'
-	    OR option_name LIKE '\_transient\_timeout\_atmo\_dpop\_nonce\_%'"
+	    OR option_name LIKE '\_transient\_timeout\_atmo\_dpop\_nonce\_%'
+	    OR option_name LIKE '\_transient\_atmosphere\_profile\_%'
+	    OR option_name LIKE '\_transient\_timeout\_atmosphere\_profile\_%'"
 );
 
 $atmosphere_option_rows = $wpdb->get_col(
