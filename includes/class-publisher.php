@@ -1163,6 +1163,17 @@ class Publisher {
 					),
 				),
 				'fields'     => 'ids',
+
+				/*
+				 * Force a deterministic order. `get_comments` defaults
+				 * to `comment_date_gmt DESC`, which ties for comments
+				 * created in the same second — under MySQL 8 / MariaDB
+				 * the tie-break is undefined and varies between PHP
+				 * versions on CI. Ordering by ID matches creation
+				 * order and pins the test contract.
+				 */
+				'orderby'    => 'comment_ID',
+				'order'      => 'ASC',
 			)
 		);
 
