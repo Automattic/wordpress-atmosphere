@@ -300,12 +300,12 @@ class Client {
 		 * Pre-encryption versions of the plugin stored the DPoP JWK as
 		 * a plain array in the transient. A user who started OAuth on
 		 * the old code and completes the callback after upgrading
-		 * sees a non-string value here. Treat it as an expired
-		 * session so the user is prompted to restart cleanly.
+		 * sees a non-string value here. Distinct error code from
+		 * "transient expired" so support can tell the two cases apart.
 		 */
 		if ( ! \is_string( $dpop_jwk_blob ) ) {
 			return new \WP_Error(
-				'atmosphere_expired',
+				'atmosphere_legacy_session',
 				\__( 'OAuth session predates the latest update. Please try connecting again.', 'atmosphere' )
 			);
 		}
@@ -317,7 +317,10 @@ class Client {
 
 		$dpop_jwk = \json_decode( $dpop_jwk_json, true );
 		if ( ! \is_array( $dpop_jwk ) ) {
-			return new \WP_Error( 'atmosphere_expired', \__( 'OAuth session key is malformed. Please try again.', 'atmosphere' ) );
+			return new \WP_Error(
+				'atmosphere_session_malformed',
+				\__( 'OAuth session key is malformed. Please try again.', 'atmosphere' )
+			);
 		}
 
 		$token_endpoint = $resolved['auth_server']['token_endpoint'];

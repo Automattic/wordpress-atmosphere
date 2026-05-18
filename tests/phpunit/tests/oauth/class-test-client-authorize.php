@@ -117,6 +117,6 @@ class Test_Client_Authorize extends WP_UnitTestCase {
 		$result = Client::handle_callback( 'code-123', 'state-abc' );
 
 		$this->assertWPError( $result );
-		$this->assertSame( 'atmosphere_expired', $result->get_error_code() );
+		$this->assertSame( 'atmosphere_legacy_session', $result->get_error_code() );
 	}
 }
