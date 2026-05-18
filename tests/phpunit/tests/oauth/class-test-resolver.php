@@ -169,6 +169,28 @@ class Test_Resolver extends WP_UnitTestCase {
 	}
 
 	/**
+	 * `pds_from_did_doc` treats the scheme as case-insensitive per
+	 * RFC 3986 — `HTTPS://pds.example.com` is the same as
+	 * `https://pds.example.com` and must be accepted.
+	 */
+	public function test_pds_from_did_doc_accepts_uppercase_https_scheme() {
+		$did_doc = array(
+			'id'      => 'did:plc:test',
+			'service' => array(
+				array(
+					'id'              => '#atproto_pds',
+					'type'            => 'AtprotoPersonalDataServer',
+					'serviceEndpoint' => 'HTTPS://pds.example.com',
+				),
+			),
+		);
+
+		$result = Resolver::pds_from_did_doc( $did_doc );
+
+		$this->assertSame( 'HTTPS://pds.example.com', $result );
+	}
+
+	/**
 	 * `pds_from_did_doc` returns the endpoint when it is a plain
 	 * HTTPS URL pointing at a public host.
 	 */

@@ -368,7 +368,7 @@ class Resolver {
 			return false;
 		}
 
-		if ( ( $parts['scheme'] ?? '' ) !== 'https' ) {
+		if ( \strtolower( $parts['scheme'] ?? '' ) !== 'https' ) {
 			return false;
 		}
 
