@@ -198,13 +198,22 @@ class Facet {
 	/**
 	 * Resolve a handle to a DID for mention facets.
 	 *
-	 * Falls back to did:web if DNS resolution fails. Handles that
-	 * don't match the AT Protocol DNS-style syntax never reach the
-	 * `dns_get_record` call — without that gate, a post containing
-	 * `@evil-attacker-controlled-tld.example` would trigger a server
-	 * DNS lookup against an attacker-controlled domain (low-bandwidth
-	 * but reliable side-channel for exfiltrating data via subdomain
-	 * encoding).
+	 * Falls back to `did:web` if DNS resolution fails. The
+	 * `is_valid_handle()` gate below ensures only DNS-syntactically
+	 * valid handles reach `dns_get_record()` — that closes the
+	 * "malformed handle as DNS query smuggling" angle (e.g. control
+	 * characters or percent-encoded segments injected through a
+	 * regex relaxation), it does NOT block lookups against
+	 * attacker-controlled but well-formed domains.
+	 *
+	 * That broader exposure is by design: mention resolution requires
+	 * a DNS lookup against the mentioned handle's authoritative server,
+	 * and any user (commenter included) can mention any well-formed
+	 * domain. If that DNS-egress surface becomes a concern, the right
+	 * fix is at the threat-model layer (skip mention resolution on
+	 * the commenter path, allowlist mention authorities, or move to
+	 * DoH with a hard timeout) rather than tightening the syntactic
+	 * gate further.
 	 *
 	 * @param string $handle AT Protocol handle.
 	 * @return string DID string, or empty string if the handle is malformed.
