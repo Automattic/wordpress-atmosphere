@@ -302,15 +302,41 @@ class Resolver {
 	}
 
 	/**
-	 * Validate an AT Protocol handle or `did:web` host against
-	 * RFC 1035-style DNS name rules.
+	 * Reserved TLDs the AT Protocol handle spec explicitly disallows.
+	 *
+	 * Sourced from https://atproto.com/specs/handle — reserved or
+	 * private-use TLDs that cannot resolve publicly and therefore
+	 * cannot host a valid handle.
+	 *
+	 * @var array<int, string>
+	 */
+	private const RESERVED_TLDS = array(
+		'alt',
+		'arpa',
+		'example',
+		'internal',
+		'invalid',
+		'local',
+		'localhost',
+		'onion',
+		'test',
+	);
+
+	/**
+	 * Validate an AT Protocol handle or `did:web` host against the
+	 * AT Protocol handle spec.
 	 *
 	 * Rejects empty strings, oversized labels, leading/trailing
 	 * hyphens, single-label hosts (`localhost`), and characters
-	 * outside `[A-Za-z0-9-]`. This is the first line of defence
-	 * against percent-encoded host bypasses and SSRF via crafted
-	 * DIDs — the regex never matches anything that contains a `%`
-	 * or other reserved URL characters.
+	 * outside `[A-Za-z0-9-]`. Also rejects per the handle spec:
+	 *
+	 *  - TLDs starting with a digit, or composed entirely of digits
+	 *    (numeric-only TLDs aren't real TLDs and overlap with the
+	 *    IP-literal class).
+	 *  - Reserved TLDs (`.local`, `.localhost`, `.arpa`,
+	 *    `.internal`, `.invalid`, `.onion`, `.test`, `.example`,
+	 *    `.alt`) — these are private-use / reserved and can't host
+	 *    a routable handle.
 	 *
 	 * @param string $host Hostname (handle or did:web domain).
 	 * @return bool
@@ -322,7 +348,23 @@ class Resolver {
 
 		$label = '[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?';
 
-		return (bool) \preg_match( '/^' . $label . '(?:\.' . $label . ')+$/', $host );
+		if ( ! \preg_match( '/^' . $label . '(?:\.' . $label . ')+$/', $host ) ) {
+			return false;
+		}
+
+		$labels = \explode( '.', $host );
+		$tld    = \strtolower( \end( $labels ) );
+
+		// TLD must not start with a digit, must not be all digits.
+		if ( \ctype_digit( $tld[0] ) ) {
+			return false;
+		}
+
+		if ( \in_array( $tld, self::RESERVED_TLDS, true ) ) {
+			return false;
+		}
+
+		return true;
 	}
 
 	/**

@@ -92,6 +92,71 @@ class Test_Resolver extends WP_UnitTestCase {
 	}
 
 	/**
+	 * The AT Protocol handle spec rejects TLDs that are entirely
+	 * numeric or that start with a digit (`alice.bsky.123`,
+	 * `alice.bsky.9foo`) — these aren't real TLDs and overlap with
+	 * IP-literal territory.
+	 *
+	 * @dataProvider provide_numeric_tld_handles
+	 *
+	 * @param string $handle Handle under test.
+	 */
+	public function test_handle_to_did_rejects_numeric_tld( string $handle ) {
+		$result = Resolver::handle_to_did( $handle );
+
+		$this->assertWPError( $result );
+		$this->assertSame( 'atmosphere_invalid_handle', $result->get_error_code() );
+	}
+
+	/**
+	 * Data provider — handles with numeric TLDs.
+	 *
+	 * @return array<string, array{0:string}>
+	 */
+	public function provide_numeric_tld_handles(): array {
+		return array(
+			'all-numeric'       => array( 'alice.bsky.123' ),
+			'starts-with-digit' => array( 'alice.bsky.9foo' ),
+		);
+	}
+
+	/**
+	 * The AT Protocol handle spec disallows reserved / private-use
+	 * TLDs — `.local`, `.localhost`, `.arpa`, `.internal`,
+	 * `.invalid`, `.onion`, `.test`, `.example`, `.alt`. Reject them
+	 * before any network lookup.
+	 *
+	 * @dataProvider provide_reserved_tld_handles
+	 *
+	 * @param string $handle Handle under test.
+	 */
+	public function test_handle_to_did_rejects_reserved_tld( string $handle ) {
+		$result = Resolver::handle_to_did( $handle );
+
+		$this->assertWPError( $result );
+		$this->assertSame( 'atmosphere_invalid_handle', $result->get_error_code() );
+	}
+
+	/**
+	 * Data provider — handles whose TLDs are on the reserved list.
+	 *
+	 * @return array<string, array{0:string}>
+	 */
+	public function provide_reserved_tld_handles(): array {
+		return array(
+			'local'     => array( 'alice.local' ),
+			'localhost' => array( 'alice.localhost' ),
+			'arpa'      => array( 'alice.arpa' ),
+			'internal'  => array( 'alice.internal' ),
+			'invalid'   => array( 'alice.invalid' ),
+			'onion'     => array( 'alice.onion' ),
+			'test'      => array( 'alice.test' ),
+			'example'   => array( 'alice.example' ),
+			'alt'       => array( 'alice.alt' ),
+		);
+	}
+
+	/**
 	 * `resolve_did` rejects unsupported DID methods.
 	 */
 	public function test_resolve_did_rejects_unsupported_method() {
