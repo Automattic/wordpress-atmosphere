@@ -338,10 +338,15 @@ class Resolver {
 	 *    `.alt`) — these are private-use / reserved and can't host
 	 *    a routable handle.
 	 *
+	 * Public so the facet / mention code in `Transformer\Facet` can
+	 * reuse the same validation rules — keeping both paths in lock-step
+	 * avoids the case where the mention path accepts a handle the
+	 * resolver path then rejects (or vice versa).
+	 *
 	 * @param string $host Hostname (handle or did:web domain).
 	 * @return bool
 	 */
-	private static function is_valid_handle( string $host ): bool {
+	public static function is_valid_handle( string $host ): bool {
 		if ( '' === $host || \strlen( $host ) > 253 ) {
 			return false;
 		}
@@ -397,10 +402,14 @@ class Resolver {
 	 *    vector that would otherwise be carried into the persisted
 	 *    connection)
 	 *
+	 * Public so other components that consume attacker-controlled
+	 * URLs (e.g. facet / mention construction in `Transformer\Facet`)
+	 * can share the same gate.
+	 *
 	 * @param mixed $url URL to validate.
 	 * @return bool
 	 */
-	private static function is_safe_https_url( $url ): bool {
+	public static function is_safe_https_url( $url ): bool {
 		if ( ! \is_string( $url ) || '' === $url ) {
 			return false;
 		}
