@@ -89,7 +89,18 @@ class TID {
 		}
 
 		if ( null === self::$clock_id ) {
-			self::$clock_id = \random_int( 0, 1023 );
+			/*
+			 * `random_int` throws on systems without a usable CSPRNG
+			 * (essentially never on a working PHP install, but a worth
+			 * a fallback so a missing entropy source can't bring down
+			 * publishing). `wp_rand` is non-cryptographic but the
+			 * collision space is still 1024.
+			 */
+			try {
+				self::$clock_id = \random_int( 0, 1023 );
+			} catch ( \Throwable $e ) {
+				self::$clock_id = \wp_rand( 0, 1023 );
+			}
 		}
 
 		return self::encode( ( $ts << 10 ) | self::$clock_id );

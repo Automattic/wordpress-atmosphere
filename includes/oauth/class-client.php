@@ -749,6 +749,18 @@ class Client {
 			return;
 		}
 
+		/*
+		 * Validate at call time, not just at the resolver during
+		 * connect. The stored option may have been imported from a
+		 * backup, restored from a migration tool, or filtered by a
+		 * misbehaving plugin since the connection was minted. POSTing
+		 * a refresh token to a non-HTTPS or otherwise-unsafe URL on
+		 * disconnect would leak it to whoever controls that endpoint.
+		 */
+		if ( ! Resolver::is_safe_https_url( $revocation_endpoint ) ) {
+			return;
+		}
+
 		if ( empty( $conn['refresh_token'] ) || empty( $conn['dpop_jwk'] ) ) {
 			return;
 		}
@@ -837,6 +849,11 @@ class Client {
 					)
 				);
 				return;
+			}
+
+			$nonce_retry = \wp_remote_retrieve_header( $response, 'dpop-nonce' );
+			if ( $nonce_retry ) {
+				DPoP::persist_nonce( $dpop_jwk, $revocation_endpoint, $nonce_retry );
 			}
 
 			$status = \wp_remote_retrieve_response_code( $response );
