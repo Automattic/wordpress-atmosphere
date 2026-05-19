@@ -240,6 +240,17 @@ function get_cron_hooks(): array {
 		'atmosphere_delete_comment',
 		'atmosphere_delete_comment_record',
 		'atmosphere_run_historical_visibility_cleanup',
+
+		/*
+		 * Deliberately omitted: `atmosphere_revoke_refresh_token`.
+		 * `Client::disconnect()` schedules it AFTER calling
+		 * `clear_scheduled_hooks()` so a slow auth server cannot block
+		 * the admin click. Including it here would clear the event we
+		 * just queued. The cron worker is a one-shot best-effort POST;
+		 * if the plugin is deactivated before it fires the event is
+		 * dropped by WordPress automatically, which is the correct
+		 * behaviour — there is nothing local to clean up.
+		 */
 		// Legacy hook from an early build of the comment publisher; cleared
 		// for users upgrading from that snapshot.
 		'atmosphere_sync_comments',

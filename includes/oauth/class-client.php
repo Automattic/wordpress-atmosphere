@@ -688,24 +688,54 @@ class Client {
 			 */
 			$error = $data['error'] ?? '';
 			if ( \in_array( $error, array( 'invalid_grant', 'invalid_client', 'unauthorized_client' ), true ) ) {
-				$conn['needs_reauth'] = true;
-				$conn['access_token'] = '';
-				unset( $conn['expires_at'] );
-				\update_option( 'atmosphere_connection', $conn );
+				/*
+				 * Re-read the connection before writing. An admin who
+				 * clicked "Disconnect" while this refresh was mid-flight
+				 * already wiped the row from `wp_options`; resurrecting
+				 * it here — even with a `needs_reauth` flag — would
+				 * recreate the connection the admin just removed, plus
+				 * re-seed `atmosphere_identity` on the next
+				 * `get_identity()` call. Drop the result silently so
+				 * the disconnect wins the race.
+				 */
+				$current = \get_option( 'atmosphere_connection', array() );
+				if ( \is_array( $current ) && ! empty( $current['refresh_token'] ) ) {
+					$current['needs_reauth'] = true;
+					$current['access_token'] = '';
+					unset( $current['expires_at'] );
+					\update_option( 'atmosphere_connection', $current, false );
+				}
 			}
 
 			return new \WP_Error( 'atmosphere_refresh', $msg );
 		}
 
-		$conn['access_token'] = Encryption::encrypt( $data['access_token'] );
-		$conn['expires_at']   = \time() + ( $data['expires_in'] ?? 3600 );
-		$conn['needs_reauth'] = false;
+		/*
+		 * Re-read the connection before persisting the rotated token.
+		 * `disconnect()` deletes `atmosphere_connection` while this
+		 * worker is in-flight; writing the post-network token back
+		 * would resurrect the row the admin just removed. Without
+		 * this guard the disconnect is silently undone, which is the
+		 * race the multi-agent review flagged as P1.
+		 */
+		$current = \get_option( 'atmosphere_connection', array() );
 
-		if ( ! empty( $data['refresh_token'] ) ) {
-			$conn['refresh_token'] = Encryption::encrypt( $data['refresh_token'] );
+		if ( ! \is_array( $current ) || empty( $current['refresh_token'] ) ) {
+			return new \WP_Error(
+				'atmosphere_disconnected_mid_refresh',
+				\__( 'Connection was disconnected while the refresh was in-flight; new tokens were discarded.', 'atmosphere' )
+			);
 		}
 
-		\update_option( 'atmosphere_connection', $conn );
+		$current['access_token'] = Encryption::encrypt( $data['access_token'] );
+		$current['expires_at']   = \time() + ( $data['expires_in'] ?? 3600 );
+		$current['needs_reauth'] = false;
+
+		if ( ! empty( $data['refresh_token'] ) ) {
+			$current['refresh_token'] = Encryption::encrypt( $data['refresh_token'] );
+		}
+
+		\update_option( 'atmosphere_connection', $current, false );
 
 		return true;
 	}
@@ -953,40 +983,75 @@ class Client {
 	 * cycle would otherwise fire deletes against the new account's repo.
 	 * Mirrors the cleanup performed on plugin deactivate / uninstall.
 	 *
-	 * Best-effort revokes the refresh token at the auth server before
-	 * deleting local state (RFC 7009). A leaked refresh token therefore
-	 * stops working server-side even though disconnect already removed
-	 * it locally. Revocation failures are logged but do not block the
-	 * local cleanup.
+	 * Best-effort revokes the refresh token at the auth server (RFC 7009)
+	 * so a leaked refresh token stops working server-side even though
+	 * disconnect already removed it locally. The revocation POST is
+	 * deferred to a single-shot WP-Cron event scheduled AFTER
+	 * `clear_scheduled_hooks()` runs (so the helper does not clear the
+	 * very event we just queued), keeping the admin click responsive:
+	 * a slow or unreachable auth server otherwise blocks disconnect
+	 * for up to ~20 seconds (two synchronous 10-second POSTs).
 	 */
 	public static function disconnect(): void {
-		self::revoke_refresh_token();
+		$conn = \get_option( 'atmosphere_connection', array() );
+
+		/*
+		 * Capture the inputs the revocation worker needs BEFORE we
+		 * wipe the local options. The encrypted ciphertexts are passed
+		 * directly to the cron worker so it can decrypt them later
+		 * without re-reading `atmosphere_connection`, which is about
+		 * to be deleted.
+		 */
+		$revoke_args = null;
+		if ( \is_array( $conn )
+			&& ! empty( $conn['refresh_token'] )
+			&& ! empty( $conn['dpop_jwk'] )
+			&& ! empty( $conn['revocation_endpoint'] )
+		) {
+			$revoke_args = array(
+				(string) $conn['refresh_token'],
+				(string) $conn['dpop_jwk'],
+				(string) $conn['revocation_endpoint'],
+			);
+		}
+
 		\delete_option( 'atmosphere_connection' );
 		\delete_option( 'atmosphere_identity' );
 		\delete_option( self::REFRESH_LOCK_OPTION );
 		clear_scheduled_hooks();
+
+		if ( null !== $revoke_args ) {
+			\wp_schedule_single_event(
+				\time(),
+				'atmosphere_revoke_refresh_token',
+				$revoke_args
+			);
+		}
 	}
 
 	/**
-	 * Best-effort revoke the stored refresh token at the auth server.
+	 * Best-effort revoke a refresh token at the auth server.
 	 *
-	 * Reads the live `atmosphere_connection` option, decrypts the
-	 * refresh token + DPoP JWK, and POSTs the token to the auth
-	 * server's `revocation_endpoint` per RFC 7009. AT Protocol auth
-	 * servers require DPoP-bound revocation, so the request carries a
-	 * DPoP proof and retries once on `use_dpop_nonce` exactly like
-	 * `refresh()` does. Any failure path returns silently after
-	 * logging — disconnect must not be gated on the auth server being
-	 * reachable.
+	 * Invoked by the `atmosphere_revoke_refresh_token` cron hook from
+	 * `disconnect()`. Decrypts the ciphertexts the caller captured
+	 * before the local state was wiped, and POSTs the token to the
+	 * auth server's `revocation_endpoint` per RFC 7009. AT Protocol
+	 * auth servers require DPoP-bound revocation, so the request
+	 * carries a DPoP proof and retries once on `use_dpop_nonce`
+	 * exactly like `refresh()` does. Any failure path returns
+	 * silently after logging — disconnect already succeeded locally
+	 * by the time this fires.
+	 *
+	 * @param string $refresh_token_ciphertext Encrypted refresh token
+	 *                                         captured at disconnect.
+	 * @param string $dpop_jwk_ciphertext      Encrypted DPoP JWK.
+	 * @param string $revocation_endpoint      Auth server revocation URL.
 	 */
-	private static function revoke_refresh_token(): void {
-		$conn = \get_option( 'atmosphere_connection', array() );
-
-		if ( ! \is_array( $conn ) ) {
-			return;
-		}
-
-		$revocation_endpoint = isset( $conn['revocation_endpoint'] ) ? (string) $conn['revocation_endpoint'] : '';
+	public static function revoke_refresh_token(
+		string $refresh_token_ciphertext,
+		string $dpop_jwk_ciphertext,
+		string $revocation_endpoint
+	): void {
 		if ( '' === $revocation_endpoint ) {
 			return;
 		}
@@ -1003,12 +1068,12 @@ class Client {
 			return;
 		}
 
-		if ( empty( $conn['refresh_token'] ) || empty( $conn['dpop_jwk'] ) ) {
+		if ( '' === $refresh_token_ciphertext || '' === $dpop_jwk_ciphertext ) {
 			return;
 		}
 
-		$refresh_token = Encryption::decrypt( $conn['refresh_token'] );
-		$dpop_jwk_json = Encryption::decrypt( $conn['dpop_jwk'] );
+		$refresh_token = Encryption::decrypt( $refresh_token_ciphertext );
+		$dpop_jwk_json = Encryption::decrypt( $dpop_jwk_ciphertext );
 		if ( false === $refresh_token || false === $dpop_jwk_json ) {
 			return;
 		}
