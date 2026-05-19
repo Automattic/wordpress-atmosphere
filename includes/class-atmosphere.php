@@ -1325,6 +1325,16 @@ class Atmosphere {
 	 * @param int $comment_id Comment ID just published.
 	 */
 	private static function reconcile_comment_after_publish( int $comment_id ): void {
+		/*
+		 * Drop the in-process `WP_Comment` cache so a concurrent web
+		 * request that just unapproved or deleted this comment is
+		 * visible to the reconcile re-check. Same exposure as the
+		 * publisher reconcile path on installs without a persistent
+		 * object cache: without this invalidation, a moderator's
+		 * mid-publish unapprove races the post-publish read and the
+		 * Bluesky reply stays live with no cleanup scheduled.
+		 */
+		\clean_comment_cache( $comment_id );
 		$fresh = \get_comment( $comment_id );
 
 		if ( $fresh instanceof \WP_Comment && self::should_publish_comment( $fresh ) ) {
