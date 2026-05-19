@@ -74,7 +74,16 @@ class Client {
 	 * @return string
 	 */
 	public static function redirect_uri(): string {
-		$uri = \admin_url( 'options-general.php?page=atmosphere' );
+		/*
+		 * Force the `https` scheme regardless of what `admin_url()`
+		 * would default to. AT Protocol auth servers will return the
+		 * authorization code by redirecting the browser to this URL;
+		 * on an HTTP-configured admin that code would otherwise travel
+		 * in cleartext. Sites that don't actually serve admin over
+		 * HTTPS will fail to load the redirect, which is the safer
+		 * failure mode.
+		 */
+		$uri = \admin_url( 'options-general.php?page=atmosphere', 'https' );
 
 		/**
 		 * Filters the OAuth redirect URI.
@@ -82,9 +91,9 @@ class Client {
 		 * Allows consumers (e.g. wrapper plugins) to set their own callback
 		 * URL so the OAuth flow returns to their admin page instead of the
 		 * default Atmosphere settings page. The return MUST be a string
-		 * pointing at this site's admin area — anything else is rejected
-		 * to prevent a malicious or buggy filter from redirecting OAuth
-		 * codes off-site.
+		 * pointing at this site's admin area over HTTPS — anything else is
+		 * rejected to prevent a malicious or buggy filter from redirecting
+		 * OAuth codes off-site or over cleartext.
 		 *
 		 * @param string $uri Default redirect URI.
 		 */
@@ -94,7 +103,11 @@ class Client {
 			return $uri;
 		}
 
-		if ( ! \str_starts_with( $filtered, \admin_url( '' ) ) ) {
+		if ( ! \str_starts_with( $filtered, 'https://' ) ) {
+			return $uri;
+		}
+
+		if ( ! \str_starts_with( $filtered, \admin_url( '', 'https' ) ) ) {
 			return $uri;
 		}
 
@@ -511,7 +524,14 @@ class Client {
 			'needs_reauth'        => false,
 		);
 
-		\update_option( 'atmosphere_connection', $connection );
+		/*
+		 * Encrypted token blobs do not need to ride along in every
+		 * request's `alloptions` payload; they're only read on the
+		 * paths that actually talk to the PDS. WP 6.6+ honours the
+		 * autoload flag on subsequent `update_option` calls too, so
+		 * existing autoloaded rows flip on the next reconnect.
+		 */
+		\update_option( 'atmosphere_connection', $connection, false );
 
 		return true;
 	}

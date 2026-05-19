@@ -124,7 +124,32 @@ class Test_Client_Metadata_Filter extends WP_UnitTestCase {
 		$response = Admin::serve_client_metadata();
 		$data     = $response->get_data();
 
-		$this->assertStringStartsWith( \admin_url( '' ), $data['redirect_uris'][0] );
+		$this->assertStringStartsWith( \admin_url( '', 'https' ), $data['redirect_uris'][0] );
+	}
+
+	/**
+	 * A `redirect_uris` entry that uses the HTTP scheme — even when it
+	 * otherwise points at this site's admin — is rejected. The auth
+	 * server would otherwise deliver the OAuth code over cleartext.
+	 */
+	public function test_http_scheme_redirect_uri_falls_back_to_default() {
+		$this->setExpectedIncorrectUsage( 'Atmosphere\\WP_Admin\\Admin::serve_client_metadata' );
+
+		\add_filter(
+			'atmosphere_client_metadata',
+			static function ( $metadata ) {
+				$metadata['redirect_uris'] = array(
+					'http://example.org/wp-admin/options-general.php?page=atmosphere',
+				);
+				return $metadata;
+			}
+		);
+
+		$response = Admin::serve_client_metadata();
+		$data     = $response->get_data();
+
+		$this->assertCount( 1, $data['redirect_uris'] );
+		$this->assertStringStartsWith( 'https://', $data['redirect_uris'][0] );
 	}
 
 	/**
@@ -139,7 +164,7 @@ class Test_Client_Metadata_Filter extends WP_UnitTestCase {
 			'atmosphere_client_metadata',
 			static function ( $metadata ) {
 				$metadata['redirect_uris'] = array(
-					\admin_url( 'options-general.php?page=atmosphere' ),
+					\admin_url( 'options-general.php?page=atmosphere', 'https' ),
 					'https://evil.example/cb',
 				);
 				return $metadata;
@@ -151,7 +176,7 @@ class Test_Client_Metadata_Filter extends WP_UnitTestCase {
 
 		// Should be the default single-entry list, not a 2-entry list.
 		$this->assertCount( 1, $data['redirect_uris'] );
-		$this->assertStringStartsWith( \admin_url( '' ), $data['redirect_uris'][0] );
+		$this->assertStringStartsWith( \admin_url( '', 'https' ), $data['redirect_uris'][0] );
 	}
 
 	/**

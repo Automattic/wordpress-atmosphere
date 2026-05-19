@@ -341,7 +341,7 @@ class Handle {
 		$connection = get_connection();
 		if ( ! empty( $connection ) ) {
 			$connection['handle'] = $handle;
-			\update_option( 'atmosphere_connection', $connection );
+			\update_option( 'atmosphere_connection', $connection, false );
 		}
 
 		/*
@@ -352,7 +352,11 @@ class Handle {
 		 * would silently drift on the public surface even though the
 		 * PDS has accepted it. Use the namespace helper rather than
 		 * `get_option` directly so a legacy connection still on the
-		 * pre-split shape gets lazy-migrated as a side effect.
+		 * pre-split shape gets lazy-migrated as a side effect. Identity
+		 * stays autoloaded (true) because it is read on every public
+		 * verification request and contains no secret material; the
+		 * autoload=false above applies only to `atmosphere_connection`,
+		 * which holds the encrypted tokens.
 		 */
 		$identity = get_identity();
 		if ( ! empty( $identity['did'] ) ) {
