@@ -227,6 +227,172 @@ class Test_Post extends WP_UnitTestCase {
 		$this->assertSame( $post->ID, $received_post_id, 'Filter should receive the post being transformed.' );
 	}
 
+	/**
+	 * Password-protected posts must not expose protected fields through
+	 * the Bluesky transformer, even when called directly.
+	 *
+	 * @covers ::transform
+	 */
+	public function test_password_protected_transform_is_redacted() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_status'   => 'publish',
+				'post_title'    => 'CONFIDENTIAL-TITLE',
+				'post_content'  => 'CONFIDENTIAL-BODY',
+				'post_excerpt'  => 'CONFIDENTIAL-EXCERPT',
+				'post_password' => 'secret',
+			)
+		);
+		\wp_set_post_tags( $post->ID, array( 'CONFIDENTIAL-TAG' ) );
+
+		$record = ( new Post( $post ) )->transform();
+		$json   = (string) \wp_json_encode( $record );
+
+		$this->assertSame( '', $record['text'] );
+		$this->assertArrayNotHasKey( 'embed', $record );
+		$this->assertArrayNotHasKey( 'tags', $record );
+		$this->assertStringNotContainsString( 'CONFIDENTIAL', $json );
+	}
+
+	/**
+	 * A literal password value of "0" is still an intentional password.
+	 *
+	 * @covers ::transform
+	 */
+	public function test_zero_string_password_transform_is_redacted() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_status'   => 'publish',
+				'post_title'    => 'CONFIDENTIAL-TITLE',
+				'post_content'  => 'CONFIDENTIAL-BODY',
+				'post_password' => '0',
+			)
+		);
+
+		$record = ( new Post( $post ) )->transform();
+		$json   = (string) \wp_json_encode( $record );
+
+		$this->assertSame( '', $record['text'] );
+		$this->assertStringNotContainsString( 'CONFIDENTIAL', $json );
+	}
+
+	/**
+	 * Non-published posts redact the same fields as password-protected posts.
+	 *
+	 * @covers ::transform
+	 */
+	public function test_draft_transform_is_redacted() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_status'  => 'draft',
+				'post_title'   => 'CONFIDENTIAL-TITLE',
+				'post_content' => 'CONFIDENTIAL-BODY',
+				'post_excerpt' => 'CONFIDENTIAL-EXCERPT',
+			)
+		);
+
+		$record = ( new Post( $post ) )->transform();
+		$json   = (string) \wp_json_encode( $record );
+
+		$this->assertSame( '', $record['text'] );
+		$this->assertArrayNotHasKey( 'embed', $record );
+		$this->assertStringNotContainsString( 'CONFIDENTIAL', $json );
+	}
+
+	/**
+	 * Redacted transforms must not expose the raw post object to record filters.
+	 *
+	 * @covers ::transform
+	 */
+	public function test_password_protected_transform_does_not_fire_bsky_record_filter() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_status'   => 'publish',
+				'post_title'    => 'CONFIDENTIAL-TITLE',
+				'post_content'  => 'CONFIDENTIAL-BODY',
+				'post_password' => 'secret',
+			)
+		);
+
+		$called = false;
+		\add_filter(
+			'atmosphere_transform_bsky_post',
+			static function ( array $record ) use ( &$called ): array {
+				$called         = true;
+				$record['text'] = 'CONFIDENTIAL-REINJECTED';
+				return $record;
+			}
+		);
+
+		$record = ( new Post( $post ) )->transform();
+
+		$this->assertSame( '', $record['text'] );
+		$this->assertFalse( $called, 'Redacted transforms must not expose the post object to bsky record filters.' );
+	}
+
+	/**
+	 * The short-form discriminator filter receives the raw post object,
+	 * so redacted transforms must not call it.
+	 *
+	 * @covers ::transform
+	 */
+	public function test_password_protected_transform_does_not_fire_short_form_filter() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_status'   => 'publish',
+				'post_title'    => 'CONFIDENTIAL-TITLE',
+				'post_content'  => 'CONFIDENTIAL-BODY',
+				'post_password' => 'secret',
+			)
+		);
+
+		$called = false;
+		\add_filter(
+			'atmosphere_is_short_form_post',
+			static function () use ( &$called ): bool {
+				$called = true;
+				return false;
+			}
+		);
+
+		$record = ( new Post( $post ) )->transform();
+
+		$this->assertSame( '', $record['text'] );
+		$this->assertFalse( $called, 'Redacted transforms must not expose the post object to short-form filters.' );
+	}
+
+	/**
+	 * Long-form composition paths also redact protected fields.
+	 *
+	 * @covers ::build_long_form_records
+	 */
+	public function test_password_protected_long_form_records_are_redacted() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_status'   => 'publish',
+				'post_title'    => 'CONFIDENTIAL-TITLE',
+				'post_content'  => 'CONFIDENTIAL-BODY',
+				'post_excerpt'  => 'CONFIDENTIAL-EXCERPT',
+				'post_password' => 'secret',
+			)
+		);
+		\wp_set_post_tags( $post->ID, array( 'CONFIDENTIAL-TAG' ) );
+
+		\add_filter(
+			'atmosphere_long_form_composition',
+			static fn() => 'teaser-thread'
+		);
+
+		$records = ( new Post( $post ) )->build_long_form_records();
+		$json    = (string) \wp_json_encode( $records );
+
+		$this->assertCount( 1, $records );
+		$this->assertSame( '', $records[0]['text'] );
+		$this->assertArrayNotHasKey( 'embed', $records[0] );
+		$this->assertArrayNotHasKey( 'tags', $records[0] );
+		$this->assertStringNotContainsString( 'CONFIDENTIAL', $json );
+	}
+
 	/*
 	 * -----------------------------------------------------------------
 	 * truncate_to_budget() — private helper covered via reflection.

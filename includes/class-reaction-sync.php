@@ -665,6 +665,7 @@ class Reaction_Sync {
 				'meta_value'     => $uri, // phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_value
 				'posts_per_page' => 1,
 				'post_status'    => 'publish',
+				'has_password'   => false,
 				'fields'         => 'ids',
 			)
 		);
@@ -679,6 +680,7 @@ class Reaction_Sync {
 				'meta_value'     => $uri, // phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_value
 				'posts_per_page' => 1,
 				'post_status'    => 'publish',
+				'has_password'   => false,
 				'fields'         => 'ids',
 			)
 		);

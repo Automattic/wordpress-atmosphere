@@ -31,6 +31,18 @@ class Document extends Base {
 	public const META_TID = '_atmosphere_doc_tid';
 
 	/**
+	 * Post meta key for the DID that minted the document TID.
+	 *
+	 * Companion to `META_TID` so cleanup paths can detect when the
+	 * record was written under a different connected account. See
+	 * `\Atmosphere\Transformer\Post::META_DID` for the matching key on
+	 * the bsky side and the rationale.
+	 *
+	 * @var string
+	 */
+	public const META_DID = '_atmosphere_doc_did';
+
+	/**
 	 * Post meta key for the document AT-URI.
 	 *
 	 * @var string
@@ -50,11 +62,21 @@ class Document extends Base {
 	 * @return array site.standard.document record.
 	 */
 	public function transform(): array {
+		$redacted = $this->is_post_redacted( $this->object );
+
+		/*
+		 * Redacted records are defense-in-depth output for authorized
+		 * previews/direct callers. Publisher rejects or deletes
+		 * non-publishable posts before this placeholder reaches the PDS.
+		 */
 		$record = array(
-			'$type'       => 'site.standard.document',
-			'title'       => sanitize_text( \get_the_title( $this->object ) ),
-			'publishedAt' => $this->to_iso8601( $this->object->post_date_gmt ),
+			'$type' => 'site.standard.document',
+			'title' => $redacted ? '' : sanitize_text( \get_the_title( $this->object ) ),
 		);
+
+		if ( ! $redacted ) {
+			$record['publishedAt'] = $this->to_iso8601( $this->object->post_date_gmt );
+		}
 
 		// Publication reference (required by spec).
 		$pub_tid = \get_option( 'atmosphere_publication_tid' );
@@ -65,59 +87,65 @@ class Document extends Base {
 			$record['site'] = \untrailingslashit( \get_home_url() );
 		}
 
-		// Relative path.
-		$permalink = \get_permalink( $this->object );
-		$relative  = \wp_make_link_relative( $permalink );
-		if ( $relative ) {
-			$record['path'] = $relative;
-		}
+		if ( ! $redacted ) {
+			// Relative path.
+			$permalink = \get_permalink( $this->object );
+			$relative  = \wp_make_link_relative( $permalink );
+			if ( $relative ) {
+				$record['path'] = $relative;
+			}
 
-		// Description.
-		$excerpt = $this->get_excerpt( $this->object, 55 );
-		if ( ! empty( $excerpt ) ) {
-			$record['description'] = $excerpt;
-		}
+			// Description.
+			$excerpt = $this->get_excerpt( $this->object, 55 );
+			if ( ! empty( $excerpt ) ) {
+				$record['description'] = $excerpt;
+			}
 
-		// Cover image.
-		$thumb_id = \get_post_thumbnail_id( $this->object );
-		if ( $thumb_id ) {
-			$blob = Post::upload_thumbnail( $thumb_id );
-			if ( $blob ) {
-				$record['coverImage'] = $blob;
+			// Cover image.
+			$thumb_id = \get_post_thumbnail_id( $this->object );
+			if ( $thumb_id ) {
+				$blob = Post::upload_thumbnail( $thumb_id );
+				if ( $blob ) {
+					$record['coverImage'] = $blob;
+				}
+			}
+
+			// Full text content.
+			$text_content = $this->get_text_content();
+			if ( ! empty( $text_content ) ) {
+				$record['textContent'] = $text_content;
+			}
+
+			// Parsed rich content (open union).
+			$content = $this->get_content();
+			if ( ! empty( $content ) ) {
+				$record['content'] = $content;
+			}
+
+			// Tags.
+			$tags = $this->collect_tags( $this->object );
+			if ( ! empty( $tags ) ) {
+				$record['tags'] = $tags;
+			}
+
+			// Bluesky cross-reference (populated after initial publish).
+			$bsky_uri = \get_post_meta( $this->object->ID, Post::META_URI, true );
+			$bsky_cid = \get_post_meta( $this->object->ID, Post::META_CID, true );
+			if ( $bsky_uri && $bsky_cid ) {
+				$record['bskyPostRef'] = array(
+					'uri' => $bsky_uri,
+					'cid' => $bsky_cid,
+				);
+			}
+
+			// Updated timestamp.
+			if ( $this->object->post_modified_gmt !== $this->object->post_date_gmt ) {
+				$record['updatedAt'] = $this->to_iso8601( $this->object->post_modified_gmt );
 			}
 		}
 
-		// Full text content.
-		$text_content = $this->get_text_content();
-		if ( ! empty( $text_content ) ) {
-			$record['textContent'] = $text_content;
-		}
-
-		// Parsed rich content (open union).
-		$content = $this->get_content();
-		if ( ! empty( $content ) ) {
-			$record['content'] = $content;
-		}
-
-		// Tags.
-		$tags = $this->collect_tags( $this->object );
-		if ( ! empty( $tags ) ) {
-			$record['tags'] = $tags;
-		}
-
-		// Bluesky cross-reference (populated after initial publish).
-		$bsky_uri = \get_post_meta( $this->object->ID, Post::META_URI, true );
-		$bsky_cid = \get_post_meta( $this->object->ID, Post::META_CID, true );
-		if ( $bsky_uri && $bsky_cid ) {
-			$record['bskyPostRef'] = array(
-				'uri' => $bsky_uri,
-				'cid' => $bsky_cid,
-			);
-		}
-
-		// Updated timestamp.
-		if ( $this->object->post_modified_gmt !== $this->object->post_date_gmt ) {
-			$record['updatedAt'] = $this->to_iso8601( $this->object->post_modified_gmt );
+		if ( $redacted ) {
+			return $record;
 		}
 
 		/**
@@ -135,7 +163,7 @@ class Document extends Base {
 			\_doing_it_wrong(
 				__METHOD__,
 				\esc_html__( 'atmosphere_transform_document must return an array; falling back to the unfiltered record.', 'atmosphere' ),
-				'0.1.0'
+				'unreleased'
 			);
 			return $record;
 		}
@@ -154,6 +182,20 @@ class Document extends Base {
 	 * {@inheritDoc}
 	 */
 	public function get_rkey(): string {
+		/*
+		 * Refresh DID provenance on every call so reconnect-to-a-
+		 * different-account flows update the recorded origin. See the
+		 * full rationale on `\Atmosphere\Transformer\Post::get_rkey()`.
+		 *
+		 * Compare before writing so `wp_head`-time callers don't issue
+		 * a DB write on every pageload.
+		 */
+		$current_did = \Atmosphere\get_did();
+		$stored_did  = (string) \get_post_meta( $this->object->ID, self::META_DID, true );
+		if ( $stored_did !== $current_did ) {
+			\update_post_meta( $this->object->ID, self::META_DID, $current_did );
+		}
+
 		$rkey = \get_post_meta( $this->object->ID, self::META_TID, true );
 
 		if ( empty( $rkey ) ) {

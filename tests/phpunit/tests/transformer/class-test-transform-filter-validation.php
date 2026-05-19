@@ -65,6 +65,31 @@ class Test_Transform_Filter_Validation extends WP_UnitTestCase {
 	}
 
 	/**
+	 * The default long-form link-card path reports the same filter misuse
+	 * as the short-form and thread-entry paths.
+	 */
+	public function test_post_link_card_falls_back_when_filter_returns_non_array() {
+		$this->setExpectedIncorrectUsage( 'Atmosphere\\Transformer\\Post::record_for_link_card' );
+
+		$post_id = self::factory()->post->create(
+			array(
+				'post_title'   => 'Hello',
+				'post_content' => 'Long-form body.',
+				'post_status'  => 'publish',
+			)
+		);
+		$post    = \get_post( $post_id );
+
+		\add_filter( 'atmosphere_transform_bsky_post', static fn() => 'not-an-array' );
+
+		$records = ( new Post( $post ) )->build_long_form_records();
+
+		$this->assertCount( 1, $records );
+		$this->assertSame( 'app.bsky.feed.post', $records[0]['$type'] );
+		$this->assertArrayHasKey( 'text', $records[0] );
+	}
+
+	/**
 	 * `Document::transform()` falls back when the filter returns null.
 	 */
 	public function test_document_transform_falls_back_on_null() {

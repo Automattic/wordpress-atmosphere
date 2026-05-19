@@ -54,23 +54,23 @@ class Test_Atmosphere extends WP_UnitTestCase {
 	 */
 	public function tear_down(): void {
 		\delete_option( 'atmosphere_connection' );
+		\delete_option( 'atmosphere_identity' );
 
 		\wp_clear_scheduled_hook( 'atmosphere_publish_post' );
 		\wp_clear_scheduled_hook( 'atmosphere_update_post' );
 		\wp_clear_scheduled_hook( 'atmosphere_delete_post' );
 		\wp_clear_scheduled_hook( 'atmosphere_delete_records' );
+		\wp_clear_scheduled_hook( 'atmosphere_delete_comment_record' );
 
 		\remove_all_filters( 'atmosphere_should_publish_comment' );
+		\remove_all_filters( 'atmosphere_pre_apply_writes' );
+		\delete_option( 'atmosphere_visibility_cleanup_migrated' );
 
 		parent::tear_down();
 	}
 
 	/**
-	 * Reset the atmosphere_publishing action counter.
-	 *
-	 * The plugin's own transition_post_status hook fires when the
-	 * factory creates a test post, incrementing the counter. Reset
-	 * it before calling on_status_change() directly.
+	 * Reset the legacy atmosphere_publishing action counter.
 	 */
 	private function reset_publishing_action(): void {
 		global $wp_actions;
@@ -141,6 +141,182 @@ class Test_Atmosphere extends WP_UnitTestCase {
 	}
 
 	/**
+	 * Password-protected publishes are not public federation output.
+	 */
+	public function test_password_protected_publish_does_not_schedule_publish() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_status'   => 'publish',
+				'post_password' => 'secret',
+			)
+		);
+
+		$this->reset_publishing_action();
+		$this->atmosphere->on_status_change( 'publish', 'draft', $post );
+
+		$this->assertFalse(
+			\wp_next_scheduled( 'atmosphere_publish_post', array( $post->ID ) ),
+			'Password-protected publish must not schedule a publish.'
+		);
+		$this->assertFalse(
+			\wp_next_scheduled( 'atmosphere_delete_post', array( $post->ID ) ),
+			'Password-protected post with no remote records has nothing to delete.'
+		);
+	}
+
+	/**
+	 * Applying a password to a previously-synced post schedules cleanup,
+	 * not an update carrying protected content.
+	 */
+	public function test_password_protected_update_schedules_delete_not_update() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_status'   => 'publish',
+				'post_password' => 'secret',
+			)
+		);
+		\wp_clear_scheduled_hook( 'atmosphere_publish_post', array( $post->ID ) );
+
+		\update_post_meta( $post->ID, Post::META_TID, 'bsky-tid-123' );
+		\update_post_meta( $post->ID, Document::META_TID, 'doc-tid-456' );
+
+		$this->reset_publishing_action();
+		$this->atmosphere->on_status_change( 'publish', 'publish', $post );
+
+		$this->assertFalse(
+			\wp_next_scheduled( 'atmosphere_update_post', array( $post->ID ) ),
+			'Password-protected update must not schedule a record update.'
+		);
+		$this->assertNotFalse(
+			\wp_next_scheduled( 'atmosphere_delete_post', array( $post->ID ) ),
+			'Password-protected update for a synced post must schedule remote cleanup.'
+		);
+	}
+
+	/**
+	 * Multiple visibility transitions in one request each schedule cleanup.
+	 */
+	public function test_bulk_password_protected_updates_schedule_cleanup_for_each_post() {
+		$posts = array(
+			self::factory()->post->create_and_get(
+				array(
+					'post_status'   => 'publish',
+					'post_password' => 'secret',
+				)
+			),
+			self::factory()->post->create_and_get(
+				array(
+					'post_status'   => 'publish',
+					'post_password' => 'secret',
+				)
+			),
+		);
+
+		foreach ( $posts as $post ) {
+			\update_post_meta( $post->ID, Post::META_TID, 'bsky-tid-' . $post->ID );
+			\update_post_meta( $post->ID, Document::META_TID, 'doc-tid-' . $post->ID );
+		}
+
+		$this->atmosphere->on_status_change( 'publish', 'publish', $posts[0] );
+		$this->atmosphere->on_status_change( 'publish', 'publish', $posts[1] );
+
+		$this->assertNotFalse(
+			\wp_next_scheduled( 'atmosphere_delete_post', array( $posts[0]->ID ) ),
+			'First protected post must schedule cleanup.'
+		);
+		$this->assertNotFalse(
+			\wp_next_scheduled( 'atmosphere_delete_post', array( $posts[1]->ID ) ),
+			'Second protected post must also schedule cleanup.'
+		);
+	}
+
+	/**
+	 * Historical leaks are scheduled once for cleanup on admin requests.
+	 */
+	public function test_historical_visibility_cleanup_schedules_existing_non_public_records() {
+		\delete_option( 'atmosphere_visibility_cleanup_migrated' );
+		\delete_option( 'atmosphere_visibility_cleanup_last_id' );
+
+		$protected = self::factory()->post->create_and_get(
+			array(
+				'post_status'   => 'publish',
+				'post_password' => 'secret',
+			)
+		);
+		\update_post_meta( $protected->ID, Post::META_TID, 'protected-bsky-tid' );
+		\update_post_meta( $protected->ID, Document::META_TID, 'protected-doc-tid' );
+
+		$public = self::factory()->post->create_and_get( array( 'post_status' => 'publish' ) );
+		\update_post_meta( $public->ID, Post::META_TID, 'public-bsky-tid' );
+		\update_post_meta( $public->ID, Document::META_TID, 'public-doc-tid' );
+
+		// First batch returns both posts; flips the cursor and schedules cleanups.
+		$this->atmosphere->run_historical_visibility_cleanup();
+
+		$this->assertNotFalse(
+			\wp_next_scheduled( 'atmosphere_delete_post', array( $protected->ID ) ),
+			'Existing protected records must be scheduled for cleanup.'
+		);
+		$this->assertFalse(
+			\wp_next_scheduled( 'atmosphere_delete_post', array( $public->ID ) ),
+			'Publishable records must not be scheduled by the historical cleanup.'
+		);
+
+		// Migration is only marked complete on the terminal empty batch —
+		// keyset paging cannot distinguish "walk exhausted" from "transient
+		// empty" without a confirmed empty fetch.
+		$this->assertFalse( \get_option( 'atmosphere_visibility_cleanup_migrated' ) );
+
+		// Second invocation hits an empty result set (cursor is past the
+		// max ID), which flips the migrated flag and clears the cursor.
+		$this->atmosphere->run_historical_visibility_cleanup();
+
+		$this->assertSame( '1', \get_option( 'atmosphere_visibility_cleanup_migrated' ) );
+		$this->assertFalse( \get_option( 'atmosphere_visibility_cleanup_last_id' ) );
+	}
+
+	/**
+	 * Removing a password after cleanup deleted remote records must
+	 * publish fresh records, not route through update's unsynced skip.
+	 */
+	public function test_password_removed_after_cleanup_schedules_publish() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_status'   => 'publish',
+				'post_password' => 'secret',
+			)
+		);
+
+		\update_post_meta( $post->ID, Post::META_TID, 'bsky-tid-123' );
+		\update_post_meta( $post->ID, Post::META_URI, 'at://did:plc:test123/app.bsky.feed.post/bsky-tid-123' );
+		\update_post_meta( $post->ID, Document::META_TID, 'doc-tid-456' );
+		\update_post_meta( $post->ID, Document::META_URI, 'at://did:plc:test123/site.standard.document/doc-tid-456' );
+
+		$this->reset_publishing_action();
+		$this->atmosphere->on_status_change( 'publish', 'publish', $post );
+
+		\delete_post_meta( $post->ID, Post::META_TID );
+		\delete_post_meta( $post->ID, Post::META_URI );
+		\delete_post_meta( $post->ID, Document::META_TID );
+		\delete_post_meta( $post->ID, Document::META_URI );
+		\wp_clear_scheduled_hook( 'atmosphere_delete_post', array( $post->ID ) );
+
+		$post->post_password = '';
+
+		$this->reset_publishing_action();
+		$this->atmosphere->on_status_change( 'publish', 'publish', $post );
+
+		$this->assertNotFalse(
+			\wp_next_scheduled( 'atmosphere_publish_post', array( $post->ID ) ),
+			'Password removal after cleanup must schedule a fresh publish.'
+		);
+		$this->assertFalse(
+			\wp_next_scheduled( 'atmosphere_update_post', array( $post->ID ) ),
+			'Password removal after cleanup must not schedule an update for missing records.'
+		);
+	}
+
+	/**
 	 * Test that publish → draft schedules a delete event.
 	 */
 	public function test_publish_to_draft_schedules_delete() {
@@ -178,6 +354,43 @@ class Test_Atmosphere extends WP_UnitTestCase {
 			\wp_next_scheduled( 'atmosphere_delete_post', array( $post->ID ) ),
 			'Expected atmosphere_delete_post to be scheduled.'
 		);
+	}
+
+	/**
+	 * Narrowing the supported post-type allowlist after publication must
+	 * clean up existing remote records instead of leaving them live.
+	 */
+	public function test_publish_update_of_previously_synced_unsupported_post_schedules_delete() {
+		$narrow = static function () {
+			return array();
+		};
+		\add_filter( 'atmosphere_syncable_post_types', $narrow );
+
+		try {
+			$post = self::factory()->post->create_and_get(
+				array(
+					'post_status' => 'publish',
+					'post_type'   => 'post',
+				)
+			);
+
+			\update_post_meta( $post->ID, Post::META_TID, 'bsky-tid-123' );
+			\update_post_meta( $post->ID, Document::META_TID, 'doc-tid-456' );
+
+			$this->reset_publishing_action();
+			$this->atmosphere->on_status_change( 'publish', 'publish', $post );
+
+			$this->assertFalse(
+				\wp_next_scheduled( 'atmosphere_update_post', array( $post->ID ) ),
+				'Unsupported post-type update must not schedule an update.'
+			);
+			$this->assertNotFalse(
+				\wp_next_scheduled( 'atmosphere_delete_post', array( $post->ID ) ),
+				'Previously-synced unsupported post must schedule remote cleanup.'
+			);
+		} finally {
+			\remove_filter( 'atmosphere_syncable_post_types', $narrow );
+		}
 	}
 
 	/**
@@ -274,6 +487,40 @@ class Test_Atmosphere extends WP_UnitTestCase {
 		$this->assertNotFalse(
 			\wp_next_scheduled( 'atmosphere_publish_post', array( $post->ID ) ),
 			'Expected atmosphere_publish_post to be scheduled on restore.'
+		);
+	}
+
+	/**
+	 * Restoring before the queued cleanup runs must update existing
+	 * records. Publishing would attempt applyWrites#create for rkeys
+	 * that are still live on the PDS.
+	 */
+	public function test_restore_before_cleanup_schedules_update_for_existing_records() {
+		$post = self::factory()->post->create_and_get(
+			array( 'post_status' => 'publish' )
+		);
+		\wp_clear_scheduled_hook( 'atmosphere_publish_post', array( $post->ID ) );
+
+		\update_post_meta( $post->ID, Post::META_TID, 'bsky-tid-123' );
+		\update_post_meta( $post->ID, Post::META_URI, 'at://did:plc:test123/app.bsky.feed.post/bsky-tid-123' );
+		\update_post_meta( $post->ID, Document::META_TID, 'doc-tid-456' );
+		\update_post_meta( $post->ID, Document::META_URI, 'at://did:plc:test123/site.standard.document/doc-tid-456' );
+		\wp_schedule_single_event( \time(), 'atmosphere_delete_post', array( $post->ID ) );
+
+		$this->reset_publishing_action();
+		$this->atmosphere->on_status_change( 'publish', 'draft', $post );
+
+		$this->assertFalse(
+			\wp_next_scheduled( 'atmosphere_publish_post', array( $post->ID ) ),
+			'Restore with existing records must not schedule a fresh publish.'
+		);
+		$this->assertNotFalse(
+			\wp_next_scheduled( 'atmosphere_update_post', array( $post->ID ) ),
+			'Restore with existing records must schedule an update.'
+		);
+		$this->assertFalse(
+			\wp_next_scheduled( 'atmosphere_delete_post', array( $post->ID ) ),
+			'Restore should clear stale queued cleanup.'
 		);
 	}
 
@@ -382,6 +629,22 @@ class Test_Atmosphere extends WP_UnitTestCase {
 		$comment    = $this->make_eligible_comment( array( 'comment_post_ID' => $other_post ) );
 
 		$this->assertFalse( Atmosphere::should_publish_comment( $comment ) );
+	}
+
+	/**
+	 * Comments on non-public parent posts are skipped even when stale
+	 * root URI/CID meta still exists.
+	 */
+	public function test_comment_on_password_protected_post_is_skipped() {
+		$comment = $this->make_eligible_comment();
+		\wp_update_post(
+			array(
+				'ID'            => (int) $comment->comment_post_ID,
+				'post_password' => 'secret',
+			)
+		);
+
+		$this->assertFalse( Atmosphere::should_publish_comment( \get_comment( $comment->comment_ID ) ) );
 	}
 
 	/**
@@ -548,6 +811,161 @@ class Test_Atmosphere extends WP_UnitTestCase {
 		\remove_all_filters( 'pre_http_request' );
 
 		$this->assertFalse( $captured, 'applyWrites must not be called for a no-longer-eligible comment.' );
+	}
+
+	/**
+	 * The post update cron handler re-checks publishability at fire
+	 * time. A post password-protected after scheduling must not update
+	 * remote records with protected content; it schedules cleanup.
+	 */
+	public function test_update_post_cron_rechecks_password_protection() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_status'   => 'publish',
+				'post_password' => 'secret',
+			)
+		);
+		\update_post_meta( $post->ID, Post::META_TID, 'bsky-tid-123' );
+		\update_post_meta( $post->ID, Post::META_URI, 'at://did:plc:test123/app.bsky.feed.post/bsky-tid-123' );
+		\update_post_meta( $post->ID, Document::META_TID, 'doc-tid-456' );
+
+		$captured_writes = array();
+		\add_filter(
+			'atmosphere_pre_apply_writes',
+			static function ( $short, $writes ) use ( &$captured_writes ) {
+				$captured_writes = $writes;
+				return array( 'results' => \array_fill( 0, \count( $writes ), array() ) );
+			},
+			10,
+			2
+		);
+
+		\do_action( 'atmosphere_update_post', $post->ID );
+		\remove_all_filters( 'atmosphere_pre_apply_writes' );
+
+		$this->assertCount( 2, $captured_writes, 'Stale update cron must delete existing remote records immediately.' );
+		$this->assertSame( 'com.atproto.repo.applyWrites#delete', $captured_writes[0]['$type'] );
+		$this->assertSame( 'app.bsky.feed.post', $captured_writes[0]['collection'] );
+		$this->assertSame( 'com.atproto.repo.applyWrites#delete', $captured_writes[1]['$type'] );
+		$this->assertSame( 'site.standard.document', $captured_writes[1]['collection'] );
+		$this->assertFalse(
+			\wp_next_scheduled( 'atmosphere_delete_post', array( $post->ID ) ),
+			'Stale update cron performs cleanup directly instead of deferring to another cron tick.'
+		);
+	}
+
+	/**
+	 * If cleanup succeeded before a stale update event fires, a restored
+	 * post with the visibility-cleanup marker must publish fresh records.
+	 */
+	public function test_update_post_cron_publishes_when_cleanup_removed_records() {
+		$post = self::factory()->post->create_and_get( array( 'post_status' => 'publish' ) );
+		Atmosphere::mark_visibility_cleanup( $post );
+
+		$captured_writes = array();
+		\add_filter(
+			'atmosphere_pre_apply_writes',
+			static function ( $short, $writes ) use ( &$captured_writes ) {
+				$captured_writes[] = $writes;
+
+				return array(
+					'results' => \array_map(
+						static fn ( $write ) => array(
+							'uri' => 'at://did:plc:test123/' . $write['collection'] . '/' . $write['rkey'],
+							'cid' => 'bafy' . $write['rkey'],
+						),
+						$writes
+					),
+				);
+			},
+			10,
+			2
+		);
+
+		\do_action( 'atmosphere_update_post', $post->ID );
+		\remove_all_filters( 'atmosphere_pre_apply_writes' );
+
+		$this->assertNotEmpty( $captured_writes, 'Stale update cron must write fresh records.' );
+		$this->assertSame( 'com.atproto.repo.applyWrites#create', $captured_writes[0][0]['$type'] );
+		$this->assertSame( 'app.bsky.feed.post', $captured_writes[0][0]['collection'] );
+		$this->assertSame( 'com.atproto.repo.applyWrites#create', $captured_writes[0][1]['$type'] );
+		$this->assertSame( 'site.standard.document', $captured_writes[0][1]['collection'] );
+	}
+
+	/**
+	 * If a stale publish event fires for a post that already has live
+	 * records, it must update them instead of trying applyWrites#create
+	 * with existing rkeys.
+	 */
+	public function test_publish_post_cron_updates_when_records_already_exist() {
+		$post = self::factory()->post->create_and_get(
+			array( 'post_status' => 'publish' )
+		);
+		\update_post_meta( $post->ID, Post::META_TID, 'bsky-tid-123' );
+		\update_post_meta( $post->ID, Post::META_URI, 'at://did:plc:test123/app.bsky.feed.post/bsky-tid-123' );
+		\update_post_meta( $post->ID, Post::META_CID, 'bafyroot' );
+		\update_post_meta( $post->ID, Document::META_TID, 'doc-tid-456' );
+		\update_post_meta( $post->ID, Document::META_URI, 'at://did:plc:test123/site.standard.document/doc-tid-456' );
+
+		$captured_writes = array();
+		\add_filter(
+			'atmosphere_pre_apply_writes',
+			static function ( $short, $writes ) use ( &$captured_writes ) {
+				$captured_writes = $writes;
+				return array( 'results' => \array_fill( 0, \count( $writes ), array() ) );
+			},
+			10,
+			2
+		);
+
+		\do_action( 'atmosphere_publish_post', $post->ID );
+		\remove_all_filters( 'atmosphere_pre_apply_writes' );
+
+		$this->assertCount( 2, $captured_writes, 'Stale publish cron must update existing bsky and document records.' );
+		$this->assertSame( 'com.atproto.repo.applyWrites#update', $captured_writes[0]['$type'] );
+		$this->assertSame( 'app.bsky.feed.post', $captured_writes[0]['collection'] );
+		$this->assertSame( 'bsky-tid-123', $captured_writes[0]['rkey'] );
+		$this->assertSame( 'com.atproto.repo.applyWrites#update', $captured_writes[1]['$type'] );
+		$this->assertSame( 'site.standard.document', $captured_writes[1]['collection'] );
+		$this->assertSame( 'doc-tid-456', $captured_writes[1]['rkey'] );
+	}
+
+	/**
+	 * If a stale delete event fires after the post has become public
+	 * again, it must update the still-live records instead of removing
+	 * them or trying to recreate them.
+	 */
+	public function test_delete_post_cron_updates_when_post_publishable_again() {
+		$post = self::factory()->post->create_and_get(
+			array( 'post_status' => 'publish' )
+		);
+		\update_post_meta( $post->ID, Post::META_TID, 'bsky-tid-123' );
+		\update_post_meta( $post->ID, Post::META_URI, 'at://did:plc:test123/app.bsky.feed.post/bsky-tid-123' );
+		\update_post_meta( $post->ID, Post::META_CID, 'bafyroot' );
+		\update_post_meta( $post->ID, Document::META_TID, 'doc-tid-456' );
+		\update_post_meta( $post->ID, Document::META_URI, 'at://did:plc:test123/site.standard.document/doc-tid-456' );
+
+		$captured_writes = array();
+		\add_filter(
+			'atmosphere_pre_apply_writes',
+			static function ( $short, $writes ) use ( &$captured_writes ) {
+				$captured_writes = $writes;
+				return array( 'results' => \array_fill( 0, \count( $writes ), array() ) );
+			},
+			10,
+			2
+		);
+
+		\do_action( 'atmosphere_delete_post', $post->ID );
+		\remove_all_filters( 'atmosphere_pre_apply_writes' );
+
+		$this->assertCount( 2, $captured_writes, 'Stale delete cron must update the existing bsky and document records.' );
+		$this->assertSame( 'com.atproto.repo.applyWrites#update', $captured_writes[0]['$type'] );
+		$this->assertSame( 'app.bsky.feed.post', $captured_writes[0]['collection'] );
+		$this->assertSame( 'bsky-tid-123', $captured_writes[0]['rkey'] );
+		$this->assertSame( 'com.atproto.repo.applyWrites#update', $captured_writes[1]['$type'] );
+		$this->assertSame( 'site.standard.document', $captured_writes[1]['collection'] );
+		$this->assertSame( 'doc-tid-456', $captured_writes[1]['rkey'] );
 	}
 
 	/**

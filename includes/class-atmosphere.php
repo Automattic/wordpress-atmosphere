@@ -14,7 +14,6 @@ use Atmosphere\Transformer\Comment;
 use Atmosphere\Transformer\Document;
 use Atmosphere\Transformer\Post;
 use Atmosphere\Transformer\Publication;
-use Atmosphere\Transformer\TID;
 use Atmosphere\Integrations\Load;
 use Atmosphere\WP_Admin\Admin;
 
@@ -36,6 +35,37 @@ class Atmosphere {
 	 * @var string
 	 */
 	private const META_PUBLISH_ATTEMPTS = '_atmosphere_publish_attempts';
+
+	/**
+	 * Post meta marker set when remote records were removed because a
+	 * previously public post left public visibility.
+	 *
+	 * @var string
+	 */
+	private const META_VISIBILITY_CLEANUP = '_atmosphere_visibility_cleanup';
+
+	/**
+	 * Option marking that the historical visibility cleanup migration ran.
+	 *
+	 * @var string
+	 */
+	private const OPTION_VISIBILITY_CLEANUP_MIGRATED = 'atmosphere_visibility_cleanup_migrated';
+
+	/**
+	 * Option storing the highest post ID processed by the historical
+	 * visibility-cleanup migration. Used for keyset (ID > last_seen)
+	 * pagination so concurrent deletes don't shift the cursor.
+	 *
+	 * @var string
+	 */
+	private const OPTION_VISIBILITY_CLEANUP_LAST_ID = 'atmosphere_visibility_cleanup_last_id';
+
+	/**
+	 * Post IDs currently being handled by on_status_change().
+	 *
+	 * @var array<int,bool>
+	 */
+	private static array $publishing_post_ids = array();
 
 	/**
 	 * Maximum re-schedule hops for a child comment waiting on a
@@ -94,6 +124,18 @@ class Atmosphere {
 		// Post lifecycle hooks.
 		\add_action( 'transition_post_status', array( $this, 'on_status_change' ), 10, 3 );
 
+		/*
+		 * Historical visibility-cleanup migration is queued (not run)
+		 * on admin_init by a `manage_options`-capable user, and the
+		 * actual batched walk runs in a single-event cron handler.
+		 * Splitting the trigger from the work keeps subscribers from
+		 * driving the full `posts_per_page => -1` walk on their first
+		 * /wp-admin/* hit, and the cron context decouples the long
+		 * walk from any specific admin pageload's timeout budget.
+		 */
+		\add_action( 'admin_init', array( $this, 'maybe_queue_historical_visibility_cleanup' ) );
+		\add_action( 'atmosphere_run_historical_visibility_cleanup', array( $this, 'run_historical_visibility_cleanup' ) );
+
 		// Catch permanent deletes (bypassing trash or emptying trash).
 		\add_action( 'before_delete_post', array( $this, 'on_before_delete' ) );
 
@@ -132,9 +174,14 @@ class Atmosphere {
 	 *
 	 * This confirms the bidirectional link between the web page and
 	 * its AT Protocol document record, as required by standard.site.
+	 *
+	 * Gated on `has_identity()` rather than `is_connected()` so the
+	 * verification link survives a temporary OAuth refresh failure —
+	 * the document AT-URI is computed from the DID, which is stable
+	 * across session expiry and `needs_reauth` states.
 	 */
 	public function output_document_link(): void {
-		if ( ! is_connected() || ! \is_singular() ) {
+		if ( ! has_identity() || ! \is_singular() ) {
 			return;
 		}
 
@@ -144,17 +191,20 @@ class Atmosphere {
 			return;
 		}
 
-		if ( ! is_supported_post_type( $post->post_type ) ) {
+		if ( ! is_post_publishable( $post ) ) {
 			return;
 		}
 
-		// Use existing TID or lazily generate one.
-		$doc_tid = \get_post_meta( $post->ID, Document::META_TID, true );
-
-		if ( empty( $doc_tid ) ) {
-			$doc_tid = TID::generate();
-			\update_post_meta( $post->ID, Document::META_TID, $doc_tid );
-		}
+		/*
+		 * Route the TID lookup through `Document::get_rkey()` so the
+		 * lazy mint here writes `META_DID` alongside `META_TID`. The
+		 * inlined fallback that used to live here would have left the
+		 * row in a "TID set, no DID" state, which the mismatch guard
+		 * in `Publisher::delete_post()` treats as "DID unknown, fall
+		 * through to `get_did()`" — re-opening the wrong-repo-delete
+		 * bypass after a reconnect-to-different-account.
+		 */
+		$doc_tid = ( new Document( $post ) )->get_rkey();
 
 		$uri = build_at_uri( get_did(), 'site.standard.document', $doc_tid );
 
@@ -202,7 +252,15 @@ class Atmosphere {
 			return;
 		}
 
-		if ( ! is_connected() ) {
+		/*
+		 * Identity gate (not connection gate): an expired OAuth session
+		 * must not break domain handle verification. Bluesky's resolver
+		 * re-fetches this endpoint to confirm the bidirectional link
+		 * each time a profile loads, so a transient token failure
+		 * otherwise propagates as "handle no longer resolves" until the
+		 * site admin reconnects.
+		 */
+		if ( ! has_identity() ) {
 			\status_header( 404 );
 			exit;
 		}
@@ -224,7 +282,15 @@ class Atmosphere {
 			return;
 		}
 
-		if ( ! is_connected() ) {
+		/*
+		 * Identity gate (not connection gate): the publication AT-URI is
+		 * derived from the persisted DID + publication TID, both of
+		 * which outlive a transient OAuth refresh failure. Returning 404
+		 * here while waiting for the user to reconnect would break
+		 * standard.site's bidirectional verification each time the
+		 * token rotates.
+		 */
+		if ( ! has_identity() ) {
 			\status_header( 404 );
 			exit;
 		}
@@ -297,56 +363,245 @@ class Atmosphere {
 			return;
 		}
 
-		$is_new_publish = 'publish' === $new_status && 'publish' !== $old_status;
-		$is_update      = 'publish' === $new_status && 'publish' === $old_status;
-		$is_unpublish   = 'publish' === $old_status && 'publish' !== $new_status;
+		$is_publishable         = is_post_publishable( $post );
+		$has_records            = self::has_post_records( $post );
+		$had_visibility_cleanup = self::has_visibility_cleanup_marker( $post );
+		$is_new_publish         = $is_publishable && ! $has_records && ( 'publish' !== $old_status || $had_visibility_cleanup );
+		$is_update              = $is_publishable && ! $is_new_publish;
+		$is_cleanup             = 'publish' === $old_status && ! $is_publishable && $has_records;
 
-		if ( ! $is_new_publish && ! $is_update && ! $is_unpublish ) {
+		if ( ! $is_new_publish && ! $is_update && ! $is_cleanup ) {
 			// Transition between two non-publish states; nothing to schedule.
 			return;
 		}
 
 		/*
-		 * Publish-time decisions respect the supported list so sites
-		 * only sync the post types they've opted into. Unpublish is a
-		 * cleanup path for records that were already synced, so
-		 * narrowing support later must not orphan those remote records:
-		 * unpublish defers to publication metadata (TIDs on the post)
-		 * instead of the current support list.
+		 * Publish-time decisions respect current public visibility.
+		 * Cleanup is different: if a previously-published post becomes
+		 * non-public (draft/private/trash, password-protected, or no
+		 * longer supported), remote records must be removed even though
+		 * the post is no longer publishable.
 		 */
-		if ( ( $is_new_publish || $is_update ) && ! is_supported_post_type( $post->post_type ) ) {
+		if ( isset( self::$publishing_post_ids[ $post->ID ] ) ) {
 			return;
 		}
 
-		if ( $is_unpublish ) {
-			$bsky_tid = \get_post_meta( $post->ID, Transformer\Post::META_TID, true );
-			$doc_tid  = \get_post_meta( $post->ID, Transformer\Document::META_TID, true );
-			if ( ! $bsky_tid && ! $doc_tid ) {
-				// Unpublish of a post that was never synced — nothing to clean up.
-				return;
+		self::$publishing_post_ids[ $post->ID ] = true;
+
+		/*
+		 * Wrap in try/finally so a throwing listener on
+		 * `atmosphere_publishing` (Sentry SDK, JSON_THROW_ON_ERROR in
+		 * a webhook sink, etc.) can't strand the per-post guard. A
+		 * stuck entry silently no-ops every subsequent transition of
+		 * the same post ID in the current PHP process — especially
+		 * painful for WP-CLI bulk imports where one fatal early in
+		 * the run poisons every later transition of that ID.
+		 */
+		try {
+			\do_action( 'atmosphere_publishing', $post );
+
+			if ( $is_publishable ) {
+				\wp_clear_scheduled_hook( 'atmosphere_delete_post', array( $post->ID ) );
 			}
-		}
 
-		// Prevent infinite loops from meta updates.
-		if ( \did_action( 'atmosphere_publishing' ) ) {
+			if ( $is_new_publish ) {
+				\wp_schedule_single_event( \time(), 'atmosphere_publish_post', array( $post->ID ) );
+			} elseif ( $is_update ) {
+				\wp_schedule_single_event( \time(), 'atmosphere_update_post', array( $post->ID ) );
+			} else {
+				self::mark_visibility_cleanup( $post );
+
+				/*
+				 * Genuine unpublish — use atmosphere_delete_post (not
+				 * delete_records) so post meta is cleaned up on success,
+				 * allowing a subsequent restore (trash → publish) to
+				 * republish correctly.
+				 */
+				\wp_schedule_single_event( \time(), 'atmosphere_delete_post', array( $post->ID ) );
+			}
+		} finally {
+			unset( self::$publishing_post_ids[ $post->ID ] );
+		}
+	}
+
+	/**
+	 * Max posts the historical migration scans per cron tick.
+	 *
+	 * Bounded so a site with thousands of historical Atmosphere
+	 * records can't blow the cron handler's execution-time budget on
+	 * a single fire. The handler reschedules itself until the walk is
+	 * exhausted, then sets `OPTION_VISIBILITY_CLEANUP_MIGRATED`.
+	 *
+	 * @var int
+	 */
+	private const VISIBILITY_CLEANUP_BATCH_SIZE = 200;
+
+	/**
+	 * Queue the historical visibility-cleanup walk if needed.
+	 *
+	 * Runs on `admin_init`. Bails on subscriber-level users so the
+	 * cron event is only ever scheduled by an actual administrator,
+	 * even though the walk itself runs in cron context. Bails on
+	 * any other condition that would re-schedule the same event,
+	 * keeping concurrent admin pageloads from queuing duplicates.
+	 */
+	public function maybe_queue_historical_visibility_cleanup(): void {
+		if ( ! \current_user_can( 'manage_options' ) ) {
 			return;
 		}
 
-		\do_action( 'atmosphere_publishing' );
+		if ( ! is_connected() ) {
+			return;
+		}
 
-		if ( $is_new_publish ) {
-			\wp_schedule_single_event( \time(), 'atmosphere_publish_post', array( $post->ID ) );
-		} elseif ( $is_update ) {
-			\wp_schedule_single_event( \time(), 'atmosphere_update_post', array( $post->ID ) );
-		} else {
-			/*
-			 * Genuine unpublish — use atmosphere_delete_post (not
-			 * delete_records) so post meta is cleaned up on success,
-			 * allowing a subsequent restore (trash → publish) to
-			 * republish correctly.
-			 */
+		if ( \get_option( self::OPTION_VISIBILITY_CLEANUP_MIGRATED ) ) {
+			return;
+		}
+
+		if ( \wp_next_scheduled( 'atmosphere_run_historical_visibility_cleanup' ) ) {
+			return;
+		}
+
+		\wp_schedule_single_event( \time(), 'atmosphere_run_historical_visibility_cleanup' );
+	}
+
+	/**
+	 * Cron handler: walk a single batch of historical posts and queue
+	 * cleanup for those that lost public visibility.
+	 *
+	 * Uses keyset (ID > last_seen) paging rather than `offset` — once
+	 * a post's records are deleted, the migration's `meta_query` no
+	 * longer matches it, so offset-paged windows would skip ahead by
+	 * roughly the number of completed deletes per batch. Keyset
+	 * paging is stable against in-flight deletes.
+	 *
+	 * Reschedules itself for the next batch BEFORE processing so a
+	 * mid-batch fatal (OOM, listener fatal) still leaves a recovery
+	 * breadcrumb — the next cron tick picks up at the persisted
+	 * cursor. An empty batch terminates the walk and sets the
+	 * one-shot migration option.
+	 */
+	public function run_historical_visibility_cleanup(): void {
+		if ( \get_option( self::OPTION_VISIBILITY_CLEANUP_MIGRATED ) ) {
+			return;
+		}
+
+		$last_id = (int) \get_option( self::OPTION_VISIBILITY_CLEANUP_LAST_ID, 0 );
+
+		global $wpdb;
+
+		/*
+		 * Raw query because WP_Query's `offset` is unstable under
+		 * concurrent deletes (see method docblock). The meta-key list
+		 * mirrors the OR EXISTS branches the original `meta_query`
+		 * used; `DISTINCT` collapses posts that match on multiple
+		 * keys (very common — most synced posts have both `bsky_tid`
+		 * and `doc_tid`).
+		 */
+		// phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.SlowDBQuery.slow_db_query_meta_key
+		$post_ids = $wpdb->get_col(
+			$wpdb->prepare(
+				"SELECT DISTINCT p.ID
+				 FROM {$wpdb->posts} p
+				 INNER JOIN {$wpdb->postmeta} pm ON pm.post_id = p.ID
+				 WHERE p.ID > %d
+				   AND pm.meta_key IN (%s, %s, %s, %s, %s)
+				 ORDER BY p.ID ASC
+				 LIMIT %d",
+				$last_id,
+				Post::META_TID,
+				Post::META_URI,
+				Post::META_THREAD_RECORDS,
+				Document::META_TID,
+				Document::META_URI,
+				self::VISIBILITY_CLEANUP_BATCH_SIZE
+			)
+		);
+		// phpcs:enable
+
+		if ( empty( $post_ids ) ) {
+			\delete_option( self::OPTION_VISIBILITY_CLEANUP_LAST_ID );
+			\update_option( self::OPTION_VISIBILITY_CLEANUP_MIGRATED, '1', false );
+			return;
+		}
+
+		/*
+		 * Persist the cursor BEFORE processing the batch and queue
+		 * the next run BEFORE the foreach. A fatal mid-batch then
+		 * leaves a recovery breadcrumb (the next cron pulls up at
+		 * the cursor we've already advanced past in the DB query but
+		 * not in the persisted state) rather than stranding the
+		 * migration until a manage_options admin hits admin_init.
+		 */
+		$max_id = (int) \end( $post_ids );
+		\update_option( self::OPTION_VISIBILITY_CLEANUP_LAST_ID, $max_id, false );
+
+		\wp_schedule_single_event( \time() + 60, 'atmosphere_run_historical_visibility_cleanup' );
+
+		foreach ( $post_ids as $post_id ) {
+			$post = \get_post( (int) $post_id );
+
+			if ( ! $post instanceof \WP_Post ) {
+				continue;
+			}
+
+			if ( is_post_publishable( $post ) || ! self::has_post_records( $post ) ) {
+				continue;
+			}
+
+			self::mark_visibility_cleanup( $post );
+
+			if ( \wp_next_scheduled( 'atmosphere_delete_post', array( $post->ID ) ) ) {
+				continue;
+			}
+
 			\wp_schedule_single_event( \time(), 'atmosphere_delete_post', array( $post->ID ) );
 		}
+	}
+
+	/**
+	 * Whether the post has local metadata for remote records.
+	 *
+	 * Used to distinguish a cleanup-worthy post from a non-public post
+	 * that never reached the PDS.
+	 *
+	 * @param \WP_Post $post Post object.
+	 * @return bool
+	 */
+	private static function has_post_records( \WP_Post $post ): bool {
+		return ! empty( \get_post_meta( $post->ID, Transformer\Post::META_TID, true ) )
+			|| ! empty( \get_post_meta( $post->ID, Transformer\Post::META_URI, true ) )
+			|| ! empty( \get_post_meta( $post->ID, Transformer\Post::META_THREAD_RECORDS, true ) )
+			|| ! empty( \get_post_meta( $post->ID, Transformer\Document::META_TID, true ) )
+			|| ! empty( \get_post_meta( $post->ID, Transformer\Document::META_URI, true ) );
+	}
+
+	/**
+	 * Whether this post previously had records removed for visibility.
+	 *
+	 * @param \WP_Post $post Post object.
+	 * @return bool
+	 */
+	private static function has_visibility_cleanup_marker( \WP_Post $post ): bool {
+		return (bool) \get_post_meta( $post->ID, self::META_VISIBILITY_CLEANUP, true );
+	}
+
+	/**
+	 * Mark a post as needing fresh publish if it becomes public again.
+	 *
+	 * @param \WP_Post $post Post object.
+	 */
+	public static function mark_visibility_cleanup( \WP_Post $post ): void {
+		\update_post_meta( $post->ID, self::META_VISIBILITY_CLEANUP, '1' );
+	}
+
+	/**
+	 * Clear the visibility-cleanup marker after a successful publish/update.
+	 *
+	 * @param \WP_Post $post Post object.
+	 */
+	private static function clear_visibility_cleanup_marker( \WP_Post $post ): void {
+		\delete_post_meta( $post->ID, self::META_VISIBILITY_CLEANUP );
 	}
 
 	/**
@@ -588,7 +843,23 @@ class Atmosphere {
 			return false;
 		}
 
-		$post_id  = (int) $comment->comment_post_ID;
+		$post_id = (int) $comment->comment_post_ID;
+
+		/*
+		 * Drop the in-process `WP_Post` cache so a concurrent web
+		 * request that just password-protected the parent is visible
+		 * to this worker. Same exposure as the publisher reconcile
+		 * path on installs without a persistent object cache: without
+		 * this invalidation, the cron handler would publish the reply
+		 * against a now-protected parent.
+		 */
+		\clean_post_cache( $post_id );
+		$post = \get_post( $post_id );
+
+		if ( ! $post instanceof \WP_Post || ! is_post_publishable( $post ) ) {
+			return false;
+		}
+
 		$post_uri = \get_post_meta( $post_id, Post::META_URI, true );
 		$post_cid = \get_post_meta( $post_id, Post::META_CID, true );
 
@@ -706,19 +977,35 @@ class Atmosphere {
 	 */
 	public static function register_async_hooks(): void {
 		/*
-		 * Publish/update cron callbacks re-check post-type support.
-		 * A user (or downstream filter) can disable a post type after a
-		 * cron event was queued, and we must not still publish it.
+		 * Publish/update cron callbacks re-check post visibility.
+		 * A user (or downstream filter) can password-protect a post,
+		 * unpublish it, or disable its post type after a cron event was
+		 * queued, and we must not still publish it.
 		 *
-		 * The delete callback intentionally skips this check so cleanup
-		 * still runs after support is removed.
+		 * The delete callback uses the inverse gate: if the post has
+		 * become publishable again, update the existing records instead
+		 * of deleting them; otherwise clean up any existing remote records.
 		 */
 		\add_action(
 			'atmosphere_publish_post',
 			static function ( int $post_id ): void {
 				$post = \get_post( $post_id );
-				if ( $post && 'publish' === $post->post_status && is_supported_post_type( $post->post_type ) ) {
-					Publisher::publish_post( $post );
+				if ( ! $post ) {
+					return;
+				}
+				if ( is_post_publishable( $post ) ) {
+					$result = self::has_post_records( $post )
+						? Publisher::update_post( $post )
+						: Publisher::publish_post( $post );
+					self::log_cron_error( 'publish_post', $post_id, $result );
+					if ( ! \is_wp_error( $result ) ) {
+						self::clear_visibility_cleanup_marker( $post );
+					}
+					return;
+				}
+				if ( self::has_post_records( $post ) ) {
+					self::mark_visibility_cleanup( $post );
+					self::log_cron_error( 'delete_post', $post_id, Publisher::delete_post( $post ) );
 				}
 			}
 		);
@@ -727,8 +1014,22 @@ class Atmosphere {
 			'atmosphere_update_post',
 			static function ( int $post_id ): void {
 				$post = \get_post( $post_id );
-				if ( $post && 'publish' === $post->post_status && is_supported_post_type( $post->post_type ) ) {
-					Publisher::update_post( $post );
+				if ( ! $post ) {
+					return;
+				}
+				if ( is_post_publishable( $post ) ) {
+					$result = self::has_post_records( $post ) || ! self::has_visibility_cleanup_marker( $post )
+						? Publisher::update_post( $post )
+						: Publisher::publish_post( $post );
+					self::log_cron_error( 'update_post', $post_id, $result );
+					if ( ! \is_wp_error( $result ) ) {
+						self::clear_visibility_cleanup_marker( $post );
+					}
+					return;
+				}
+				if ( self::has_post_records( $post ) ) {
+					self::mark_visibility_cleanup( $post );
+					self::log_cron_error( 'delete_post', $post_id, Publisher::delete_post( $post ) );
 				}
 			}
 		);
@@ -738,7 +1039,20 @@ class Atmosphere {
 			static function ( int $post_id ): void {
 				$post = \get_post( $post_id );
 				if ( $post ) {
-					Publisher::delete_post( $post );
+					if ( is_post_publishable( $post ) ) {
+						$result = self::has_post_records( $post ) || ! self::has_visibility_cleanup_marker( $post )
+							? Publisher::update_post( $post )
+							: Publisher::publish_post( $post );
+						self::log_cron_error( 'delete_post_publishable_reconcile', $post_id, $result );
+						if ( ! \is_wp_error( $result ) ) {
+							self::clear_visibility_cleanup_marker( $post );
+						}
+						return;
+					}
+					if ( self::has_post_records( $post ) ) {
+						self::mark_visibility_cleanup( $post );
+						self::log_cron_error( 'delete_post', $post_id, Publisher::delete_post( $post ) );
+					}
 				}
 			}
 		);
@@ -947,24 +1261,47 @@ class Atmosphere {
 	 * here would lose the breadcrumb operators need to diagnose
 	 * auth, transport, or PDS-side failures.
 	 *
-	 * @param string $op         One of 'publish_comment' | 'update_comment' | 'delete_comment'.
-	 * @param int    $comment_id Comment ID.
-	 * @param mixed  $result     Publisher call result.
+	 * @param string $op        Operation name.
+	 * @param int    $object_id Post or comment ID.
+	 * @param mixed  $result    Publisher call result.
 	 */
-	private static function log_cron_error( string $op, int $comment_id, $result ): void {
+	public static function log_cron_error( string $op, int $object_id, $result ): void {
 		if ( ! \is_wp_error( $result ) ) {
 			return;
 		}
+
+		/*
+		 * PDS error messages flow through `WP_Error::get_error_message()`
+		 * via `API::apply_writes` and can include attacker-controlled
+		 * bytes (CRLF, ANSI escapes, fake `[atmosphere]` prefixes that
+		 * imitate other log lines). `error_log` does not escape them,
+		 * so a misbehaving PDS could otherwise smuggle multiline noise
+		 * into log-shipping pipelines that parse line prefixes.
+		 */
+		$message = \str_replace( array( "\r", "\n" ), ' ', $result->get_error_message() );
 
 		\error_log( // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
 			\sprintf(
 				'[atmosphere] %s %d failed: %s — %s',
 				$op,
-				$comment_id,
+				$object_id,
 				$result->get_error_code(),
-				$result->get_error_message()
+				$message
 			)
 		);
+	}
+
+	/**
+	 * Public alias for {@see Atmosphere::log_cron_error()} used by the
+	 * Publisher reconcile path. Routes the cleanup-delete failure
+	 * through a stable op label (`reconcile_cleanup`) so monitors do
+	 * not confuse it with the original publish failure.
+	 *
+	 * @param int   $post_id Post ID whose reconcile cleanup failed.
+	 * @param mixed $result  `WP_Error` from `Publisher::delete_post()`.
+	 */
+	public static function log_reconcile_cleanup_error( int $post_id, $result ): void {
+		self::log_cron_error( 'reconcile_cleanup', $post_id, $result );
 	}
 
 	/**
@@ -988,6 +1325,16 @@ class Atmosphere {
 	 * @param int $comment_id Comment ID just published.
 	 */
 	private static function reconcile_comment_after_publish( int $comment_id ): void {
+		/*
+		 * Drop the in-process `WP_Comment` cache so a concurrent web
+		 * request that just unapproved or deleted this comment is
+		 * visible to the reconcile re-check. Same exposure as the
+		 * publisher reconcile path on installs without a persistent
+		 * object cache: without this invalidation, a moderator's
+		 * mid-publish unapprove races the post-publish read and the
+		 * Bluesky reply stays live with no cleanup scheduled.
+		 */
+		\clean_comment_cache( $comment_id );
 		$fresh = \get_comment( $comment_id );
 
 		if ( $fresh instanceof \WP_Comment && self::should_publish_comment( $fresh ) ) {

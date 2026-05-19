@@ -50,6 +50,7 @@ class Test_Handle extends WP_UnitTestCase {
 		$this->tracked_filters = array();
 
 		\delete_option( 'atmosphere_connection' );
+		\delete_option( 'atmosphere_identity' );
 		\delete_option( Handle::OPTION_PREVIOUS_HANDLE );
 
 		parent::tear_down();
