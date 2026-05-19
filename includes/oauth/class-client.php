@@ -13,6 +13,7 @@ namespace Atmosphere\OAuth;
 \defined( 'ABSPATH' ) || exit;
 
 use function Atmosphere\clear_scheduled_hooks;
+use function Atmosphere\get_connection;
 
 /**
  * OAuth client that manages the authorization lifecycle.
@@ -38,6 +39,16 @@ class Client {
 	 * @var string
 	 */
 	private const SCOPES = 'atproto transition:generic identity:handle';
+
+	/**
+	 * `wp_options` row name used as the cross-process refresh lock.
+	 *
+	 * Public so `uninstall.php` and the test suite can refer to the same
+	 * key without drifting from the canonical value used here.
+	 *
+	 * @var string
+	 */
+	public const REFRESH_LOCK_OPTION = '_atmosphere_refresh_lock';
 
 	/**
 	 * Get the client_id URL (= client metadata endpoint).
@@ -445,7 +456,25 @@ class Client {
 			return new \WP_Error( 'atmosphere_token', $msg );
 		}
 
-		// Persist connection.
+		/*
+		 * Persist identity separately from the credentials so a later
+		 * refresh failure can wipe the live session without taking the
+		 * domain's verification headers down with it. The credentials
+		 * option still holds did/handle/pds_endpoint as well for
+		 * backward compatibility with any external consumer reading the
+		 * pre-split shape; the canonical source of truth for identity
+		 * is `atmosphere_identity`.
+		 */
+		\update_option(
+			'atmosphere_identity',
+			array(
+				'did'          => $resolved['did'],
+				'handle'       => $resolved['handle'],
+				'pds_endpoint' => $resolved['pds_endpoint'],
+			),
+			true
+		);
+
 		$connection = array(
 			'did'            => $resolved['did'],
 			'handle'         => $resolved['handle'],
@@ -456,6 +485,7 @@ class Client {
 			'refresh_token'  => ! empty( $data['refresh_token'] ) ? Encryption::encrypt( $data['refresh_token'] ) : '',
 			'dpop_jwk'       => Encryption::encrypt( (string) \wp_json_encode( $dpop_jwk ) ),
 			'expires_at'     => \time() + ( $data['expires_in'] ?? 3600 ),
+			'needs_reauth'   => false,
 		);
 
 		/*
@@ -473,6 +503,25 @@ class Client {
 	/**
 	 * Refresh the access token.
 	 *
+	 * Gated by a best-effort coordination lock so that a publish event
+	 * firing inline through `access_token()` and the twice-daily refresh
+	 * cron do not both present the same refresh token to a rotating-token
+	 * auth server like Bluesky's — that race used to surface as
+	 * `invalid_grant` for the loser, which previously meant the entire
+	 * connection was wiped from `wp_options`.
+	 *
+	 * The lock is intentionally best-effort: `wp_cache_add` is atomic
+	 * on installs with a persistent object cache (Redis, Memcached),
+	 * and the transient fallback for other installs is check-then-set,
+	 * so two processes can in theory both enter the critical section.
+	 * The diff that introduced this lock also flipped the permanent-
+	 * error path from "delete the connection" to "mark `needs_reauth`",
+	 * which makes a missed lock acquisition recoverable rather than
+	 * catastrophic. When the lock is already held, this method short-
+	 * circuits to success if the stored token has already been rotated
+	 * to a fresh value, otherwise it returns a soft error and lets the
+	 * other process finish.
+	 *
 	 * @return true|\WP_Error
 	 */
 	public static function refresh(): true|\WP_Error {
@@ -482,6 +531,50 @@ class Client {
 			return new \WP_Error( 'atmosphere_no_refresh', \__( 'No refresh token available.', 'atmosphere' ) );
 		}
 
+		if ( ! self::lock() ) {
+			$fresh = \get_option( 'atmosphere_connection', array() );
+
+			if ( ! empty( $fresh['access_token'] )
+				&& empty( $fresh['needs_reauth'] )
+				&& ! empty( $fresh['expires_at'] )
+				&& $fresh['expires_at'] > \time() + 300
+			) {
+				return true;
+			}
+
+			return new \WP_Error(
+				'atmosphere_refresh_locked',
+				\__( 'Token refresh is already in progress; another request will pick up the new token.', 'atmosphere' )
+			);
+		}
+
+		try {
+			/*
+			 * Re-read the connection after acquiring the lock. Another
+			 * caller may have completed a refresh between our initial
+			 * read and the lock acquisition; using a stale refresh
+			 * token here would defeat the point of locking.
+			 */
+			$conn = \get_option( 'atmosphere_connection', array() );
+
+			if ( empty( $conn['refresh_token'] ) ) {
+				return new \WP_Error( 'atmosphere_no_refresh', \__( 'No refresh token available.', 'atmosphere' ) );
+			}
+
+			return self::refresh_locked( $conn );
+		} finally {
+			self::unlock();
+		}
+	}
+
+	/**
+	 * Inner refresh routine. Runs under the refresh lock acquired in
+	 * `refresh()`. Do not call directly.
+	 *
+	 * @param array $conn Connection option as read at lock-acquisition time.
+	 * @return true|\WP_Error
+	 */
+	private static function refresh_locked( array $conn ): true|\WP_Error {
 		$refresh_token = Encryption::decrypt( $conn['refresh_token'] );
 		if ( false === $refresh_token ) {
 			return new \WP_Error( 'atmosphere_decrypt', \__( 'Failed to decrypt refresh token.', 'atmosphere' ) );
@@ -570,14 +663,26 @@ class Client {
 			$msg = $data['error_description'] ?? ( $data['error'] ?? \__( 'Token refresh failed.', 'atmosphere' ) );
 
 			/*
-			 * Only delete the connection for permanent errors where the
-			 * refresh token has been consumed or revoked. Transient errors
-			 * (rate-limiting, server errors) may not have consumed the
-			 * token, so the connection can recover on the next attempt.
+			 * Only mark the connection as needing reauth for permanent
+			 * errors where the refresh token has been consumed or revoked.
+			 * Transient errors (rate-limiting, server errors) may not have
+			 * consumed the token, so the connection can recover on the
+			 * next attempt without operator action.
+			 *
+			 * The connection row itself is preserved (rather than deleted)
+			 * so the durable identity inside it stays available for the
+			 * public verification headers — see `Atmosphere\has_identity()`
+			 * and the gates in `output_document_link()` and the well-known
+			 * endpoints. `is_connected()` returns false while
+			 * `needs_reauth` is set, so the publish, comment, and API
+			 * callers short-circuit until the user re-authorizes.
 			 */
 			$error = $data['error'] ?? '';
 			if ( \in_array( $error, array( 'invalid_grant', 'invalid_client', 'unauthorized_client' ), true ) ) {
-				\delete_option( 'atmosphere_connection' );
+				$conn['needs_reauth'] = true;
+				$conn['access_token'] = '';
+				unset( $conn['expires_at'] );
+				\update_option( 'atmosphere_connection', $conn, false );
 			}
 
 			return new \WP_Error( 'atmosphere_refresh', $msg );
@@ -585,6 +690,7 @@ class Client {
 
 		$conn['access_token'] = Encryption::encrypt( $data['access_token'] );
 		$conn['expires_at']   = \time() + ( $data['expires_in'] ?? 3600 );
+		$conn['needs_reauth'] = false;
 
 		if ( ! empty( $data['refresh_token'] ) ) {
 			$conn['refresh_token'] = Encryption::encrypt( $data['refresh_token'] );
@@ -596,12 +702,198 @@ class Client {
 	}
 
 	/**
+	 * Acquire the refresh-in-progress lock. Returns true if this caller
+	 * now owns the lock; false if another request already holds a
+	 * non-expired lock.
+	 *
+	 * Atomicity comes from the `UNIQUE` index on `wp_options.option_name`:
+	 * `INSERT IGNORE` will succeed for exactly one concurrent caller and
+	 * silently no-op for the rest. The stored value is the expiry
+	 * timestamp; if a holder crashes mid-refresh, the next caller reads
+	 * a past expiry and atomically steals the row via a `UPDATE ... WHERE
+	 * option_value = $previous` compare-and-swap.
+	 *
+	 * Direct `$wpdb` queries are used (rather than `add_option`) because
+	 * `add_option` is itself a check-then-INSERT and is not safe under
+	 * concurrent acquisition. The options cache is invalidated by hand
+	 * on every write so a subsequent `get_option` lookup elsewhere in
+	 * the codebase does not return a cached value.
+	 *
+	 * Note: re-locking by the same caller returns false. The lock has
+	 * no notion of owner identity; pair every successful `lock()` with
+	 * a matching `unlock()` in a `try`/`finally`.
+	 *
+	 * @return bool
+	 */
+	public static function lock(): bool {
+		global $wpdb;
+
+		$key        = self::REFRESH_LOCK_OPTION;
+		$now        = \time();
+		$expires_at = $now + 30;
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching
+		$inserted = $wpdb->query(
+			$wpdb->prepare(
+				"INSERT IGNORE INTO {$wpdb->options} (option_name, option_value, autoload) VALUES (%s, %s, %s)",
+				$key,
+				(string) $expires_at,
+				'no'
+			)
+		);
+
+		if ( 1 === (int) $inserted ) {
+			self::invalidate_lock_option_cache( $key );
+			return true;
+		}
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching
+		$existing = (int) $wpdb->get_var(
+			$wpdb->prepare(
+				"SELECT option_value FROM {$wpdb->options} WHERE option_name = %s",
+				$key
+			)
+		);
+
+		if ( $existing > 0 && $now < $existing ) {
+			return false;
+		}
+
+		/*
+		 * Compare-and-swap: only steal the lock if the row still holds
+		 * the timestamp we just read. If a third caller stole the row
+		 * between the SELECT and this UPDATE, the WHERE clause filters
+		 * us out and we report failure.
+		 */
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching
+		$stolen = $wpdb->query(
+			$wpdb->prepare(
+				"UPDATE {$wpdb->options} SET option_value = %s WHERE option_name = %s AND option_value = %s",
+				(string) $expires_at,
+				$key,
+				(string) $existing
+			)
+		);
+
+		if ( 1 === (int) $stolen ) {
+			self::invalidate_lock_option_cache( $key );
+			return true;
+		}
+
+		return false;
+	}
+
+	/**
+	 * Release the refresh-in-progress lock.
+	 *
+	 * Safe to call unconditionally — a missing row is a no-op.
+	 */
+	public static function unlock(): void {
+		global $wpdb;
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching
+		$wpdb->delete( $wpdb->options, array( 'option_name' => self::REFRESH_LOCK_OPTION ) );
+		self::invalidate_lock_option_cache( self::REFRESH_LOCK_OPTION );
+	}
+
+	/**
+	 * Whether the refresh lock is currently held by any caller.
+	 *
+	 * Returns false when the lock row is absent or its stored expiry is
+	 * in the past — both states indicate the next {@see self::lock()}
+	 * call would succeed. Useful for diagnostics and for tests; the
+	 * production refresh path uses {@see self::lock()}'s return value
+	 * directly to avoid a redundant SELECT.
+	 *
+	 * @return bool
+	 */
+	public static function locked(): bool {
+		global $wpdb;
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching
+		$value = $wpdb->get_var(
+			$wpdb->prepare(
+				"SELECT option_value FROM {$wpdb->options} WHERE option_name = %s",
+				self::REFRESH_LOCK_OPTION
+			)
+		);
+
+		if ( null === $value ) {
+			return false;
+		}
+
+		return \time() < (int) $value;
+	}
+
+	/**
+	 * Invalidate the WP options cache for the lock row so a later
+	 * `get_option` call does not see a stale value written by the
+	 * direct `$wpdb` queries above.
+	 *
+	 * @param string $key Option name.
+	 */
+	private static function invalidate_lock_option_cache( string $key ): void {
+		\wp_cache_delete( $key, 'options' );
+		\wp_cache_delete( 'notoptions', 'options' );
+	}
+
+	/**
+	 * Poll the connection option for up to ~5 seconds, waiting for
+	 * the concurrent refresh holder to write a fresh access token.
+	 *
+	 * Returns `true` when the stored token has been rotated by another
+	 * caller and is safe to use, or a `WP_Error` when the holder either
+	 * flipped `needs_reauth` (permanent failure) or did not finish in
+	 * time. Used by {@see self::access_token()} so that a publish or
+	 * comment cron event does not get silently dropped when it arrives
+	 * mid-refresh.
+	 *
+	 * @return true|\WP_Error
+	 */
+	private static function wait_for_token_refresh(): true|\WP_Error {
+		$deadline = \microtime( true ) + 5.0;
+
+		while ( \microtime( true ) < $deadline ) {
+			// phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
+			\usleep( 100000 );
+
+			$conn = \get_option( 'atmosphere_connection', array() );
+
+			if ( ! empty( $conn['needs_reauth'] ) ) {
+				return new \WP_Error(
+					'atmosphere_needs_reauth',
+					\__( 'AT Protocol session expired during concurrent refresh. Reconnect to resume publishing.', 'atmosphere' )
+				);
+			}
+
+			if ( ! empty( $conn['access_token'] )
+				&& ! empty( $conn['expires_at'] )
+				&& $conn['expires_at'] > \time() + 300
+			) {
+				return true;
+			}
+		}
+
+		return new \WP_Error(
+			'atmosphere_refresh_locked',
+			\__( 'Token refresh did not complete in time.', 'atmosphere' )
+		);
+	}
+
+	/**
 	 * Get a usable access token, refreshing if close to expiry.
 	 *
 	 * @return string|\WP_Error
 	 */
 	public static function access_token(): string|\WP_Error {
 		$conn = \get_option( 'atmosphere_connection', array() );
+
+		if ( ! empty( $conn['needs_reauth'] ) ) {
+			return new \WP_Error(
+				'atmosphere_needs_reauth',
+				\__( 'AT Protocol session expired. Reconnect to resume publishing.', 'atmosphere' )
+			);
+		}
 
 		if ( empty( $conn['access_token'] ) ) {
 			return new \WP_Error( 'atmosphere_not_connected', \__( 'Not connected to AT Protocol.', 'atmosphere' ) );
@@ -610,9 +902,28 @@ class Client {
 		// Refresh if expiring within 5 minutes.
 		if ( ! empty( $conn['expires_at'] ) && $conn['expires_at'] < \time() + 300 ) {
 			$result = self::refresh();
+
 			if ( \is_wp_error( $result ) ) {
-				return $result;
+				/*
+				 * Another caller is refreshing right now. Wait briefly
+				 * for them to finish before failing the publish/comment
+				 * cron event we are part of: those events are consumed
+				 * on dispatch and not retried, so propagating the
+				 * `atmosphere_refresh_locked` error would silently drop
+				 * the post or comment even though the other caller is
+				 * about to rotate the token.
+				 */
+				if ( 'atmosphere_refresh_locked' === $result->get_error_code() ) {
+					$waited = self::wait_for_token_refresh();
+
+					if ( \is_wp_error( $waited ) ) {
+						return $waited;
+					}
+				} else {
+					return $result;
+				}
 			}
+
 			$conn = \get_option( 'atmosphere_connection', array() );
 		}
 
@@ -635,6 +946,8 @@ class Client {
 	 */
 	public static function disconnect(): void {
 		\delete_option( 'atmosphere_connection' );
+		\delete_option( 'atmosphere_identity' );
+		\delete_option( self::REFRESH_LOCK_OPTION );
 		clear_scheduled_hooks();
 	}
 

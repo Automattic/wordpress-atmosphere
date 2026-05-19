@@ -135,6 +135,28 @@ abstract class Base {
 	}
 
 	/**
+	 * Whether post-derived record fields must be redacted.
+	 *
+	 * Transformer output can be written to a remote PDS, so this check
+	 * must not use post_password_required(), which depends on the
+	 * current request's unlock cookie.
+	 *
+	 * Intentionally narrower than `Atmosphere\is_post_publishable()`:
+	 * direct transformer callers may transform unsupported post types,
+	 * but protected/non-published fields still must not be serialized.
+	 *
+	 * @param \WP_Post $post Post object.
+	 * @return bool
+	 */
+	protected function is_post_redacted( \WP_Post $post ): bool {
+		if ( '' !== (string) $post->post_password ) {
+			return true;
+		}
+
+		return 'publish' !== \get_post_status( $post );
+	}
+
+	/**
 	 * Cache of `render_post_content_plain()` output keyed by post ID.
 	 *
 	 * Per-instance memoization; `the_content` filter chains can be

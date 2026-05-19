@@ -61,11 +61,17 @@ Always reserve the rkey via meta in `get_rkey()` — that meta key is the marker
 
 **Gating:** `atmosphere_syncable_post_types`, `atmosphere_should_publish_comment`, `atmosphere_should_sync_reply`, `atmosphere_backfill_limit`, `atmosphere_oauth_redirect_uri`, `atmosphere_client_metadata`.
 
-**Actions:** `atmosphere_publishing`, `atmosphere_publish_post_result`, `atmosphere_publish_comment_result`, `atmosphere_update_skipped_unsynced_post`, `atmosphere_long_form_strategy_downgraded`, `atmosphere_reaction_synced`.
+**Actions:** `atmosphere_publishing`, `atmosphere_publish_post_result`, `atmosphere_publish_comment_result`, `atmosphere_update_skipped_unsynced_post`, `atmosphere_long_form_strategy_downgraded`, `atmosphere_reaction_synced`. `atmosphere_publishing` receives the current `WP_Post` and is not a request-wide guard.
 
 **Test-only:** `atmosphere_pre_apply_writes` — Publisher fixture uses this to short-circuit `apply_writes` before the HTTP layer.
 
 Full signatures and docblocks: [`docs/php-coding-standards.md → Hook Patterns`](../../../docs/php-coding-standards.md#hook-patterns).
+
+## Post Visibility and Federation Cleanup
+
+Federation output is remote, site-wide state. Treat a post as publishable only when it is `publish`, its post type is supported, and `post_password` is empty. Do not use `post_password_required()` for AT Protocol records: it depends on the current visitor's unlock cookie and can leak protected content into PDS records.
+
+When a previously-published post leaves public visibility (draft, pending, private, trash, custom non-public status, password applied, or post type support removed), delete remote records rather than updating them with redacted content. Status transitions may queue the normal delete event, but stale publish/update cron handlers must re-check visibility at fire time and call `Publisher::delete_post( $post )` directly when local record metadata exists.
 
 ## Cron Lifecycle — Three-Way Symmetry
 

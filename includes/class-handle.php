@@ -339,12 +339,30 @@ class Handle {
 	 */
 	private static function sync_connection_handle( string $handle ): void {
 		$connection = get_connection();
-		if ( empty( $connection ) ) {
-			return;
+		if ( ! empty( $connection ) ) {
+			$connection['handle'] = $handle;
+			\update_option( 'atmosphere_connection', $connection, false );
 		}
 
-		$connection['handle'] = $handle;
-		\update_option( 'atmosphere_connection', $connection, false );
+		/*
+		 * Mirror to the durable identity option as well — that is now
+		 * the canonical store consulted by `get_identity()` /
+		 * `has_identity()`, and the publishing UI / verification
+		 * headers read from there. Without this write, a handle change
+		 * would silently drift on the public surface even though the
+		 * PDS has accepted it. Use the namespace helper rather than
+		 * `get_option` directly so a legacy connection still on the
+		 * pre-split shape gets lazy-migrated as a side effect. Identity
+		 * stays autoloaded (true) because it is read on every public
+		 * verification request and contains no secret material; the
+		 * autoload=false above applies only to `atmosphere_connection`,
+		 * which holds the encrypted tokens.
+		 */
+		$identity = get_identity();
+		if ( ! empty( $identity['did'] ) ) {
+			$identity['handle'] = $handle;
+			\update_option( 'atmosphere_identity', $identity, true );
+		}
 	}
 
 	/**
