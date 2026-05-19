@@ -505,13 +505,22 @@ class Reaction_Sync {
 		array $profile
 	): int|false {
 		/*
-		 * Respect the post-level comments-open policy. If the site
-		 * admin closed comments on a post, an inbound Bluesky like /
-		 * repost / reply should not appear as a fresh comment row.
+		 * Deliberately NOT gating on `comments_open( $post_id )` here.
+		 * `paginate()` advances the per-collection watermark to the
+		 * newest URI on each page regardless of whether the per-item
+		 * callback accepted the item; if we dropped reactions on
+		 * closed-comments posts at this gate, the watermark would
+		 * still move past them and a subsequent reopen of comments
+		 * could not recover the missed imports — the WATERMARK_GRACE
+		 * window is only ten items.
+		 *
+		 * Federated reactions are an audit record of activity that
+		 * happened on Bluesky, not a comment-form submission. Insert
+		 * the row, let the moderation pipeline below decide the
+		 * approval state, and rely on the standard `comments_open`
+		 * gate in the template / REST layer to control whether
+		 * those rows render on the front end.
 		 */
-		if ( ! \comments_open( $post_id ) ) {
-			return false;
-		}
 
 		$uri    = $notification['uri'] ?? '';
 		$cid    = $notification['cid'] ?? '';

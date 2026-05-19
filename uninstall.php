@@ -130,8 +130,13 @@ foreach ( $atmosphere_transients as $atmosphere_transient ) {
  *    pre-bootstrap, so we can't reference the constant directly
  *    without loading the autoloader here. Anyone renaming the
  *    constant should grep for `atmo_dpop_nonce_` and update both.
- *  - atmosphere_oauth_rate_<user_id>
- *    — per-user OAuth rate-limit counter (15 min TTL).
+ *  - _atmosphere_oauth_rate_<user_id>
+ *    — per-user OAuth rate-limit counter. Stored as a plain option
+ *    (not a transient) so the read+CAS-update loop in
+ *    `Client::rate_limit_check()` can be atomic via INSERT IGNORE +
+ *    UPDATE WHERE option_value = $previous; the window expiry is
+ *    encoded in the value itself rather than relying on transient
+ *    TTL.
  *  - atmosphere_profile_<md5>       — reaction-sync profile cache
  *    written by `Reaction_Sync::resolve_author()`. No constant —
  *    grep for `atmosphere_profile_` in includes/.
@@ -172,7 +177,8 @@ $atmosphere_transient_rows = $wpdb->get_col(
 
 $atmosphere_option_rows = $wpdb->get_col(
 	"SELECT option_name FROM {$wpdb->options}
-	 WHERE option_name LIKE 'atmosphere\_last\_seen\_own\_%'"
+	 WHERE option_name LIKE 'atmosphere\_last\_seen\_own\_%'
+	    OR option_name LIKE '\_atmosphere\_oauth\_rate\_%'"
 );
 // phpcs:enable
 

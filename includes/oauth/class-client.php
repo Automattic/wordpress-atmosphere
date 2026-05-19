@@ -111,14 +111,25 @@ class Client {
 	 * @return string|\WP_Error Authorization URL or error.
 	 */
 	public static function authorize( string $handle ): string|\WP_Error {
-		$rate_limit = self::rate_limit_check();
-		if ( \is_wp_error( $rate_limit ) ) {
-			return $rate_limit;
-		}
-
+		/*
+		 * Rate-limit AFTER a successful `Resolver::resolve()`, not
+		 * before. The earlier ordering charged the per-user bucket on
+		 * every handle-typo / DNS-miss / malformed-DID-document path,
+		 * even though those failures never reach the auth server — so
+		 * ten consecutive typos in fifteen minutes locked the admin
+		 * out without any abusive request having occurred. Resolver
+		 * itself is bounded by its own DNS + HTTP timeouts, so the
+		 * pre-resolve flood surface stays narrow even without a
+		 * bucket charge here.
+		 */
 		$resolved = Resolver::resolve( $handle );
 		if ( \is_wp_error( $resolved ) ) {
 			return $resolved;
+		}
+
+		$rate_limit = self::rate_limit_check();
+		if ( \is_wp_error( $rate_limit ) ) {
+			return $rate_limit;
 		}
 
 		$auth_meta = $resolved['auth_server'];
@@ -441,6 +452,18 @@ class Client {
 				return $response;
 			}
 
+			/*
+			 * Persist the nonce from the retry response too. Auth
+			 * servers rotate nonces per response; without this write
+			 * the stored nonce stays at whatever the first response
+			 * advertised, so the next DPoP-bound request issues a
+			 * stale proof and forces another `use_dpop_nonce` retry.
+			 */
+			$nonce_retry = \wp_remote_retrieve_header( $response, 'dpop-nonce' );
+			if ( $nonce_retry ) {
+				DPoP::persist_nonce( $dpop_jwk, $token_endpoint, $nonce_retry );
+			}
+
 			$status = \wp_remote_retrieve_response_code( $response );
 			$data   = \json_decode( \wp_remote_retrieve_body( $response ), true );
 			if ( ! \is_array( $data ) ) {
@@ -659,6 +682,18 @@ class Client {
 
 			if ( \is_wp_error( $response ) ) {
 				return $response;
+			}
+
+			/*
+			 * Persist the nonce from the retry response too. Auth
+			 * servers rotate nonces per response; without this write
+			 * the stored nonce stays at whatever the first response
+			 * advertised, so the next DPoP-bound refresh issues a
+			 * stale proof and forces another `use_dpop_nonce` retry.
+			 */
+			$nonce_retry = \wp_remote_retrieve_header( $response, 'dpop-nonce' );
+			if ( $nonce_retry ) {
+				DPoP::persist_nonce( $dpop_jwk, $token_endpoint, $nonce_retry );
 			}
 
 			$status = \wp_remote_retrieve_response_code( $response );
@@ -1007,11 +1042,25 @@ class Client {
 			&& ! empty( $conn['refresh_token'] )
 			&& ! empty( $conn['dpop_jwk'] )
 			&& ! empty( $conn['revocation_endpoint'] )
+			&& ! empty( $conn['auth_server'] )
 		) {
+			/*
+			 * Pass the auth-server issuer URL alongside the revocation
+			 * endpoint. The cron worker binds the two at use time: if
+			 * a tampered or backup-restored `atmosphere_connection`
+			 * row pointed `revocation_endpoint` at an attacker host,
+			 * the refresh token would otherwise be POSTed to that
+			 * host even though `is_safe_https_url()` would not block
+			 * it (the check only confirms HTTPS + safe host, not the
+			 * issuer-binding). Including the issuer here lets the
+			 * worker reject endpoint↔issuer mismatches before the
+			 * decryption step.
+			 */
 			$revoke_args = array(
 				(string) $conn['refresh_token'],
 				(string) $conn['dpop_jwk'],
 				(string) $conn['revocation_endpoint'],
+				(string) $conn['auth_server'],
 			);
 		}
 
@@ -1046,11 +1095,15 @@ class Client {
 	 *                                         captured at disconnect.
 	 * @param string $dpop_jwk_ciphertext      Encrypted DPoP JWK.
 	 * @param string $revocation_endpoint      Auth server revocation URL.
+	 * @param string $auth_server_issuer       Auth server issuer URL the
+	 *                                         revocation endpoint must
+	 *                                         share an origin with.
 	 */
 	public static function revoke_refresh_token(
 		string $refresh_token_ciphertext,
 		string $dpop_jwk_ciphertext,
-		string $revocation_endpoint
+		string $revocation_endpoint,
+		string $auth_server_issuer = ''
 	): void {
 		if ( '' === $revocation_endpoint ) {
 			return;
@@ -1066,6 +1119,32 @@ class Client {
 		 */
 		if ( ! Resolver::is_safe_https_url( $revocation_endpoint ) ) {
 			return;
+		}
+
+		/*
+		 * Bind the revocation endpoint to the auth-server issuer
+		 * origin. `is_safe_https_url()` above confirms the URL is
+		 * well-formed HTTPS to a non-private host, but says nothing
+		 * about which host. A tampered `atmosphere_connection` row
+		 * could have swapped `revocation_endpoint` for
+		 * `https://attacker.example/collect` between connect and
+		 * disconnect; without this check the cron worker would
+		 * happily POST the decrypted refresh token there. The
+		 * issuer comparison is host-only (ignores path), which
+		 * matches how OAuth metadata discovery resolves an issuer
+		 * to its origin.
+		 */
+		if ( '' !== $auth_server_issuer ) {
+			$revoke_host = \wp_parse_url( $revocation_endpoint, PHP_URL_HOST );
+			$issuer_host = \wp_parse_url( $auth_server_issuer, PHP_URL_HOST );
+
+			if ( ! \is_string( $revoke_host )
+				|| ! \is_string( $issuer_host )
+				|| '' === $revoke_host
+				|| \strtolower( $revoke_host ) !== \strtolower( $issuer_host )
+			) {
+				return;
+			}
 		}
 
 		if ( '' === $refresh_token_ciphertext || '' === $dpop_jwk_ciphertext ) {
@@ -1212,19 +1291,123 @@ class Client {
 	 * @return true|\WP_Error
 	 */
 	private static function rate_limit_check(): true|\WP_Error {
-		$key      = \sprintf( 'atmosphere_oauth_rate_%d', \get_current_user_id() );
-		$attempts = (int) \get_transient( $key );
+		global $wpdb;
 
-		if ( $attempts >= self::RATE_LIMIT_MAX ) {
-			return new \WP_Error(
-				'atmosphere_rate_limited',
-				\__( 'Too many OAuth attempts. Please wait a few minutes and try again.', 'atmosphere' )
-			);
+		/*
+		 * Why direct $wpdb instead of the options API or a transient?
+		 * The rate-limit semantics require atomicity: two concurrent
+		 * callers at `attempts = N - 1` must not both pass the cap.
+		 * None of the WordPress-idiomatic primitives give us that
+		 * cross-process guarantee on a default install:
+		 *
+		 *   - `set_transient` / `get_transient` is a check-then-set
+		 *     pair; the two callers above both `get` 9, both pass
+		 *     the `>=` check, both `set` 10. The cap silently
+		 *     doubles under contention.
+		 *   - `add_option` does a preflight `SELECT` then an
+		 *     `INSERT ... ON DUPLICATE KEY UPDATE`, so on the second
+		 *     INSERT it overwrites the first caller's value rather
+		 *     than failing — also not atomic for our purpose.
+		 *   - `wp_cache_add` is atomic on installs with a persistent
+		 *     object cache (Redis, Memcached) but degrades to a
+		 *     per-request store on default WP, where it cannot see
+		 *     a concurrent worker's bucket at all.
+		 *
+		 * `INSERT IGNORE` is atomic at the SQL layer because of the
+		 * UNIQUE index on `wp_options.option_name`. Combined with
+		 * the CAS-loop below (`UPDATE ... WHERE option_value = $previous`),
+		 * the entire read-decide-write cycle becomes lock-free and
+		 * cross-process correct. The bespoke SQL is the price of an
+		 * actually-atomic counter; the per-user bucket holds two
+		 * digits and an integer expiry, so the storage is cheap.
+		 *
+		 * The encoded value is `attempts|expires_at` so the whole
+		 * bucket is a single packed payload the CAS can replace
+		 * with one statement. Window expiry is encoded in the value
+		 * itself (rather than relying on transient TTL) so stale
+		 * windows reset themselves on the next CAS-iteration.
+		 */
+		$key        = \sprintf( '_atmosphere_oauth_rate_%d', \get_current_user_id() );
+		$now        = \time();
+		$expires_at = $now + self::RATE_LIMIT_WINDOW;
+
+		/*
+		 * First-in-window race: `INSERT IGNORE` is atomic on the
+		 * `wp_options` UNIQUE index, so exactly one concurrent
+		 * caller writes the initial `1|expires_at` row. Everyone
+		 * else falls through to the CAS-loop below.
+		 */
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching
+		$inserted = $wpdb->query(
+			$wpdb->prepare(
+				"INSERT IGNORE INTO {$wpdb->options} (option_name, option_value, autoload) VALUES (%s, %s, %s)",
+				$key,
+				'1|' . $expires_at,
+				'no'
+			)
+		);
+
+		if ( 1 === (int) $inserted ) {
+			self::invalidate_lock_option_cache( $key );
+			return true;
 		}
 
-		\set_transient( $key, $attempts + 1, self::RATE_LIMIT_WINDOW );
+		/*
+		 * Row exists. Walk a bounded compare-and-swap loop: read the
+		 * current packed value, decide what the next value should be
+		 * (cap-reached / window-expired-reset / increment), then
+		 * `UPDATE ... WHERE option_value = $previous`. The WHERE
+		 * clause filters out anyone else who beat us between SELECT
+		 * and UPDATE, so the loser retries on a fresh read. Five
+		 * tries is more than enough under realistic contention; if
+		 * we still cannot land an update, fail closed so the
+		 * caller backs off rather than passing in a torn state.
+		 */
+		for ( $i = 0; $i < 5; $i++ ) {
+			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching
+			$current = (string) $wpdb->get_var(
+				$wpdb->prepare(
+					"SELECT option_value FROM {$wpdb->options} WHERE option_name = %s",
+					$key
+				)
+			);
 
-		return true;
+			$parts            = \explode( '|', $current, 2 );
+			$current_attempts = (int) ( $parts[0] ?? 0 );
+			$current_expiry   = (int) ( $parts[1] ?? 0 );
+
+			if ( $now >= $current_expiry ) {
+				// Window has expired; reset to 1 attempt in a fresh window.
+				$next = '1|' . ( $now + self::RATE_LIMIT_WINDOW );
+			} elseif ( $current_attempts >= self::RATE_LIMIT_MAX ) {
+				return new \WP_Error(
+					'atmosphere_rate_limited',
+					\__( 'Too many OAuth attempts. Please wait a few minutes and try again.', 'atmosphere' )
+				);
+			} else {
+				$next = ( $current_attempts + 1 ) . '|' . $current_expiry;
+			}
+
+			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching
+			$updated = (int) $wpdb->query(
+				$wpdb->prepare(
+					"UPDATE {$wpdb->options} SET option_value = %s WHERE option_name = %s AND option_value = %s",
+					$next,
+					$key,
+					$current
+				)
+			);
+
+			if ( 1 === $updated ) {
+				self::invalidate_lock_option_cache( $key );
+				return true;
+			}
+		}
+
+		return new \WP_Error(
+			'atmosphere_rate_limited',
+			\__( 'Too many OAuth attempts. Please wait a few minutes and try again.', 'atmosphere' )
+		);
 	}
 
 	/**

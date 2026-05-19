@@ -71,10 +71,41 @@ class TID {
 	 * @return string 13-character identifier.
 	 */
 	public static function generate(): string {
+		global $wpdb;
+
 		$ts = (int) ( \microtime( true ) * 1_000_000 );
 
-		// Cross-request floor: another worker may have minted a TID
-		// later than this process's static counter.
+		/*
+		 * Why direct $wpdb instead of `update_option()` here?
+		 * The whole point of this persisted floor is a cross-worker
+		 * monotonic guarantee: two PHP-FPM workers minting TIDs at
+		 * the same microsecond must end up with distinct rkeys, and
+		 * the persisted value must never regress. `update_option`
+		 * does a read-modify-write at the PHP layer with no
+		 * conditional on the existing row, so the obvious shape —
+		 * read $persisted, compute max, write it back — is racy:
+		 *
+		 *   T0  worker A: get_option = 100
+		 *   T1  worker B: get_option = 100
+		 *   T2  worker A: ts = 105, update_option(105)  -> floor=105
+		 *   T3  worker B: ts = 103, update_option(103)  -> floor=103  ← regress
+		 *
+		 * The slower worker silently regresses the floor and the
+		 * monotonic invariant the docblock promises evaporates.
+		 * Subsequent TIDs fall back to the 10-bit `clock_id` for
+		 * collision avoidance, which is fine 1023/1024 of the time
+		 * but is not "monotonic" in any meaningful sense.
+		 *
+		 * `UPDATE ... WHERE CAST(option_value AS UNSIGNED) < $ts`
+		 * is a single atomic statement: the row is rewritten only
+		 * when the new candidate strictly exceeds the stored one.
+		 * Worker B at T3 above no-ops because 103 < 105 fails the
+		 * WHERE. Combined with the per-process `self::$last_ts`
+		 * for the hot path, this gives us a true monotonic floor
+		 * without an option-write per call (worker B never even
+		 * issues the UPDATE if its candidate is already below the
+		 * static).
+		 */
 		$persisted = (int) \get_option( self::OPTION_LAST_TS, 0 );
 		$floor     = \max( self::$last_ts, $persisted );
 
@@ -85,7 +116,37 @@ class TID {
 		self::$last_ts = $ts;
 
 		if ( $ts > $persisted ) {
-			\update_option( self::OPTION_LAST_TS, $ts, false );
+			if ( 0 === $persisted ) {
+				/*
+				 * First-write: there is no row to UPDATE against yet,
+				 * so the standard options API creates it. Subsequent
+				 * advances go through the atomic UPDATE branch below.
+				 * `autoload=false` keeps the row out of the
+				 * always-loaded options cache; the per-process static
+				 * is what makes the hot path tight.
+				 */
+				\update_option( self::OPTION_LAST_TS, (string) $ts, false );
+			} else {
+				/*
+				 * Atomic advance via compare-and-swap on the option
+				 * value. Cast to string for the write to match how
+				 * WordPress stores `option_value`; the WHERE clause
+				 * casts back to UNSIGNED for a numeric comparison
+				 * because the column is `longtext`. Invalidate the
+				 * options cache by hand because `$wpdb->query` does
+				 * not (unlike `update_option`).
+				 */
+				// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching
+				$wpdb->query(
+					$wpdb->prepare(
+						"UPDATE {$wpdb->options} SET option_value = %s WHERE option_name = %s AND CAST(option_value AS UNSIGNED) < %d",
+						(string) $ts,
+						self::OPTION_LAST_TS,
+						$ts
+					)
+				);
+				\wp_cache_delete( self::OPTION_LAST_TS, 'options' );
+			}
 		}
 
 		if ( null === self::$clock_id ) {
