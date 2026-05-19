@@ -54,6 +54,7 @@ class Test_Atmosphere extends WP_UnitTestCase {
 	 */
 	public function tear_down(): void {
 		\delete_option( 'atmosphere_connection' );
+		\delete_option( 'atmosphere_identity' );
 
 		\wp_clear_scheduled_hook( 'atmosphere_publish_post' );
 		\wp_clear_scheduled_hook( 'atmosphere_update_post' );

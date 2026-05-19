@@ -24,6 +24,7 @@ require_once __DIR__ . '/includes/functions.php';
 // Remove options.
 $atmosphere_options = array(
 	'atmosphere_connection',
+	'atmosphere_identity',
 	'atmosphere_publication_tid',
 	'atmosphere_publication_uri',
 	'atmosphere_auto_publish',
@@ -31,6 +32,10 @@ $atmosphere_options = array(
 	'atmosphere_long_form_composition',
 	'atmosphere_support_post_types',
 	'atmosphere_last_seen_notification',
+	// Canonical value: `\Atmosphere\OAuth\Client::REFRESH_LOCK_OPTION`.
+	// Hardcoded here because `uninstall.php` runs before the plugin
+	// bootstrap is loaded, so the constant isn't available.
+	'_atmosphere_refresh_lock',
 );
 
 foreach ( $atmosphere_options as $atmosphere_option ) {
