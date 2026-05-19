@@ -3,7 +3,7 @@
 	<description>WordPress ATmosphere Standards</description>
 
 	<file>.</file>
-	<exclude-pattern>.(git|github|vscode|idea)</exclude-pattern>
+	<exclude-pattern>.(git|github|vscode|idea|wordpress-org)</exclude-pattern>
 	<exclude-pattern>*\.(inc|css|js|svg)</exclude-pattern>
 	<exclude-pattern>*/vendor/*</exclude-pattern>
 	<exclude-pattern>*/node_modules/*</exclude-pattern>
