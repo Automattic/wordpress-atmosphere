@@ -247,12 +247,38 @@ function get_cron_hooks(): array {
 }
 
 /**
- * Clear every plugin-owned scheduled hook.
+ * Clear every plugin-owned scheduled hook used during disconnect.
+ *
+ * The `atmosphere_revoke_refresh_token` event is intentionally NOT
+ * cleared here. `Client::disconnect()` schedules it AFTER this helper
+ * runs so a slow auth server cannot block the admin click; including
+ * it in the loop would clear the event we just queued. The cron
+ * worker is a one-shot best-effort POST; once it fires (or its
+ * scheduled-event row ages out), there is nothing local to clean up.
+ *
+ * `deactivate()` and uninstall use {@see clear_scheduled_hooks_all()}
+ * instead because at that point the plugin is going away and the
+ * still-queued revoke event would orphan encrypted ciphertexts in
+ * `wp_options['cron']` forever — WP-Cron does not auto-drop rows
+ * whose callbacks are no longer registered.
  */
 function clear_scheduled_hooks(): void {
 	foreach ( get_cron_hooks() as $hook ) {
 		\wp_clear_scheduled_hook( $hook );
 	}
+}
+
+/**
+ * Clear every plugin-owned scheduled hook, including the one-shot
+ * revocation hook `Client::disconnect()` defers cleanup of.
+ *
+ * Use at plugin deactivation / uninstall so a queued revoke event
+ * does not sit in `wp_options['cron']` with encrypted ciphertext
+ * waiting for a callback that no longer exists.
+ */
+function clear_scheduled_hooks_all(): void {
+	clear_scheduled_hooks();
+	\wp_clear_scheduled_hook( 'atmosphere_revoke_refresh_token' );
 }
 
 /**
