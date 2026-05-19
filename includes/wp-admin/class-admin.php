@@ -27,11 +27,20 @@ class Admin {
 
 	/**
 	 * Boot admin hooks.
+	 *
+	 * `Admin::register()` itself runs on `init` (priority 5 in
+	 * `Atmosphere::init()`), so calling `register_options()` synchronously
+	 * here registers every plugin setting on every WordPress request type
+	 * — admin, REST, cron, WP-CLI, and frontend. The Settings API UI
+	 * (sections + fields) stays on `admin_init` because it only ever
+	 * needs to be assembled when the Settings page is about to render.
 	 */
 	public static function register(): void {
+		self::register_options();
+
 		\add_action( 'admin_menu', array( self::class, 'add_menu' ) );
 		\add_action( 'admin_init', array( self::class, 'handle_oauth_callback' ) );
-		\add_action( 'admin_init', array( self::class, 'register_settings' ) );
+		\add_action( 'admin_init', array( self::class, 'register_settings_ui' ) );
 		\add_action( 'admin_enqueue_scripts', array( self::class, 'enqueue_assets' ) );
 		\add_action( 'admin_notices', array( self::class, 'maybe_render_reauth_notice' ) );
 
@@ -49,22 +58,21 @@ class Admin {
 	}
 
 	/**
-	 * Register the settings page under Settings.
+	 * Register the plugin's stored options with the Settings API.
+	 *
+	 * Called from {@see self::register()} so the registered defaults
+	 * (`atmosphere_auto_publish = '1'`, `atmosphere_support_post_types
+	 * = array( 'post' )`, `atmosphere_long_form_composition = 'link-card'`)
+	 * resolve correctly from every request type — including REST, cron,
+	 * and WP-CLI publishes that fire before `admin_init` (or do not
+	 * fire `admin_init` at all). Previously these registrations only
+	 * ran on `admin_init`, so a bare `get_option( 'atmosphere_auto_publish' )`
+	 * outside the admin returned the stored value or `false` instead of
+	 * the documented default — each caller had to pass the default
+	 * inline to compensate, and any caller that forgot silently treated
+	 * auto-publish as off on a fresh install.
 	 */
-	public static function add_menu(): void {
-		\add_options_page(
-			\__( 'ATmosphere', 'atmosphere' ),
-			\__( 'ATmosphere', 'atmosphere' ),
-			'manage_options',
-			'atmosphere',
-			array( self::class, 'render_page' )
-		);
-	}
-
-	/**
-	 * Register plugin settings, sections, and fields.
-	 */
-	public static function register_settings(): void {
+	public static function register_options(): void {
 		\register_setting(
 			'atmosphere',
 			'atmosphere_auto_publish',
@@ -117,7 +125,31 @@ class Admin {
 				'sanitize_callback' => array( self::class, 'sanitize_handle' ),
 			)
 		);
+	}
 
+	/**
+	 * Register the settings page under Settings.
+	 */
+	public static function add_menu(): void {
+		\add_options_page(
+			\__( 'ATmosphere', 'atmosphere' ),
+			\__( 'ATmosphere', 'atmosphere' ),
+			'manage_options',
+			'atmosphere',
+			array( self::class, 'render_page' )
+		);
+	}
+
+	/**
+	 * Register the Settings API sections and fields rendered on the
+	 * plugin's options page.
+	 *
+	 * Settings registration itself lives in {@see self::register_options()}
+	 * and runs on `init`; this method only assembles the visible UI and
+	 * is intentionally pinned to `admin_init` since nothing outside the
+	 * Settings page consumes it.
+	 */
+	public static function register_settings_ui(): void {
 		// Connection section.
 		\add_settings_section(
 			'atmosphere_connection',
@@ -262,7 +294,7 @@ class Admin {
 	 * Render the "use my domain as my Bluesky handle" confirm field.
 	 *
 	 * Registered conditionally on the `atmosphere_connection` section
-	 * via {@see self::register_settings()}; only enqueued when
+	 * via {@see self::register_settings_ui()}; only enqueued when
 	 * {@see Handle::should_offer()} agrees the offer is meaningful.
 	 */
 	public static function render_domain_handle_field(): void {

@@ -1,0 +1,4 @@
+Significance: patch
+Type: fixed
+
+Apply your auto-publish, post-type, and long-form preferences even when a post is published outside the WordPress admin (REST API, WP-CLI, or scheduled posts).
