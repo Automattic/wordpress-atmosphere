@@ -13,7 +13,7 @@ namespace Atmosphere\Tests;
 
 use WP_UnitTestCase;
 use Atmosphere\Atmosphere;
-use Atmosphere\Options;
+use Atmosphere\Sanitize;
 
 /**
  * Long-form composition setting tests.
@@ -51,19 +51,19 @@ class Test_Long_Form_Composition_Setting extends WP_UnitTestCase {
 	 * Sanitize callback accepts each known strategy.
 	 */
 	public function test_sanitize_accepts_known_values() {
-		$this->assertSame( 'link-card', Options::sanitize_long_form_composition( 'link-card' ) );
-		$this->assertSame( 'truncate-link', Options::sanitize_long_form_composition( 'truncate-link' ) );
-		$this->assertSame( 'teaser-thread', Options::sanitize_long_form_composition( 'teaser-thread' ) );
+		$this->assertSame( 'link-card', Sanitize::long_form_composition( 'link-card' ) );
+		$this->assertSame( 'truncate-link', Sanitize::long_form_composition( 'truncate-link' ) );
+		$this->assertSame( 'teaser-thread', Sanitize::long_form_composition( 'teaser-thread' ) );
 	}
 
 	/**
 	 * Sanitize callback falls back to the default for unknown / non-string input.
 	 */
 	public function test_sanitize_rejects_unknown_values() {
-		$this->assertSame( 'link-card', Options::sanitize_long_form_composition( 'something-else' ) );
-		$this->assertSame( 'link-card', Options::sanitize_long_form_composition( '' ) );
-		$this->assertSame( 'link-card', Options::sanitize_long_form_composition( null ) );
-		$this->assertSame( 'link-card', Options::sanitize_long_form_composition( array( 'teaser-thread' ) ) );
+		$this->assertSame( 'link-card', Sanitize::long_form_composition( 'something-else' ) );
+		$this->assertSame( 'link-card', Sanitize::long_form_composition( '' ) );
+		$this->assertSame( 'link-card', Sanitize::long_form_composition( null ) );
+		$this->assertSame( 'link-card', Sanitize::long_form_composition( array( 'teaser-thread' ) ) );
 	}
 
 	/**
