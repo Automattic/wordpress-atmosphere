@@ -27,6 +27,7 @@ class Test_Post extends WP_UnitTestCase {
 		\remove_all_filters( 'atmosphere_long_form_composition' );
 		\remove_all_filters( 'atmosphere_teaser_thread_posts' );
 		\remove_all_filters( 'atmosphere_transform_bsky_post' );
+		\remove_all_filters( 'atmosphere_post_embed' );
 		\remove_all_actions( 'atmosphere_long_form_strategy_downgraded' );
 		parent::tear_down();
 	}
@@ -1598,5 +1599,435 @@ class Test_Post extends WP_UnitTestCase {
 		$this->assertCount( 1, $records );
 		$this->assertSame( $oracle['text'], $records[0]['text'] );
 		$this->assertSame( $oracle['embed'], $records[0]['embed'] );
+	}
+
+	/*
+	 * -----------------------------------------------------------------
+	 * atmosphere_post_embed filter — embed swap seam.
+	 * -----------------------------------------------------------------
+	 */
+
+	/**
+	 * The filter fires for a long-form post and the default external
+	 * card is passed in as the default value.
+	 *
+	 * @covers ::transform
+	 */
+	public function test_post_embed_filter_receives_default_external_card_for_long_form() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'A Titled Post',
+				'post_content' => 'Long-form body.',
+				'post_excerpt' => 'Teaser excerpt.',
+			)
+		);
+
+		$seen_default  = 'not-called';
+		$seen_strategy = null;
+		\add_filter(
+			'atmosphere_post_embed',
+			static function ( $embed, $filter_post, $strategy ) use ( &$seen_default, &$seen_strategy ) {
+				$seen_default  = $embed;
+				$seen_strategy = $strategy;
+				return $embed;
+			},
+			10,
+			3
+		);
+
+		( new Post( $post ) )->transform();
+
+		$this->assertIsArray( $seen_default );
+		$this->assertSame( 'app.bsky.embed.external', $seen_default['$type'] );
+		$this->assertSame( 'link-card', $seen_strategy );
+	}
+
+	/**
+	 * The filter fires for a short-form post with `null` as the default
+	 * — short-form has no embed by default, but the seam is still open.
+	 *
+	 * @covers ::transform
+	 */
+	public function test_post_embed_filter_receives_null_default_for_short_form() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => '',
+				'post_content' => 'Untitled body.',
+			)
+		);
+
+		$seen_default  = 'not-called';
+		$seen_strategy = null;
+		\add_filter(
+			'atmosphere_post_embed',
+			static function ( $embed, $filter_post, $strategy ) use ( &$seen_default, &$seen_strategy ) {
+				$seen_default  = $embed;
+				$seen_strategy = $strategy;
+				return $embed;
+			},
+			10,
+			3
+		);
+
+		( new Post( $post ) )->transform();
+
+		$this->assertNull( $seen_default );
+		$this->assertSame( 'short-form', $seen_strategy );
+	}
+
+	/**
+	 * Filter return replaces the embed assigned to the record.
+	 *
+	 * @covers ::transform
+	 */
+	public function test_post_embed_filter_can_replace_embed() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'A Titled Post',
+				'post_content' => 'Body.',
+				'post_excerpt' => 'Excerpt.',
+			)
+		);
+
+		$replacement = array(
+			'$type'  => 'app.bsky.embed.images',
+			'images' => array(
+				array(
+					'image' => array( 'fake' => 'blob' ),
+					'alt'   => '',
+				),
+			),
+		);
+
+		\add_filter(
+			'atmosphere_post_embed',
+			static fn() => $replacement
+		);
+
+		$record = ( new Post( $post ) )->transform();
+
+		$this->assertSame( $replacement, $record['embed'] );
+	}
+
+	/**
+	 * Filter can attach an embed to a short-form post that would otherwise
+	 * ship with none — the new seam beyond what
+	 * `atmosphere_transform_bsky_post` could reach without rewriting the
+	 * record.
+	 *
+	 * @covers ::transform
+	 */
+	public function test_post_embed_filter_can_attach_embed_to_short_form() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => '',
+				'post_content' => 'Untitled body.',
+			)
+		);
+
+		$attached = array(
+			'$type'  => 'app.bsky.embed.images',
+			'images' => array(
+				array(
+					'image' => array( 'fake' => 'blob' ),
+					'alt'   => '',
+				),
+			),
+		);
+
+		\add_filter(
+			'atmosphere_post_embed',
+			static fn() => $attached
+		);
+
+		$record = ( new Post( $post ) )->transform();
+
+		$this->assertArrayHasKey( 'embed', $record );
+		$this->assertSame( $attached, $record['embed'] );
+	}
+
+	/**
+	 * Filter returning null suppresses the default external card.
+	 *
+	 * @covers ::transform
+	 */
+	public function test_post_embed_filter_returning_null_suppresses_embed() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'A Titled Post',
+				'post_content' => 'Body.',
+				'post_excerpt' => 'Excerpt.',
+			)
+		);
+
+		\add_filter( 'atmosphere_post_embed', '__return_null' );
+
+		$record = ( new Post( $post ) )->transform();
+
+		$this->assertArrayNotHasKey( 'embed', $record );
+	}
+
+	/**
+	 * Non-array, non-null filter return is rejected and the pre-filter
+	 * embed is preserved.
+	 *
+	 * @covers ::transform
+	 */
+	public function test_post_embed_filter_rejects_non_array_non_null() {
+		$this->setExpectedIncorrectUsage( 'Atmosphere\Transformer\Post::apply_post_embed_filter' );
+
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'A Titled Post',
+				'post_content' => 'Body.',
+				'post_excerpt' => 'Excerpt.',
+			)
+		);
+
+		\add_filter( 'atmosphere_post_embed', static fn() => 'not-an-array' );
+
+		$record = ( new Post( $post ) )->transform();
+
+		$this->assertArrayHasKey( 'embed', $record );
+		$this->assertSame( 'app.bsky.embed.external', $record['embed']['$type'] );
+	}
+
+	/**
+	 * Redacted (password-protected) transforms must not expose the post
+	 * object to the embed filter, mirroring the short-form and record
+	 * filters' redaction posture.
+	 *
+	 * @covers ::transform
+	 */
+	public function test_post_embed_filter_does_not_fire_on_redacted_transform() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_status'   => 'publish',
+				'post_title'    => 'CONFIDENTIAL-TITLE',
+				'post_content'  => 'CONFIDENTIAL-BODY',
+				'post_password' => 'secret',
+			)
+		);
+
+		$called = false;
+		\add_filter(
+			'atmosphere_post_embed',
+			static function ( $embed ) use ( &$called ) {
+				$called = true;
+				return $embed;
+			}
+		);
+
+		( new Post( $post ) )->transform();
+
+		$this->assertFalse( $called, 'Redacted transforms must not expose the post object to embed filters.' );
+	}
+
+	/**
+	 * The filter fires for the link-card record in
+	 * `build_long_form_records()` with the 'link-card' strategy.
+	 *
+	 * @covers ::build_long_form_records
+	 */
+	public function test_post_embed_filter_fires_for_link_card_long_form_record() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'A Titled Post',
+				'post_content' => 'Body.',
+				'post_excerpt' => 'Excerpt.',
+			)
+		);
+
+		$seen_strategy = null;
+		\add_filter(
+			'atmosphere_post_embed',
+			static function ( $embed, $filter_post, $strategy ) use ( &$seen_strategy ) {
+				$seen_strategy = $strategy;
+				return $embed;
+			},
+			10,
+			3
+		);
+
+		( new Post( $post ) )->build_long_form_records();
+
+		$this->assertSame( 'link-card', $seen_strategy );
+	}
+
+	/**
+	 * The filter fires for the terminal CTA entry of a teaser-thread
+	 * with the 'teaser-thread' strategy, and the filter return is what
+	 * lands on the CTA record.
+	 *
+	 * @covers ::build_long_form_records
+	 */
+	public function test_post_embed_filter_fires_for_teaser_thread_terminal_record() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'A Titled Post',
+				'post_content' => 'Body sentence one. Body sentence two.',
+			)
+		);
+
+		\add_filter( 'atmosphere_long_form_composition', fn() => 'teaser-thread' );
+
+		$replacement = array(
+			'$type'  => 'app.bsky.embed.images',
+			'images' => array(
+				array(
+					'image' => array( 'fake' => 'blob' ),
+					'alt'   => '',
+				),
+			),
+		);
+
+		$seen_strategy = null;
+		\add_filter(
+			'atmosphere_post_embed',
+			static function ( $embed, $filter_post, $strategy ) use ( &$seen_strategy, $replacement ) {
+				$seen_strategy = $strategy;
+				return $replacement;
+			},
+			10,
+			3
+		);
+
+		$records = ( new Post( $post ) )->build_long_form_records();
+
+		$this->assertSame( 'teaser-thread', $seen_strategy );
+		// Default thread shape is hook + body chunk + CTA; embed is on the terminal entry.
+		$this->assertCount( 3, $records );
+		$this->assertArrayNotHasKey( 'embed', $records[0] );
+		$this->assertArrayNotHasKey( 'embed', $records[1] );
+		$this->assertSame( $replacement, $records[2]['embed'] );
+	}
+
+	/*
+	 * -----------------------------------------------------------------
+	 * upload_thumbnail() backward-compat alias for upload_image_blob().
+	 * -----------------------------------------------------------------
+	 */
+
+	/**
+	 * The deprecated-name `upload_thumbnail()` and the new
+	 * `upload_image_blob()` are the same code path — both must hit the
+	 * cached postmeta short-circuit identically so existing callers
+	 * (Publication, Document) keep working unchanged.
+	 *
+	 * @covers ::upload_thumbnail
+	 * @covers ::upload_image_blob
+	 */
+	public function test_upload_thumbnail_aliases_upload_image_blob() {
+		$attachment_id = self::factory()->attachment->create_object(
+			array(
+				'file'           => 'fake.jpg',
+				'post_mime_type' => 'image/jpeg',
+			),
+			0,
+			array(
+				'post_title' => 'Fake attachment',
+			)
+		);
+
+		$cached_ref = array(
+			'cid'      => 'bafyfake',
+			'mimeType' => 'image/jpeg',
+			'size'     => 123,
+		);
+		\update_post_meta( $attachment_id, '_atmosphere_blob_ref', $cached_ref );
+
+		$this->assertSame( $cached_ref, Post::upload_image_blob( $attachment_id ) );
+		$this->assertSame( $cached_ref, Post::upload_thumbnail( $attachment_id ) );
+	}
+
+	/*
+	 * -----------------------------------------------------------------
+	 * get_attachment_aspect_ratio() — pixel dimensions for embed.images.
+	 * -----------------------------------------------------------------
+	 */
+
+	/**
+	 * Returns the integer width/height pair for an image attachment
+	 * with valid metadata.
+	 *
+	 * @covers ::get_attachment_aspect_ratio
+	 */
+	public function test_get_attachment_aspect_ratio_returns_dimensions() {
+		$attachment_id = self::factory()->attachment->create_object(
+			array(
+				'file'           => 'fake.jpg',
+				'post_mime_type' => 'image/jpeg',
+			),
+			0,
+			array(
+				'post_title' => 'Fake attachment',
+			)
+		);
+
+		\wp_update_attachment_metadata(
+			$attachment_id,
+			array(
+				'width'  => 1600,
+				'height' => 1200,
+			)
+		);
+
+		$this->assertSame(
+			array(
+				'width'  => 1600,
+				'height' => 1200,
+			),
+			Post::get_attachment_aspect_ratio( $attachment_id )
+		);
+	}
+
+	/**
+	 * Returns null when metadata is missing — the typical pre-image-sub-size
+	 * state right after upload.
+	 *
+	 * @covers ::get_attachment_aspect_ratio
+	 */
+	public function test_get_attachment_aspect_ratio_returns_null_without_metadata() {
+		$attachment_id = self::factory()->attachment->create_object(
+			array(
+				'file'           => 'fake.jpg',
+				'post_mime_type' => 'image/jpeg',
+			),
+			0,
+			array(
+				'post_title' => 'Fake attachment',
+			)
+		);
+
+		$this->assertNull( Post::get_attachment_aspect_ratio( $attachment_id ) );
+	}
+
+	/**
+	 * Returns null when either dimension is zero — guards against bogus
+	 * metadata from broken image generators.
+	 *
+	 * @covers ::get_attachment_aspect_ratio
+	 */
+	public function test_get_attachment_aspect_ratio_returns_null_for_zero_dimensions() {
+		$attachment_id = self::factory()->attachment->create_object(
+			array(
+				'file'           => 'fake.jpg',
+				'post_mime_type' => 'image/jpeg',
+			),
+			0,
+			array(
+				'post_title' => 'Fake attachment',
+			)
+		);
+
+		\wp_update_attachment_metadata(
+			$attachment_id,
+			array(
+				'width'  => 0,
+				'height' => 1200,
+			)
+		);
+
+		$this->assertNull( Post::get_attachment_aspect_ratio( $attachment_id ) );
 	}
 }

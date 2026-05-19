@@ -1,0 +1,4 @@
+Significance: minor
+Type: added
+
+Add `atmosphere_post_embed` filter so downstream code can swap the default external link card for a richer embed (`app.bsky.embed.images`, `app.bsky.embed.video`, …) or attach an embed to a short-form post that would otherwise ship with none. `Post::upload_thumbnail()` becomes a backward-compatible alias for the new generic `Post::upload_image_blob()`; a new `Post::get_attachment_aspect_ratio()` helper exposes the pixel dimensions consumers need for `embed.images`.
