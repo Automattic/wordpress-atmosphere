@@ -10,9 +10,17 @@ You are a security auditor for the WordPress ATmosphere plugin. You check for vu
 
 ## Known Vulnerability History
 
-Past security issues inform what patterns to watch for. Update this list when new issues are discovered or fixed.
+Past security issues inform what patterns to watch for. Update this list when new issues are discovered or fixed. Sister-plugin findings are included when the same architectural pattern exists in ATmosphere.
 
-*(No CVEs reported yet — track issues as they arise.)*
+*(No ATmosphere CVEs reported yet — track issues as they arise.)*
+
+### Sister-Plugin Visibility Incidents
+
+These are not confirmed ATmosphere bugs. They are regression classes inherited from the WordPress ActivityPub security audit history and must be checked whenever ATmosphere touches publishing, deletion, previews, public endpoints, or transformers.
+
+1. **Public-to-password-protected transition leak** (ActivityPub, 2026) — a previously federated public post changed to password-protected kept exposing protected content because the scheduler treated the save as an Update, content helpers read raw `post_content` / `post_excerpt`, and public representations reused lifecycle gates that were intended for Delete delivery. ATmosphere must treat any non-empty `WP_Post::post_password` as not publicly publishable, schedule remote cleanup for previously-published records, and never use `post_password_required()` for federation output because it depends on the current request cookie.
+2. **Non-public status content-negotiation leak** (ActivityPub, 2026) — posts moved to draft, pending, private, trash, or custom non-public statuses were still renderable through an ActivityPub representation while waiting for Delete delivery. ATmosphere's direct preview currently requires `edit_posts`, but any future public JSON/document/outbox-like route must gate on current public queryability, not on "has TIDs" or "needs cleanup".
+3. **Serialized/snapshotted remote content leaks persist** — ActivityPub outbox snapshots froze leaked Update activities. ATmosphere writes records to a PDS instead; the same rule applies there: once protected text, excerpts, embeds, thumbnails, tags, `site.standard.document#textContent`, or parsed `content` are written, the leak persists remotely until an explicit update or delete removes it.
 
 ## Audit Scope
 
@@ -151,12 +159,17 @@ Files: `includes/wp-admin/`, `includes/class-atmosphere.php`
 Files: `includes/class-publisher.php`, `includes/transformer/`
 
 - Verify that only published posts are sent to the PDS (no drafts, private, password-protected, or trashed)
+- Verify that "published" means all of: `post_status === 'publish'`, supported post type, and empty `post_password`. Do not rely on `post_password_required()` for federation output; it is request-cookie-sensitive and can return false for an editor who has unlocked the post locally.
+- Verify that previously-published records are deleted, not updated/redacted, when a post leaves public visibility: publish -> draft/pending/private/trash, publish -> custom non-public status, password applied, supported post type removed, or the `atmosphere_syncable_post_types` allowlist narrows after publication.
+- Verify publish/update cron handlers re-check current visibility at fire time. A stale `atmosphere_update_post` event must not push a protected or non-public edit that happened after the event was queued; if local record metadata exists, it should directly call `Publisher::delete_post( $post )` rather than enqueueing another cleanup event.
+- Verify transformer redaction is centralized and covers both record families: `app.bsky.feed.post` text, facets, embeds, thumbnails, tags, and `site.standard.document` title/description/cover/textContent/content/tags where those fields could reveal protected content.
 - Check that post content is properly sanitized before transformation
 - Verify `applyWrites` batch cannot be manipulated to write unexpected records or collections
 - Check TID generation for predictability or collision risks
 - Verify facet detection (`class-facet.php`) cannot inject malicious links or mentions
 - Check that the bsky post transformer respects Bluesky's character/image limits
 - Verify that backfill operations check post visibility before syncing
+- Verify backfill skips password-protected posts even when they have `publish` status and a public post type.
 
 ### 9. Uninstall & Data Cleanup
 
@@ -258,6 +271,9 @@ Files: well-known handlers, REST controllers, anywhere that exposes post / publi
 - Outbox-like endpoints (if any are added) must filter on `post_status === 'publish'` AND exclude password-protected / private posts before returning data to unauthenticated visitors.
 - Check that cross-post visibility checks happen at *every* boundary: the publisher gate, the backfill gate, the reaction-sync write-back, and any admin preview. A missed gate at any of these leaks private content.
 - Verify that querying `/.well-known/atproto-did` with unexpected query parameters (`?foo=bar`, `?atmosphere_wellknown=garbage`) cannot return data for the wrong site / user.
+- Public surfaces must not use lifecycle cleanup gates as content-exposure gates. It is valid for a previously-published now-private post to pass through a cleanup path so Delete can reach the PDS; it is not valid for that same escape hatch to render current post fields to an unauthenticated request.
+- Treat `post_password` as a first-class visibility column. Checks that look only at post status, post type support, ATmosphere TID meta, or sync options are incomplete.
+- If a public route returns existing PDS metadata for a post, confirm the route cannot expose stale AT-URIs/CIDs for posts now made private/password-protected unless the data is strictly necessary for deletion by an authorized user.
 
 ### 16. Race Conditions & Cron Reentry
 
@@ -266,6 +282,8 @@ Files: `includes/class-atmosphere.php` (cron registration), `includes/class-publ
 - Verify cron handlers are idempotent. `wp_schedule_single_event` can fire twice (concurrent workers, plugin re-activation, traffic spikes triggering loopback requests). If a handler has user-visible side effects (a published Bluesky post, a stored comment), it must gate on a meta sentinel **before** the side effect.
 - Verify inflight-state races are reconciled. When a publish writes meta both before (rkey reservation in `get_rkey()`) and after (URI in `mirror_thread_records_meta()`), a concurrent comment-deletion or post-status transition can leave the system inconsistent. Confirm the reconcile-after-publish pattern is applied (see `reconcile_comment_after_publish()`).
 - Verify the `atmosphere_publishing` action loop guard cannot be bypassed by a third-party hook that resets it.
+- Verify lifecycle transitions cancel or supersede stale scheduled work. A publish/restore after a queued delete must not leave the delete event alive if it would remove the newly-restored records; a newly-queued delete must not leave an older update event able to rewrite protected content first.
+- Verify any transition out of public queryability has a cleanup signal even when WordPress does not change `post_status`: applying `post_password`, removing post type support, narrowing `atmosphere_syncable_post_types`, or changing an equivalent visibility setting introduced later.
 
 ### 17. Deletion & Revocation Authority
 
@@ -301,6 +319,9 @@ Findings from sister-plugin audits (ActivityPub 8.1.x–8.2.x and parallel) and 
 - **CORS without credentials** — endpoints not designed for browser use must not advertise credentialed CORS. `Access-Control-Allow-Origin: *` + `Access-Control-Allow-Credentials: true` is the dangerous combination.
 - **Signature freshness** — clock-skew windows for incoming signed payloads (DPoP, future signed responses) must be narrow, freshness timestamps must be required, and unreasonable expiries must be capped.
 - **Visibility of private content on public surfaces** — outbox / well-known / preview handlers must filter on `post_status === 'publish'` AND exclude password-protected, private, or draft posts.
+- **Public-to-password-protected federation leak** — ActivityPub leaked protected posts when a public post was later password-protected. ATmosphere audits must check three layers together: scheduler emits Delete rather than Update, transformers refuse to read raw protected fields, and any public route refuses to render the current representation.
+- **PDS records are durable leak snapshots** — ATmosphere does not have a local outbox endpoint today, but PDS records are still serialized remote state. If protected content reaches `app.bsky.feed.post` or `site.standard.document`, later WordPress visibility checks do not undo the leak; the fix must delete or overwrite the remote record.
+- **Use direct password checks for federation** — `post_password_required()` is for the current web request and honors the visitor's unlock cookie. Federation output is site-wide remote state, so the gate must be `! empty( $post->post_password )`.
 - **Caller-owns-this-record on deletes** — every delete-on-PDS path must verify the AT-URI's repo DID matches the connected account.
 - **Revoke at auth server on disconnect** — local-only token delete leaves a valid refresh token usable from anywhere it leaked to.
 - **Type-confusion via third-party filters** — `apply_filters` chains processing data from external sources must validate return shapes; ActivityPub had a class of fatals where third-party plugins returned `null` into filters that expected arrays.

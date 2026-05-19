@@ -912,7 +912,7 @@ class Admin {
 			\_doing_it_wrong(
 				__METHOD__,
 				\esc_html__( 'atmosphere_client_metadata must return an array with a non-empty string client_id and a redirect_uris list of admin URLs; falling back to the unfiltered metadata.', 'atmosphere' ),
-				'0.1.0'
+				'unreleased'
 			);
 		}
 

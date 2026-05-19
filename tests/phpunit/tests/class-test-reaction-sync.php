@@ -47,6 +47,26 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 	}
 
 	/**
+	 * Password-protected posts should not receive public reaction/reply
+	 * write-backs even if stale AT-URI meta remains.
+	 */
+	public function test_find_post_by_bsky_uri_skips_password_protected_posts() {
+		$post_id = self::factory()->post->create(
+			array(
+				'post_status'   => 'publish',
+				'post_password' => 'secret',
+			)
+		);
+		$uri     = 'at://did:plc:test123/app.bsky.feed.post/protected';
+
+		\update_post_meta( $post_id, BskyPost::META_URI, $uri );
+
+		$method = new \ReflectionMethod( Reaction_Sync::class, 'find_post_by_bsky_uri' );
+
+		$this->assertFalse( $method->invoke( null, $uri ) );
+	}
+
+	/**
 	 * Test that find_post_by_bsky_uri returns false for unknown URI.
 	 */
 	public function test_find_post_by_bsky_uri_not_found() {
