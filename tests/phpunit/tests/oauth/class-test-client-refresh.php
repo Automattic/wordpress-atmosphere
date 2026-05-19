@@ -71,7 +71,7 @@ class Test_Client_Refresh extends WP_UnitTestCase {
 	public function tear_down(): void {
 		\delete_option( 'atmosphere_connection' );
 		\delete_option( 'atmosphere_identity' );
-		\delete_transient( 'atmosphere_refresh_lock' );
+		\delete_option( Client::REFRESH_LOCK_OPTION );
 		\remove_all_filters( 'pre_http_request' );
 
 		parent::tear_down();
@@ -254,13 +254,42 @@ class Test_Client_Refresh extends WP_UnitTestCase {
 	}
 
 	/**
+	 * Simulate another caller holding the cross-process refresh lock.
+	 *
+	 * For the happy path ({@see $expires_in} > 0) this just calls the
+	 * public {@see Client::lock()} API. The stale-lock variant
+	 * ({@see $expires_in} <= 0) plants a row directly because the API
+	 * intentionally only ever writes a future expiry.
+	 *
+	 * @param int $expires_in Seconds until the lock expires. Use a
+	 *                        negative value to simulate a stuck lock
+	 *                        from a crashed prior holder.
+	 */
+	private function hold_refresh_lock( int $expires_in = 30 ): void {
+		if ( $expires_in > 0 ) {
+			Client::lock();
+			return;
+		}
+
+		global $wpdb;
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching
+		$wpdb->query(
+			$wpdb->prepare(
+				"INSERT INTO {$wpdb->options} (option_name, option_value, autoload) VALUES (%s, %s, %s)",
+				Client::REFRESH_LOCK_OPTION,
+				(string) ( \time() + $expires_in ),
+				'no'
+			)
+		);
+	}
+
+	/**
 	 * Test that the refresh lock blocks a concurrent caller and that the
 	 * blocked caller returns success when the option already shows a
 	 * freshly rotated token.
 	 */
 	public function test_refresh_lock_short_circuits_when_token_already_fresh() {
-		// Simulate another caller holding the lock with a future expiry.
-		\set_transient( 'atmosphere_refresh_lock', \time(), 30 );
+		$this->hold_refresh_lock();
 
 		// Pretend that caller already wrote a fresh token.
 		$conn                 = \get_option( 'atmosphere_connection' );
@@ -279,7 +308,7 @@ class Test_Client_Refresh extends WP_UnitTestCase {
 	 * caller is mid-refresh and the stored token is not yet fresh.
 	 */
 	public function test_refresh_lock_returns_soft_error_when_token_still_stale() {
-		\set_transient( 'atmosphere_refresh_lock', \time(), 30 );
+		$this->hold_refresh_lock();
 
 		// Force the stored token to look stale.
 		$conn               = \get_option( 'atmosphere_connection' );
@@ -291,8 +320,77 @@ class Test_Client_Refresh extends WP_UnitTestCase {
 		$this->assertWPError( $result );
 		$this->assertSame( 'atmosphere_refresh_locked', $result->get_error_code() );
 
-		// The lock should still be held by the (mocked) other caller.
-		$this->assertNotFalse( \get_transient( 'atmosphere_refresh_lock' ) );
+		$this->assertTrue(
+			Client::locked(),
+			'Lock should still be held by the simulated other caller.'
+		);
+	}
+
+	/**
+	 * Stale lock rows must be stealable so a crashed holder cannot block
+	 * subsequent refreshes indefinitely.
+	 */
+	public function test_refresh_lock_steals_stale_lock() {
+		$this->hold_refresh_lock( -60 );
+
+		$this->mock_token_response(
+			200,
+			array(
+				'access_token'  => 'after-steal',
+				'refresh_token' => 'after-steal-refresh',
+				'expires_in'    => 3600,
+			)
+		);
+
+		$result = Client::refresh();
+
+		$this->assertTrue( $result );
+	}
+
+	/**
+	 * `access_token()` must wait for a concurrent refresh to land instead
+	 * of propagating `atmosphere_refresh_locked` — those errors get
+	 * consumed by single-shot cron events and would silently drop the
+	 * publish or comment that triggered them.
+	 */
+	public function test_access_token_waits_for_concurrent_refresh_to_land() {
+		// Lock held by another caller; access token close to expiry to
+		// force the refresh path.
+		$this->hold_refresh_lock();
+
+		$conn               = \get_option( 'atmosphere_connection' );
+		$conn['expires_at'] = \time() + 60;
+		\update_option( 'atmosphere_connection', $conn );
+
+		/*
+		 * Capture the stale shape once, then flip the option to a
+		 * rotated shape on the second read via `pre_option`. The closure
+		 * MUST NOT call `get_option('atmosphere_connection')` itself —
+		 * that re-enters this filter and recurses without bound.
+		 */
+		$rotated                 = \get_option( 'atmosphere_connection' );
+		$rotated['access_token'] = Encryption::encrypt( 'holder-rotated-token' );
+		$rotated['expires_at']   = \time() + 3600;
+		$rotated['needs_reauth'] = false;
+
+		$polls = 0;
+		\add_filter(
+			'pre_option_atmosphere_connection',
+			static function ( $value ) use ( &$polls, $rotated ) {
+				++$polls;
+				if ( $polls < 2 ) {
+					return $value;
+				}
+				return $rotated;
+			}
+		);
+
+		$token = Client::access_token();
+
+		\remove_all_filters( 'pre_option_atmosphere_connection' );
+
+		$this->assertIsString( $token );
+		$this->assertSame( 'holder-rotated-token', $token );
 	}
 
 	/**

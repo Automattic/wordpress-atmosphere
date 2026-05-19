@@ -32,6 +32,10 @@ $atmosphere_options = array(
 	'atmosphere_long_form_composition',
 	'atmosphere_support_post_types',
 	'atmosphere_last_seen_notification',
+	// Canonical value: `\Atmosphere\OAuth\Client::REFRESH_LOCK_OPTION`.
+	// Hardcoded here because `uninstall.php` runs before the plugin
+	// bootstrap is loaded, so the constant isn't available.
+	'_atmosphere_refresh_lock',
 );
 
 foreach ( $atmosphere_options as $atmosphere_option ) {
@@ -104,7 +108,6 @@ $atmosphere_transients = array(
 	'atmosphere_oauth_dpop_jwk',
 	'atmosphere_oauth_resolved',
 	'atmosphere_invalid_long_form_composition_logged',
-	'atmosphere_refresh_lock',
 );
 
 foreach ( $atmosphere_transients as $atmosphere_transient ) {
