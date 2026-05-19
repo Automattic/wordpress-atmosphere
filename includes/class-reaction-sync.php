@@ -504,6 +504,34 @@ class Reaction_Sync {
 		array $notification,
 		array $profile
 	): int|false {
+		/*
+		 * Deliberately NOT gating on `comments_open( $post_id )` here.
+		 * `paginate()` advances the per-collection watermark to the
+		 * newest URI on each page regardless of whether the per-item
+		 * callback accepted the item; if we dropped reactions on
+		 * closed-comments posts at this gate, the watermark would
+		 * still move past them and a subsequent reopen of comments
+		 * could not recover the missed imports — the WATERMARK_GRACE
+		 * window is only ten items.
+		 *
+		 * Federated reactions are an audit record of activity that
+		 * happened on Bluesky, not a comment-form submission. Insert
+		 * the row, let the moderation pipeline below decide the
+		 * approval state, and accept that imported reactions remain
+		 * in `wp_comments` even on closed-comments posts.
+		 *
+		 * Caveat: WordPress's stock `comments_template()` hides
+		 * comments when `comments_open()` is false, but themes that
+		 * render comments without going through `comments_template()`,
+		 * and the REST `/wp/v2/comments` endpoint, will still surface
+		 * these rows on closed-comments posts. Sites that need
+		 * stricter rendering control should filter `the_comments` /
+		 * `rest_prepare_comment` themselves; we don't register
+		 * display-side filters here because the existence of the
+		 * comment row is the federation history record this method
+		 * is responsible for preserving.
+		 */
+
 		$uri    = $notification['uri'] ?? '';
 		$cid    = $notification['cid'] ?? '';
 		$author = $notification['author'] ?? array();
@@ -521,13 +549,58 @@ class Reaction_Sync {
 			'comment_author'       => $author_name,
 			'comment_author_url'   => \esc_url_raw( 'https://bsky.app/profile/' . \rawurlencode( $author_handle ) ),
 			'comment_author_email' => '',
+			'comment_author_IP'    => '',
 			'comment_content'      => \wp_kses_post( $content ),
 			'comment_date'         => \get_date_from_gmt( $gm_date ),
 			'comment_date_gmt'     => $gm_date,
 			'comment_type'         => $comment_type,
-			'comment_approved'     => 1,
 			'comment_agent'        => 'ATmosphere/' . ATMOSPHERE_VERSION,
+			'user_id'              => 0,
 		);
+
+		/*
+		 * Run the full WordPress moderation pipeline rather than just
+		 * gating on `comment_moderation`. `wp_allow_comment()` evaluates
+		 * the same chain WordPress applies to native comment submissions:
+		 *
+		 *   - `comment_moderation` ("hold all comments")
+		 *   - `comment_whitelist` (previously-approved-author bypass)
+		 *   - `comment_max_links` threshold
+		 *   - `disallowed_keys` blacklist (returns WP_Error)
+		 *   - `moderation_keys` (returns approved=0)
+		 *   - the `pre_comment_approved` filter chain, which is where
+		 *     Akismet stamps spam verdicts and where any third-party
+		 *     anti-spam plugin hooks in.
+		 *
+		 * Without this call, importing Bluesky reactions silently
+		 * bypassed every one of those checks; only `comment_moderation`
+		 * was honoured. A `WP_Error` return means the comment was
+		 * hard-rejected (e.g. disallowed-keys hit) — drop the import.
+		 *
+		 * `wp_is_comment_flood` is short-circuited to false for this
+		 * one call: federated reactions are server-to-server traffic
+		 * without an IP, so WordPress's IP/email-based 15-second flood
+		 * heuristic doesn't model them correctly — rate-limiting for
+		 * inbound reactions happens upstream at Bluesky's relay. The
+		 * filter is removed immediately after the call so it cannot
+		 * affect any subsequent user-submitted comment in the same
+		 * request.
+		 *
+		 * The `ATmosphere/` `comment_agent` stamp keeps the outbound
+		 * comment-publish cron (`atmosphere_publish_comment`) from
+		 * picking the row back up regardless of approval state, so a
+		 * held reaction can be approved in wp-admin later without
+		 * being written back to the Bluesky PDS.
+		 */
+		\add_filter( 'wp_is_comment_flood', '__return_false', 99 );
+		$approved = \wp_allow_comment( $comment_data, true );
+		\remove_filter( 'wp_is_comment_flood', '__return_false', 99 );
+
+		if ( \is_wp_error( $approved ) ) {
+			return false;
+		}
+
+		$comment_data['comment_approved'] = $approved;
 
 		$comment_id = \wp_insert_comment( $comment_data );
 

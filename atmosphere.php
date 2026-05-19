@@ -64,7 +64,16 @@ function activate() {
  * Deactivation hook.
  */
 function deactivate() {
-	clear_scheduled_hooks();
+	/*
+	 * Use the all-hooks variant: deactivation is the user-visible
+	 * "stop running everything" moment, so any still-queued one-shot
+	 * cron event (notably `atmosphere_revoke_refresh_token`, which
+	 * `Client::disconnect()` schedules outside the regular
+	 * `clear_scheduled_hooks()` set) must be cleared too. Otherwise
+	 * its encrypted ciphertexts sit in `wp_options['cron']` waiting
+	 * for a callback the deactivated plugin no longer registers.
+	 */
+	clear_scheduled_hooks_all();
 	\flush_rewrite_rules();
 }
 \register_deactivation_hook( __FILE__, __NAMESPACE__ . '\deactivate' );

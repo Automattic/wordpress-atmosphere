@@ -157,6 +157,19 @@ class Atmosphere {
 			\wp_schedule_event( \time(), 'twicedaily', 'atmosphere_refresh_token' );
 		}
 
+		/*
+		 * Async refresh-token revocation, scheduled by
+		 * `Client::disconnect()`. The callback is registered for every
+		 * request so the worker fires correctly when WP-Cron picks up
+		 * the queued event even though the local connection is gone.
+		 */
+		\add_action(
+			'atmosphere_revoke_refresh_token',
+			array( Client::class, 'revoke_refresh_token' ),
+			10,
+			4
+		);
+
 		// Async action hooks (called by WP-Cron).
 		self::register_async_hooks();
 

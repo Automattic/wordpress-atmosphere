@@ -7,7 +7,7 @@
  * @package Atmosphere
  */
 
-use function Atmosphere\clear_scheduled_hooks;
+use function Atmosphere\clear_scheduled_hooks_all;
 
 if ( ! defined( 'WP_UNINSTALL_PLUGIN' ) ) {
 	exit;
@@ -32,6 +32,7 @@ $atmosphere_options = array(
 	'atmosphere_long_form_composition',
 	'atmosphere_support_post_types',
 	'atmosphere_last_seen_notification',
+	'atmosphere_tid_last_ts',
 	'atmosphere_visibility_cleanup_migrated',
 	'atmosphere_visibility_cleanup_migrated_offset',
 	'atmosphere_visibility_cleanup_last_id',
@@ -45,8 +46,13 @@ foreach ( $atmosphere_options as $atmosphere_option ) {
 	delete_option( $atmosphere_option );
 }
 
-// Remove scheduled events via the canonical helper.
-clear_scheduled_hooks();
+// Remove scheduled events via the canonical helper. Use the
+// all-hooks variant so any still-queued one-shot revoke event
+// (scheduled outside the regular hook set by `Client::disconnect()`)
+// is also dropped — uninstall is the final cleanup, the encrypted
+// ciphertexts in `wp_options['cron']` would otherwise outlive the
+// plugin forever.
+clear_scheduled_hooks_all();
 
 global $wpdb;
 
@@ -129,6 +135,13 @@ foreach ( $atmosphere_transients as $atmosphere_transient ) {
  *    pre-bootstrap, so we can't reference the constant directly
  *    without loading the autoloader here. Anyone renaming the
  *    constant should grep for `atmo_dpop_nonce_` and update both.
+ *  - _atmosphere_oauth_rate_<user_id>
+ *    — per-user OAuth rate-limit counter. Stored as a plain option
+ *    (not a transient) so the read+CAS-update loop in
+ *    `Client::rate_limit_check()` can be atomic via INSERT IGNORE +
+ *    UPDATE WHERE option_value = $previous; the window expiry is
+ *    encoded in the value itself rather than relying on transient
+ *    TTL.
  *  - atmosphere_profile_<md5>       — reaction-sync profile cache
  *    written by `Reaction_Sync::resolve_author()`. No constant —
  *    grep for `atmosphere_profile_` in includes/.
@@ -162,12 +175,15 @@ $atmosphere_transient_rows = $wpdb->get_col(
 	 WHERE option_name LIKE '\_transient\_atmo\_dpop\_nonce\_%'
 	    OR option_name LIKE '\_transient\_timeout\_atmo\_dpop\_nonce\_%'
 	    OR option_name LIKE '\_transient\_atmosphere\_profile\_%'
-	    OR option_name LIKE '\_transient\_timeout\_atmosphere\_profile\_%'"
+	    OR option_name LIKE '\_transient\_timeout\_atmosphere\_profile\_%'
+	    OR option_name LIKE '\_transient\_atmosphere\_oauth\_%'
+	    OR option_name LIKE '\_transient\_timeout\_atmosphere\_oauth\_%'"
 );
 
 $atmosphere_option_rows = $wpdb->get_col(
 	"SELECT option_name FROM {$wpdb->options}
-	 WHERE option_name LIKE 'atmosphere\_last\_seen\_own\_%'"
+	 WHERE option_name LIKE 'atmosphere\_last\_seen\_own\_%'
+	    OR option_name LIKE '\_atmosphere\_oauth\_rate\_%'"
 );
 // phpcs:enable
 
