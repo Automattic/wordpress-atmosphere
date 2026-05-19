@@ -24,6 +24,7 @@ require_once __DIR__ . '/includes/functions.php';
 // Remove options.
 $atmosphere_options = array(
 	'atmosphere_connection',
+	'atmosphere_identity',
 	'atmosphere_publication_tid',
 	'atmosphere_publication_uri',
 	'atmosphere_auto_publish',
@@ -103,6 +104,7 @@ $atmosphere_transients = array(
 	'atmosphere_oauth_dpop_jwk',
 	'atmosphere_oauth_resolved',
 	'atmosphere_invalid_long_form_composition_logged',
+	'atmosphere_refresh_lock',
 );
 
 foreach ( $atmosphere_transients as $atmosphere_transient ) {

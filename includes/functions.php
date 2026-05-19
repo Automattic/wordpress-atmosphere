@@ -99,7 +99,7 @@ function to_iso8601( string $datetime ): string {
 }
 
 /**
- * Get the stored connection data.
+ * Get the stored connection (OAuth credentials + ephemeral state).
  *
  * @return array
  */
@@ -108,13 +108,94 @@ function get_connection(): array {
 }
 
 /**
- * Check whether the plugin is connected to a PDS.
+ * Get the persisted AT Protocol identity (DID, handle, PDS endpoint).
+ *
+ * Identity is stored separately from the OAuth credentials so that a
+ * failed token refresh — which clears the live session — does not also
+ * wipe the bidirectional verification headers (`.well-known/atproto-did`
+ * and the `<link rel="site.standard.document">` tag). On a legacy
+ * connection that still embeds the identity inside `atmosphere_connection`
+ * this performs a one-shot lazy migration into the new option.
+ *
+ * @return array{did?: string, handle?: string, pds_endpoint?: string}
+ */
+function get_identity(): array {
+	$identity = \get_option( 'atmosphere_identity', array() );
+
+	if ( ! empty( $identity['did'] ) ) {
+		return $identity;
+	}
+
+	$conn = get_connection();
+
+	if ( empty( $conn['did'] ) ) {
+		return array();
+	}
+
+	$identity = array(
+		'did'          => (string) $conn['did'],
+		'handle'       => (string) ( $conn['handle'] ?? '' ),
+		'pds_endpoint' => (string) ( $conn['pds_endpoint'] ?? '' ),
+	);
+
+	\update_option( 'atmosphere_identity', $identity, true );
+
+	return $identity;
+}
+
+/**
+ * Whether a persisted AT Protocol identity is on file.
+ *
+ * Drives the public verification headers and the settings UI's
+ * publishing section so they keep functioning across token expiry.
+ *
+ * @return bool
+ */
+function has_identity(): bool {
+	return ! empty( get_identity()['did'] );
+}
+
+/**
+ * Whether the plugin holds a live OAuth session against the PDS.
+ *
+ * Returns false when the credentials are missing OR the connection
+ * is flagged `needs_reauth` (last refresh attempt was rejected with
+ * a permanent error). Use `has_identity()` for code paths that only
+ * need the site's DID/handle and do not require live credentials.
  *
  * @return bool
  */
 function is_connected(): bool {
+	if ( ! has_identity() ) {
+		return false;
+	}
+
 	$conn = get_connection();
-	return ! empty( $conn['access_token'] ) && ! empty( $conn['did'] );
+
+	if ( ! empty( $conn['needs_reauth'] ) ) {
+		return false;
+	}
+
+	return ! empty( $conn['access_token'] );
+}
+
+/**
+ * Whether the connection requires the user to re-authorize.
+ *
+ * True when an identity is on file but the credentials option is
+ * missing, empty, or flagged `needs_reauth` after a permanent OAuth
+ * refresh failure. False on a never-connected site.
+ *
+ * @return bool
+ */
+function needs_reauth(): bool {
+	if ( ! has_identity() ) {
+		return false;
+	}
+
+	$conn = get_connection();
+
+	return ! empty( $conn['needs_reauth'] ) || empty( $conn['access_token'] );
 }
 
 /**
@@ -123,7 +204,7 @@ function is_connected(): bool {
  * @return string
  */
 function get_did(): string {
-	return get_connection()['did'] ?? '';
+	return (string) ( get_identity()['did'] ?? '' );
 }
 
 /**
@@ -132,7 +213,7 @@ function get_did(): string {
  * @return string
  */
 function get_pds_endpoint(): string {
-	return get_connection()['pds_endpoint'] ?? '';
+	return (string) ( get_identity()['pds_endpoint'] ?? '' );
 }
 
 /**

@@ -16,7 +16,9 @@ use Atmosphere\Post_Types;
 use Atmosphere\Publisher;
 use function Atmosphere\get_connection;
 use function Atmosphere\get_supported_post_types;
+use function Atmosphere\has_identity;
 use function Atmosphere\is_connected;
+use function Atmosphere\needs_reauth;
 
 /**
  * Admin class.
@@ -31,6 +33,7 @@ class Admin {
 		\add_action( 'admin_init', array( self::class, 'handle_oauth_callback' ) );
 		\add_action( 'admin_init', array( self::class, 'register_settings' ) );
 		\add_action( 'admin_enqueue_scripts', array( self::class, 'enqueue_assets' ) );
+		\add_action( 'admin_notices', array( self::class, 'maybe_render_reauth_notice' ) );
 
 		\add_action( 'admin_post_atmosphere_disconnect', array( self::class, 'handle_disconnect' ) );
 		\add_action( 'admin_post_atmosphere_set_domain_handle', array( self::class, 'handle_set_domain_handle' ) );
@@ -134,7 +137,17 @@ class Admin {
 				'atmosphere_connection'
 			);
 
-			return;
+			/*
+			 * Even while the OAuth session is gone, an existing identity
+			 * keeps the publishing-section UI visible so the user does
+			 * not lose sight of their stored auto-publish, long-form,
+			 * and post-type preferences during a reauth round-trip. The
+			 * publish callbacks themselves gate on `is_connected()` and
+			 * stay short-circuited until reauth completes.
+			 */
+			if ( ! has_identity() ) {
+				return;
+			}
 		}
 
 		// Publishing section.
@@ -774,6 +787,47 @@ class Admin {
 			false,
 			array( 'post' => $post )
 		);
+	}
+
+	/**
+	 * Render a global admin notice when the OAuth session needs reauth.
+	 *
+	 * Surfaced on every admin screen (gated on `manage_options`) because
+	 * the publish, comment, and update paths silently no-op until the
+	 * user reconnects — without a visible nudge, an expired refresh
+	 * token can sit unnoticed for days. The notice is dismissible per
+	 * page-load only so the user is reminded again on their next visit.
+	 */
+	public static function maybe_render_reauth_notice(): void {
+		if ( ! \current_user_can( 'manage_options' ) ) {
+			return;
+		}
+
+		if ( ! needs_reauth() ) {
+			return;
+		}
+
+		$settings_url = \admin_url( 'options-general.php?page=atmosphere' );
+
+		?>
+		<div class="notice notice-warning is-dismissible">
+			<p>
+				<strong><?php \esc_html_e( 'ATmosphere: reconnection required', 'atmosphere' ); ?></strong>
+			</p>
+			<p>
+				<?php
+				echo \wp_kses(
+					\sprintf(
+						/* translators: %s: URL to the ATmosphere settings page. */
+						\__( 'Your AT Protocol session has expired. New posts and comments will not publish until you <a href="%s">reconnect on the settings page</a>. Your publishing preferences and verification headers stay in place in the meantime.', 'atmosphere' ),
+						\esc_url( $settings_url )
+					),
+					array( 'a' => array( 'href' => array() ) )
+				);
+				?>
+			</p>
+		</div>
+		<?php
 	}
 
 	/**

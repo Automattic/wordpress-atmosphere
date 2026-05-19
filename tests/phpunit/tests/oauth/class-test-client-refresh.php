@@ -16,6 +16,9 @@ use WP_UnitTestCase;
 use Atmosphere\OAuth\Client;
 use Atmosphere\OAuth\DPoP;
 use Atmosphere\OAuth\Encryption;
+use function Atmosphere\has_identity;
+use function Atmosphere\is_connected;
+use function Atmosphere\needs_reauth;
 
 /**
  * Client refresh tests.
@@ -44,9 +47,20 @@ class Test_Client_Refresh extends WP_UnitTestCase {
 				'refresh_token'  => Encryption::encrypt( 'test-refresh-token' ),
 				'dpop_jwk'       => Encryption::encrypt( \wp_json_encode( $dpop_jwk ) ),
 				'did'            => 'did:plc:test123',
+				'handle'         => 'test.example.com',
 				'pds_endpoint'   => 'https://pds.example.com',
 				'token_endpoint' => self::TOKEN_ENDPOINT,
 				'expires_at'     => \time() + 3600,
+				'needs_reauth'   => false,
+			)
+		);
+
+		\update_option(
+			'atmosphere_identity',
+			array(
+				'did'          => 'did:plc:test123',
+				'handle'       => 'test.example.com',
+				'pds_endpoint' => 'https://pds.example.com',
 			)
 		);
 	}
@@ -56,6 +70,8 @@ class Test_Client_Refresh extends WP_UnitTestCase {
 	 */
 	public function tear_down(): void {
 		\delete_option( 'atmosphere_connection' );
+		\delete_option( 'atmosphere_identity' );
+		\delete_transient( 'atmosphere_refresh_lock' );
 		\remove_all_filters( 'pre_http_request' );
 
 		parent::tear_down();
@@ -119,9 +135,11 @@ class Test_Client_Refresh extends WP_UnitTestCase {
 	}
 
 	/**
-	 * Test that invalid_grant deletes the connection.
+	 * Test that invalid_grant marks the connection for reauth without
+	 * deleting it, and preserves the identity option for the public
+	 * verification headers.
 	 */
-	public function test_invalid_grant_deletes_connection() {
+	public function test_invalid_grant_marks_needs_reauth() {
 		$this->mock_token_response(
 			400,
 			array(
@@ -133,13 +151,22 @@ class Test_Client_Refresh extends WP_UnitTestCase {
 		$result = Client::refresh();
 
 		$this->assertWPError( $result );
-		$this->assertFalse( \get_option( 'atmosphere_connection' ) );
+
+		$conn = \get_option( 'atmosphere_connection' );
+		$this->assertNotFalse( $conn );
+		$this->assertTrue( ! empty( $conn['needs_reauth'] ) );
+		$this->assertEmpty( $conn['access_token'] );
+
+		$identity = \get_option( 'atmosphere_identity' );
+		$this->assertNotFalse( $identity );
+		$this->assertSame( 'did:plc:test123', $identity['did'] );
+		$this->assertSame( 'test.example.com', $identity['handle'] );
 	}
 
 	/**
-	 * Test that invalid_client deletes the connection.
+	 * Test that invalid_client marks the connection for reauth.
 	 */
-	public function test_invalid_client_deletes_connection() {
+	public function test_invalid_client_marks_needs_reauth() {
 		$this->mock_token_response(
 			401,
 			array(
@@ -151,13 +178,17 @@ class Test_Client_Refresh extends WP_UnitTestCase {
 		$result = Client::refresh();
 
 		$this->assertWPError( $result );
-		$this->assertFalse( \get_option( 'atmosphere_connection' ) );
+
+		$conn = \get_option( 'atmosphere_connection' );
+		$this->assertNotFalse( $conn );
+		$this->assertTrue( ! empty( $conn['needs_reauth'] ) );
+		$this->assertNotFalse( \get_option( 'atmosphere_identity' ) );
 	}
 
 	/**
-	 * Test that unauthorized_client deletes the connection.
+	 * Test that unauthorized_client marks the connection for reauth.
 	 */
-	public function test_unauthorized_client_deletes_connection() {
+	public function test_unauthorized_client_marks_needs_reauth() {
 		$this->mock_token_response(
 			403,
 			array(
@@ -169,7 +200,99 @@ class Test_Client_Refresh extends WP_UnitTestCase {
 		$result = Client::refresh();
 
 		$this->assertWPError( $result );
-		$this->assertFalse( \get_option( 'atmosphere_connection' ) );
+
+		$conn = \get_option( 'atmosphere_connection' );
+		$this->assertNotFalse( $conn );
+		$this->assertTrue( ! empty( $conn['needs_reauth'] ) );
+		$this->assertNotFalse( \get_option( 'atmosphere_identity' ) );
+	}
+
+	/**
+	 * Test that a successful refresh clears any prior needs_reauth flag.
+	 */
+	public function test_successful_refresh_clears_needs_reauth_flag() {
+		$conn                 = \get_option( 'atmosphere_connection' );
+		$conn['needs_reauth'] = true;
+		\update_option( 'atmosphere_connection', $conn );
+
+		$this->mock_token_response(
+			200,
+			array(
+				'access_token'  => 'fresh-token',
+				'refresh_token' => 'fresh-refresh',
+				'expires_in'    => 3600,
+			)
+		);
+
+		$result = Client::refresh();
+
+		$this->assertTrue( $result );
+
+		$conn = \get_option( 'atmosphere_connection' );
+		$this->assertEmpty( $conn['needs_reauth'] );
+	}
+
+	/**
+	 * Invariant the whole PR rests on: after a permanent refresh
+	 * failure, `is_connected()` flips to false (so publish/comment
+	 * paths short-circuit) while `has_identity()` stays true (so
+	 * verification headers keep serving) and `needs_reauth()` is true
+	 * (so the admin notice and reconnect flow surface).
+	 */
+	public function test_needs_reauth_decouples_session_from_identity() {
+		$this->mock_token_response(
+			400,
+			array( 'error' => 'invalid_grant' )
+		);
+
+		$result = Client::refresh();
+
+		$this->assertWPError( $result );
+		$this->assertFalse( is_connected(), 'Publish path should short-circuit while needs_reauth.' );
+		$this->assertTrue( has_identity(), 'Verification headers should keep serving while needs_reauth.' );
+		$this->assertTrue( needs_reauth(), 'Admin notice gate should fire while needs_reauth.' );
+	}
+
+	/**
+	 * Test that the refresh lock blocks a concurrent caller and that the
+	 * blocked caller returns success when the option already shows a
+	 * freshly rotated token.
+	 */
+	public function test_refresh_lock_short_circuits_when_token_already_fresh() {
+		// Simulate another caller holding the lock with a future expiry.
+		\set_transient( 'atmosphere_refresh_lock', \time(), 30 );
+
+		// Pretend that caller already wrote a fresh token.
+		$conn                 = \get_option( 'atmosphere_connection' );
+		$conn['access_token'] = Encryption::encrypt( 'someone-elses-fresh-token' );
+		$conn['expires_at']   = \time() + 3600;
+		$conn['needs_reauth'] = false;
+		\update_option( 'atmosphere_connection', $conn );
+
+		$result = Client::refresh();
+
+		$this->assertTrue( $result );
+	}
+
+	/**
+	 * Test that the refresh lock returns a soft error if a concurrent
+	 * caller is mid-refresh and the stored token is not yet fresh.
+	 */
+	public function test_refresh_lock_returns_soft_error_when_token_still_stale() {
+		\set_transient( 'atmosphere_refresh_lock', \time(), 30 );
+
+		// Force the stored token to look stale.
+		$conn               = \get_option( 'atmosphere_connection' );
+		$conn['expires_at'] = \time() - 60;
+		\update_option( 'atmosphere_connection', $conn );
+
+		$result = Client::refresh();
+
+		$this->assertWPError( $result );
+		$this->assertSame( 'atmosphere_refresh_locked', $result->get_error_code() );
+
+		// The lock should still be held by the (mocked) other caller.
+		$this->assertNotFalse( \get_transient( 'atmosphere_refresh_lock' ) );
 	}
 
 	/**
