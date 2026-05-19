@@ -167,7 +167,7 @@ class Atmosphere {
 			'atmosphere_revoke_refresh_token',
 			array( Client::class, 'revoke_refresh_token' ),
 			10,
-			3
+			4
 		);
 
 		// Async action hooks (called by WP-Cron).

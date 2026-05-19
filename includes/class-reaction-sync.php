@@ -517,9 +517,19 @@ class Reaction_Sync {
 		 * Federated reactions are an audit record of activity that
 		 * happened on Bluesky, not a comment-form submission. Insert
 		 * the row, let the moderation pipeline below decide the
-		 * approval state, and rely on the standard `comments_open`
-		 * gate in the template / REST layer to control whether
-		 * those rows render on the front end.
+		 * approval state, and accept that imported reactions remain
+		 * in `wp_comments` even on closed-comments posts.
+		 *
+		 * Caveat: WordPress's stock `comments_template()` hides
+		 * comments when `comments_open()` is false, but themes that
+		 * render comments without going through `comments_template()`,
+		 * and the REST `/wp/v2/comments` endpoint, will still surface
+		 * these rows on closed-comments posts. Sites that need
+		 * stricter rendering control should filter `the_comments` /
+		 * `rest_prepare_comment` themselves; we don't register
+		 * display-side filters here because the existence of the
+		 * comment row is the federation history record this method
+		 * is responsible for preserving.
 		 */
 
 		$uri    = $notification['uri'] ?? '';

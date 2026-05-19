@@ -7,7 +7,7 @@
  * @package Atmosphere
  */
 
-use function Atmosphere\clear_scheduled_hooks;
+use function Atmosphere\clear_scheduled_hooks_all;
 
 if ( ! defined( 'WP_UNINSTALL_PLUGIN' ) ) {
 	exit;
@@ -46,8 +46,13 @@ foreach ( $atmosphere_options as $atmosphere_option ) {
 	delete_option( $atmosphere_option );
 }
 
-// Remove scheduled events via the canonical helper.
-clear_scheduled_hooks();
+// Remove scheduled events via the canonical helper. Use the
+// all-hooks variant so any still-queued one-shot revoke event
+// (scheduled outside the regular hook set by `Client::disconnect()`)
+// is also dropped — uninstall is the final cleanup, the encrypted
+// ciphertexts in `wp_options['cron']` would otherwise outlive the
+// plugin forever.
+clear_scheduled_hooks_all();
 
 global $wpdb;
 

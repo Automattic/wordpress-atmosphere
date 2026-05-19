@@ -724,17 +724,26 @@ class Client {
 			$error = $data['error'] ?? '';
 			if ( \in_array( $error, array( 'invalid_grant', 'invalid_client', 'unauthorized_client' ), true ) ) {
 				/*
-				 * Re-read the connection before writing. An admin who
-				 * clicked "Disconnect" while this refresh was mid-flight
-				 * already wiped the row from `wp_options`; resurrecting
-				 * it here — even with a `needs_reauth` flag — would
-				 * recreate the connection the admin just removed, plus
-				 * re-seed `atmosphere_identity` on the next
-				 * `get_identity()` call. Drop the result silently so
-				 * the disconnect wins the race.
+				 * Re-read the connection before writing, and only stamp
+				 * `needs_reauth` if the row STILL holds the same
+				 * refresh-token ciphertext we read at lock-acquisition
+				 * time. Two races close here:
+				 *
+				 *   - Admin disconnected mid-flight: the row is gone
+				 *     and the `refresh_token` check below fails.
+				 *   - Admin disconnected + reconnected to a different
+				 *     account mid-flight: the row exists but the
+				 *     `refresh_token` ciphertext is different (libsodium
+				 *     re-encrypts with a fresh nonce). Stamping
+				 *     `needs_reauth` on the NEW account because the
+				 *     OLD account's refresh failed would be wrong.
 				 */
 				$current = \get_option( 'atmosphere_connection', array() );
-				if ( \is_array( $current ) && ! empty( $current['refresh_token'] ) ) {
+				if ( \is_array( $current )
+					&& ! empty( $current['refresh_token'] )
+					&& isset( $conn['refresh_token'] )
+					&& \hash_equals( (string) $conn['refresh_token'], (string) $current['refresh_token'] )
+				) {
 					$current['needs_reauth'] = true;
 					$current['access_token'] = '';
 					unset( $current['expires_at'] );
@@ -747,18 +756,35 @@ class Client {
 
 		/*
 		 * Re-read the connection before persisting the rotated token.
-		 * `disconnect()` deletes `atmosphere_connection` while this
-		 * worker is in-flight; writing the post-network token back
-		 * would resurrect the row the admin just removed. Without
-		 * this guard the disconnect is silently undone, which is the
-		 * race the multi-agent review flagged as P1.
+		 * Two races are possible while the worker is in-flight:
+		 *
+		 *  1. Admin clicks Disconnect — `atmosphere_connection` is
+		 *     deleted. Writing the post-network token back would
+		 *     resurrect the row the admin just removed.
+		 *  2. Admin clicks Disconnect AND immediately reconnects to a
+		 *     different account. The row exists, but `refresh_token`
+		 *     belongs to the NEW account; writing our rotated tokens
+		 *     would overwrite the new account's access_token with
+		 *     credentials minted against the OLD account's session.
+		 *
+		 * Both are closed by comparing the refresh-token ciphertext we
+		 * read at lock-acquisition time against the current row. The
+		 * ciphertexts are random per encryption (libsodium uses a
+		 * fresh nonce on every `encrypt()`), so any change at all —
+		 * delete-then-recreate, reconnect, even an unrelated
+		 * `sync_connection_handle()` write that re-encrypted the row
+		 * — fails the equality check and the worker bails.
 		 */
 		$current = \get_option( 'atmosphere_connection', array() );
 
-		if ( ! \is_array( $current ) || empty( $current['refresh_token'] ) ) {
+		if ( ! \is_array( $current )
+			|| empty( $current['refresh_token'] )
+			|| ! isset( $conn['refresh_token'] )
+			|| ! \hash_equals( (string) $conn['refresh_token'], (string) $current['refresh_token'] )
+		) {
 			return new \WP_Error(
 				'atmosphere_disconnected_mid_refresh',
-				\__( 'Connection was disconnected while the refresh was in-flight; new tokens were discarded.', 'atmosphere' )
+				\__( 'Connection changed while the refresh was in-flight; new tokens were discarded.', 'atmosphere' )
 			);
 		}
 
@@ -912,20 +938,33 @@ class Client {
 	}
 
 	/**
-	 * Poll the connection option for up to ~5 seconds, waiting for
-	 * the concurrent refresh holder to write a fresh access token.
+	 * Poll the connection option waiting for the concurrent refresh
+	 * holder to write a fresh access token (or to flip
+	 * `needs_reauth` on a permanent failure).
 	 *
-	 * Returns `true` when the stored token has been rotated by another
-	 * caller and is safe to use, or a `WP_Error` when the holder either
-	 * flipped `needs_reauth` (permanent failure) or did not finish in
-	 * time. Used by {@see self::access_token()} so that a publish or
-	 * comment cron event does not get silently dropped when it arrives
-	 * mid-refresh.
+	 * The deadline matches `REFRESH_LOCK_TTL` (90s) rather than a
+	 * conservative few-seconds wait. The previous 5-second budget
+	 * was shorter than the realistic worst case — two sequential
+	 * `wp_safe_remote_post` calls at 15-second timeouts on the
+	 * `use_dpop_nonce` retry path plus encryption overhead — which
+	 * meant single-shot publish / comment cron events that arrived
+	 * mid-refresh would silently drop their content even though the
+	 * holder was about to land a fresh token. Aligning with the
+	 * lock TTL guarantees we either see the holder's result or
+	 * conclude the holder crashed (lock will be reclaimable on the
+	 * next call).
+	 *
+	 * Returns `true` when the stored token has been rotated and is
+	 * safe to use, or a `WP_Error` when the holder either flipped
+	 * `needs_reauth` (permanent failure) or did not finish in time.
+	 * Used by {@see self::access_token()} so that a publish or
+	 * comment cron event does not get silently dropped when it
+	 * arrives mid-refresh.
 	 *
 	 * @return true|\WP_Error
 	 */
 	private static function wait_for_token_refresh(): true|\WP_Error {
-		$deadline = \microtime( true ) + 5.0;
+		$deadline = \microtime( true ) + (float) self::REFRESH_LOCK_TTL;
 
 		while ( \microtime( true ) < $deadline ) {
 			// phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
@@ -1129,19 +1168,27 @@ class Client {
 		 * could have swapped `revocation_endpoint` for
 		 * `https://attacker.example/collect` between connect and
 		 * disconnect; without this check the cron worker would
-		 * happily POST the decrypted refresh token there. The
-		 * issuer comparison is host-only (ignores path), which
-		 * matches how OAuth metadata discovery resolves an issuer
-		 * to its origin.
+		 * happily POST the decrypted refresh token there.
+		 *
+		 * The comparison is scheme + host + port (origin in the RFC
+		 * 6454 sense). The auth-server is always HTTPS (the resolver
+		 * already enforces that), so in practice this comes down to
+		 * matching the host plus an explicit port if either side
+		 * declares one. Missing ports normalise to the HTTPS default
+		 * (443) so `auth.example.com` and `auth.example.com:443`
+		 * compare equal.
 		 */
 		if ( '' !== $auth_server_issuer ) {
-			$revoke_host = \wp_parse_url( $revocation_endpoint, PHP_URL_HOST );
+			$revoke_host = $revocation_endpoint ? \wp_parse_url( $revocation_endpoint, PHP_URL_HOST ) : '';
 			$issuer_host = \wp_parse_url( $auth_server_issuer, PHP_URL_HOST );
+			$revoke_port = \wp_parse_url( $revocation_endpoint, PHP_URL_PORT );
+			$issuer_port = \wp_parse_url( $auth_server_issuer, PHP_URL_PORT );
 
 			if ( ! \is_string( $revoke_host )
 				|| ! \is_string( $issuer_host )
 				|| '' === $revoke_host
 				|| \strtolower( $revoke_host ) !== \strtolower( $issuer_host )
+				|| ( $revoke_port ?? 443 ) !== ( $issuer_port ?? 443 )
 			) {
 				return;
 			}
