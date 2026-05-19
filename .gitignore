@@ -3,6 +3,10 @@
 composer.lock
 package-lock.json
 *.zip
+.phpunit.cache
 .phpunit.result.cache
+.wp-env.override.json
 /docs/superpowers/
+.idea/
+.vscode/
 .DS_Store
