@@ -524,29 +524,64 @@ class Reaction_Sync {
 		$timestamp = \strtotime( $record['createdAt'] ?? '' );
 		$gm_date   = \gmdate( 'Y-m-d H:i:s', false === $timestamp ? 0 : $timestamp );
 
-		/*
-		 * Honour the global "moderate before publishing" setting. The
-		 * `ATmosphere/` agent stamp keeps the comment-publish cron
-		 * (`atmosphere_publish_comment`) from picking this row back up
-		 * regardless of its approval state, so a held reaction can be
-		 * approved in wp-admin later without being written back to the
-		 * Bluesky PDS.
-		 */
-		$comment_approved = (int) \get_option( 'comment_moderation' ) ? 0 : 1;
-
 		$comment_data = array(
 			'comment_post_ID'      => $post_id,
 			'comment_parent'       => $comment_parent,
 			'comment_author'       => $author_name,
 			'comment_author_url'   => \esc_url_raw( 'https://bsky.app/profile/' . \rawurlencode( $author_handle ) ),
 			'comment_author_email' => '',
+			'comment_author_IP'    => '',
 			'comment_content'      => \wp_kses_post( $content ),
 			'comment_date'         => \get_date_from_gmt( $gm_date ),
 			'comment_date_gmt'     => $gm_date,
 			'comment_type'         => $comment_type,
-			'comment_approved'     => $comment_approved,
 			'comment_agent'        => 'ATmosphere/' . ATMOSPHERE_VERSION,
+			'user_id'              => 0,
 		);
+
+		/*
+		 * Run the full WordPress moderation pipeline rather than just
+		 * gating on `comment_moderation`. `wp_allow_comment()` evaluates
+		 * the same chain WordPress applies to native comment submissions:
+		 *
+		 *   - `comment_moderation` ("hold all comments")
+		 *   - `comment_whitelist` (previously-approved-author bypass)
+		 *   - `comment_max_links` threshold
+		 *   - `disallowed_keys` blacklist (returns WP_Error)
+		 *   - `moderation_keys` (returns approved=0)
+		 *   - the `pre_comment_approved` filter chain, which is where
+		 *     Akismet stamps spam verdicts and where any third-party
+		 *     anti-spam plugin hooks in.
+		 *
+		 * Without this call, importing Bluesky reactions silently
+		 * bypassed every one of those checks; only `comment_moderation`
+		 * was honoured. A `WP_Error` return means the comment was
+		 * hard-rejected (e.g. disallowed-keys hit) — drop the import.
+		 *
+		 * `wp_is_comment_flood` is short-circuited to false for this
+		 * one call: federated reactions are server-to-server traffic
+		 * without an IP, so WordPress's IP/email-based 15-second flood
+		 * heuristic doesn't model them correctly — rate-limiting for
+		 * inbound reactions happens upstream at Bluesky's relay. The
+		 * filter is removed immediately after the call so it cannot
+		 * affect any subsequent user-submitted comment in the same
+		 * request.
+		 *
+		 * The `ATmosphere/` `comment_agent` stamp keeps the outbound
+		 * comment-publish cron (`atmosphere_publish_comment`) from
+		 * picking the row back up regardless of approval state, so a
+		 * held reaction can be approved in wp-admin later without
+		 * being written back to the Bluesky PDS.
+		 */
+		\add_filter( 'wp_is_comment_flood', '__return_false', 99 );
+		$approved = \wp_allow_comment( $comment_data, true );
+		\remove_filter( 'wp_is_comment_flood', '__return_false', 99 );
+
+		if ( \is_wp_error( $approved ) ) {
+			return false;
+		}
+
+		$comment_data['comment_approved'] = $approved;
 
 		$comment_id = \wp_insert_comment( $comment_data );
 
