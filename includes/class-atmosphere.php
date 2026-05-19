@@ -174,9 +174,14 @@ class Atmosphere {
 	 *
 	 * This confirms the bidirectional link between the web page and
 	 * its AT Protocol document record, as required by standard.site.
+	 *
+	 * Gated on `has_identity()` rather than `is_connected()` so the
+	 * verification link survives a temporary OAuth refresh failure —
+	 * the document AT-URI is computed from the DID, which is stable
+	 * across session expiry and `needs_reauth` states.
 	 */
 	public function output_document_link(): void {
-		if ( ! is_connected() || ! \is_singular() ) {
+		if ( ! has_identity() || ! \is_singular() ) {
 			return;
 		}
 
@@ -247,7 +252,15 @@ class Atmosphere {
 			return;
 		}
 
-		if ( ! is_connected() ) {
+		/*
+		 * Identity gate (not connection gate): an expired OAuth session
+		 * must not break domain handle verification. Bluesky's resolver
+		 * re-fetches this endpoint to confirm the bidirectional link
+		 * each time a profile loads, so a transient token failure
+		 * otherwise propagates as "handle no longer resolves" until the
+		 * site admin reconnects.
+		 */
+		if ( ! has_identity() ) {
 			\status_header( 404 );
 			exit;
 		}
@@ -269,7 +282,15 @@ class Atmosphere {
 			return;
 		}
 
-		if ( ! is_connected() ) {
+		/*
+		 * Identity gate (not connection gate): the publication AT-URI is
+		 * derived from the persisted DID + publication TID, both of
+		 * which outlive a transient OAuth refresh failure. Returning 404
+		 * here while waiting for the user to reconnect would break
+		 * standard.site's bidirectional verification each time the
+		 * token rotates.
+		 */
+		if ( ! has_identity() ) {
 			\status_header( 404 );
 			exit;
 		}

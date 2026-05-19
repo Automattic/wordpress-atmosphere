@@ -1,0 +1,4 @@
+Significance: patch
+Type: fixed
+
+Prevent concurrent token refreshes from racing each other and accidentally disconnecting the plugin.
