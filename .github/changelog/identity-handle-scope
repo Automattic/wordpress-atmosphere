@@ -1,4 +1,0 @@
-Significance: minor
-Type: added
-
-Request the identity:handle permission when connecting to Bluesky so handle changes can be kept in sync.

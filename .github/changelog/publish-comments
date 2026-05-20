@@ -1,4 +1,0 @@
-Significance: minor
-Type: added
-
-Publish replies from registered WordPress users to Bluesky as native replies, with edit and unapprove/delete synced back to the AT Protocol record.

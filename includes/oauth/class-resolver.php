@@ -271,6 +271,20 @@ class Resolver {
 			);
 		}
 
+		/*
+		 * `revocation_endpoint` is optional (RFC 8414 §2). When the auth
+		 * server advertises one we keep it so disconnect can revoke the
+		 * refresh token server-side; a malformed value gets dropped
+		 * rather than failing the whole connect, since revocation is
+		 * best-effort defence-in-depth.
+		 */
+		if ( ! empty( $meta['revocation_endpoint'] )
+			&& ( ! \is_string( $meta['revocation_endpoint'] )
+				|| ! self::is_safe_https_url( $meta['revocation_endpoint'] ) )
+		) {
+			unset( $meta['revocation_endpoint'] );
+		}
+
 		$meta['issuer_url'] = $issuer;
 
 		return $meta;

@@ -1,4 +1,0 @@
-Significance: patch
-Type: fixed
-
-Keep your AT Protocol verification headers and publishing preferences in place when your session expires. Reconnect is required to resume publishing, but your settings no longer reset and standard.site verification keeps working.

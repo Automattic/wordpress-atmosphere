@@ -94,6 +94,17 @@ class Publisher {
 	 * @return array|\WP_Error applyWrites response(s) or error.
 	 */
 	public static function publish_post( \WP_Post $post ): array|\WP_Error {
+		if ( ! is_post_publishable( $post ) ) {
+			$result = new \WP_Error(
+				'atmosphere_post_not_publishable',
+				\__( 'Post is not eligible for AT Protocol publishing.', 'atmosphere' )
+			);
+
+			\do_action( 'atmosphere_publish_post_result', $post, $result );
+
+			return $result;
+		}
+
 		$bsky_transformer = new Post( $post );
 		$doc_transformer  = new Document( $post );
 
@@ -115,6 +126,8 @@ class Publisher {
 			}
 		}
 
+		$result = self::reconcile_post_after_write( $post, $result );
+
 		/**
 		 * Fires after a post publish attempt completes, with the final result.
 		 *
@@ -129,6 +142,63 @@ class Publisher {
 		\do_action( 'atmosphere_publish_post_result', $post, $result );
 
 		return $result;
+	}
+
+	/**
+	 * Remove records that became ineligible while applyWrites was in flight.
+	 *
+	 * @param \WP_Post        $post   Post just written.
+	 * @param array|\WP_Error $result Publisher result.
+	 * @return array|\WP_Error
+	 */
+	private static function reconcile_post_after_write( \WP_Post $post, array|\WP_Error $result ): array|\WP_Error {
+		if ( \is_wp_error( $result ) ) {
+			return $result;
+		}
+
+		/*
+		 * `get_post()` returns the in-process `WP_Object_Cache` copy on
+		 * installs without a persistent object cache drop-in (the
+		 * WordPress default). A concurrent web request that just
+		 * password-protected the post calls `clean_post_cache()` only
+		 * in its own process, so without an explicit invalidation here
+		 * the worker would still see the pre-protect snapshot and
+		 * `is_post_publishable( $fresh )` would return true — letting
+		 * the just-committed records sit live on the PDS.
+		 */
+		\clean_post_cache( $post->ID );
+		$fresh = \get_post( $post->ID );
+
+		if ( $fresh instanceof \WP_Post && is_post_publishable( $fresh ) ) {
+			return $result;
+		}
+
+		if ( ! $fresh instanceof \WP_Post ) {
+			return $result;
+		}
+
+		Atmosphere::mark_visibility_cleanup( $fresh );
+
+		$cleanup = self::delete_post( $fresh );
+
+		if ( \is_wp_error( $cleanup ) ) {
+			/*
+			 * The publish itself succeeded — records are live and meta
+			 * references them. The cleanup-delete failed transiently
+			 * (PDS 429 / network blip / expired refresh token). Surface
+			 * the cleanup failure on its own op label so monitors don't
+			 * mislabel it as a publish failure, but return the original
+			 * publish `$result` so `atmosphere_publish_post_result`
+			 * fires with the publish outcome the caller expects.
+			 * `mark_visibility_cleanup` above leaves the marker in
+			 * place so the next status transition or the historical
+			 * migration revisits the record.
+			 */
+			Atmosphere::log_reconcile_cleanup_error( $fresh->ID, $cleanup );
+			return $result;
+		}
+
+		return $cleanup;
 	}
 
 	/**
@@ -539,6 +609,10 @@ class Publisher {
 	 * @return array|\WP_Error
 	 */
 	public static function update_post( \WP_Post $post ): array|\WP_Error {
+		if ( ! is_post_publishable( $post ) ) {
+			return self::delete_post( $post );
+		}
+
 		$stored = self::stored_thread_records( $post->ID );
 
 		if ( empty( $stored ) ) {
@@ -726,7 +800,7 @@ class Publisher {
 			return $doc_ref_result;
 		}
 
-		return $result;
+		return self::reconcile_post_after_write( $post, $result );
 	}
 
 	/**
@@ -827,7 +901,7 @@ class Publisher {
 			return $doc_ref_result;
 		}
 
-		return $result;
+		return self::reconcile_post_after_write( $post, $result );
 	}
 
 	/**
@@ -967,7 +1041,7 @@ class Publisher {
 	 * @return array|\WP_Error
 	 */
 	public static function delete_post( \WP_Post $post ): array|\WP_Error {
-		$stored  = self::stored_thread_records( $post->ID );
+		$stored  = self::stored_thread_records( $post->ID, true );
 		$doc_tid = \get_post_meta( $post->ID, Document::META_TID, true );
 
 		$comment_tids = self::collect_published_comment_tids( $post->ID );
@@ -976,6 +1050,36 @@ class Publisher {
 			return new \WP_Error(
 				'atmosphere_not_published',
 				\__( 'Post has no AT Protocol records.', 'atmosphere' )
+			);
+		}
+
+		/*
+		 * `applyWrites#delete` always targets the currently-connected
+		 * repo. If the post's records were minted under a different
+		 * DID (disconnect → reconnect-to-different-account, atproto
+		 * account migration), issuing the delete against the current
+		 * DID would silently no-op while leaving the original records
+		 * orphaned on the previous account's PDS. Bail with an
+		 * operator-visible error so the situation is at least logged
+		 * rather than masked behind a successful-looking cleanup.
+		 */
+		$bsky_origin_did = (string) \get_post_meta( $post->ID, Post::META_DID, true );
+		$doc_origin_did  = (string) \get_post_meta( $post->ID, Document::META_DID, true );
+		$current_did     = get_did();
+
+		$bsky_skip = '' !== $bsky_origin_did && '' !== $current_did && $bsky_origin_did !== $current_did;
+		$doc_skip  = '' !== $doc_origin_did && '' !== $current_did && $doc_origin_did !== $current_did;
+
+		if ( ( $bsky_skip && ! empty( $stored ) ) || ( $doc_skip && $doc_tid ) ) {
+			return new \WP_Error(
+				'atmosphere_did_mismatch',
+				\__( 'Cannot delete records that were created under a different connected account.', 'atmosphere' ),
+				array(
+					'post_id'         => $post->ID,
+					'current_did'     => $current_did,
+					'bsky_origin_did' => $bsky_origin_did,
+					'doc_origin_did'  => $doc_origin_did,
+				)
 			);
 		}
 
@@ -1059,6 +1163,17 @@ class Publisher {
 					),
 				),
 				'fields'     => 'ids',
+
+				/*
+				 * Force a deterministic order. `get_comments` defaults
+				 * to `comment_date_gmt DESC`, which ties for comments
+				 * created in the same second — under MySQL 8 / MariaDB
+				 * the tie-break is undefined and varies between PHP
+				 * versions on CI. Ordering by ID matches creation
+				 * order and pins the test contract.
+				 */
+				'orderby'    => 'comment_ID',
+				'order'      => 'ASC',
 			)
 		);
 
@@ -1197,40 +1312,49 @@ class Publisher {
 	 * @return array|\WP_Error
 	 */
 	public static function sync_publication(): array|\WP_Error {
+		$did = get_did();
+
+		/*
+		 * A cron event queued just before `Client::disconnect()` can
+		 * still fire after the connection option is cleared. Calling
+		 * `putRecord` with an empty `repo` would either malform the
+		 * request or — worse — land on whatever DID the auth layer
+		 * happened to cache. Bail before either can happen.
+		 */
+		if ( '' === $did ) {
+			return new \WP_Error(
+				'atmosphere_not_connected',
+				\__( 'Cannot sync the publication record: no active connection.', 'atmosphere' )
+			);
+		}
+
 		$pub = new Publication( null );
 
-		$existing_uri = \get_option( Publication::OPTION_URI );
-
-		if ( $existing_uri ) {
-			$result = API::post(
-				'/xrpc/com.atproto.repo.putRecord',
-				array(
-					'repo'       => get_did(),
-					'collection' => 'site.standard.publication',
-					'rkey'       => $pub->get_rkey(),
-					'record'     => $pub->transform(),
-				)
-			);
-		} else {
-			$result = API::post(
-				'/xrpc/com.atproto.repo.createRecord',
-				array(
-					'repo'       => get_did(),
-					'collection' => 'site.standard.publication',
-					'rkey'       => $pub->get_rkey(),
-					'record'     => $pub->transform(),
-				)
-			);
-		}
-
-		if ( \is_wp_error( $result ) ) {
-			return $result;
-		}
-
-		$uri = $result['uri'] ?? $pub->get_uri();
-		\update_option( Publication::OPTION_URI, $uri, false );
-
-		return $result;
+		/*
+		 * Always `putRecord`. AT Protocol's `putRecord` is an upsert:
+		 * it creates the record when missing and overwrites when
+		 * present. A previous version branched between `createRecord`
+		 * and `putRecord` based on a locally-persisted URI option;
+		 * after disconnect/reconnect-to-a-different-DID that branch
+		 * could pick `createRecord` against a repo that already had
+		 * the record (PDS replies "already exists") or `putRecord`
+		 * against a repo that did not (which `putRecord` handles
+		 * fine, but the inconsistency made the local state hard to
+		 * reason about). Using `putRecord` unconditionally collapses
+		 * both cases into a single upsert against the CURRENT DID +
+		 * locally-persisted TID — the rkey is stable across
+		 * reconnects, so the record always lands at the same address
+		 * for the active owner.
+		 */
+		return API::post(
+			'/xrpc/com.atproto.repo.putRecord',
+			array(
+				'repo'       => $did,
+				'collection' => 'site.standard.publication',
+				'rkey'       => $pub->get_rkey(),
+				'record'     => $pub->transform(),
+			)
+		);
 	}
 
 	/**
@@ -1566,10 +1690,11 @@ class Publisher {
 	 * meta so posts published before this key existed still delete/update
 	 * correctly.
 	 *
-	 * @param int $post_id Post ID.
+	 * @param int  $post_id          Post ID.
+	 * @param bool $include_bare_tid Include a reserved TID even when URI is absent.
 	 * @return array[] Array of { uri, cid, tid } triples, possibly empty.
 	 */
-	private static function stored_thread_records( int $post_id ): array {
+	private static function stored_thread_records( int $post_id, bool $include_bare_tid = false ): array {
 		$stored = \get_post_meta( $post_id, Post::META_THREAD_RECORDS, true );
 		if ( \is_array( $stored ) && ! empty( $stored ) ) {
 			return $stored;
@@ -1585,8 +1710,23 @@ class Publisher {
 		// republish failed). Treat that as "nothing published" so the
 		// caller falls back to a fresh publish and the reserved TID is
 		// reused on the next attempt.
-		if ( ! $uri ) {
+		if ( ! $uri && ( ! $include_bare_tid || ! $tid ) ) {
 			return array();
+		}
+
+		if ( ! $uri && $tid ) {
+			/*
+			 * Synthesize the URI from the DID that minted the TID, not
+			 * the currently-connected DID. After a disconnect+reconnect
+			 * to a different account, `get_did()` would otherwise build
+			 * an AT-URI pointing at the new account's repo for a record
+			 * that lives (or never landed) under the previous account.
+			 */
+			$origin_did = (string) \get_post_meta( $post_id, Post::META_DID, true );
+			if ( '' === $origin_did ) {
+				$origin_did = get_did();
+			}
+			$uri = build_at_uri( $origin_did, 'app.bsky.feed.post', (string) $tid );
 		}
 
 		return array(

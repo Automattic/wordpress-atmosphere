@@ -13,6 +13,7 @@ use function Atmosphere\build_at_uri;
 use function Atmosphere\sanitize_text;
 use function Atmosphere\truncate_text;
 use function Atmosphere\to_iso8601;
+use function Atmosphere\is_post_publishable;
 
 /**
  * Function tests.
@@ -107,5 +108,53 @@ class Test_Functions extends WP_UnitTestCase {
 		$result = to_iso8601( '2024-01-15 12:30:00' );
 
 		$this->assertSame( '2024-01-15T12:30:00.000Z', $result );
+	}
+
+	/**
+	 * Publishable posts must be public, supported, and not password-protected.
+	 */
+	public function test_is_post_publishable_requires_public_supported_unprotected_post() {
+		$public = self::factory()->post->create_and_get(
+			array(
+				'post_status' => 'publish',
+				'post_type'   => 'post',
+			)
+		);
+
+		$draft = self::factory()->post->create_and_get(
+			array(
+				'post_status' => 'draft',
+				'post_type'   => 'post',
+			)
+		);
+
+		$protected = self::factory()->post->create_and_get(
+			array(
+				'post_status'   => 'publish',
+				'post_type'     => 'post',
+				'post_password' => 'secret',
+			)
+		);
+
+		$zero_string_password = self::factory()->post->create_and_get(
+			array(
+				'post_status'   => 'publish',
+				'post_type'     => 'post',
+				'post_password' => '0',
+			)
+		);
+
+		$page = self::factory()->post->create_and_get(
+			array(
+				'post_status' => 'publish',
+				'post_type'   => 'page',
+			)
+		);
+
+		$this->assertTrue( is_post_publishable( $public ) );
+		$this->assertFalse( is_post_publishable( $draft ) );
+		$this->assertFalse( is_post_publishable( $protected ) );
+		$this->assertFalse( is_post_publishable( $zero_string_password ) );
+		$this->assertFalse( is_post_publishable( $page ) );
 	}
 }

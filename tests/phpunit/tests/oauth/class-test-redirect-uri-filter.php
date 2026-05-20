@@ -36,7 +36,7 @@ class Test_Redirect_Uri_Filter extends WP_UnitTestCase {
 	public function test_default_redirect_uri_is_admin_url() {
 		$uri = Client::redirect_uri();
 
-		$this->assertStringStartsWith( \admin_url( '' ), $uri );
+		$this->assertStringStartsWith( \admin_url( '', 'https' ), $uri );
 		$this->assertStringContainsString( 'page=atmosphere', $uri );
 	}
 
@@ -52,7 +52,7 @@ class Test_Redirect_Uri_Filter extends WP_UnitTestCase {
 
 		$uri = Client::redirect_uri();
 
-		$this->assertStringStartsWith( \admin_url( '' ), $uri );
+		$this->assertStringStartsWith( \admin_url( '', 'https' ), $uri );
 		$this->assertStringNotContainsString( 'evil.example.com', $uri );
 	}
 
@@ -62,7 +62,7 @@ class Test_Redirect_Uri_Filter extends WP_UnitTestCase {
 	 * wrapper plugins.
 	 */
 	public function test_in_site_admin_filter_is_accepted() {
-		$override = \admin_url( 'admin.php?page=my-wrapper-plugin' );
+		$override = \admin_url( 'admin.php?page=my-wrapper-plugin', 'https' );
 
 		\add_filter(
 			'atmosphere_oauth_redirect_uri',
@@ -80,17 +80,17 @@ class Test_Redirect_Uri_Filter extends WP_UnitTestCase {
 	 */
 	public function test_non_string_filter_returns_fall_back() {
 		\add_filter( 'atmosphere_oauth_redirect_uri', static fn() => null );
-		$this->assertStringStartsWith( \admin_url( '' ), Client::redirect_uri() );
+		$this->assertStringStartsWith( \admin_url( '', 'https' ), Client::redirect_uri() );
 
 		\remove_all_filters( 'atmosphere_oauth_redirect_uri' );
 
 		\add_filter( 'atmosphere_oauth_redirect_uri', static fn() => array( 'not', 'a', 'url' ) );
-		$this->assertStringStartsWith( \admin_url( '' ), Client::redirect_uri() );
+		$this->assertStringStartsWith( \admin_url( '', 'https' ), Client::redirect_uri() );
 
 		\remove_all_filters( 'atmosphere_oauth_redirect_uri' );
 
 		\add_filter( 'atmosphere_oauth_redirect_uri', static fn() => false );
-		$this->assertStringStartsWith( \admin_url( '' ), Client::redirect_uri() );
+		$this->assertStringStartsWith( \admin_url( '', 'https' ), Client::redirect_uri() );
 	}
 
 	/**
@@ -100,7 +100,24 @@ class Test_Redirect_Uri_Filter extends WP_UnitTestCase {
 	public function test_empty_string_filter_falls_back() {
 		\add_filter( 'atmosphere_oauth_redirect_uri', static fn() => '' );
 
-		$this->assertStringStartsWith( \admin_url( '' ), Client::redirect_uri() );
+		$this->assertStringStartsWith( \admin_url( '', 'https' ), Client::redirect_uri() );
+	}
+
+	/**
+	 * A filter that returns the HTTP scheme version of this site's
+	 * admin URL is rejected. The OAuth code must not travel over
+	 * cleartext, even when the rest of the URL is in-site.
+	 */
+	public function test_http_scheme_filter_is_rejected() {
+		\add_filter(
+			'atmosphere_oauth_redirect_uri',
+			static fn() => 'http://example.org/wp-admin/admin.php?page=my-wrapper-plugin'
+		);
+
+		$uri = Client::redirect_uri();
+
+		$this->assertStringStartsWith( 'https://', $uri );
+		$this->assertStringNotContainsString( 'my-wrapper-plugin', $uri );
 	}
 
 	/**
@@ -115,7 +132,7 @@ class Test_Redirect_Uri_Filter extends WP_UnitTestCase {
 
 		$uri = Client::redirect_uri();
 
-		$this->assertStringStartsWith( \admin_url( '' ), $uri );
+		$this->assertStringStartsWith( \admin_url( '', 'https' ), $uri );
 		$this->assertStringNotContainsString( 'javascript', $uri );
 	}
 }

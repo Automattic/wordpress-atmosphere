@@ -315,9 +315,26 @@ class Handle {
 			);
 		}
 
-		$response = API::post(
+		/*
+		 * Called synchronously from `Admin::maybe_set_domain_handle()`
+		 * on `admin_init`, so the submitting administrator waits on
+		 * this HTTP round-trip. The PDS asks the host's
+		 * `/.well-known/atproto-did` for the DID associated with the
+		 * domain; that lookup typically completes well under five
+		 * seconds in practice but can stretch to 15-45s for slow DNS
+		 * or slow-origin combinations. The 60s timeout (versus the
+		 * `wp_safe_remote_post` default of 30s) gives a slow-but-
+		 * eventual success room to land instead of failing the
+		 * verification mid-handshake. The wait is paid by an
+		 * administrator who explicitly clicked the button.
+		 */
+		$response = API::request(
+			'POST',
 			'/xrpc/com.atproto.identity.updateHandle',
-			array( 'handle' => $handle )
+			array(
+				'body'    => array( 'handle' => $handle ),
+				'timeout' => 60,
+			)
 		);
 
 		if ( \is_wp_error( $response ) ) {
@@ -341,7 +358,7 @@ class Handle {
 		$connection = get_connection();
 		if ( ! empty( $connection ) ) {
 			$connection['handle'] = $handle;
-			\update_option( 'atmosphere_connection', $connection );
+			\update_option( 'atmosphere_connection', $connection, false );
 		}
 
 		/*
@@ -352,7 +369,11 @@ class Handle {
 		 * would silently drift on the public surface even though the
 		 * PDS has accepted it. Use the namespace helper rather than
 		 * `get_option` directly so a legacy connection still on the
-		 * pre-split shape gets lazy-migrated as a side effect.
+		 * pre-split shape gets lazy-migrated as a side effect. Identity
+		 * stays autoloaded (true) because it is read on every public
+		 * verification request and contains no secret material; the
+		 * autoload=false above applies only to `atmosphere_connection`,
+		 * which holds the encrypted tokens.
 		 */
 		$identity = get_identity();
 		if ( ! empty( $identity['did'] ) ) {

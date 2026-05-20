@@ -35,11 +35,11 @@ class Admin {
 	public static function register(): void {
 		\add_action( 'admin_menu', array( self::class, 'add_menu' ) );
 		\add_action( 'admin_init', array( self::class, 'handle_oauth_callback' ) );
+		\add_action( 'admin_init', array( self::class, 'maybe_set_domain_handle' ) );
 		\add_action( 'admin_enqueue_scripts', array( self::class, 'enqueue_assets' ) );
 		\add_action( 'admin_notices', array( self::class, 'maybe_render_reauth_notice' ) );
 
 		\add_action( 'admin_post_atmosphere_disconnect', array( self::class, 'handle_disconnect' ) );
-		\add_action( 'admin_post_atmosphere_set_domain_handle', array( self::class, 'handle_set_domain_handle' ) );
 
 		// Meta box on syncable post types.
 		\add_action( 'add_meta_boxes', array( self::class, 'add_meta_box' ) );
@@ -157,23 +157,46 @@ class Admin {
 	}
 
 	/**
-	 * Handle the explicit "use my domain as my Bluesky handle" submission.
+	 * Trigger `Handle::set_handle()` when the settings form is
+	 * submitted with the "Use my domain as my Bluesky handle" button.
 	 *
-	 * Verifies capability + nonce, defers to {@see Handle::set_handle()} for
-	 * the actual call, then redirects back to the Settings page with a notice
-	 * already populated by Handle.
+	 * The button renders inside the WP Settings form and carries
+	 * `name="atmosphere_set_domain_handle" value="1"`. When clicked,
+	 * the form POSTs to `options.php` like any other settings save.
+	 * Routing the trigger through a dedicated `admin-post.php?action=…`
+	 * endpoint instead collides with `settings_fields()`'s hidden
+	 * `<input name="action" value="update">` field — POST wins in
+	 * `$_REQUEST['action']` and the click ends up dispatched to
+	 * `admin_post_update`. Detecting the field here on `admin_init`,
+	 * before options.php runs, keeps the action inside the same
+	 * form-submit lifecycle without conflicting concerns.
+	 *
+	 * Bails silently if the trigger field is absent (normal Save
+	 * Changes path) or if the request fails any of the standard
+	 * settings-form guards (capability, option group, nonce). On
+	 * success `Handle::set_handle()` posts its own settings notice;
+	 * options.php's own redirect surfaces the notice on the next
+	 * pageview without us having to intercept the redirect here.
 	 */
-	public static function handle_set_domain_handle(): void {
-		if ( ! \current_user_can( 'manage_options' ) ) {
-			\wp_die( \esc_html__( 'You do not have permission to do this.', 'atmosphere' ) );
+	public static function maybe_set_domain_handle(): void {
+		// phpcs:ignore WordPress.Security.NonceVerification.Missing -- Presence check only; nonce is verified below before any side effect.
+		if ( empty( $_POST['atmosphere_set_domain_handle'] ) ) {
+			return;
 		}
 
-		\check_admin_referer( 'atmosphere_set_domain_handle', 'atmosphere_nonce' );
+		if ( ! \current_user_can( 'manage_options' ) ) {
+			return;
+		}
+
+		// phpcs:ignore WordPress.Security.NonceVerification.Missing -- Same as above; nonce verified on the next line.
+		$option_page = isset( $_POST['option_page'] ) ? \sanitize_key( \wp_unslash( $_POST['option_page'] ) ) : '';
+		if ( 'atmosphere' !== $option_page ) {
+			return;
+		}
+
+		\check_admin_referer( 'atmosphere-options' );
 
 		Handle::set_handle();
-
-		\wp_safe_redirect( \admin_url( 'options-general.php?page=atmosphere' ) );
-		exit;
 	}
 
 	/**
@@ -342,10 +365,10 @@ class Admin {
 		 *  - `client_id`: non-empty string (advertised as the OAuth client
 		 *    identifier; should match `Client::client_id()`).
 		 *  - `redirect_uris`: non-empty list of non-empty strings, where
-		 *    every entry is rooted at this site's admin
-		 *    (`admin_url('')` prefix). Off-site / empty / non-string /
-		 *    nested-array entries cause the entire filter result to be
-		 *    rejected.
+		 *    every entry is rooted at this site's admin over HTTPS
+		 *    (`admin_url('', 'https')` prefix). Off-site / empty /
+		 *    non-string / HTTP-scheme / nested-array entries cause the
+		 *    entire filter result to be rejected.
 		 *
 		 * Anything else falls back to the unfiltered metadata. The
 		 * metadata endpoint is public and the document advertises
@@ -373,7 +396,7 @@ class Admin {
 			\_doing_it_wrong(
 				__METHOD__,
 				\esc_html__( 'atmosphere_client_metadata must return an array with a non-empty string client_id and a redirect_uris list of admin URLs; falling back to the unfiltered metadata.', 'atmosphere' ),
-				'0.1.0'
+				'1.0.0'
 			);
 		}
 
@@ -409,11 +432,12 @@ class Admin {
 	 * Per-entry `redirect_uris` rules:
 	 *
 	 *  - Each entry is a non-empty string.
-	 *  - Each entry begins with this site's admin URL prefix
-	 *    (`admin_url('')`), the same gate
+	 *  - Each entry begins with this site's HTTPS admin URL prefix
+	 *    (`admin_url('', 'https')`), the same gate
 	 *    {@see \Atmosphere\OAuth\Client::redirect_uri()} applies to
-	 *    the inbound filter. An off-site / scheme-mismatched / empty
-	 *    entry disqualifies the entire filter result.
+	 *    the inbound filter. An off-site / HTTP-scheme /
+	 *    scheme-mismatched / empty entry disqualifies the entire
+	 *    filter result.
 	 *
 	 * Returns true only if every check passes; the caller falls back
 	 * to the unfiltered metadata on false.
@@ -440,11 +464,18 @@ class Admin {
 			return false;
 		}
 
-		$admin_prefix = \admin_url( '' );
+		/*
+		 * Match the HTTPS scheme `Client::redirect_uri()` produces. The
+		 * OAuth code is delivered to the browser via this URL and must
+		 * not travel in cleartext, even if `admin_url()` itself defaults
+		 * to HTTP on the host.
+		 */
+		$admin_prefix = \admin_url( '', 'https' );
 
 		foreach ( $filtered['redirect_uris'] as $uri ) {
 			if ( ! \is_string( $uri )
 				|| '' === $uri
+				|| ! \str_starts_with( $uri, 'https://' )
 				|| ! \str_starts_with( $uri, $admin_prefix )
 			) {
 				return false;

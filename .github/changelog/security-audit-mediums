@@ -1,4 +1,0 @@
-Significance: patch
-Type: security
-
-Tighten OAuth redirect handling, validate hook return values from third-party plugins, gate DNS lookups for @mentions, and clean up additional plugin data on uninstall.

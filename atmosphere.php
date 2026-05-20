@@ -3,7 +3,7 @@
  * Plugin Name: ATmosphere
  * Plugin URI: https://github.com/pfefferle/atmosphere
  * Description: Publish WordPress posts to AT Protocol (Bluesky + standard.site) via native OAuth.
- * Version: unreleased
+ * Version: 1.0.0
  * Author: Automattic
  * Author URI: https://automattic.com
  * License: GPL-2.0-or-later
@@ -19,7 +19,7 @@ namespace Atmosphere;
 
 \defined( 'ABSPATH' ) || exit;
 
-\define( 'ATMOSPHERE_VERSION', 'unreleased' );
+\define( 'ATMOSPHERE_VERSION', '1.0.0' );
 \define( 'ATMOSPHERE_PLUGIN_DIR', \plugin_dir_path( __FILE__ ) );
 \define( 'ATMOSPHERE_PLUGIN_URL', \plugin_dir_url( __FILE__ ) );
 \define( 'ATMOSPHERE_PLUGIN_FILE', __FILE__ );
@@ -64,7 +64,16 @@ function activate() {
  * Deactivation hook.
  */
 function deactivate() {
-	clear_scheduled_hooks();
+	/*
+	 * Use the all-hooks variant: deactivation is the user-visible
+	 * "stop running everything" moment, so any still-queued one-shot
+	 * cron event (notably `atmosphere_revoke_refresh_token`, which
+	 * `Client::disconnect()` schedules outside the regular
+	 * `clear_scheduled_hooks()` set) must be cleared too. Otherwise
+	 * its encrypted ciphertexts sit in `wp_options['cron']` waiting
+	 * for a callback the deactivated plugin no longer registers.
+	 */
+	clear_scheduled_hooks_all();
 	\flush_rewrite_rules();
 }
 \register_deactivation_hook( __FILE__, __NAMESPACE__ . '\deactivate' );

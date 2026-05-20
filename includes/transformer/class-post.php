@@ -30,6 +30,22 @@ class Post extends Base {
 	public const META_TID = '_atmosphere_bsky_tid';
 
 	/**
+	 * Post meta key for the DID that minted the bsky TID.
+	 *
+	 * Persisted at the same time as `META_TID` so cleanup paths can
+	 * detect when a post's record was written under a different
+	 * account (disconnect → reconnect-to-different-DID flow,
+	 * `updateHandle` that triggered a migration, atproto account
+	 * migration). Without this, `applyWrites#delete` against the
+	 * currently-connected DID's repo silently succeeds for a TID that
+	 * doesn't exist there — leaving the original record orphaned on
+	 * the previous DID's PDS with no local pointer.
+	 *
+	 * @var string
+	 */
+	public const META_DID = '_atmosphere_bsky_did';
+
+	/**
 	 * Post meta key for the bsky post AT-URI.
 	 *
 	 * @var string
@@ -110,6 +126,8 @@ class Post extends Base {
 	 * @return array app.bsky.feed.post record.
 	 */
 	public function transform(): array {
+		$redacted = $this->is_redacted();
+
 		/**
 		 * Filters whether the post should be treated as short-form for Bluesky.
 		 *
@@ -124,18 +142,21 @@ class Post extends Base {
 		 * @param bool     $is_short Whether the post should be treated as short-form.
 		 * @param \WP_Post $post     The post being transformed.
 		 */
-		$is_short = \wp_validate_boolean(
-			\apply_filters(
-				'atmosphere_is_short_form_post',
-				$this->is_short_form( $this->object ),
-				$this->object
-			)
-		);
+		$is_short = true;
+		if ( ! $redacted ) {
+			$is_short = \wp_validate_boolean(
+				\apply_filters(
+					'atmosphere_is_short_form_post',
+					$this->is_short_form( $this->object ),
+					$this->object
+				)
+			);
+		}
 
-		$text  = $is_short ? $this->build_short_form_text() : '';
+		$text  = $redacted ? '' : ( $is_short ? $this->build_short_form_text() : '' );
 		$embed = null;
 
-		if ( '' === $text ) {
+		if ( ! $redacted && '' === $text ) {
 			$text  = $this->build_text();
 			$embed = $this->build_embed();
 		}
@@ -156,9 +177,15 @@ class Post extends Base {
 			$record['embed'] = $embed;
 		}
 
-		$tags = $this->collect_tags( $this->object );
-		if ( ! empty( $tags ) ) {
-			$record['tags'] = $tags;
+		if ( ! $redacted ) {
+			$tags = $this->collect_tags( $this->object );
+			if ( ! empty( $tags ) ) {
+				$record['tags'] = $tags;
+			}
+		}
+
+		if ( $redacted ) {
+			return $record;
 		}
 
 		/**
@@ -196,7 +223,7 @@ class Post extends Base {
 			\_doing_it_wrong(
 				__METHOD__,
 				\esc_html__( 'atmosphere_transform_bsky_post must return an array; falling back to the unfiltered record.', 'atmosphere' ),
-				'0.1.0'
+				'1.0.0'
 			);
 			return $record;
 		}
@@ -215,6 +242,31 @@ class Post extends Base {
 	 * {@inheritDoc}
 	 */
 	public function get_rkey(): string {
+		/*
+		 * Persist DID provenance on every call, not only on first
+		 * reservation. After a disconnect+reconnect-to-different-DID,
+		 * `META_TID` already exists from the prior account, so a
+		 * one-shot reservation guard would never refresh `META_DID`
+		 * to the current account — letting the mismatch guard in
+		 * `delete_post()` later block a legitimate cleanup against
+		 * the current account.
+		 *
+		 * Written BEFORE `META_TID` so a partial-failure between the
+		 * two writes leaves the row in "DID set, no TID" state. The
+		 * cleanup gates skip that state cleanly; the inverse ("TID
+		 * set, no DID") would let the mismatch guard fall through to
+		 * `get_did()` and re-open the wrong-repo-delete bypass.
+		 *
+		 * Compare before writing so the read-path callers (the
+		 * `wp_head` document-link renderer) don't issue a DB write on
+		 * every pageload — only on the actual transition.
+		 */
+		$current_did = \Atmosphere\get_did();
+		$stored_did  = (string) \get_post_meta( $this->object->ID, self::META_DID, true );
+		if ( $stored_did !== $current_did ) {
+			\update_post_meta( $this->object->ID, self::META_DID, $current_did );
+		}
+
 		$rkey = \get_post_meta( $this->object->ID, self::META_TID, true );
 
 		if ( empty( $rkey ) ) {
@@ -231,6 +283,10 @@ class Post extends Base {
 	 * @return string
 	 */
 	private function build_text(): string {
+		if ( $this->is_redacted() ) {
+			return '';
+		}
+
 		$title     = sanitize_text( \get_the_title( $this->object ) );
 		$excerpt   = $this->get_excerpt( $this->object );
 		$permalink = \get_permalink( $this->object );
@@ -268,6 +324,10 @@ class Post extends Base {
 	 * @return array|null
 	 */
 	private function build_embed(): ?array {
+		if ( $this->is_redacted() ) {
+			return null;
+		}
+
 		$permalink   = \get_permalink( $this->object );
 		$title       = sanitize_text( \get_the_title( $this->object ) );
 		$description = $this->get_excerpt( $this->object, 55 );
@@ -370,6 +430,10 @@ class Post extends Base {
 	 * @return string
 	 */
 	private function build_short_form_text(): string {
+		if ( $this->is_redacted() ) {
+			return '';
+		}
+
 		return truncate_text( $this->render_post_content_plain( $this->object ), 300 );
 	}
 
@@ -381,9 +445,17 @@ class Post extends Base {
 	 * Publisher branch on short vs. long without reaching into the
 	 * transformer's private state.
 	 *
+	 * Redacted posts return true without invoking the filter so direct
+	 * transformer callers do not expose protected post objects to
+	 * subscribers.
+	 *
 	 * @return bool
 	 */
 	public function is_short_form_post(): bool {
+		if ( $this->is_redacted() ) {
+			return true;
+		}
+
 		return \wp_validate_boolean(
 			\apply_filters(
 				'atmosphere_is_short_form_post',
@@ -445,6 +517,20 @@ class Post extends Base {
 	 *                 the root / parent of any replies).
 	 */
 	public function build_long_form_records( int $stored_count = 0 ): array {
+		if ( $this->is_redacted() ) {
+			return array(
+				$this->record_for_thread_entry(
+					'',
+					true,
+					array(
+						'strategy'        => 'redacted',
+						'thread_index'    => 0,
+						'is_thread_reply' => false,
+					)
+				),
+			);
+		}
+
 		/**
 		 * Filters the long-form composition strategy for this post.
 		 *
@@ -794,7 +880,7 @@ class Post extends Base {
 			\_doing_it_wrong(
 				'atmosphere_teaser_thread_posts',
 				\esc_html__( 'The atmosphere_teaser_thread_posts filter must return a non-empty array of strings; falling back to the default teaser-thread shape.', 'atmosphere' ),
-				'unreleased'
+				'1.0.0'
 			);
 			return $default;
 		}
@@ -816,7 +902,7 @@ class Post extends Base {
 			\_doing_it_wrong(
 				'atmosphere_teaser_thread_posts',
 				\esc_html__( 'The atmosphere_teaser_thread_posts filter must return at least 2 string entries; falling back to the default teaser-thread shape.', 'atmosphere' ),
-				'unreleased'
+				'1.0.0'
 			);
 			return $default;
 		}
@@ -836,6 +922,10 @@ class Post extends Base {
 	 * @return bool
 	 */
 	private function has_composable_body(): bool {
+		if ( $this->is_redacted() ) {
+			return false;
+		}
+
 		if ( ! empty( $this->object->post_excerpt )
 			&& \mb_strlen( sanitize_text( $this->object->post_excerpt ) ) >= 10
 		) {
@@ -843,6 +933,15 @@ class Post extends Base {
 		}
 
 		return \mb_strlen( $this->render_post_content_plain( $this->object ) ) >= 10;
+	}
+
+	/**
+	 * Whether this post's fields must be redacted from AT Protocol records.
+	 *
+	 * @return bool
+	 */
+	private function is_redacted(): bool {
+		return $this->is_post_redacted( $this->object );
 	}
 
 	/**
@@ -998,11 +1097,15 @@ class Post extends Base {
 			$record['embed'] = $embed;
 		}
 
-		if ( $is_root ) {
+		if ( $is_root && ! $this->is_redacted() ) {
 			$tags = $this->collect_tags( $this->object );
 			if ( ! empty( $tags ) ) {
 				$record['tags'] = $tags;
 			}
+		}
+
+		if ( $this->is_redacted() ) {
+			return $record;
 		}
 
 		$context = \wp_parse_args(
@@ -1021,7 +1124,7 @@ class Post extends Base {
 			\_doing_it_wrong(
 				__METHOD__,
 				\esc_html__( 'atmosphere_transform_bsky_post must return an array; falling back to the unfiltered record.', 'atmosphere' ),
-				'0.1.0'
+				'1.0.0'
 			);
 			return $record;
 		}
@@ -1040,8 +1143,9 @@ class Post extends Base {
 	 * @return array Bsky post record.
 	 */
 	private function record_for_link_card(): array {
-		$text  = $this->build_text();
-		$embed = $this->build_embed();
+		$text     = $this->build_text();
+		$embed    = $this->build_embed();
+		$redacted = $this->is_redacted();
 
 		$record = array(
 			'$type'     => 'app.bsky.feed.post',
@@ -1059,9 +1163,15 @@ class Post extends Base {
 			$record['embed'] = $embed;
 		}
 
-		$tags = $this->collect_tags( $this->object );
-		if ( ! empty( $tags ) ) {
-			$record['tags'] = $tags;
+		if ( ! $redacted ) {
+			$tags = $this->collect_tags( $this->object );
+			if ( ! empty( $tags ) ) {
+				$record['tags'] = $tags;
+			}
+		}
+
+		if ( $redacted ) {
+			return $record;
 		}
 
 		/** This filter is documented in Post::transform() above. */
@@ -1076,6 +1186,15 @@ class Post extends Base {
 			)
 		);
 
-		return \is_array( $filtered ) ? $filtered : $record;
+		if ( ! \is_array( $filtered ) ) {
+			\_doing_it_wrong(
+				__METHOD__,
+				\esc_html__( 'atmosphere_transform_bsky_post must return an array; falling back to the unfiltered record.', 'atmosphere' ),
+				'1.0.0'
+			);
+			return $record;
+		}
+
+		return $filtered;
 	}
 }

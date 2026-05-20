@@ -1,4 +1,0 @@
-Significance: patch
-Type: fixed
-
-Preserve the OAuth connection when token refresh fails due to temporary server errors.
