@@ -109,6 +109,7 @@ class Atmosphere {
 
 		// Frontend verification headers.
 		\add_action( 'wp_head', array( $this, 'output_document_link' ) );
+		\add_action( 'wp_head', array( $this, 'output_publication_link' ) );
 
 		// Well-known endpoints.
 		\add_action( 'init', array( $this, 'register_wellknown_rewrite' ) );
@@ -242,6 +243,74 @@ class Atmosphere {
 			'<link rel="site.standard.document" href="%s" />' . "\n",
 			\esc_attr( $uri )
 		);
+	}
+
+	/**
+	 * Output `<link rel="site.standard.publication">` on the URLs that
+	 * map to the publication record's `url` field.
+	 *
+	 * Emitted on:
+	 *
+	 * - Singular publishable posts, so a resolver landing on an article
+	 *   URL can find the parent publication directly without first
+	 *   fetching the document record.
+	 * - The WordPress front page, since the publication record's `url`
+	 *   field is `home_url('/')`. Lets a resolver verify the page <->
+	 *   publication binding by matching AT-URIs, sparing the
+	 *   `.well-known/site.standard.publication` round-trip.
+	 *
+	 * Gated on `has_identity()` (not `is_connected()`) so the
+	 * verification link survives transient OAuth refresh failures, in
+	 * lockstep with {@see Atmosphere::output_document_link()}.
+	 */
+	public function output_publication_link(): void {
+		if ( ! has_identity() ) {
+			return;
+		}
+
+		$pub_tid = \get_option( Publication::OPTION_TID );
+
+		if ( ! $pub_tid ) {
+			return;
+		}
+
+		if ( ! self::is_publication_url() ) {
+			return;
+		}
+
+		$uri = build_at_uri( get_did(), 'site.standard.publication', $pub_tid );
+
+		\printf(
+			'<link rel="site.standard.publication" href="%s" />' . "\n",
+			\esc_attr( $uri )
+		);
+	}
+
+	/**
+	 * Whether the current request URL maps to the publication record's
+	 * `url` field — i.e. a URL where the `<link rel="site.standard.publication">`
+	 * tag belongs.
+	 *
+	 * - The WordPress front page always qualifies, regardless of
+	 *   whether it shows posts or a static page (a static page set
+	 *   as front is both `is_front_page()` AND `is_singular('page')`;
+	 *   checking the front-page condition first is what keeps the
+	 *   tag emitting in that configuration).
+	 * - A publishable singular post qualifies because its document
+	 *   record carries a reference back to the publication.
+	 */
+	private static function is_publication_url(): bool {
+		if ( \is_front_page() ) {
+			return true;
+		}
+
+		if ( ! \is_singular() ) {
+			return false;
+		}
+
+		$post = \get_queried_object();
+
+		return $post instanceof \WP_Post && is_post_publishable( $post );
 	}
 
 	/**
