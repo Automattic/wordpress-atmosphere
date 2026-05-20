@@ -1830,4 +1830,297 @@ class Test_Atmosphere extends WP_UnitTestCase {
 			\wp_clear_scheduled_hook( 'atmosphere_sync_reactions' );
 		}
 	}
+
+	/**
+	 * Reply to a local-only parent comment (anonymous, never-published)
+	 * must not be published to the PDS. The previous behaviour would
+	 * silently demote the reply to a top-level post on the parent
+	 * article's bsky record after the deferral cap, losing the WP
+	 * thread context.
+	 */
+	public function test_publish_comment_skipped_when_parent_is_local_only() {
+		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		\update_post_meta( $post_id, Post::META_URI, 'at://did:plc:test123/app.bsky.feed.post/postroot' );
+		\update_post_meta( $post_id, Post::META_CID, 'bafypostroot' );
+
+		// Anonymous parent — `user_id = 0` makes the parent permanently
+		// ineligible for outbound publish, so it will never gain a
+		// bsky URI.
+		$parent_id = self::factory()->comment->create(
+			array(
+				'comment_post_ID'      => $post_id,
+				'comment_approved'     => '1',
+				'comment_type'         => 'comment',
+				'user_id'              => 0,
+				'comment_author'       => 'Anon',
+				'comment_author_email' => 'anon@example.com',
+				'comment_content'      => 'Anonymous comment.',
+			)
+		);
+
+		$child_id = self::factory()->comment->create(
+			array(
+				'comment_post_ID'  => $post_id,
+				'comment_approved' => '1',
+				'comment_type'     => 'comment',
+				'user_id'          => self::factory()->user->create(),
+				'comment_content'  => 'Reply to anon.',
+				'comment_parent'   => $parent_id,
+			)
+		);
+		// Seed a non-empty deferral counter so the post-skip assertion
+		// distinguishes "the cron handler cleared it" from "no value
+		// was ever written" — comment meta defaults to '' otherwise
+		// and the assertion would be trivially true.
+		\update_comment_meta( $child_id, '_atmosphere_publish_attempts', 2 );
+
+		$apply_writes_calls = 0;
+		\add_filter(
+			'atmosphere_pre_apply_writes',
+			function () use ( &$apply_writes_calls ) {
+				++$apply_writes_calls;
+				return array(
+					'results' => array(
+						array(
+							'uri' => 'at://x',
+							'cid' => 'bafyx',
+						),
+					),
+				);
+			},
+			10,
+			2
+		);
+
+		\do_action( 'atmosphere_publish_comment', $child_id );
+
+		$this->assertSame( 0, $apply_writes_calls, 'No PDS call should be attempted when parent has no bsky representation.' );
+		$this->assertSame( '', (string) \get_comment_meta( $child_id, Comment::META_URI, true ), 'Child must not gain a bsky URI.' );
+		$this->assertSame( '', (string) \get_comment_meta( $child_id, '_atmosphere_publish_attempts', true ), 'Deferral counter must be cleared on skip.' );
+	}
+
+	/**
+	 * A reply whose parent comment was previously published to the PDS
+	 * (carries `Comment::META_URI`) IS published — that's the happy
+	 * thread-on-bsky path.
+	 */
+	public function test_publish_comment_proceeds_when_parent_has_bsky_uri() {
+		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		\update_post_meta( $post_id, Post::META_URI, 'at://did:plc:test123/app.bsky.feed.post/postroot' );
+		\update_post_meta( $post_id, Post::META_CID, 'bafypostroot' );
+
+		$parent_id = self::factory()->comment->create(
+			array(
+				'comment_post_ID'  => $post_id,
+				'comment_approved' => '1',
+				'comment_type'     => 'comment',
+				'user_id'          => self::factory()->user->create(),
+				'comment_content'  => 'Already-published parent.',
+			)
+		);
+		\update_comment_meta( $parent_id, Comment::META_URI, 'at://did:plc:test123/app.bsky.feed.post/parent' );
+		\update_comment_meta( $parent_id, Comment::META_CID, 'bafyparent' );
+
+		$child_id = self::factory()->comment->create(
+			array(
+				'comment_post_ID'  => $post_id,
+				'comment_approved' => '1',
+				'comment_type'     => 'comment',
+				'user_id'          => self::factory()->user->create(),
+				'comment_content'  => 'Reply.',
+				'comment_parent'   => $parent_id,
+			)
+		);
+
+		$apply_writes_calls = 0;
+		\add_filter(
+			'atmosphere_pre_apply_writes',
+			function ( $short, $writes ) use ( &$apply_writes_calls ) {
+				++$apply_writes_calls;
+				$results = array();
+				foreach ( $writes as $write ) {
+					$results[] = array(
+						'uri' => 'at://did:plc:test123/' . ( $write['collection'] ?? 'app.bsky.feed.post' ) . '/' . ( $write['rkey'] ?? 'tid' ),
+						'cid' => 'bafychild',
+					);
+				}
+				return array( 'results' => $results );
+			},
+			10,
+			2
+		);
+
+		\do_action( 'atmosphere_publish_comment', $child_id );
+
+		$this->assertSame( 1, $apply_writes_calls, 'Publish should proceed when parent has a bsky URI.' );
+	}
+
+	/**
+	 * A reply whose parent was imported from bsky (Reaction_Sync stamps
+	 * `META_PROTOCOL = atproto`) IS published — its bsky strongRef is
+	 * available even though the parent comment was never published
+	 * outbound by this site.
+	 */
+	public function test_publish_comment_proceeds_when_parent_was_imported_from_bsky() {
+		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		\update_post_meta( $post_id, Post::META_URI, 'at://did:plc:test123/app.bsky.feed.post/postroot' );
+		\update_post_meta( $post_id, Post::META_CID, 'bafypostroot' );
+
+		// Imported-from-bsky parent: no user_id (federation imports
+		// typically write `user_id = 0`), but `META_PROTOCOL = atproto`
+		// signals "this row has a bsky URI we can thread under".
+		$parent_id = self::factory()->comment->create(
+			array(
+				'comment_post_ID'      => $post_id,
+				'comment_approved'     => '1',
+				'comment_type'         => 'comment',
+				'user_id'              => 0,
+				'comment_author'       => 'Federated User',
+				'comment_author_email' => 'fed@example.com',
+				'comment_content'      => 'Imported reply.',
+			)
+		);
+		\update_comment_meta( $parent_id, Reaction_Sync::META_PROTOCOL, 'atproto' );
+		\update_comment_meta( $parent_id, Reaction_Sync::META_SOURCE_ID, 'at://did:plc:other/app.bsky.feed.post/fedparent' );
+		\update_comment_meta( $parent_id, Reaction_Sync::META_BSKY_CID, 'bafyfedparent' );
+
+		$child_id = self::factory()->comment->create(
+			array(
+				'comment_post_ID'  => $post_id,
+				'comment_approved' => '1',
+				'comment_type'     => 'comment',
+				'user_id'          => self::factory()->user->create(),
+				'comment_content'  => 'Reply to federated.',
+				'comment_parent'   => $parent_id,
+			)
+		);
+
+		$apply_writes_calls = 0;
+		\add_filter(
+			'atmosphere_pre_apply_writes',
+			function ( $short, $writes ) use ( &$apply_writes_calls ) {
+				++$apply_writes_calls;
+				$results = array();
+				foreach ( $writes as $write ) {
+					$results[] = array(
+						'uri' => 'at://did:plc:test123/' . ( $write['collection'] ?? 'app.bsky.feed.post' ) . '/' . ( $write['rkey'] ?? 'tid' ),
+						'cid' => 'bafychild',
+					);
+				}
+				return array( 'results' => $results );
+			},
+			10,
+			2
+		);
+
+		\do_action( 'atmosphere_publish_comment', $child_id );
+
+		$this->assertSame( 1, $apply_writes_calls, 'Publish should proceed when parent was imported from bsky.' );
+	}
+
+	/**
+	 * A top-level comment (no `comment_parent`) always proceeds —
+	 * the post's own bsky record is the thread root, no per-comment
+	 * parent check applies.
+	 */
+	public function test_publish_comment_proceeds_for_top_level_comment() {
+		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		\update_post_meta( $post_id, Post::META_URI, 'at://did:plc:test123/app.bsky.feed.post/postroot' );
+		\update_post_meta( $post_id, Post::META_CID, 'bafypostroot' );
+
+		$comment_id = self::factory()->comment->create(
+			array(
+				'comment_post_ID'  => $post_id,
+				'comment_approved' => '1',
+				'comment_type'     => 'comment',
+				'user_id'          => self::factory()->user->create(),
+				'comment_content'  => 'Top-level comment.',
+			)
+		);
+
+		$apply_writes_calls = 0;
+		\add_filter(
+			'atmosphere_pre_apply_writes',
+			function ( $short, $writes ) use ( &$apply_writes_calls ) {
+				++$apply_writes_calls;
+				$results = array();
+				foreach ( $writes as $write ) {
+					$results[] = array(
+						'uri' => 'at://did:plc:test123/' . ( $write['collection'] ?? 'app.bsky.feed.post' ) . '/' . ( $write['rkey'] ?? 'tid' ),
+						'cid' => 'bafytop',
+					);
+				}
+				return array( 'results' => $results );
+			},
+			10,
+			2
+		);
+
+		\do_action( 'atmosphere_publish_comment', $comment_id );
+
+		$this->assertSame( 1, $apply_writes_calls, 'Top-level comment publish should proceed unconditionally.' );
+	}
+
+	/**
+	 * Half-state guard: a parent that has `Comment::META_URI` but no
+	 * matching `META_CID` must NOT count as having a bsky
+	 * representation. `Comment::resolve_parent_ref()` requires both
+	 * fields for the reply strongRef and would otherwise fall back to
+	 * the post root — reintroducing the top-level-fallback bug the
+	 * cron-handler gate is here to prevent. Symmetric check on the
+	 * federated path (atproto protocol flag without `META_BSKY_CID`)
+	 * is exercised by the existing tests via shared code paths.
+	 */
+	public function test_publish_comment_skipped_when_parent_has_uri_but_no_cid() {
+		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		\update_post_meta( $post_id, Post::META_URI, 'at://did:plc:test123/app.bsky.feed.post/postroot' );
+		\update_post_meta( $post_id, Post::META_CID, 'bafypostroot' );
+
+		$parent_id = self::factory()->comment->create(
+			array(
+				'comment_post_ID'  => $post_id,
+				'comment_approved' => '1',
+				'comment_type'     => 'comment',
+				'user_id'          => self::factory()->user->create(),
+				'comment_content'  => 'Half-published parent.',
+			)
+		);
+		// URI present but CID missing — a half-state row that would
+		// previously slip past the parent_has_bsky_representation
+		// gate yet still fall back to root in build_reply_ref().
+		\update_comment_meta( $parent_id, Comment::META_URI, 'at://did:plc:test123/app.bsky.feed.post/parent' );
+
+		$child_id = self::factory()->comment->create(
+			array(
+				'comment_post_ID'  => $post_id,
+				'comment_approved' => '1',
+				'comment_type'     => 'comment',
+				'user_id'          => self::factory()->user->create(),
+				'comment_content'  => 'Reply to half-state.',
+				'comment_parent'   => $parent_id,
+			)
+		);
+
+		$apply_writes_calls = 0;
+		\add_filter(
+			'atmosphere_pre_apply_writes',
+			function () use ( &$apply_writes_calls ) {
+				++$apply_writes_calls;
+				return array(
+					'results' => array(
+						array(
+							'uri' => 'at://x',
+							'cid' => 'bafyx',
+						),
+					),
+				);
+			},
+			10,
+			2
+		);
+
+		\do_action( 'atmosphere_publish_comment', $child_id );
+
+		$this->assertSame( 0, $apply_writes_calls, 'Publish must be skipped when parent has URI but no CID.' );
+	}
 }

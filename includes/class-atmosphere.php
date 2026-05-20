@@ -70,8 +70,10 @@ class Atmosphere {
 	/**
 	 * Maximum re-schedule hops for a child comment waiting on a
 	 * not-yet-published parent. After this many deferrals the child
-	 * publishes as a top-level reply on the post (current fallback
-	 * behavior) so a stuck parent does not block it forever.
+	 * is skipped if the parent still lacks a threadable strongRef so a
+	 * stuck parent does not block it forever — see
+	 * {@see Atmosphere::parent_has_bsky_representation()} for the
+	 * skip rule.
 	 *
 	 * @var int
 	 */
@@ -1236,6 +1238,21 @@ class Atmosphere {
 				if ( self::defer_when_parent_pending( $comment ) ) {
 					return;
 				}
+				if ( ! self::parent_has_bsky_representation( $comment ) ) {
+					/*
+					 * Parent is local-only: anonymous WP commenter, an
+					 * ineligible comment that will never publish, or a
+					 * federation source other than bsky. Publishing the
+					 * reply anyway would either fail at strongRef
+					 * construction or fall back to a top-level reply on
+					 * the post (losing the WP thread context). Skip
+					 * instead, and clear the deferral counter so a
+					 * future re-publish (e.g. if the parent gains a URI
+					 * later) gets a fresh budget.
+					 */
+					\delete_comment_meta( $comment_id, self::META_PUBLISH_ATTEMPTS );
+					return;
+				}
 				\delete_comment_meta( $comment_id, self::META_PUBLISH_ATTEMPTS );
 
 				$result = Publisher::publish_comment( $comment );
@@ -1315,13 +1332,14 @@ class Atmosphere {
 	 *
 	 * Comments are scheduled as independent single events with no
 	 * dependency ordering: if a user approves a parent and its reply
-	 * together, the child's cron event can fire first, see
-	 * resolve_parent_ref() return null, and publish flat as a
-	 * top-level reply on the root post. This defers the child a short
-	 * interval (up to PARENT_DEFER_MAX_ATTEMPTS hops) to give the
-	 * parent time to publish first. After the cap the child publishes
-	 * anyway using the root fallback — a stuck parent must not block
-	 * the child forever.
+	 * together, the child's cron event can fire first and see
+	 * `resolve_parent_ref()` return null. This defers the child a
+	 * short interval (up to PARENT_DEFER_MAX_ATTEMPTS hops) so the
+	 * parent has time to publish first. After the cap the cron
+	 * handler's {@see Atmosphere::parent_has_bsky_representation()}
+	 * check skips the child entirely rather than letting
+	 * {@see Comment::build_reply_ref()} fall back to a top-level
+	 * reply on the post — losing the WP thread context.
 	 *
 	 * @param \WP_Comment $comment Comment being published.
 	 * @return bool True when the publish was deferred, false to proceed now.
@@ -1340,8 +1358,12 @@ class Atmosphere {
 		}
 
 		if ( ! self::should_publish_comment( $parent ) ) {
-			// Parent is ineligible (anon, rejected, etc.); resolve_parent_ref
-			// will fall back to root, which is the correct behavior.
+			// Parent is ineligible (anon, rejected, etc.). No reason to
+			// defer — it will never gain a bsky URI. The subsequent
+			// `parent_has_bsky_representation()` check in the cron
+			// handler will skip the publish entirely so we don't
+			// promote a nested WP reply into a confusing top-level
+			// bsky reply on the post.
 			return false;
 		}
 
@@ -1354,8 +1376,12 @@ class Atmosphere {
 		$attempts   = (int) \get_comment_meta( $comment_id, self::META_PUBLISH_ATTEMPTS, true );
 
 		if ( $attempts >= self::PARENT_DEFER_MAX_ATTEMPTS ) {
-			// Give up and publish with root as parent; clear the counter
-			// so a future re-publish gets a fresh deferral budget.
+			// Give up on the deferral budget; clear the counter so a
+			// future re-publish gets a fresh budget. The subsequent
+			// `parent_has_bsky_representation()` check skips the publish
+			// rather than letting `build_reply_ref()` fall back to a
+			// top-level reply on the post, which would lose the WP
+			// thread context.
 			\delete_comment_meta( $comment_id, self::META_PUBLISH_ATTEMPTS );
 			return false;
 		}
@@ -1368,6 +1394,72 @@ class Atmosphere {
 		);
 
 		return true;
+	}
+
+	/**
+	 * Whether the comment's immediate WP parent has an AT Protocol
+	 * strongRef the reply record can thread under.
+	 *
+	 * Mirrors the exact requirements of {@see Comment::resolve_parent_ref()}:
+	 * a strongRef needs BOTH `uri` and `cid`. Half-state rows (URI
+	 * present but CID missing, or `META_PROTOCOL = atproto` without
+	 * the federated CID alongside) would let `resolve_parent_ref()`
+	 * fall through and `build_reply_ref()` substitute the post root,
+	 * silently promoting the nested reply to a top-level post — the
+	 * exact bug this check is here to prevent.
+	 *
+	 * Returns true when:
+	 *
+	 * - The comment has no parent (top-level reply to the post). The
+	 *   post itself has a bsky record; the publish path threads against
+	 *   that root.
+	 * - The parent comment carries both {@see Comment::META_URI} and
+	 *   {@see Comment::META_CID} — the plugin already published the
+	 *   parent to the PDS.
+	 * - The parent comment is marked as ingested by
+	 *   {@see Reaction_Sync} (`META_PROTOCOL = atproto`) AND carries
+	 *   both `META_SOURCE_ID` (URI) and `META_BSKY_CID`.
+	 *
+	 * Only the immediate parent is checked: any comment that passes
+	 * this gate was itself only publishable through the same gate, so
+	 * by induction every WP ancestor is also threadable.
+	 *
+	 * Known legacy edge case: sites that ran a pre-fix version of the
+	 * plugin may have "demoted" comments on bsky — comments whose
+	 * original WP parent was local-only but which the old root-fallback
+	 * still pushed to bsky as top-level replies under the post. Their
+	 * rows now carry valid `META_URI` / `META_CID`, so new replies to
+	 * them pass this gate even though the deeper WP ancestor chain is
+	 * incomplete. The strongRef itself is still valid (the demoted
+	 * comment is on bsky); the bsky-side view simply omits the
+	 * pre-existing local-only ancestor, which mirrors what the WP user
+	 * sees with the local-only commenter anyway. No further migration
+	 * is planned for those legacy rows.
+	 *
+	 * @param \WP_Comment $comment Comment about to be published.
+	 * @return bool
+	 */
+	private static function parent_has_bsky_representation( \WP_Comment $comment ): bool {
+		$parent_id = (int) $comment->comment_parent;
+
+		if ( $parent_id <= 0 ) {
+			return true;
+		}
+
+		$local_uri = \get_comment_meta( $parent_id, Comment::META_URI, true );
+		$local_cid = \get_comment_meta( $parent_id, Comment::META_CID, true );
+		if ( ! empty( $local_uri ) && ! empty( $local_cid ) ) {
+			return true;
+		}
+
+		if ( 'atproto' !== \get_comment_meta( $parent_id, Reaction_Sync::META_PROTOCOL, true ) ) {
+			return false;
+		}
+
+		$federated_uri = \get_comment_meta( $parent_id, Reaction_Sync::META_SOURCE_ID, true );
+		$federated_cid = \get_comment_meta( $parent_id, Reaction_Sync::META_BSKY_CID, true );
+
+		return ! empty( $federated_uri ) && ! empty( $federated_cid );
 	}
 
 	/**
