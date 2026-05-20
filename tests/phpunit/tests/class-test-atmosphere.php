@@ -1673,6 +1673,50 @@ class Test_Atmosphere extends WP_UnitTestCase {
 	}
 
 	/**
+	 * Publication link tag fires on a static front page too — the
+	 * common "Settings → Reading → A static page" configuration.
+	 *
+	 * `is_front_page()` and `is_singular('page')` are BOTH true in
+	 * that scenario; the publishability gate would otherwise reject
+	 * the request because `page` is not in the default supported
+	 * post type list. The tag must still emit because `home_url('/')`
+	 * — which the publication record's `url` field points at — is
+	 * the static page's permalink.
+	 */
+	public function test_output_publication_link_emits_on_static_front_page() {
+		\update_option( 'atmosphere_publication_tid', '3kpubtid000000' );
+
+		$page_id = self::factory()->post->create(
+			array(
+				'post_type'   => 'page',
+				'post_status' => 'publish',
+				'post_title'  => 'Home',
+			)
+		);
+		\update_option( 'show_on_front', 'page' );
+		\update_option( 'page_on_front', $page_id );
+
+		// `?page_id=N` is the plain-permalink form WordPress uses to
+		// reach a singular page; with `page_on_front` set above,
+		// `WP_Query::is_front_page()` will recognise the queried page
+		// and flip both `is_singular()` and `is_front_page()` on.
+		$this->go_to( '?page_id=' . $page_id );
+
+		$this->assertTrue( \is_front_page(), 'Sanity check: static page must be the front page.' );
+		$this->assertTrue( \is_singular(), 'Sanity check: the static front page is also singular.' );
+
+		$output = $this->capture_publication_link();
+
+		\delete_option( 'show_on_front' );
+		\delete_option( 'page_on_front' );
+
+		$this->assertStringContainsString(
+			'<link rel="site.standard.publication" href="at://did:plc:test123/site.standard.publication/3kpubtid000000" />',
+			$output
+		);
+	}
+
+	/**
 	 * No emission when the site has not yet minted a publication TID
 	 * (fresh install, pre-sync). Without a TID there is no AT-URI to
 	 * point a resolver at, so emitting an empty `href` would be worse

@@ -257,15 +257,7 @@ class Atmosphere {
 			return;
 		}
 
-		if ( \is_singular() ) {
-			$post = \get_queried_object();
-			if ( ! $post instanceof \WP_Post ) {
-				return;
-			}
-			if ( ! is_post_publishable( $post ) ) {
-				return;
-			}
-		} elseif ( ! \is_front_page() ) {
+		if ( ! self::is_publication_url() ) {
 			return;
 		}
 
@@ -275,6 +267,33 @@ class Atmosphere {
 			'<link rel="site.standard.publication" href="%s" />' . "\n",
 			\esc_attr( $uri )
 		);
+	}
+
+	/**
+	 * Whether the current request URL maps to the publication record's
+	 * `url` field — i.e. a URL where the `<link rel="site.standard.publication">`
+	 * tag belongs.
+	 *
+	 * - The WordPress front page always qualifies, regardless of
+	 *   whether it shows posts or a static page (a static page set
+	 *   as front is both `is_front_page()` AND `is_singular('page')`;
+	 *   checking the front-page condition first is what keeps the
+	 *   tag emitting in that configuration).
+	 * - A publishable singular post qualifies because its document
+	 *   record carries a reference back to the publication.
+	 */
+	private static function is_publication_url(): bool {
+		if ( \is_front_page() ) {
+			return true;
+		}
+
+		if ( ! \is_singular() ) {
+			return false;
+		}
+
+		$post = \get_queried_object();
+
+		return $post instanceof \WP_Post && is_post_publishable( $post );
 	}
 
 	/**
