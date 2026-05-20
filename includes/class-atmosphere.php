@@ -145,10 +145,27 @@ class Atmosphere {
 		\add_action( 'edit_comment', array( $this, 'on_comment_edit' ) );
 		\add_action( 'delete_comment', array( $this, 'on_comment_before_delete' ) );
 
-		// Auto-sync publication when site identity changes.
+		/*
+		 * Auto-sync the publication record whenever something the record
+		 * derives from changes. The record bakes in WordPress's site
+		 * identity (name, description, icon, home URL) and the active
+		 * theme's primary colours; keeping it in lockstep with those
+		 * sources avoids a stale publication on the PDS until the next
+		 * unrelated event happens to re-sync.
+		 *
+		 * Triggers cover both surfaces a site administrator can edit
+		 * theme colours from: classic-theme Customizer saves
+		 * (`customize_save_after`) and block-theme Site Editor saves
+		 * (the `wp_global_styles` post update).
+		 */
 		\add_action( 'update_option_blogname', array( $this, 'schedule_publication_sync' ) );
 		\add_action( 'update_option_blogdescription', array( $this, 'schedule_publication_sync' ) );
 		\add_action( 'update_option_site_icon', array( $this, 'schedule_publication_sync' ) );
+		\add_action( 'update_option_home', array( $this, 'schedule_publication_sync' ) );
+		\add_action( 'update_option_siteurl', array( $this, 'schedule_publication_sync' ) );
+		\add_action( 'switch_theme', array( $this, 'schedule_publication_sync' ) );
+		\add_action( 'save_post_wp_global_styles', array( $this, 'schedule_publication_sync' ) );
+		\add_action( 'customize_save_after', array( $this, 'schedule_publication_sync' ) );
 
 		// Token refresh cron.
 		\add_action( 'atmosphere_refresh_token', array( $this, 'cron_refresh_token' ) );

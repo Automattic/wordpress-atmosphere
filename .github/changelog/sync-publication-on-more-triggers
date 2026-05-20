@@ -1,0 +1,4 @@
+Significance: patch
+Type: changed
+
+Refresh the site's publication record when the site URL, the active theme, or the theme's colours change, so the published record always reflects the current site state.
