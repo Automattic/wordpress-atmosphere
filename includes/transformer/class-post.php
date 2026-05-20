@@ -177,7 +177,10 @@ class Post extends Base {
 			$record['facets'] = $facets;
 		}
 
-		if ( $embed ) {
+		// `apply_post_embed_filter()` guarantees `$embed` is either null
+		// or a well-formed array with a `$type` key, so this matches
+		// the `null !== $embed` check in `record_for_thread_entry()`.
+		if ( null !== $embed ) {
 			$record['embed'] = $embed;
 		}
 
@@ -449,8 +452,26 @@ class Post extends Base {
 			return null;
 		}
 
-		$width  = isset( $meta['width'] ) ? (int) $meta['width'] : 0;
-		$height = isset( $meta['height'] ) ? (int) $meta['height'] : 0;
+		/*
+		 * Validate with `is_numeric` BEFORE casting. The earlier shape
+		 * did `(int) $meta['width']`, which silently accepts strings
+		 * with a leading numeric prefix — `"1600px"` casts to `1600`
+		 * and passes the `> 0` gate. A misbehaving third-party metadata
+		 * filter could otherwise inject a unit-suffixed string and
+		 * have it propagate into the AT Protocol record's
+		 * `aspectRatio` field as a misleading integer. Requiring a
+		 * pure numeric input matches the docblock's "non-numeric"
+		 * contract.
+		 */
+		if ( ! isset( $meta['width'], $meta['height'] )
+			|| ! \is_numeric( $meta['width'] )
+			|| ! \is_numeric( $meta['height'] )
+		) {
+			return null;
+		}
+
+		$width  = (int) $meta['width'];
+		$height = (int) $meta['height'];
 
 		if ( $width <= 0 || $height <= 0 ) {
 			return null;
@@ -528,6 +549,26 @@ class Post extends Base {
 			\_doing_it_wrong(
 				__METHOD__,
 				\esc_html__( 'atmosphere_post_embed must return an array or null; falling back to the unfiltered embed.', 'atmosphere' ),
+				'unreleased'
+			);
+			return $embed;
+		}
+
+		/*
+		 * Reject empty arrays and arrays missing the `$type` key.
+		 * Without this gate the three call sites disagreed: the
+		 * `if ( $embed )` truthy checks in `transform()` and
+		 * `record_for_link_card()` silently dropped an empty-array
+		 * return, while `record_for_thread_entry()` used
+		 * `null !== $embed` and attached the malformed embed to the
+		 * record. Failing loudly here means every composition
+		 * strategy treats a half-formed filter return the same way,
+		 * and the call sites can use `null !== $embed` consistently.
+		 */
+		if ( empty( $filtered ) || empty( $filtered['$type'] ) || ! \is_string( $filtered['$type'] ) ) {
+			\_doing_it_wrong(
+				__METHOD__,
+				\esc_html__( 'atmosphere_post_embed must return an embed array with a non-empty $type string, or null; falling back to the unfiltered embed.', 'atmosphere' ),
 				'unreleased'
 			);
 			return $embed;
@@ -1301,7 +1342,10 @@ class Post extends Base {
 			$record['facets'] = $facets;
 		}
 
-		if ( $embed ) {
+		// `apply_post_embed_filter()` guarantees `$embed` is either null
+		// or a well-formed array with a `$type` key, so this matches
+		// the `null !== $embed` check in `record_for_thread_entry()`.
+		if ( null !== $embed ) {
 			$record['embed'] = $embed;
 		}
 
