@@ -15,9 +15,11 @@ namespace Atmosphere\Tests;
 use WP_UnitTestCase;
 use Atmosphere\Atmosphere;
 use Atmosphere\Reaction_Sync;
+use Atmosphere\OAuth\Client;
 use Atmosphere\Transformer\Comment;
 use Atmosphere\Transformer\Document;
 use Atmosphere\Transformer\Post;
+use Atmosphere\Transformer\Publication;
 
 /**
  * Atmosphere tests.
@@ -1470,6 +1472,28 @@ class Test_Atmosphere extends WP_UnitTestCase {
 				"Client::disconnect must clear scheduled hook: {$hook}"
 			);
 		}
+	}
+
+	/**
+	 * `Client::disconnect` clears `Publication::OPTION_URI`.
+	 *
+	 * Reconnecting to a different DID would otherwise leave the option
+	 * baked with the previous owner's AT-URI; the well-known endpoint
+	 * would keep serving the old authority and standard.site validation
+	 * would fail with "Expected at://<new>/pub/<tid>, Got at://<old>/...".
+	 */
+	public function test_disconnect_clears_publication_uri() {
+		\update_option(
+			Publication::OPTION_URI,
+			'at://did:plc:old-owner/site.standard.publication/3kpubtid000000'
+		);
+
+		Client::disconnect();
+
+		$this->assertFalse(
+			\get_option( Publication::OPTION_URI ),
+			'Client::disconnect must clear Publication::OPTION_URI so a reconnect to a different DID does not leak the previous authority through the well-known endpoint.'
+		);
 	}
 
 	/**

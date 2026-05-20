@@ -316,13 +316,17 @@ class Handle {
 		}
 
 		/*
-		 * Called from the `atmosphere_set_handle` cron worker — no
-		 * synchronous PHP-FPM budget to honour. The auth server's
-		 * `/.well-known/atproto-did` verification routinely takes
-		 * 15-45 seconds; we give the HTTP call a 60s timeout so it
-		 * can complete without being killed by the default 30s
-		 * `wp_safe_remote_post` window. Cron has its own timeout
-		 * (~60s on most installs) which we live within.
+		 * Called synchronously from `Admin::maybe_set_domain_handle()`
+		 * on `admin_init`, so the submitting administrator waits on
+		 * this HTTP round-trip. The PDS asks the host's
+		 * `/.well-known/atproto-did` for the DID associated with the
+		 * domain; that lookup typically completes well under five
+		 * seconds in practice but can stretch to 15-45s for slow DNS
+		 * or slow-origin combinations. The 60s timeout (versus the
+		 * `wp_safe_remote_post` default of 30s) gives a slow-but-
+		 * eventual success room to land instead of failing the
+		 * verification mid-handshake. The wait is paid by an
+		 * administrator who explicitly clicked the button.
 		 */
 		$response = API::request(
 			'POST',

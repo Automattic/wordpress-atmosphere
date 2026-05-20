@@ -1312,6 +1312,24 @@ class Publisher {
 	 * @return array|\WP_Error
 	 */
 	public static function sync_publication(): array|\WP_Error {
+		$did = get_did();
+
+		/*
+		 * A cron event queued just before `Client::disconnect()` can
+		 * still fire after the connection option is cleared. Without
+		 * this guard we would stamp `Publication::OPTION_URI` with an
+		 * AT-URI whose authority is empty
+		 * (`at:///site.standard.publication/<tid>`) and surface a
+		 * noisy "expected at://X/..., got at:///..." validation error
+		 * on the front-end until the next legitimate sync.
+		 */
+		if ( '' === $did ) {
+			return new \WP_Error(
+				'atmosphere_not_connected',
+				\__( 'Cannot sync the publication record: no active connection.', 'atmosphere' )
+			);
+		}
+
 		$pub = new Publication( null );
 
 		/*
@@ -1327,8 +1345,15 @@ class Publisher {
 		 * every sync makes the local option always reflect the
 		 * current owner; the PDS write that follows is what makes
 		 * the record itself catch up.
+		 *
+		 * Inconsistency window: if the PDS call below fails, the
+		 * option transiently points at a URI whose record may not
+		 * yet exist on the PDS for the new owner. The next
+		 * `sync_publication` invocation re-derives and re-writes the
+		 * same URI after a successful PDS write, so the divergence
+		 * self-heals on retry rather than wedging.
 		 */
-		$canonical_uri = build_at_uri( get_did(), 'site.standard.publication', $pub->get_rkey() );
+		$canonical_uri = build_at_uri( $did, 'site.standard.publication', $pub->get_rkey() );
 		\update_option( Publication::OPTION_URI, $canonical_uri, false );
 
 		/*
@@ -1345,7 +1370,7 @@ class Publisher {
 		$result = API::post(
 			'/xrpc/com.atproto.repo.putRecord',
 			array(
-				'repo'       => get_did(),
+				'repo'       => $did,
 				'collection' => 'site.standard.publication',
 				'rkey'       => $pub->get_rkey(),
 				'record'     => $pub->transform(),
