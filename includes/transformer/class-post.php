@@ -491,9 +491,13 @@ class Post extends Base {
 	 * and the two teaser-thread embed sites in `build_long_form_records()`
 	 * — gives the same observable seam to downstream consumers.
 	 *
-	 * Non-null, non-array filter returns are rejected with
-	 * `_doing_it_wrong` and the pre-filter value is used; null is a valid
-	 * return that suppresses the embed.
+	 * Valid filter returns: `null` (suppress the embed) or an array with
+	 * a non-empty string `$type` key. Anything else — non-array, empty
+	 * array, or array missing/with a non-string `$type` — is rejected
+	 * with `_doing_it_wrong` and the pre-filter value is used. Failing
+	 * loudly on half-formed returns keeps the three composition call
+	 * sites consistent (all use `null !== $embed`) and protects the
+	 * applyWrites batch from a malformed embed.
 	 *
 	 * @param array|null $embed    Default embed for this strategy
 	 *                             (null for short-form, an
@@ -518,9 +522,13 @@ class Post extends Base {
 		 *     ship plain.
 		 *   - Suppress the default embed by returning null.
 		 *
-		 * Non-null, non-array returns are rejected with `_doing_it_wrong`
-		 * and the pre-filter value is restored — protects the
-		 * applyWrites batch from a misbehaving listener.
+		 * Valid returns are `null` or an array with a non-empty string
+		 * `$type` key. Non-array returns, empty arrays, and arrays
+		 * without a non-empty string `$type` are rejected with
+		 * `_doing_it_wrong` and the pre-filter value is restored —
+		 * protects the applyWrites batch from a misbehaving listener
+		 * and keeps every composition strategy treating half-formed
+		 * returns the same way.
 		 *
 		 * The filter is called *after* the default embed has been
 		 * built, so listeners can read the default before deciding to
