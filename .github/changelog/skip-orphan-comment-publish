@@ -1,0 +1,4 @@
+Significance: patch
+Type: fixed
+
+Stop publishing replies to local-only WordPress comments to Bluesky. Previously such replies were demoted to a top-level reply on the post; they are now skipped so the Bluesky thread only mirrors comments whose ancestors are also on Bluesky.
