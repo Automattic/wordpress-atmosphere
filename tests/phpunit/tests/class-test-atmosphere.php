@@ -1473,6 +1473,28 @@ class Test_Atmosphere extends WP_UnitTestCase {
 	}
 
 	/**
+	 * `Client::disconnect` sweeps the stale `atmosphere_publication_uri`
+	 * row that 1.0.0 used to write. Nothing in production consumes the
+	 * option (the well-known endpoint and Document transformer derive
+	 * the URI from `get_did()` + the publication TID), but a leftover
+	 * row on disconnected installs would still be confusing to operators
+	 * inspecting the options table.
+	 */
+	public function test_disconnect_sweeps_stale_publication_uri_option() {
+		\update_option(
+			'atmosphere_publication_uri',
+			'at://did:plc:old-owner/site.standard.publication/3kpubtid000000'
+		);
+
+		\Atmosphere\OAuth\Client::disconnect();
+
+		$this->assertFalse(
+			\get_option( 'atmosphere_publication_uri' ),
+			'Client::disconnect must sweep the stale atmosphere_publication_uri row from 1.0.0 installs.'
+		);
+	}
+
+	/**
 	 * Race: a moderator unapproves the comment while applyWrites is in
 	 * flight. `Comment::get_rkey` writes META_TID before the API call,
 	 * but META_URI is only written after the call returns. The status

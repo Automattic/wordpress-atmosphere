@@ -1312,40 +1312,49 @@ class Publisher {
 	 * @return array|\WP_Error
 	 */
 	public static function sync_publication(): array|\WP_Error {
+		$did = get_did();
+
+		/*
+		 * A cron event queued just before `Client::disconnect()` can
+		 * still fire after the connection option is cleared. Calling
+		 * `putRecord` with an empty `repo` would either malform the
+		 * request or — worse — land on whatever DID the auth layer
+		 * happened to cache. Bail before either can happen.
+		 */
+		if ( '' === $did ) {
+			return new \WP_Error(
+				'atmosphere_not_connected',
+				\__( 'Cannot sync the publication record: no active connection.', 'atmosphere' )
+			);
+		}
+
 		$pub = new Publication( null );
 
-		$existing_uri = \get_option( Publication::OPTION_URI );
-
-		if ( $existing_uri ) {
-			$result = API::post(
-				'/xrpc/com.atproto.repo.putRecord',
-				array(
-					'repo'       => get_did(),
-					'collection' => 'site.standard.publication',
-					'rkey'       => $pub->get_rkey(),
-					'record'     => $pub->transform(),
-				)
-			);
-		} else {
-			$result = API::post(
-				'/xrpc/com.atproto.repo.createRecord',
-				array(
-					'repo'       => get_did(),
-					'collection' => 'site.standard.publication',
-					'rkey'       => $pub->get_rkey(),
-					'record'     => $pub->transform(),
-				)
-			);
-		}
-
-		if ( \is_wp_error( $result ) ) {
-			return $result;
-		}
-
-		$uri = $result['uri'] ?? $pub->get_uri();
-		\update_option( Publication::OPTION_URI, $uri, false );
-
-		return $result;
+		/*
+		 * Always `putRecord`. AT Protocol's `putRecord` is an upsert:
+		 * it creates the record when missing and overwrites when
+		 * present. A previous version branched between `createRecord`
+		 * and `putRecord` based on a locally-persisted URI option;
+		 * after disconnect/reconnect-to-a-different-DID that branch
+		 * could pick `createRecord` against a repo that already had
+		 * the record (PDS replies "already exists") or `putRecord`
+		 * against a repo that did not (which `putRecord` handles
+		 * fine, but the inconsistency made the local state hard to
+		 * reason about). Using `putRecord` unconditionally collapses
+		 * both cases into a single upsert against the CURRENT DID +
+		 * locally-persisted TID — the rkey is stable across
+		 * reconnects, so the record always lands at the same address
+		 * for the active owner.
+		 */
+		return API::post(
+			'/xrpc/com.atproto.repo.putRecord',
+			array(
+				'repo'       => $did,
+				'collection' => 'site.standard.publication',
+				'rkey'       => $pub->get_rkey(),
+				'record'     => $pub->transform(),
+			)
+		);
 	}
 
 	/**

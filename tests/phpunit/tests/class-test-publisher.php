@@ -2347,4 +2347,27 @@ class Test_Publisher extends WP_UnitTestCase {
 		$this->assertWPError( $captured[0]['result'] );
 		$this->assertSame( $result, $captured[0]['result'], 'hook receives the same result returned to the caller' );
 	}
+
+	/**
+	 * `sync_publication()` bails when the plugin is disconnected.
+	 *
+	 * A cron event queued before `Client::disconnect()` can still fire
+	 * after the connection option is cleared. Without the guard,
+	 * `putRecord` would be called with an empty `repo`, either
+	 * malforming the request or landing on whatever DID the auth
+	 * layer happened to cache.
+	 */
+	public function test_sync_publication_bails_when_disconnected() {
+		\delete_option( 'atmosphere_connection' );
+		\delete_option( 'atmosphere_did' );
+		// `get_did()` resolves through `get_identity()` which reads
+		// `atmosphere_identity` — without this delete the option can
+		// leak in from earlier tests and skip the guard under test.
+		\delete_option( 'atmosphere_identity' );
+
+		$result = Publisher::sync_publication();
+
+		$this->assertWPError( $result );
+		$this->assertSame( 'atmosphere_not_connected', $result->get_error_code() );
+	}
 }
