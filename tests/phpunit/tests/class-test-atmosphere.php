@@ -1612,8 +1612,6 @@ class Test_Atmosphere extends WP_UnitTestCase {
 	 * trigger set so a future refactor can't silently drop one.
 	 */
 	public function test_init_wires_publication_sync_triggers() {
-		$this->atmosphere->init();
-
 		$triggers = array(
 			'update_option_blogname',
 			'update_option_blogdescription',
@@ -1625,11 +1623,31 @@ class Test_Atmosphere extends WP_UnitTestCase {
 			'customize_save_after',
 		);
 
-		foreach ( $triggers as $trigger ) {
-			$this->assertNotFalse(
-				\has_action( $trigger, array( $this->atmosphere, 'schedule_publication_sync' ) ),
-				"{$trigger} must be wired to schedule_publication_sync."
-			);
+		$this->atmosphere->init();
+
+		try {
+			foreach ( $triggers as $trigger ) {
+				$this->assertNotFalse(
+					\has_action( $trigger, array( $this->atmosphere, 'schedule_publication_sync' ) ),
+					"{$trigger} must be wired to schedule_publication_sync."
+				);
+			}
+		} finally {
+			/*
+			 * `init()` writes to global hook + cron state that the WP test
+			 * framework does not roll back between tests. Roll back the
+			 * pieces our action triggers so a later test changing
+			 * `blogname` / `home` / etc. is not surprised by a spurious
+			 * `atmosphere_sync_publication` schedule, and clear the two
+			 * recurring crons `init()` queues so they do not survive
+			 * either.
+			 */
+			foreach ( $triggers as $trigger ) {
+				\remove_action( $trigger, array( $this->atmosphere, 'schedule_publication_sync' ) );
+			}
+			\wp_clear_scheduled_hook( 'atmosphere_sync_publication' );
+			\wp_clear_scheduled_hook( 'atmosphere_refresh_token' );
+			\wp_clear_scheduled_hook( 'atmosphere_sync_reactions' );
 		}
 	}
 }
