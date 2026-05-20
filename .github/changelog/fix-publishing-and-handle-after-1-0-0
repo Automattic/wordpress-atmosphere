@@ -1,0 +1,4 @@
+Significance: patch
+Type: fixed
+
+Fix posts not appearing on Bluesky after a frontend visit lazily stamped the post, restore standard.site verification after reconnecting to a different account, and let the "use my domain as my Bluesky handle" button complete reliably without timing out.
