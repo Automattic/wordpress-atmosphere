@@ -55,6 +55,7 @@ class Test_Atmosphere extends WP_UnitTestCase {
 	public function tear_down(): void {
 		\delete_option( 'atmosphere_connection' );
 		\delete_option( 'atmosphere_identity' );
+		\delete_option( 'atmosphere_publication_tid' );
 
 		\wp_clear_scheduled_hook( 'atmosphere_publish_post' );
 		\wp_clear_scheduled_hook( 'atmosphere_update_post' );
@@ -1598,5 +1599,184 @@ class Test_Atmosphere extends WP_UnitTestCase {
 		);
 
 		\remove_all_filters( 'atmosphere_pre_apply_writes' );
+	}
+
+	/**
+	 * Capture what `output_publication_link()` prints to stdout.
+	 *
+	 * @return string Output (empty when the method bails before emit).
+	 */
+	private function capture_publication_link(): string {
+		\ob_start();
+		$this->atmosphere->output_publication_link();
+		return (string) \ob_get_clean();
+	}
+
+	/**
+	 * Drive the WP query into a state where `is_singular()` resolves to
+	 * a real post object — `go_to()` is the supported way to drop the
+	 * unit-test request into the singular branch of template_redirect.
+	 *
+	 * @param int $post_id Post ID.
+	 */
+	private function go_to_post( int $post_id ): void {
+		$this->go_to( (string) \get_permalink( $post_id ) );
+		// Belt-and-suspenders: `is_singular()` reads from $wp_query.
+		global $wp_query;
+		$wp_query->queried_object    = \get_post( $post_id );
+		$wp_query->queried_object_id = $post_id;
+	}
+
+	/**
+	 * Drive the WP query into the front-page state.
+	 */
+	private function go_to_front_page(): void {
+		$this->go_to( \home_url( '/' ) );
+	}
+
+	/**
+	 * Publication link tag fires on a singular publishable post whenever
+	 * the site has minted its publication TID — that's the URL a third-
+	 * party resolver would land on after following a permalink from a
+	 * federated post, so they can find the parent publication without
+	 * fetching the document first.
+	 */
+	public function test_output_publication_link_emits_on_singular_publishable_post() {
+		\update_option( 'atmosphere_publication_tid', '3kpubtid000000' );
+		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		$this->go_to_post( $post_id );
+
+		$output = $this->capture_publication_link();
+
+		$this->assertStringContainsString(
+			'<link rel="site.standard.publication" href="at://did:plc:test123/site.standard.publication/3kpubtid000000" />',
+			$output
+		);
+	}
+
+	/**
+	 * Publication link tag fires on the WordPress front page, since the
+	 * publication record's `url` field is `home_url('/')`. Lets a
+	 * resolver verify the page-to-publication binding by matching
+	 * AT-URIs instead of round-tripping through `.well-known`.
+	 */
+	public function test_output_publication_link_emits_on_front_page() {
+		\update_option( 'atmosphere_publication_tid', '3kpubtid000000' );
+		$this->go_to_front_page();
+
+		$output = $this->capture_publication_link();
+
+		$this->assertStringContainsString(
+			'<link rel="site.standard.publication" href="at://did:plc:test123/site.standard.publication/3kpubtid000000" />',
+			$output
+		);
+	}
+
+	/**
+	 * Publication link tag fires on a static front page too — the
+	 * common "Settings → Reading → A static page" configuration.
+	 *
+	 * `is_front_page()` and `is_singular('page')` are BOTH true in
+	 * that scenario; the publishability gate would otherwise reject
+	 * the request because `page` is not in the default supported
+	 * post type list. The tag must still emit because `home_url('/')`
+	 * — which the publication record's `url` field points at — is
+	 * the static page's permalink.
+	 */
+	public function test_output_publication_link_emits_on_static_front_page() {
+		\update_option( 'atmosphere_publication_tid', '3kpubtid000000' );
+
+		$page_id = self::factory()->post->create(
+			array(
+				'post_type'   => 'page',
+				'post_status' => 'publish',
+				'post_title'  => 'Home',
+			)
+		);
+		\update_option( 'show_on_front', 'page' );
+		\update_option( 'page_on_front', $page_id );
+
+		// `?page_id=N` is the plain-permalink form WordPress uses to
+		// reach a singular page; with `page_on_front` set above,
+		// `WP_Query::is_front_page()` will recognise the queried page
+		// and flip both `is_singular()` and `is_front_page()` on.
+		$this->go_to( '?page_id=' . $page_id );
+
+		$this->assertTrue( \is_front_page(), 'Sanity check: static page must be the front page.' );
+		$this->assertTrue( \is_singular(), 'Sanity check: the static front page is also singular.' );
+
+		$output = $this->capture_publication_link();
+
+		\delete_option( 'show_on_front' );
+		\delete_option( 'page_on_front' );
+
+		$this->assertStringContainsString(
+			'<link rel="site.standard.publication" href="at://did:plc:test123/site.standard.publication/3kpubtid000000" />',
+			$output
+		);
+	}
+
+	/**
+	 * No emission when the site has not yet minted a publication TID
+	 * (fresh install, pre-sync). Without a TID there is no AT-URI to
+	 * point a resolver at, so emitting an empty `href` would be worse
+	 * than silence.
+	 */
+	public function test_output_publication_link_bails_without_publication_tid() {
+		\delete_option( 'atmosphere_publication_tid' );
+		$this->go_to_front_page();
+
+		$output = $this->capture_publication_link();
+
+		$this->assertSame( '', $output );
+	}
+
+	/**
+	 * No emission when the plugin is disconnected (no persisted
+	 * identity). The gate mirrors {@see Atmosphere::output_document_link()}
+	 * so the two link tags appear and disappear together.
+	 */
+	public function test_output_publication_link_bails_without_identity() {
+		\delete_option( 'atmosphere_connection' );
+		\delete_option( 'atmosphere_identity' );
+		\update_option( 'atmosphere_publication_tid', '3kpubtid000000' );
+		$this->go_to_front_page();
+
+		$output = $this->capture_publication_link();
+
+		$this->assertSame( '', $output );
+	}
+
+	/**
+	 * No emission on archive / category / search / 404 pages — only the
+	 * front page or a publishable singular qualifies.
+	 */
+	public function test_output_publication_link_bails_on_non_singular_non_front_page() {
+		\update_option( 'atmosphere_publication_tid', '3kpubtid000000' );
+		$this->go_to( \home_url( '/?s=anything' ) );
+
+		$output = $this->capture_publication_link();
+
+		$this->assertSame( '', $output );
+	}
+
+	/**
+	 * Singular posts that fail the publishability gate (e.g.
+	 * password-protected) get no publication tag either — it would
+	 * advertise a record we have not published and would not publish.
+	 */
+	public function test_output_publication_link_bails_on_non_publishable_singular() {
+		\update_option( 'atmosphere_publication_tid', '3kpubtid000000' );
+		$post_id = self::factory()->post->create(
+			array(
+				'post_status'   => 'publish',
+				'post_password' => 'secret',
+			)
+		);
+		$this->go_to_post( $post_id );
+
+		$output = $this->capture_publication_link();
+
+		$this->assertSame( '', $output );
 	}
 }
