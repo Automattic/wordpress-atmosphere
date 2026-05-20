@@ -582,10 +582,28 @@ class Atmosphere {
 	 * @return bool
 	 */
 	private static function has_post_records( \WP_Post $post ): bool {
+		/*
+		 * Drop `Document::META_TID` from the "has records" signal,
+		 * keep everything else.
+		 *
+		 * `Document::META_TID` is the only meta key that can be
+		 * written speculatively: `output_document_link()` (frontend
+		 * `wp_head`) lazily mints it on the first singular pageview
+		 * so the `<link rel="site.standard.document">` tag has
+		 * something to point at — well before any publish to the
+		 * PDS. Treating that pre-publish TID stamp as "has records"
+		 * misclassifies every transition to publish as `is_update`,
+		 * the cron handler refuses because no URI/CID exists to
+		 * update against, and the publish silently no-ops.
+		 *
+		 * `Post::META_TID` is different: Publisher writes it only
+		 * after a successful `applyWrites`, alongside `META_URI` /
+		 * `META_CID`. It's an honest signal of an existing record
+		 * and remains a positive indicator here.
+		 */
 		return ! empty( \get_post_meta( $post->ID, Transformer\Post::META_TID, true ) )
 			|| ! empty( \get_post_meta( $post->ID, Transformer\Post::META_URI, true ) )
 			|| ! empty( \get_post_meta( $post->ID, Transformer\Post::META_THREAD_RECORDS, true ) )
-			|| ! empty( \get_post_meta( $post->ID, Transformer\Document::META_TID, true ) )
 			|| ! empty( \get_post_meta( $post->ID, Transformer\Document::META_URI, true ) );
 	}
 
