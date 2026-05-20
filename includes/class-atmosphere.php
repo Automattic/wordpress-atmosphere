@@ -70,8 +70,10 @@ class Atmosphere {
 	/**
 	 * Maximum re-schedule hops for a child comment waiting on a
 	 * not-yet-published parent. After this many deferrals the child
-	 * publishes as a top-level reply on the post (current fallback
-	 * behavior) so a stuck parent does not block it forever.
+	 * is skipped if the parent still lacks a threadable strongRef so a
+	 * stuck parent does not block it forever — see
+	 * {@see Atmosphere::parent_has_bsky_representation()} for the
+	 * skip rule.
 	 *
 	 * @var int
 	 */
@@ -1330,13 +1332,14 @@ class Atmosphere {
 	 *
 	 * Comments are scheduled as independent single events with no
 	 * dependency ordering: if a user approves a parent and its reply
-	 * together, the child's cron event can fire first, see
-	 * resolve_parent_ref() return null, and publish flat as a
-	 * top-level reply on the root post. This defers the child a short
-	 * interval (up to PARENT_DEFER_MAX_ATTEMPTS hops) to give the
-	 * parent time to publish first. After the cap the child publishes
-	 * anyway using the root fallback — a stuck parent must not block
-	 * the child forever.
+	 * together, the child's cron event can fire first and see
+	 * `resolve_parent_ref()` return null. This defers the child a
+	 * short interval (up to PARENT_DEFER_MAX_ATTEMPTS hops) so the
+	 * parent has time to publish first. After the cap the cron
+	 * handler's {@see Atmosphere::parent_has_bsky_representation()}
+	 * check skips the child entirely rather than letting
+	 * {@see Comment::build_reply_ref()} fall back to a top-level
+	 * reply on the post — losing the WP thread context.
 	 *
 	 * @param \WP_Comment $comment Comment being published.
 	 * @return bool True when the publish was deferred, false to proceed now.
@@ -1416,6 +1419,22 @@ class Atmosphere {
 	 * - The parent comment is marked as ingested by
 	 *   {@see Reaction_Sync} (`META_PROTOCOL = atproto`) AND carries
 	 *   both `META_SOURCE_ID` (URI) and `META_BSKY_CID`.
+	 *
+	 * Only the immediate parent is checked: any comment that passes
+	 * this gate was itself only publishable through the same gate, so
+	 * by induction every WP ancestor is also threadable.
+	 *
+	 * Known legacy edge case: sites that ran a pre-fix version of the
+	 * plugin may have "demoted" comments on bsky — comments whose
+	 * original WP parent was local-only but which the old root-fallback
+	 * still pushed to bsky as top-level replies under the post. Their
+	 * rows now carry valid `META_URI` / `META_CID`, so new replies to
+	 * them pass this gate even though the deeper WP ancestor chain is
+	 * incomplete. The strongRef itself is still valid (the demoted
+	 * comment is on bsky); the bsky-side view simply omits the
+	 * pre-existing local-only ancestor, which mirrors what the WP user
+	 * sees with the local-only commenter anyway. No further migration
+	 * is planned for those legacy rows.
 	 *
 	 * @param \WP_Comment $comment Comment about to be published.
 	 * @return bool

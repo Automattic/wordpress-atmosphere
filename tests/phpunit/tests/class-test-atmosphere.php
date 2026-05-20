@@ -1868,6 +1868,11 @@ class Test_Atmosphere extends WP_UnitTestCase {
 				'comment_parent'   => $parent_id,
 			)
 		);
+		// Seed a non-empty deferral counter so the post-skip assertion
+		// distinguishes "the cron handler cleared it" from "no value
+		// was ever written" — comment meta defaults to '' otherwise
+		// and the assertion would be trivially true.
+		\update_comment_meta( $child_id, '_atmosphere_publish_attempts', 2 );
 
 		$apply_writes_calls = 0;
 		\add_filter(
