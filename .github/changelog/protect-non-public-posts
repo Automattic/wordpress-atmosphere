@@ -1,4 +1,0 @@
-Significance: patch
-Type: fixed
-
-Prevent password-protected or otherwise non-public posts from being published to AT Protocol records, and remove existing records when public posts become protected.

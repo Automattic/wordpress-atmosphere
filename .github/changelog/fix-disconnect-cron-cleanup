@@ -1,4 +1,0 @@
-Significance: patch
-Type: fixed
-
-Clear queued sync events on disconnect, deactivation, and uninstall so leftover jobs cannot fire against a different connected account.

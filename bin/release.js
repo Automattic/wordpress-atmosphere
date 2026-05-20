@@ -37,26 +37,105 @@ const updateVersionInFile = ( filePath, version, patterns ) => {
 	fs.writeFileSync( filePath, content );
 };
 
+const prompt = ( question ) =>
+	new Promise( ( resolve ) => rl.question( question, ( answer ) => resolve( answer.trim() ) ) );
+
+/*
+ * Calls `vendor/bin/changelogger` directly rather than through the
+ * `composer changelog:write` composer script. The script chains
+ * `composer install` + `vendor/bin/changelogger write --add-pr-num`,
+ * and composer's `--` arg-forwarding hands extra flags (like
+ * `--use-version`) to the FIRST sub-command, which doesn't know them.
+ * Skipping composer here lets us pass `--use-version=X.Y.Z` to the
+ * changelogger binary as documented.
+ */
+const runChangeloggerWrite = ( useVersion ) => {
+	const useVersionFlag = useVersion ? ` --use-version=${ useVersion }` : '';
+	execSync( `vendor/bin/changelogger write --add-pr-num${ useVersionFlag }`, { stdio: 'pipe' } );
+};
+
+/*
+ * Match `## [1.0.0] - 2026-05-20` AND `## 1.0.0 - 2026-05-20`. Jetpack
+ * changelogger writes the bracketed Keep-a-Changelog form when a
+ * prior version exists (so it has a comparison link to attach) and
+ * the bare form on a first release with no link. The release script
+ * has to work for both.
+ */
+const RELEASE_HEADER_RE = /## \[?(\d+\.\d+\.\d+)\]? - \d{4}-\d{2}-\d{2}/;
+const RELEASE_HEADER_RE_GLOBAL = /## \[?(\d+\.\d+\.\d+)\]? - (\d{4}-\d{2}-\d{2})/g;
+
 const generateChangelog = async () => {
-	// Run the changelog generation command
+	/*
+	 * First attempt without --use-version. Jetpack changelogger infers
+	 * the next version from the most recent `## X.Y.Z` block in
+	 * CHANGELOG.md plus the `Significance:` of each unreleased entry.
+	 * On a first-ever release the file has no prior block, so the bare
+	 * command fails with "Changelog file contains no entries! Use
+	 * --use-version to specify the initial version." We detect that
+	 * exact case and re-run with an explicit version gathered
+	 * interactively; everything else surfaces verbatim so real
+	 * failures stop being swallowed by `stdio: 'ignore'`.
+	 *
+	 * Note: semver intentionally refuses to auto-bump 0.x.y → 1.0.0
+	 * even when entries carry `Significance: major`. To go to 1.0,
+	 * answer the prompt with `1.0.0`.
+	 */
 	try {
-		execSync( 'composer changelog:write', { stdio: 'ignore' } );
+		runChangeloggerWrite( null );
 	} catch ( error ) {
-		console.error( 'Error generating changelog:' );
-		console.error( error );
-		process.exit( 1 );
+		const stdout = ( error.stdout || '' ).toString();
+		const stderr = ( error.stderr || '' ).toString();
+		const combined = `${ stdout }\n${ stderr }`;
+
+		const needsInitialVersion = combined.includes( 'Changelog file contains no entries' );
+
+		if ( ! needsInitialVersion ) {
+			console.error( 'Error generating changelog:' );
+			if ( stdout ) {
+				console.error( stdout );
+			}
+			if ( stderr ) {
+				console.error( stderr );
+			}
+			process.exit( 1 );
+		}
+
+		console.log(
+			'CHANGELOG.md has no prior version blocks — Jetpack changelogger ' +
+				'cannot infer the next version. This is normal for the very ' +
+				'first release. (Note: semver does not auto-bump 0.x.y → 1.0.0; ' +
+				'enter 1.0.0 explicitly if you want to ship the first stable.)'
+		);
+		const initial = await prompt(
+			'Initial version to assign this release (e.g. 1.0.0): '
+		);
+
+		if ( ! /^\d+\.\d+\.\d+$/.test( initial ) ) {
+			console.error(
+				`"${ initial }" is not a valid X.Y.Z version. Aborting.`
+			);
+			process.exit( 1 );
+		}
+
+		try {
+			runChangeloggerWrite( initial );
+		} catch ( retryError ) {
+			console.error( 'Error generating changelog (retry):' );
+			console.error( ( retryError.stdout || '' ).toString() );
+			console.error( ( retryError.stderr || '' ).toString() );
+			process.exit( 1 );
+		}
 	}
 
-	// Grab the version from the generated changelog
 	const content = fs.readFileSync( 'CHANGELOG.md', 'utf8' );
-	const version = content.match( /## \[(\d+\.\d+\.\d+)\] - \d{4}-\d{2}-\d{2}/ )[ 1 ];
+	const match = content.match( RELEASE_HEADER_RE );
 
-	if ( ! version ) {
-		console.error( 'No version found in CHANGELOG.md' );
+	if ( ! match ) {
+		console.error( 'No version found in CHANGELOG.md after writing entries' );
 		process.exit( 1 );
 	}
 
-	return version;
+	return match[ 1 ];
 };
 
 const updateReadmeWithChangelog = ( version ) => {
@@ -65,7 +144,9 @@ const updateReadmeWithChangelog = ( version ) => {
 	const readmeContent = fs.readFileSync( 'readme.txt', 'utf8' );
 
 	// Ensure the latest release entry was found in the list of latest releases we grabbed.
-	const latestReleaseRegex = new RegExp( `## \\[${ version }\\].*?(?=## \\[|$)`, 's' );
+	// Accept both `## [version]` (Keep-a-Changelog with link) and bare `## version`
+	// (Jetpack changelogger's first-release output without a comparison link).
+	const latestReleaseRegex = new RegExp( `## \\[?${ version }\\]?.*?(?=## \\[?\\d|$)`, 's' );
 	const latestReleaseMatch = changelogContent.match( latestReleaseRegex );
 	if ( ! latestReleaseMatch ) {
 		console.error( `No changelog entry found for version ${ version }` );
@@ -77,8 +158,8 @@ const updateReadmeWithChangelog = ( version ) => {
 	// e.g. if the latest release is 1.2.1, then we want to include all entries from 1.0.0 to 1.2.1.
 	const majorVersion = version.split( '.' )[ 0 ];
 
-	// Find all releases with the same major version
-	const releaseRegex = /## \[(\d+\.\d+\.\d+)\] - (\d{4}-\d{2}-\d{2})/g;
+	// Find all releases with the same major version.
+	const releaseRegex = new RegExp( RELEASE_HEADER_RE_GLOBAL.source, 'g' );
 	const releases = [];
 	let match;
 
@@ -86,7 +167,7 @@ const updateReadmeWithChangelog = ( version ) => {
 		const [ , releaseVersion, releaseDate ] = match;
 		if ( releaseVersion.startsWith( `${ majorVersion }.` ) ) {
 			// Find the content for this release
-			const releaseContentRegex = new RegExp( `## \\[${ releaseVersion }\\].*?(?=## \\[|$)`, 's' );
+			const releaseContentRegex = new RegExp( `## \\[?${ releaseVersion }\\]?.*?(?=## \\[?\\d|$)`, 's' );
 			const releaseContent = changelogContent.match( releaseContentRegex );
 
 			if ( releaseContent ) {
@@ -119,9 +200,15 @@ const updateReadmeWithChangelog = ( version ) => {
 	// 3. Remove PR numbers like [#123] from the ends of lines.
 	let formattedChangelog = releases
 		.map( ( entry ) => {
+			/*
+			 * The header in CHANGELOG.md may be bracketed (`## [X.Y.Z] - DATE`)
+			 * or bare (`## X.Y.Z - DATE`); the regex covers both so we don't
+			 * silently leave the original `##` line in place.
+			 */
+			const headerRegex = new RegExp( `## \\[?${ entry.version }\\]? - ${ entry.date }` );
 			return entry.content
 				.replace( /### /g, '#### ' )
-				.replace( `## [${ entry.version }] - ${ entry.date }`, `### ${ entry.version } - ${ entry.date }` )
+				.replace( headerRegex, `### ${ entry.version } - ${ entry.date }` )
 				.replace( /\s+\[#\d+\]$/gm, '' )
 				.trim();
 		} )
