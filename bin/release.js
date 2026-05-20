@@ -350,20 +350,31 @@ async function createRelease() {
 				search: /@deprecated unreleased/gi,
 				replace: `@deprecated ${ version }`,
 			},
+			/*
+			 * The `s` (dotAll) flag is critical here. `_deprecated_*()`,
+			 * `_doing_it_wrong()`, `apply_filters_deprecated()`, etc.
+			 * are routinely formatted across multiple lines in this
+			 * codebase, with `\esc_html__()` calls or translator
+			 * comments between the function name and the version
+			 * literal. Without `s`, `.*?` won't match the embedded
+			 * newlines and the substitution silently no-ops on every
+			 * multi-line call site — leaving `'unreleased'` literals
+			 * in the released code.
+			 */
 			{
-				search: /(?<=_deprecated_(?:function|class|constructor|file|argument|hook)\s*\(\s*.*?,\s*')unreleased(?=')/gi,
+				search: /(?<=_deprecated_(?:function|class|constructor|file|argument|hook)\s*\(\s*.*?,\s*')unreleased(?=')/gis,
 				replace: ( match ) => match.replace( /unreleased/i, version ),
 			},
 			{
-				search: /(?<=_doing_it_wrong\s*\(\s*.*?,\s*'.*?',\s*')unreleased(?=')/gi,
+				search: /(?<=_doing_it_wrong\s*\(\s*.*?,\s*.*?,\s*')unreleased(?=')/gis,
 				replace: ( match ) => match.replace( /unreleased/i, version ),
 			},
 			{
-				search: /(?<=\b(?:apply_filters_deprecated|do_action_deprecated)\s*\(\s*'.*?'\s*,\s*array\s*\(.*?\)\s*,\s*')unreleased(?=['"],\s*['"])/gi,
+				search: /(?<=\b(?:apply_filters_deprecated|do_action_deprecated)\s*\(\s*'.*?'\s*,\s*array\s*\(.*?\)\s*,\s*')unreleased(?=['"],\s*['"])/gis,
 				replace: ( match ) => match.replace( /unreleased/i, version ),
 			},
 			{
-				search: /(?<=version_compare\s*\(\s*\$\w+,\s*')unreleased(?=',\s*['<=>])/gi,
+				search: /(?<=version_compare\s*\(\s*\$\w+,\s*')unreleased(?=',\s*['<=>])/gis,
 				replace: ( match ) => match.replace( /unreleased/i, version ),
 			},
 		] );
