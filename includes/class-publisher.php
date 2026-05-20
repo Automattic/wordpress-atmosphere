@@ -1316,12 +1316,10 @@ class Publisher {
 
 		/*
 		 * A cron event queued just before `Client::disconnect()` can
-		 * still fire after the connection option is cleared. Without
-		 * this guard we would stamp `Publication::OPTION_URI` with an
-		 * AT-URI whose authority is empty
-		 * (`at:///site.standard.publication/<tid>`) and surface a
-		 * noisy "expected at://X/..., got at:///..." validation error
-		 * on the front-end until the next legitimate sync.
+		 * still fire after the connection option is cleared. Calling
+		 * `putRecord` with an empty `repo` would either malform the
+		 * request or — worse — land on whatever DID the auth layer
+		 * happened to cache. Bail before either can happen.
 		 */
 		if ( '' === $did ) {
 			return new \WP_Error(
@@ -1333,41 +1331,22 @@ class Publisher {
 		$pub = new Publication( null );
 
 		/*
-		 * Re-derive the canonical publication URI from the CURRENT DID
-		 * and the locally-persisted TID, then store it before we even
-		 * call the PDS. The well-known endpoint and the front-end
-		 * verification headers both read `Publication::OPTION_URI`, so
-		 * any drift between the stored URI and `get_did()` immediately
-		 * breaks standard.site validation — exactly the
-		 * disconnect-then-reconnect-to-different-DID failure the
-		 * validator surfaces as "Expected at://<new>/pub/<tid>, Got
-		 * at://<old>/pub/<tid>". Stamping it from current state on
-		 * every sync makes the local option always reflect the
-		 * current owner; the PDS write that follows is what makes
-		 * the record itself catch up.
-		 *
-		 * Inconsistency window: if the PDS call below fails, the
-		 * option transiently points at a URI whose record may not
-		 * yet exist on the PDS for the new owner. The next
-		 * `sync_publication` invocation re-derives and re-writes the
-		 * same URI after a successful PDS write, so the divergence
-		 * self-heals on retry rather than wedging.
-		 */
-		$canonical_uri = build_at_uri( $did, 'site.standard.publication', $pub->get_rkey() );
-		\update_option( Publication::OPTION_URI, $canonical_uri, false );
-
-		/*
 		 * Always `putRecord`. AT Protocol's `putRecord` is an upsert:
 		 * it creates the record when missing and overwrites when
-		 * present. The previous `createRecord`-vs-`putRecord` branch
-		 * picked between the two based on whether we already had a
-		 * URI locally, which broke after a manual option delete (the
-		 * fall-through to `createRecord` failed with "record already
-		 * exists" because the record was still on the PDS, just not
-		 * in our option). Using `putRecord` unconditionally avoids
-		 * that mismatch.
+		 * present. A previous version branched between `createRecord`
+		 * and `putRecord` based on a locally-persisted URI option;
+		 * after disconnect/reconnect-to-a-different-DID that branch
+		 * could pick `createRecord` against a repo that already had
+		 * the record (PDS replies "already exists") or `putRecord`
+		 * against a repo that did not (which `putRecord` handles
+		 * fine, but the inconsistency made the local state hard to
+		 * reason about). Using `putRecord` unconditionally collapses
+		 * both cases into a single upsert against the CURRENT DID +
+		 * locally-persisted TID — the rkey is stable across
+		 * reconnects, so the record always lands at the same address
+		 * for the active owner.
 		 */
-		$result = API::post(
+		return API::post(
 			'/xrpc/com.atproto.repo.putRecord',
 			array(
 				'repo'       => $did,
@@ -1376,21 +1355,6 @@ class Publisher {
 				'record'     => $pub->transform(),
 			)
 		);
-
-		if ( \is_wp_error( $result ) ) {
-			return $result;
-		}
-
-		/*
-		 * Prefer the PDS-returned URI when available — it is the
-		 * authoritative form of the just-written record — and fall
-		 * back to the canonical URI we stamped above otherwise.
-		 */
-		if ( ! empty( $result['uri'] ) ) {
-			\update_option( Publication::OPTION_URI, (string) $result['uri'], false );
-		}
-
-		return $result;
 	}
 
 	/**

@@ -15,11 +15,9 @@ namespace Atmosphere\Tests;
 use WP_UnitTestCase;
 use Atmosphere\Atmosphere;
 use Atmosphere\Reaction_Sync;
-use Atmosphere\OAuth\Client;
 use Atmosphere\Transformer\Comment;
 use Atmosphere\Transformer\Document;
 use Atmosphere\Transformer\Post;
-use Atmosphere\Transformer\Publication;
 
 /**
  * Atmosphere tests.
@@ -1475,24 +1473,24 @@ class Test_Atmosphere extends WP_UnitTestCase {
 	}
 
 	/**
-	 * `Client::disconnect` clears `Publication::OPTION_URI`.
-	 *
-	 * Reconnecting to a different DID would otherwise leave the option
-	 * baked with the previous owner's AT-URI; the well-known endpoint
-	 * would keep serving the old authority and standard.site validation
-	 * would fail with "Expected at://<new>/pub/<tid>, Got at://<old>/...".
+	 * `Client::disconnect` sweeps the stale `atmosphere_publication_uri`
+	 * row that 1.0.0 used to write. Nothing in production consumes the
+	 * option (the well-known endpoint and Document transformer derive
+	 * the URI from `get_did()` + the publication TID), but a leftover
+	 * row on disconnected installs would still be confusing to operators
+	 * inspecting the options table.
 	 */
-	public function test_disconnect_clears_publication_uri() {
+	public function test_disconnect_sweeps_stale_publication_uri_option() {
 		\update_option(
-			Publication::OPTION_URI,
+			'atmosphere_publication_uri',
 			'at://did:plc:old-owner/site.standard.publication/3kpubtid000000'
 		);
 
-		Client::disconnect();
+		\Atmosphere\OAuth\Client::disconnect();
 
 		$this->assertFalse(
-			\get_option( Publication::OPTION_URI ),
-			'Client::disconnect must clear Publication::OPTION_URI so a reconnect to a different DID does not leak the previous authority through the well-known endpoint.'
+			\get_option( 'atmosphere_publication_uri' ),
+			'Client::disconnect must sweep the stale atmosphere_publication_uri row from 1.0.0 installs.'
 		);
 	}
 

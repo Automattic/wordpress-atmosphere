@@ -20,7 +20,6 @@ use Atmosphere\OAuth\Encryption;
 use Atmosphere\Transformer\Comment;
 use Atmosphere\Transformer\Document;
 use Atmosphere\Transformer\Post;
-use Atmosphere\Transformer\Publication;
 
 /**
  * Publisher tests.
@@ -2353,74 +2352,22 @@ class Test_Publisher extends WP_UnitTestCase {
 	 * `sync_publication()` bails when the plugin is disconnected.
 	 *
 	 * A cron event queued before `Client::disconnect()` can still fire
-	 * after the connection option is cleared. Without the guard we'd
-	 * stamp `Publication::OPTION_URI` with an empty-authority AT-URI
-	 * (`at:///site.standard.publication/<tid>`) that breaks .well-known
-	 * validation until the next legitimate sync.
+	 * after the connection option is cleared. Without the guard,
+	 * `putRecord` would be called with an empty `repo`, either
+	 * malforming the request or landing on whatever DID the auth
+	 * layer happened to cache.
 	 */
 	public function test_sync_publication_bails_when_disconnected() {
 		\delete_option( 'atmosphere_connection' );
 		\delete_option( 'atmosphere_did' );
-		\delete_option( Publication::OPTION_URI );
+		// `get_did()` resolves through `get_identity()` which reads
+		// `atmosphere_identity` — without this delete the option can
+		// leak in from earlier tests and skip the guard under test.
+		\delete_option( 'atmosphere_identity' );
 
 		$result = Publisher::sync_publication();
 
 		$this->assertWPError( $result );
 		$this->assertSame( 'atmosphere_not_connected', $result->get_error_code() );
-		$this->assertFalse(
-			\get_option( Publication::OPTION_URI ),
-			'OPTION_URI must not be written when the plugin is disconnected.'
-		);
-	}
-
-	/**
-	 * `sync_publication()` writes the canonical URI (current DID +
-	 * locally-persisted TID) to `Publication::OPTION_URI` BEFORE the
-	 * PDS call. This is what makes the well-known endpoint serve the
-	 * correct authority immediately after a reconnect to a different
-	 * DID — the PDS write catches up afterwards. Regression guard for
-	 * the disconnect→reconnect-to-different-DID standard.site
-	 * validation failure.
-	 */
-	public function test_sync_publication_writes_uri_before_pds_call() {
-		\update_option( 'atmosphere_publication_tid', '3kpubtid000000' );
-		\delete_option( Publication::OPTION_URI );
-
-		$snapshot_at_request_time = null;
-
-		$intercept = function ( $response, array $args, string $url ) use ( &$snapshot_at_request_time ) {
-			if ( false === \strpos( $url, 'com.atproto.repo.putRecord' ) ) {
-				return $response;
-			}
-			$body = isset( $args['body'] ) && \is_string( $args['body'] ) ? \json_decode( $args['body'], true ) : array();
-			if ( ! isset( $body['collection'] ) || 'site.standard.publication' !== $body['collection'] ) {
-				return $response;
-			}
-
-			$snapshot_at_request_time = \get_option( Publication::OPTION_URI );
-
-			return array(
-				'response' => array( 'code' => 200 ),
-				'body'     => \wp_json_encode(
-					array(
-						'uri' => 'at://did:plc:test123/site.standard.publication/3kpubtid000000',
-						'cid' => 'bafyreibpubcid',
-					)
-				),
-			);
-		};
-		\add_filter( 'pre_http_request', $intercept, 5, 3 );
-
-		$result = Publisher::sync_publication();
-
-		\remove_filter( 'pre_http_request', $intercept, 5 );
-		\delete_option( 'atmosphere_publication_tid' );
-
-		$this->assertIsArray( $result );
-		$this->assertSame(
-			'at://did:plc:test123/site.standard.publication/3kpubtid000000',
-			$snapshot_at_request_time,
-			'OPTION_URI must be stamped with the current DID + TID BEFORE the PDS call.'
-		);
 	}
 }

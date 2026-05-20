@@ -97,13 +97,19 @@ class Test_Admin_Handle extends WP_UnitTestCase {
 	 * Install a spy on `Handle::FILTER_PRE_UPDATE` and return a
 	 * reference to its call counter.
 	 *
+	 * The spy short-circuits the filter with `true` (controlled
+	 * success) so `Handle::set_handle()` returns cleanly without
+	 * exercising the real DPoP / HTTP path — the integration test
+	 * only cares that the admin trigger reaches the handle service,
+	 * not that the auth layer succeeds.
+	 *
 	 * @param int $counter Call-count reference holder.
 	 */
 	private function spy_on_handle_update( int &$counter ): void {
 		$counter = 0;
-		$spy     = static function ( $value ) use ( &$counter ) {
+		$spy     = static function () use ( &$counter ) {
 			++$counter;
-			return $value;
+			return true;
 		};
 		$this->add_filter_tracked( Handle::FILTER_PRE_UPDATE, $spy );
 	}

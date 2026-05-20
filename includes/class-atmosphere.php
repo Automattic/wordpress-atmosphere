@@ -518,14 +518,13 @@ class Atmosphere {
 				 FROM {$wpdb->posts} p
 				 INNER JOIN {$wpdb->postmeta} pm ON pm.post_id = p.ID
 				 WHERE p.ID > %d
-				   AND pm.meta_key IN (%s, %s, %s, %s, %s)
+				   AND pm.meta_key IN (%s, %s, %s, %s)
 				 ORDER BY p.ID ASC
 				 LIMIT %d",
 				$last_id,
 				Post::META_TID,
 				Post::META_URI,
 				Post::META_THREAD_RECORDS,
-				Document::META_TID,
 				Document::META_URI,
 				self::VISIBILITY_CLEANUP_BATCH_SIZE
 			)
