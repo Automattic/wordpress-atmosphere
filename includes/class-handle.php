@@ -315,9 +315,22 @@ class Handle {
 			);
 		}
 
-		$response = API::post(
+		/*
+		 * Called from the `atmosphere_set_handle` cron worker — no
+		 * synchronous PHP-FPM budget to honour. The auth server's
+		 * `/.well-known/atproto-did` verification routinely takes
+		 * 15-45 seconds; we give the HTTP call a 60s timeout so it
+		 * can complete without being killed by the default 30s
+		 * `wp_safe_remote_post` window. Cron has its own timeout
+		 * (~60s on most installs) which we live within.
+		 */
+		$response = API::request(
+			'POST',
 			'/xrpc/com.atproto.identity.updateHandle',
-			array( 'handle' => $handle )
+			array(
+				'body'    => array( 'handle' => $handle ),
+				'timeout' => 60,
+			)
 		);
 
 		if ( \is_wp_error( $response ) ) {
