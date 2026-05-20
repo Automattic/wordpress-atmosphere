@@ -1977,6 +1977,7 @@ class Test_Atmosphere extends WP_UnitTestCase {
 		);
 		\update_comment_meta( $parent_id, Reaction_Sync::META_PROTOCOL, 'atproto' );
 		\update_comment_meta( $parent_id, Reaction_Sync::META_SOURCE_ID, 'at://did:plc:other/app.bsky.feed.post/fedparent' );
+		\update_comment_meta( $parent_id, Reaction_Sync::META_BSKY_CID, 'bafyfedparent' );
 
 		$child_id = self::factory()->comment->create(
 			array(
@@ -2053,5 +2054,68 @@ class Test_Atmosphere extends WP_UnitTestCase {
 		\do_action( 'atmosphere_publish_comment', $comment_id );
 
 		$this->assertSame( 1, $apply_writes_calls, 'Top-level comment publish should proceed unconditionally.' );
+	}
+
+	/**
+	 * Half-state guard: a parent that has `Comment::META_URI` but no
+	 * matching `META_CID` must NOT count as having a bsky
+	 * representation. `Comment::resolve_parent_ref()` requires both
+	 * fields for the reply strongRef and would otherwise fall back to
+	 * the post root — reintroducing the top-level-fallback bug the
+	 * cron-handler gate is here to prevent. Symmetric check on the
+	 * federated path (atproto protocol flag without `META_BSKY_CID`)
+	 * is exercised by the existing tests via shared code paths.
+	 */
+	public function test_publish_comment_skipped_when_parent_has_uri_but_no_cid() {
+		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		\update_post_meta( $post_id, Post::META_URI, 'at://did:plc:test123/app.bsky.feed.post/postroot' );
+		\update_post_meta( $post_id, Post::META_CID, 'bafypostroot' );
+
+		$parent_id = self::factory()->comment->create(
+			array(
+				'comment_post_ID'  => $post_id,
+				'comment_approved' => '1',
+				'comment_type'     => 'comment',
+				'user_id'          => self::factory()->user->create(),
+				'comment_content'  => 'Half-published parent.',
+			)
+		);
+		// URI present but CID missing — a half-state row that would
+		// previously slip past the parent_has_bsky_representation
+		// gate yet still fall back to root in build_reply_ref().
+		\update_comment_meta( $parent_id, Comment::META_URI, 'at://did:plc:test123/app.bsky.feed.post/parent' );
+
+		$child_id = self::factory()->comment->create(
+			array(
+				'comment_post_ID'  => $post_id,
+				'comment_approved' => '1',
+				'comment_type'     => 'comment',
+				'user_id'          => self::factory()->user->create(),
+				'comment_content'  => 'Reply to half-state.',
+				'comment_parent'   => $parent_id,
+			)
+		);
+
+		$apply_writes_calls = 0;
+		\add_filter(
+			'atmosphere_pre_apply_writes',
+			function () use ( &$apply_writes_calls ) {
+				++$apply_writes_calls;
+				return array(
+					'results' => array(
+						array(
+							'uri' => 'at://x',
+							'cid' => 'bafyx',
+						),
+					),
+				);
+			},
+			10,
+			2
+		);
+
+		\do_action( 'atmosphere_publish_comment', $child_id );
+
+		$this->assertSame( 0, $apply_writes_calls, 'Publish must be skipped when parent has URI but no CID.' );
 	}
 }

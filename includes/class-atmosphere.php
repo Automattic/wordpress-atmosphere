@@ -1395,27 +1395,27 @@ class Atmosphere {
 
 	/**
 	 * Whether the comment's immediate WP parent has an AT Protocol
-	 * representation that the reply record can thread under.
+	 * strongRef the reply record can thread under.
+	 *
+	 * Mirrors the exact requirements of {@see Comment::resolve_parent_ref()}:
+	 * a strongRef needs BOTH `uri` and `cid`. Half-state rows (URI
+	 * present but CID missing, or `META_PROTOCOL = atproto` without
+	 * the federated CID alongside) would let `resolve_parent_ref()`
+	 * fall through and `build_reply_ref()` substitute the post root,
+	 * silently promoting the nested reply to a top-level post — the
+	 * exact bug this check is here to prevent.
 	 *
 	 * Returns true when:
 	 *
 	 * - The comment has no parent (top-level reply to the post). The
 	 *   post itself has a bsky record; the publish path threads against
 	 *   that root.
-	 * - The parent comment carries {@see Comment::META_URI} — the
-	 *   plugin already published the parent to the PDS.
+	 * - The parent comment carries both {@see Comment::META_URI} and
+	 *   {@see Comment::META_CID} — the plugin already published the
+	 *   parent to the PDS.
 	 * - The parent comment is marked as ingested by
-	 *   {@see Reaction_Sync} (`META_PROTOCOL = atproto`) — it came in
-	 *   from the bsky side, and the bsky URI / CID needed for the
-	 *   reply strongRef are on the row.
-	 *
-	 * Otherwise the parent is local-only: an anonymous WP commenter, an
-	 * un-publishable comment, or a comment from a different federation
-	 * source. Publishing a reply to it would either fail at strongRef
-	 * construction or — worse — silently promote the nested reply to a
-	 * top-level post via the root fallback in
-	 * {@see Comment::build_reply_ref()}, severing the WP thread context.
-	 * The cron handler skips the publish in that case.
+	 *   {@see Reaction_Sync} (`META_PROTOCOL = atproto`) AND carries
+	 *   both `META_SOURCE_ID` (URI) and `META_BSKY_CID`.
 	 *
 	 * @param \WP_Comment $comment Comment about to be published.
 	 * @return bool
@@ -1427,11 +1427,20 @@ class Atmosphere {
 			return true;
 		}
 
-		if ( ! empty( \get_comment_meta( $parent_id, Comment::META_URI, true ) ) ) {
+		$local_uri = \get_comment_meta( $parent_id, Comment::META_URI, true );
+		$local_cid = \get_comment_meta( $parent_id, Comment::META_CID, true );
+		if ( ! empty( $local_uri ) && ! empty( $local_cid ) ) {
 			return true;
 		}
 
-		return 'atproto' === \get_comment_meta( $parent_id, Reaction_Sync::META_PROTOCOL, true );
+		if ( 'atproto' !== \get_comment_meta( $parent_id, Reaction_Sync::META_PROTOCOL, true ) ) {
+			return false;
+		}
+
+		$federated_uri = \get_comment_meta( $parent_id, Reaction_Sync::META_SOURCE_ID, true );
+		$federated_cid = \get_comment_meta( $parent_id, Reaction_Sync::META_BSKY_CID, true );
+
+		return ! empty( $federated_uri ) && ! empty( $federated_cid );
 	}
 
 	/**
