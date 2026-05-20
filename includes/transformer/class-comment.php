@@ -117,7 +117,7 @@ class Comment extends Base {
 			\_doing_it_wrong(
 				__METHOD__,
 				\esc_html__( 'atmosphere_transform_comment must return an array; falling back to the unfiltered record.', 'atmosphere' ),
-				'unreleased'
+				'1.0.0'
 			);
 			return $record;
 		}

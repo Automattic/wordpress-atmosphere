@@ -315,9 +315,26 @@ class Handle {
 			);
 		}
 
-		$response = API::post(
+		/*
+		 * Called synchronously from `Admin::maybe_set_domain_handle()`
+		 * on `admin_init`, so the submitting administrator waits on
+		 * this HTTP round-trip. The PDS asks the host's
+		 * `/.well-known/atproto-did` for the DID associated with the
+		 * domain; that lookup typically completes well under five
+		 * seconds in practice but can stretch to 15-45s for slow DNS
+		 * or slow-origin combinations. The 60s timeout (versus the
+		 * `wp_safe_remote_post` default of 30s) gives a slow-but-
+		 * eventual success room to land instead of failing the
+		 * verification mid-handshake. The wait is paid by an
+		 * administrator who explicitly clicked the button.
+		 */
+		$response = API::request(
+			'POST',
 			'/xrpc/com.atproto.identity.updateHandle',
-			array( 'handle' => $handle )
+			array(
+				'body'    => array( 'handle' => $handle ),
+				'timeout' => 60,
+			)
 		);
 
 		if ( \is_wp_error( $response ) ) {

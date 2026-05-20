@@ -1,4 +1,0 @@
-Significance: patch
-Type: fixed
-
-Break up large cleanup batches when removing a post and its replies so deletion still completes on threads with many comments.

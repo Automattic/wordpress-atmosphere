@@ -1,4 +1,0 @@
-Significance: patch
-Type: security
-
-Harden OAuth and PDS HTTP request paths against SSRF, encrypt the temporary DPoP key used during connect, and validate URLs received from third-party servers before they are used or stored.

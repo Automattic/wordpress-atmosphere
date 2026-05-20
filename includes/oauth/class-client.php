@@ -1126,6 +1126,19 @@ class Client {
 		\delete_option( 'atmosphere_connection' );
 		\delete_option( 'atmosphere_identity' );
 		\delete_option( self::REFRESH_LOCK_OPTION );
+
+		/*
+		 * Sweep a stale option from 1.0.0 installs. `atmosphere_publication_uri`
+		 * was cached state that nothing in production ever read — the
+		 * well-known endpoint and the Document transformer's `site`
+		 * reference both derive the publication URI on demand from
+		 * `get_did()` + the publication TID. Drop the row so it does
+		 * not linger on disconnected installs. `atmosphere_publication_tid`
+		 * stays put because that TID is the stable site-level
+		 * identifier that survives reconnects to the same account.
+		 */
+		\delete_option( 'atmosphere_publication_uri' );
+
 		clear_scheduled_hooks();
 
 		if ( null !== $revoke_args ) {

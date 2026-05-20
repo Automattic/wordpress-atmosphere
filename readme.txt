@@ -4,7 +4,7 @@ Tags: at-protocol, bluesky, fediverse, atproto, crossposting
 Requires at least: 6.2
 Tested up to: 7.0
 Requires PHP: 8.2
-Stable tag: unreleased
+Stable tag: 1.0.0
 License: GPL-2.0-or-later
 License URI: https://spdx.org/licenses/GPL-2.0-or-later.html
 
@@ -91,14 +91,58 @@ Not at this time. ATmosphere is designed for a single WordPress site. On a Netwo
 
 == Changelog ==
 
-= 0.1.0 =
+### 1.0.0 - 2026-05-20
+#### Security
+- Harden OAuth and PDS HTTP request paths against SSRF, encrypt the temporary DPoP key used during connect, and validate URLs received from third-party servers before they are used or stored.
+- Tighten DPoP proof lifetime when talking to the AT Protocol auth server and PDS, and harden the OAuth and PDS HTTP paths against malformed server responses.
+- Tighten OAuth redirect handling, validate hook return values from third-party plugins, gate DNS lookups for @mentions, and clean up additional plugin data on uninstall.
 
-* Initial release.
-* Native AT Protocol OAuth with PKCE and DPoP.
-* Bluesky cross-posting with facet detection.
-* standard.site publication and document records.
-* Per-post meta box controls.
-* Bulk backfill for existing posts.
+#### Added
+- Add extensible content parser support and a JSON preview endpoint for AT Protocol records.
+- Add `atmosphere_publish_post_result` and `atmosphere_publish_comment_result` actions so subscribers can react to publish success or failure (e.g., for metrics and notifications) without observing internal state.
+- Add `atmosphere_should_sync_reply` filter so consumers can suppress specific incoming replies before they become WordPress comments — primarily useful for teaser-thread publishers that don't want their own follow-up records re-ingested as self-replies.
+- Automatically sync the publication record when the site name, tagline, or site icon changes.
+- Choose how long-form posts publish to Bluesky from the ATmosphere settings page — link card (default), a single post combining body text with the permalink, or a two-post teaser thread.
+- Choose which post types are published to AT Protocol from the ATmosphere settings page. Plugins and themes can also opt their custom post types in directly with `add_post_type_support( 'your_type', 'atmosphere' )`.
+- Liftoff! ATmosphere has cleared the troposphere — version 1.0 is now generally available.
+- Long-form posts can now be published to Bluesky as a short thread that points readers back to the full article. Sites can keep the existing single-post behavior, publish a shortened text version with a link, or use a two-post teaser thread. When a threaded post is edited, ATmosphere updates the existing Bluesky posts when possible so links and replies stay connected. If the publishing format changes, ATmosphere replaces the old Bluesky posts with new ones.
+- Preserve the connection success notice after completing Bluesky setup, and let integrating plugins customize the OAuth callback destination.
+- Publish replies from registered WordPress users to Bluesky as native replies, with edit and unapprove/delete synced back to the AT Protocol record.
+- Request the identity:handle permission when connecting to Bluesky so handle changes can be kept in sync.
+- Short-form posts (untitled or with a post format) now publish as native Bluesky posts instead of link cards, matching the ActivityPub plugin's Note discriminator. Added the `atmosphere_is_short_form_post` filter for downstream override.
+- Sync Bluesky replies, likes, and reposts back as WordPress comments.
+- Use your site domain as your Bluesky handle with one click from the ATmosphere settings page.
+- Use your WordPress domain as your Bluesky handle with automatic domain verification.
+
+#### Changed
+- Always use HTTPS for the AT Protocol OAuth callback URL, and keep encrypted connection tokens out of the always-loaded options cache.
+- Improved Bluesky connection reliability and disconnect speed, fixed a rare duplicate-record issue when publishing simultaneously from multiple workers, and now respects your comment moderation and spam filter settings when importing Bluesky reactions and replies.
+- Improve the development test setup so automated tests can run while another local WordPress environment is already using the default ports.
+- Limit backfill to the 10 most recent unsynced posts to avoid overwhelming the server on large sites.
+- Long-form teaser threads now use a 3-post default (hook, body chunk, "continue reading" reply with a link card), so the thread reliably surfaces on bsky.app profiles and the terminal post offers a clear path back to the WordPress article.
+- Redesign the settings page to use the standard WordPress Settings API for a cleaner, more consistent admin experience.
+- Replace third-party JWT library with native OpenSSL signing and add a custom class autoloader.
+
+#### Fixed
+- Break up large cleanup batches when removing a post and its replies so deletion still completes on threads with many comments.
+- Clear every plugin-owned scheduled event on deactivate and uninstall so leftover jobs don't linger after the plugin is removed.
+- Clear queued sync events on disconnect, deactivation, and uninstall so leftover jobs cannot fire against a different connected account.
+- Editing a WordPress post that was published before connecting to Bluesky no longer creates a new Bluesky post on save. Use the Backfill tool to sync existing posts on purpose.
+- Fix auto-publish being disabled by default after saving settings.
+- Fix PHPCS warnings about unprefixed global variables and hook names.
+- Fix published posts being incorrectly deleted from Bluesky when editing.
+- Fix restoring a trashed post not republishing it to Bluesky.
+- Fix the settings page, meta box, and backfill actions not loading after the previous admin hook change.
+- Keep your AT Protocol verification headers and publishing preferences in place when your session expires. Reconnect is required to resume publishing, but your settings no longer reset and standard.site verification keeps working.
+- Move scheduled action hook registration into the standard plugin initialization flow.
+- Preserve remote cleanup of already-synced posts when their post type is removed from the syncable allowlist.
+- Preserve the OAuth connection when token refresh fails due to temporary server errors.
+- Prevent concurrent token refreshes from racing each other and accidentally disconnecting the plugin.
+- Prevent password-protected or otherwise non-public posts from being published to AT Protocol records, and remove existing records when public posts become protected.
+- Remove a comment reply from Bluesky if the comment was deleted or unapproved while it was being published, instead of leaving an orphan reply behind.
+- Short posts under the long-form teaser-thread strategy no longer ship a redundant "continue reading" reply when the entire body already fits in a single Bluesky post. The link-back is preserved as a card on the same post.
+
+See full Changelog on [GitHub](https://github.com/Automattic/wordpress-atmosphere/blob/trunk/CHANGELOG.md).
 
 == Upgrade Notice ==
 

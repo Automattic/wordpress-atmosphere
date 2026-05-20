@@ -27,13 +27,6 @@ class Publication extends Base {
 	public const OPTION_TID = 'atmosphere_publication_tid';
 
 	/**
-	 * Option key for the publication AT-URI.
-	 *
-	 * @var string
-	 */
-	public const OPTION_URI = 'atmosphere_publication_uri';
-
-	/**
 	 * Transform site settings into a publication record.
 	 *
 	 * @return array site.standard.publication record.
@@ -76,7 +69,7 @@ class Publication extends Base {
 			\_doing_it_wrong(
 				__METHOD__,
 				\esc_html__( 'atmosphere_transform_publication must return an array; falling back to the unfiltered record.', 'atmosphere' ),
-				'unreleased'
+				'1.0.0'
 			);
 			return $record;
 		}

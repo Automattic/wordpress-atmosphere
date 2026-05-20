@@ -32,11 +32,11 @@ class Admin {
 		\add_action( 'admin_menu', array( self::class, 'add_menu' ) );
 		\add_action( 'admin_init', array( self::class, 'handle_oauth_callback' ) );
 		\add_action( 'admin_init', array( self::class, 'register_settings' ) );
+		\add_action( 'admin_init', array( self::class, 'maybe_set_domain_handle' ) );
 		\add_action( 'admin_enqueue_scripts', array( self::class, 'enqueue_assets' ) );
 		\add_action( 'admin_notices', array( self::class, 'maybe_render_reauth_notice' ) );
 
 		\add_action( 'admin_post_atmosphere_disconnect', array( self::class, 'handle_disconnect' ) );
-		\add_action( 'admin_post_atmosphere_set_domain_handle', array( self::class, 'handle_set_domain_handle' ) );
 
 		// Meta box on syncable post types.
 		\add_action( 'add_meta_boxes', array( self::class, 'add_meta_box' ) );
@@ -266,9 +266,8 @@ class Admin {
 	 * {@see Handle::should_offer()} agrees the offer is meaningful.
 	 */
 	public static function render_domain_handle_field(): void {
-		$current  = (string) ( get_connection()['handle'] ?? '' );
-		$target   = Handle::get_target_handle();
-		$post_url = \admin_url( 'admin-post.php?action=atmosphere_set_domain_handle' );
+		$current = (string) ( get_connection()['handle'] ?? '' );
+		$target  = Handle::get_target_handle();
 		?>
 		<p>
 			<?php
@@ -295,23 +294,26 @@ class Admin {
 		<p>
 			<?php
 			/*
-			 * The settings page wraps every field in a single outer
-			 * <form action="options.php" method="post">. A nested form
-			 * would be invalid HTML, so the submit button overrides the
-			 * outer form's destination via formaction/formmethod when —
-			 * and only when — this button is the one clicked. The Save
-			 * button at the bottom of the settings page still posts to
-			 * options.php as normal. This keeps the nonce in the request
-			 * body instead of leaking it through the URL / Referer
-			 * header / link prefetching, which an <a> with
-			 * wp_nonce_url() would do.
+			 * `name`/`value` mark the button so {@see
+			 * self::maybe_set_domain_handle()} (hooked on
+			 * `admin_init`) can detect this specific click. The
+			 * Save Changes button at the bottom of the page does
+			 * not carry this name, so a regular settings save lands
+			 * `$_POST['atmosphere_set_domain_handle']` as empty and
+			 * the trigger handler bails — only an explicit click on
+			 * THIS button reaches `Handle::set_handle()`.
+			 *
+			 * Stays inside the WP Settings form: the click rides on
+			 * the form's own nonce + capability gate and options.php
+			 * issues the normal redirect afterwards, so the settings
+			 * notice posted by `Handle::set_handle()` surfaces on the
+			 * next pageview without any custom redirect path.
 			 */
-			\wp_nonce_field( 'atmosphere_set_domain_handle', 'atmosphere_nonce', false );
 			?>
 			<button
 				type="submit"
-				formaction="<?php echo \esc_url( $post_url ); ?>"
-				formmethod="post"
+				name="atmosphere_set_domain_handle"
+				value="1"
 				class="button">
 				<?php
 				echo \esc_html(
@@ -696,23 +698,46 @@ class Admin {
 	}
 
 	/**
-	 * Handle the explicit "use my domain as my Bluesky handle" submission.
+	 * Trigger `Handle::set_handle()` when the settings form is
+	 * submitted with the "Use my domain as my Bluesky handle" button.
 	 *
-	 * Verifies capability + nonce, defers to {@see Handle::set_handle()} for
-	 * the actual call, then redirects back to the Settings page with a notice
-	 * already populated by Handle.
+	 * The button renders inside the WP Settings form and carries
+	 * `name="atmosphere_set_domain_handle" value="1"`. When clicked,
+	 * the form POSTs to `options.php` like any other settings save.
+	 * Routing the trigger through a dedicated `admin-post.php?action=…`
+	 * endpoint instead collides with `settings_fields()`'s hidden
+	 * `<input name="action" value="update">` field — POST wins in
+	 * `$_REQUEST['action']` and the click ends up dispatched to
+	 * `admin_post_update`. Detecting the field here on `admin_init`,
+	 * before options.php runs, keeps the action inside the same
+	 * form-submit lifecycle without conflicting concerns.
+	 *
+	 * Bails silently if the trigger field is absent (normal Save
+	 * Changes path) or if the request fails any of the standard
+	 * settings-form guards (capability, option group, nonce). On
+	 * success `Handle::set_handle()` posts its own settings notice;
+	 * options.php's own redirect surfaces the notice on the next
+	 * pageview without us having to intercept the redirect here.
 	 */
-	public static function handle_set_domain_handle(): void {
-		if ( ! \current_user_can( 'manage_options' ) ) {
-			\wp_die( \esc_html__( 'You do not have permission to do this.', 'atmosphere' ) );
+	public static function maybe_set_domain_handle(): void {
+		// phpcs:ignore WordPress.Security.NonceVerification.Missing -- Presence check only; nonce is verified below before any side effect.
+		if ( empty( $_POST['atmosphere_set_domain_handle'] ) ) {
+			return;
 		}
 
-		\check_admin_referer( 'atmosphere_set_domain_handle', 'atmosphere_nonce' );
+		if ( ! \current_user_can( 'manage_options' ) ) {
+			return;
+		}
+
+		// phpcs:ignore WordPress.Security.NonceVerification.Missing -- Same as above; nonce verified on the next line.
+		$option_page = isset( $_POST['option_page'] ) ? \sanitize_key( \wp_unslash( $_POST['option_page'] ) ) : '';
+		if ( 'atmosphere' !== $option_page ) {
+			return;
+		}
+
+		\check_admin_referer( 'atmosphere-options' );
 
 		Handle::set_handle();
-
-		\wp_safe_redirect( \admin_url( 'options-general.php?page=atmosphere' ) );
-		exit;
 	}
 
 	/**
@@ -912,7 +937,7 @@ class Admin {
 			\_doing_it_wrong(
 				__METHOD__,
 				\esc_html__( 'atmosphere_client_metadata must return an array with a non-empty string client_id and a redirect_uris list of admin URLs; falling back to the unfiltered metadata.', 'atmosphere' ),
-				'unreleased'
+				'1.0.0'
 			);
 		}
 

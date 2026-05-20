@@ -1,11 +1,13 @@
 <?php
 /**
- * Integration tests for the domain-handle admin-post handler.
+ * Integration tests for the in-form domain-handle trigger.
  *
- * Covers the two security gates on `Admin::handle_set_domain_handle`
- * (capability + nonce) and the happy-path redirect. The Handle service
- * itself has unit coverage in {@see Test_Handle}; this file pins the
- * front-door contract between an admin POST and the XRPC call.
+ * Covers the gates on `Admin::maybe_set_domain_handle()` (presence of
+ * the button's `name` field, capability, option-group, nonce) and
+ * confirms that `Handle::set_handle()` runs only when every gate
+ * passes. Handle service itself has unit coverage in
+ * {@see Test_Handle}; this file pins the front-door contract between
+ * the settings-form submission and the XRPC call.
  *
  * @package Atmosphere
  * @group atmosphere
@@ -20,7 +22,7 @@ use WP_UnitTestCase;
 use WPDieException;
 
 /**
- * Admin domain-handle handler tests.
+ * Domain-handle trigger tests.
  */
 class Test_Admin_Handle extends WP_UnitTestCase {
 
@@ -75,10 +77,6 @@ class Test_Admin_Handle extends WP_UnitTestCase {
 	 * Set up an eligible state where {@see Handle::set_handle()} would
 	 * reach the {@see Handle::FILTER_PRE_UPDATE} short-circuit if
 	 * called: root-install URLs and a connected, non-matching handle.
-	 *
-	 * Without this scaffolding, a `FILTER_PRE_UPDATE` spy can't tell the
-	 * difference between "the handler skipped Handle::set_handle()" and
-	 * "Handle::set_handle() ran but bailed early at !is_connected()".
 	 */
 	private function make_handle_call_observable(): void {
 		$home = static fn() => 'https://example.com';
@@ -96,89 +94,136 @@ class Test_Admin_Handle extends WP_UnitTestCase {
 	}
 
 	/**
-	 * Test that the handler dies when the current user lacks `manage_options`.
+	 * Install a spy on `Handle::FILTER_PRE_UPDATE` and return a
+	 * reference to its call counter.
+	 *
+	 * The spy short-circuits the filter with `true` (controlled
+	 * success) so `Handle::set_handle()` returns cleanly without
+	 * exercising the real DPoP / HTTP path — the integration test
+	 * only cares that the admin trigger reaches the handle service,
+	 * not that the auth layer succeeds.
+	 *
+	 * @param int $counter Call-count reference holder.
 	 */
-	public function test_dies_without_manage_options_cap(): void {
+	private function spy_on_handle_update( int &$counter ): void {
+		$counter = 0;
+		$spy     = static function () use ( &$counter ) {
+			++$counter;
+			return true;
+		};
+		$this->add_filter_tracked( Handle::FILTER_PRE_UPDATE, $spy );
+	}
+
+	/**
+	 * Build a settings-form POST that carries the trigger button +
+	 * the standard `atmosphere-options` settings nonce.
+	 *
+	 * @return string The created nonce (for assertion convenience).
+	 */
+	private function arrange_valid_form_post(): string {
+		$nonce = \wp_create_nonce( 'atmosphere-options' );
+
+		$_POST['atmosphere_set_domain_handle'] = '1';
+		$_POST['option_page']                  = 'atmosphere';
+		$_POST['_wpnonce']                     = $nonce;
+		$_REQUEST['_wpnonce']                  = $nonce;
+		$_REQUEST['option_page']               = 'atmosphere';
+
+		return $nonce;
+	}
+
+	/**
+	 * The trigger handler must NOT die when the current user lacks
+	 * `manage_options`. The button posts through the regular settings
+	 * form, and the rest of options.php still has work to do for the
+	 * other registered settings; bailing silently is the contract.
+	 */
+	public function test_bails_silently_without_manage_options_cap(): void {
 		\wp_set_current_user( 0 );
+		$this->make_handle_call_observable();
+		$this->arrange_valid_form_post();
+		$called = 0;
+		$this->spy_on_handle_update( $called );
+
+		Admin::maybe_set_domain_handle();
+
+		$this->assertSame( 0, $called, 'Handle::set_handle() must not run without manage_options.' );
+	}
+
+	/**
+	 * Without the trigger field in the POST (Save Changes path or any
+	 * unrelated admin pageview) the handler must return without
+	 * touching the Handle service.
+	 */
+	public function test_bails_silently_without_trigger_field(): void {
+		$this->become_admin();
+		$this->make_handle_call_observable();
+		$called = 0;
+		$this->spy_on_handle_update( $called );
+
+		// Note: $_POST['atmosphere_set_domain_handle'] is intentionally absent.
+		Admin::maybe_set_domain_handle();
+
+		$this->assertSame( 0, $called, 'Handle::set_handle() must not run on a non-trigger admin_init pass.' );
+	}
+
+	/**
+	 * The handler must reject submissions whose `option_page` is not
+	 * the atmosphere group — that field is the only reliable signal
+	 * that the POST came from our settings form and not another
+	 * options.php submission that happens to carry a matching name.
+	 */
+	public function test_bails_silently_when_option_page_does_not_match(): void {
+		$this->become_admin();
+		$this->make_handle_call_observable();
+		$this->arrange_valid_form_post();
+		$_POST['option_page']    = 'something-else';
+		$_REQUEST['option_page'] = 'something-else';
+		$called                  = 0;
+		$this->spy_on_handle_update( $called );
+
+		Admin::maybe_set_domain_handle();
+
+		$this->assertSame( 0, $called, 'Handle::set_handle() must not run when option_page does not match.' );
+	}
+
+	/**
+	 * With the trigger field + cap + matching option_page but a
+	 * missing nonce, `check_admin_referer` must wp_die — guaranteeing
+	 * the side-effect cannot execute on a forged POST.
+	 */
+	public function test_dies_on_missing_nonce(): void {
+		$this->become_admin();
+		$this->make_handle_call_observable();
+		$_POST['atmosphere_set_domain_handle'] = '1';
+		$_POST['option_page']                  = 'atmosphere';
+		$_REQUEST['option_page']               = 'atmosphere';
+		$called                                = 0;
+		$this->spy_on_handle_update( $called );
 
 		$this->expectException( WPDieException::class );
 
-		Admin::handle_set_domain_handle();
+		try {
+			Admin::maybe_set_domain_handle();
+		} finally {
+			$this->assertSame( 0, $called, 'Handle::set_handle() must not run on a nonce-failing POST.' );
+		}
 	}
 
 	/**
-	 * Test that the handler dies when no valid nonce is present, and that
-	 * the underlying `Handle::set_handle()` flow never runs.
-	 *
-	 * Sets up an otherwise-eligible state (root install + connected,
-	 * non-matching handle) so the FILTER_PRE_UPDATE spy is meaningful:
-	 * if `Handle::set_handle()` *were* incorrectly reached, the filter
-	 * would fire and `$called` would be 1.
+	 * Happy path: trigger field + cap + option_page + valid nonce →
+	 * `Handle::set_handle()` runs and the FILTER_PRE_UPDATE spy
+	 * observes exactly one short-circuit invocation.
 	 */
-	public function test_dies_on_missing_nonce_and_skips_handle_call(): void {
+	public function test_invokes_handle_set_when_all_gates_pass(): void {
 		$this->become_admin();
 		$this->make_handle_call_observable();
-
+		$this->arrange_valid_form_post();
 		$called = 0;
-		$spy    = static function ( $value ) use ( &$called ) {
-			++$called;
-			return $value;
-		};
-		$this->add_filter_tracked( Handle::FILTER_PRE_UPDATE, $spy );
+		$this->spy_on_handle_update( $called );
 
-		try {
-			Admin::handle_set_domain_handle();
-			$this->fail( 'Expected wp_die() from check_admin_referer.' );
-		} catch ( WPDieException $e ) {
-			// Expected.
-			unset( $e );
-		}
+		Admin::maybe_set_domain_handle();
 
-		$this->assertSame( 0, $called, 'Handle::set_handle() must not run when the nonce check fails.' );
-	}
-
-	/**
-	 * Test that the handler redirects to the Atmosphere settings page when
-	 * both the capability and nonce gates pass.
-	 *
-	 * The browser-side panel posts to admin-post.php via a form, so the
-	 * nonce is delivered in `$_POST` rather than the URL — the test
-	 * mirrors that.
-	 */
-	public function test_redirects_to_settings_page_on_success(): void {
-		$this->become_admin();
-
-		$nonce = \wp_create_nonce( 'atmosphere_set_domain_handle' );
-
-		/*
-		 * In real requests PHP populates $_REQUEST from $_POST/$_GET on
-		 * script start; in tests we mutate the superglobals directly, so
-		 * mirror the value into $_REQUEST too — that is what
-		 * check_admin_referer() actually reads.
-		 */
-		$_POST['atmosphere_nonce']    = $nonce;
-		$_REQUEST['atmosphere_nonce'] = $nonce;
-
-		/*
-		 * Short-circuit `wp_redirect` so the handler's `exit` is preempted
-		 * by an exception we can catch — without this the test would halt
-		 * the entire PHPUnit run.
-		 */
-		$captured = null;
-		$catcher  = static function ( $location ) use ( &$captured ) {
-			$captured = $location;
-			throw new WPDieException( 'redirect_intercepted' );
-		};
-		$this->add_filter_tracked( 'wp_redirect', $catcher );
-
-		try {
-			Admin::handle_set_domain_handle();
-			$this->fail( 'Expected redirect to be intercepted.' );
-		} catch ( WPDieException $e ) {
-			$this->assertSame( 'redirect_intercepted', $e->getMessage() );
-		}
-
-		$this->assertIsString( $captured );
-		$this->assertStringContainsString( 'page=atmosphere', $captured );
+		$this->assertSame( 1, $called, 'Handle::set_handle() must run when all gates pass.' );
 	}
 }

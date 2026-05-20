@@ -230,7 +230,7 @@ class Post extends Base {
 			\_doing_it_wrong(
 				__METHOD__,
 				\esc_html__( 'atmosphere_transform_bsky_post must return an array; falling back to the unfiltered record.', 'atmosphere' ),
-				'unreleased'
+				'1.0.0'
 			);
 			return $record;
 		}
@@ -1059,7 +1059,7 @@ class Post extends Base {
 			\_doing_it_wrong(
 				'atmosphere_teaser_thread_posts',
 				\esc_html__( 'The atmosphere_teaser_thread_posts filter must return a non-empty array of strings; falling back to the default teaser-thread shape.', 'atmosphere' ),
-				'unreleased'
+				'1.0.0'
 			);
 			return $default;
 		}
@@ -1081,7 +1081,7 @@ class Post extends Base {
 			\_doing_it_wrong(
 				'atmosphere_teaser_thread_posts',
 				\esc_html__( 'The atmosphere_teaser_thread_posts filter must return at least 2 string entries; falling back to the default teaser-thread shape.', 'atmosphere' ),
-				'unreleased'
+				'1.0.0'
 			);
 			return $default;
 		}
@@ -1303,7 +1303,7 @@ class Post extends Base {
 			\_doing_it_wrong(
 				__METHOD__,
 				\esc_html__( 'atmosphere_transform_bsky_post must return an array; falling back to the unfiltered record.', 'atmosphere' ),
-				'unreleased'
+				'1.0.0'
 			);
 			return $record;
 		}
@@ -1376,7 +1376,7 @@ class Post extends Base {
 			\_doing_it_wrong(
 				__METHOD__,
 				\esc_html__( 'atmosphere_transform_bsky_post must return an array; falling back to the unfiltered record.', 'atmosphere' ),
-				'unreleased'
+				'1.0.0'
 			);
 			return $record;
 		}
