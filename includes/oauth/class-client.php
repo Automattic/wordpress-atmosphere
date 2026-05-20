@@ -12,6 +12,7 @@ namespace Atmosphere\OAuth;
 
 \defined( 'ABSPATH' ) || exit;
 
+use Atmosphere\Transformer\Publication;
 use function Atmosphere\clear_scheduled_hooks;
 use function Atmosphere\get_connection;
 
@@ -1126,6 +1127,22 @@ class Client {
 		\delete_option( 'atmosphere_connection' );
 		\delete_option( 'atmosphere_identity' );
 		\delete_option( self::REFRESH_LOCK_OPTION );
+
+		/*
+		 * Clear the cached publication AT-URI. The URI bakes in the
+		 * current DID (`at://<did>/site.standard.publication/<tid>`),
+		 * so a reconnect to a different AT Protocol account would
+		 * otherwise leave the well-known endpoint, the front-end
+		 * verification headers, and `Publisher::sync_publication()`'s
+		 * "exists, update it" branch all pointing at the previous
+		 * owner's repo. We keep `atmosphere_publication_tid` because
+		 * the TID is a stable site-level identifier that should
+		 * survive reconnects to the SAME account; the next
+		 * `Publisher::sync_publication()` call after reconnect
+		 * derives the new URI from the new DID + retained TID.
+		 */
+		\delete_option( Publication::OPTION_URI );
+
 		clear_scheduled_hooks();
 
 		if ( null !== $revoke_args ) {

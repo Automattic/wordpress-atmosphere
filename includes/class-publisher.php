@@ -1314,36 +1314,56 @@ class Publisher {
 	public static function sync_publication(): array|\WP_Error {
 		$pub = new Publication( null );
 
-		$existing_uri = \get_option( Publication::OPTION_URI );
+		/*
+		 * Re-derive the canonical publication URI from the CURRENT DID
+		 * and the locally-persisted TID, then store it before we even
+		 * call the PDS. The well-known endpoint and the front-end
+		 * verification headers both read `Publication::OPTION_URI`, so
+		 * any drift between the stored URI and `get_did()` immediately
+		 * breaks standard.site validation — exactly the
+		 * disconnect-then-reconnect-to-different-DID failure the
+		 * validator surfaces as "Expected at://<new>/pub/<tid>, Got
+		 * at://<old>/pub/<tid>". Stamping it from current state on
+		 * every sync makes the local option always reflect the
+		 * current owner; the PDS write that follows is what makes
+		 * the record itself catch up.
+		 */
+		$canonical_uri = build_at_uri( get_did(), 'site.standard.publication', $pub->get_rkey() );
+		\update_option( Publication::OPTION_URI, $canonical_uri, false );
 
-		if ( $existing_uri ) {
-			$result = API::post(
-				'/xrpc/com.atproto.repo.putRecord',
-				array(
-					'repo'       => get_did(),
-					'collection' => 'site.standard.publication',
-					'rkey'       => $pub->get_rkey(),
-					'record'     => $pub->transform(),
-				)
-			);
-		} else {
-			$result = API::post(
-				'/xrpc/com.atproto.repo.createRecord',
-				array(
-					'repo'       => get_did(),
-					'collection' => 'site.standard.publication',
-					'rkey'       => $pub->get_rkey(),
-					'record'     => $pub->transform(),
-				)
-			);
-		}
+		/*
+		 * Always `putRecord`. AT Protocol's `putRecord` is an upsert:
+		 * it creates the record when missing and overwrites when
+		 * present. The previous `createRecord`-vs-`putRecord` branch
+		 * picked between the two based on whether we already had a
+		 * URI locally, which broke after a manual option delete (the
+		 * fall-through to `createRecord` failed with "record already
+		 * exists" because the record was still on the PDS, just not
+		 * in our option). Using `putRecord` unconditionally avoids
+		 * that mismatch.
+		 */
+		$result = API::post(
+			'/xrpc/com.atproto.repo.putRecord',
+			array(
+				'repo'       => get_did(),
+				'collection' => 'site.standard.publication',
+				'rkey'       => $pub->get_rkey(),
+				'record'     => $pub->transform(),
+			)
+		);
 
 		if ( \is_wp_error( $result ) ) {
 			return $result;
 		}
 
-		$uri = $result['uri'] ?? $pub->get_uri();
-		\update_option( Publication::OPTION_URI, $uri, false );
+		/*
+		 * Prefer the PDS-returned URI when available — it is the
+		 * authoritative form of the just-written record — and fall
+		 * back to the canonical URI we stamped above otherwise.
+		 */
+		if ( ! empty( $result['uri'] ) ) {
+			\update_option( Publication::OPTION_URI, (string) $result['uri'], false );
+		}
 
 		return $result;
 	}
