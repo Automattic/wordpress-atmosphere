@@ -16,6 +16,7 @@ use Atmosphere\Transformer\Post;
 use Atmosphere\Transformer\Publication;
 use Atmosphere\Integrations\Load;
 use Atmosphere\WP_Admin\Admin;
+use Atmosphere\WP_Admin\Settings_Fields;
 
 /**
  * Atmosphere main class.
@@ -96,6 +97,17 @@ class Atmosphere {
 		 */
 		\add_action( 'init', array( Admin::class, 'register' ), 5 );
 		\add_action( 'init', array( Backfill::class, 'register' ), 5 );
+
+		/*
+		 * Settings API option registration (`Options::init()`) and
+		 * Settings page UI assembly (`Settings_Fields::init()`) live in
+		 * their own classes, matching the layout the ActivityPub
+		 * plugin uses. Each wires its own hooks: `Options` registers
+		 * on `admin_init` + `rest_api_init`, `Settings_Fields` on
+		 * `load-settings_page_atmosphere`.
+		 */
+		Options::init();
+		Settings_Fields::init();
 
 		/*
 		 * Seed the long-form composition strategy from the user's

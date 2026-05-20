@@ -1,6 +1,6 @@
 <?php
 /**
- * Tests for `Admin::sanitize_handle()` redirect contract.
+ * Tests for `Sanitize::handle()` redirect contract.
  *
  * The method is the front-door entry to the OAuth flow: an admin
  * types a handle, this method runs as a `register_setting()`
@@ -20,7 +20,7 @@
 
 namespace Atmosphere\Tests\WP_Admin;
 
-use Atmosphere\WP_Admin\Admin;
+use Atmosphere\Sanitize;
 use WP_UnitTestCase;
 use WPDieException;
 
@@ -175,7 +175,7 @@ class Test_Sanitize_Handle extends WP_UnitTestCase {
 			}
 		);
 
-		Admin::sanitize_handle( 'alice.bsky-test-handle.io' );
+		Sanitize::handle( 'alice.bsky-test-handle.io' );
 
 		$this->assertFalse( $redirected, 'sanitize_handle must not redirect on a non-HTTPS auth URL.' );
 
@@ -204,7 +204,7 @@ class Test_Sanitize_Handle extends WP_UnitTestCase {
 			}
 		);
 
-		Admin::sanitize_handle( 'alice.bsky-test-handle.io' );
+		Sanitize::handle( 'alice.bsky-test-handle.io' );
 
 		$this->assertFalse( $redirected, 'sanitize_handle must not redirect when authorize() returns WP_Error.' );
 
@@ -236,7 +236,7 @@ class Test_Sanitize_Handle extends WP_UnitTestCase {
 		);
 
 		try {
-			Admin::sanitize_handle( 'alice.bsky-test-handle.io' );
+			Sanitize::handle( 'alice.bsky-test-handle.io' );
 			$this->fail( 'Expected redirect to be intercepted.' );
 		} catch ( WPDieException $e ) {
 			$this->assertSame( 'redirect_intercepted', $e->getMessage() );
