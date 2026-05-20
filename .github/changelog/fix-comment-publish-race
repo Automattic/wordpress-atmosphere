@@ -1,4 +1,0 @@
-Significance: patch
-Type: fixed
-
-Remove a comment reply from Bluesky if the comment was deleted or unapproved while it was being published, instead of leaving an orphan reply behind.

@@ -1,4 +1,0 @@
-Significance: patch
-Type: fixed
-
-Preserve remote cleanup of already-synced posts when their post type is removed from the syncable allowlist.
