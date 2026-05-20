@@ -15,6 +15,13 @@ use Atmosphere\Content_Parser\Content_Parser;
 class Stub_Parser implements Content_Parser {
 
 	/**
+	 * Whether parse() should return null.
+	 *
+	 * @var bool
+	 */
+	public bool $return_null = false;
+
+	/**
 	 * {@inheritDoc}
 	 */
 	public function get_type(): string {
@@ -27,7 +34,11 @@ class Stub_Parser implements Content_Parser {
 	 * @param string   $content Raw post content.
 	 * @param \WP_Post $post    The WordPress post object.
 	 */
-	public function parse( string $content, \WP_Post $post ): array { // phpcs:ignore VariableAnalysis.CodeAnalysis.VariableAnalysis.UnusedVariable
+	public function parse( string $content, \WP_Post $post ): ?array { // phpcs:ignore Generic.CodeAnalysis.UnusedFunctionParameter.Found, VariableAnalysis.CodeAnalysis.VariableAnalysis.UnusedVariable
+		if ( $this->return_null ) {
+			return null;
+		}
+
 		return array(
 			'$type' => 'test.stub.parser',
 			'text'  => $content,

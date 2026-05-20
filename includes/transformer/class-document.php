@@ -233,6 +233,10 @@ class Document extends Base {
 
 		$content = $parser->parse( $this->object->post_content, $this->object );
 
+		if ( null === $content ) {
+			return null;
+		}
+
 		/**
 		 * Filters the parsed content object before adding to the document record.
 		 *
