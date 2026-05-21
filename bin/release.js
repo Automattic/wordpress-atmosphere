@@ -243,13 +243,6 @@ async function createRelease() {
 	// Prompt for and update the upgrade notice section in readme.txt
 	await updateReadmeWithUpgradeNotice( version );
 
-	updateVersionInFile( 'includes/class-migration.php', version, [
-		{
-			search: /(?<!\*[\s\S]{0,50})(?<=version_compare\s*\(\s*\$version_from_db,\s*')unreleased(?=',\s*['<=>])/g,
-			replace: ( match ) => match.replace( /unreleased/i, version ),
-		},
-	] );
-
 	const phpFiles = execWithOutput( 'find . -name "*.php"' ).split( '\n' );
 
 	phpFiles.forEach( ( filePath ) => {
