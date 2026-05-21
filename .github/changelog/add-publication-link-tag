@@ -1,4 +1,0 @@
-Significance: patch
-Type: added
-
-Advertise the site's standard.site publication record from the front page and from each published post via a new `<link rel="site.standard.publication">` tag, alongside the existing document link.
