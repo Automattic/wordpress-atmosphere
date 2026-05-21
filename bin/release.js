@@ -221,8 +221,8 @@ async function createRelease() {
 			replace: `Version: ${ version }`,
 		},
 		{
-			search: /ATMOSPHERE_PLUGIN_VERSION', '\d+\.\d+\.\d+/,
-			replace: `ATMOSPHERE_PLUGIN_VERSION', '${ version }`,
+			search: /ATMOSPHERE_VERSION', '\d+\.\d+\.\d+/,
+			replace: `ATMOSPHERE_VERSION', '${ version }`,
 		},
 	] );
 
