@@ -1474,6 +1474,33 @@ class Test_Atmosphere extends WP_UnitTestCase {
 	}
 
 	/**
+	 * `Client::disconnect` preserves `atmosphere_identity` so the
+	 * bidirectional verification headers (`.well-known/atproto-did`,
+	 * publication link tag) keep serving after the OAuth session is
+	 * cleared. Sites that adopted a custom domain handle depend on the
+	 * well-known route to resolve their handle back to a DID during
+	 * reconnect; wiping identity here would 404 the route and lock the
+	 * user out of reconnecting with their domain handle (their entered
+	 * handle resolves to nothing on DNS TXT and HTTPS well-known).
+	 */
+	public function test_disconnect_preserves_identity_for_handle_resolution() {
+		$identity = array(
+			'did'          => 'did:plc:testidentity1234567890',
+			'handle'       => 'example.com',
+			'pds_endpoint' => 'https://pds.example.com',
+		);
+		\update_option( 'atmosphere_identity', $identity, true );
+
+		\Atmosphere\OAuth\Client::disconnect();
+
+		$this->assertSame(
+			$identity,
+			\get_option( 'atmosphere_identity' ),
+			'Client::disconnect must preserve atmosphere_identity so .well-known/atproto-did keeps serving and the user can reconnect with a custom domain handle.'
+		);
+	}
+
+	/**
 	 * `Client::disconnect` sweeps the stale `atmosphere_publication_uri`
 	 * row that 1.0.0 used to write. Nothing in production consumes the
 	 * option (the well-known endpoint and Document transformer derive

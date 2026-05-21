@@ -1069,7 +1069,23 @@ class Client {
 	}
 
 	/**
-	 * Disconnect: remove all stored credentials and clear queued cron events.
+	 * Disconnect: remove stored credentials and clear queued cron events.
+	 *
+	 * Drops `atmosphere_connection` (the OAuth session) but deliberately
+	 * preserves `atmosphere_identity`. Identity holds the DID, handle, and
+	 * PDS endpoint that drive the bidirectional verification headers
+	 * (`/.well-known/atproto-did` and the publication link tag). Sites that
+	 * adopted a custom domain handle (e.g. `example.com` instead of
+	 * `alice.bsky.social`) depend on that route to resolve their handle
+	 * back to a DID during reconnect — wiping identity here breaks the
+	 * chain: `Resolver::handle_to_did()` then 404s on both DNS TXT and the
+	 * HTTPS well-known, and the user is locked out of reconnecting with
+	 * their domain handle. The split between identity and credentials was
+	 * introduced precisely so a failed token refresh would not break this
+	 * route (see `get_identity()`); explicit disconnect must honor the
+	 * same invariant. A reconnect overwrites identity in place; sites that
+	 * truly want to forget the DID should clear `atmosphere_identity`
+	 * separately.
 	 *
 	 * Queued events (`atmosphere_delete_records`,
 	 * `atmosphere_delete_comment_record`) issue applyWrites without a
@@ -1124,7 +1140,6 @@ class Client {
 		}
 
 		\delete_option( 'atmosphere_connection' );
-		\delete_option( 'atmosphere_identity' );
 		\delete_option( self::REFRESH_LOCK_OPTION );
 
 		/*
