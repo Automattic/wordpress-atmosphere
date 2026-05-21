@@ -138,7 +138,7 @@ const updateReadmeWithChangelog = ( version ) => {
 
 	// At the bottom of the changelog section, add a link to the full changelog on GitHub.
 	formattedChangelog +=
-		'\n\nSee full Changelog on [GitHub](https://github.com/Automattic/wordpress-activitypub/blob/trunk/CHANGELOG.md).';
+		'\n\nSee full Changelog on [GitHub](https://github.com/Automattic/wordpress-atmosphere/blob/trunk/CHANGELOG.md).';
 
 	// Update the readme.txt with the new changelog section
 	const updatedReadmeContent = readmeContent.replace(
@@ -215,14 +215,14 @@ async function createRelease() {
 	exec( `git checkout -b ${ branchName }` );
 
 	// Update version numbers in files
-	updateVersionInFile( 'activitypub.php', version, [
+	updateVersionInFile( 'atmosphere.php', version, [
 		{
 			search: /Version: \d+\.\d+\.\d+/,
 			replace: `Version: ${ version }`,
 		},
 		{
-			search: /ACTIVITYPUB_PLUGIN_VERSION', '\d+\.\d+\.\d+/,
-			replace: `ACTIVITYPUB_PLUGIN_VERSION', '${ version }`,
+			search: /ATMOSPHERE_PLUGIN_VERSION', '\d+\.\d+\.\d+/,
+			replace: `ATMOSPHERE_PLUGIN_VERSION', '${ version }`,
 		},
 	] );
 
