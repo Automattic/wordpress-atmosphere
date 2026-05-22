@@ -51,6 +51,19 @@ class Client {
 	public const REFRESH_LOCK_OPTION = '_atmosphere_refresh_lock';
 
 	/**
+	 * `wp_options` row name flagging an explicit operator-initiated disconnect.
+	 *
+	 * Set on {@see self::disconnect()} so the admin reauth notice can tell
+	 * "user clicked Disconnect" apart from "refresh token failed". Cleared
+	 * on the next successful authorization. Public so `uninstall.php` and
+	 * the test suite can refer to the same key without drifting from the
+	 * canonical value used here.
+	 *
+	 * @var string
+	 */
+	public const DISCONNECTED_OPTION = 'atmosphere_disconnected';
+
+	/**
 	 * Get the client_id URL (= client metadata endpoint).
 	 *
 	 * @return string
@@ -532,6 +545,14 @@ class Client {
 		 * existing autoloaded rows flip on the next reconnect.
 		 */
 		\update_option( 'atmosphere_connection', $connection, false );
+
+		/*
+		 * Clear any prior explicit-disconnect marker so the reauth notice
+		 * stops reporting "you disconnected" once a fresh session lands.
+		 * Safe to call when nothing was set — `delete_option` is a no-op
+		 * for missing rows.
+		 */
+		\delete_option( self::DISCONNECTED_OPTION );
 
 		return true;
 	}
@@ -1141,6 +1162,16 @@ class Client {
 
 		\delete_option( 'atmosphere_connection' );
 		\delete_option( self::REFRESH_LOCK_OPTION );
+
+		/*
+		 * Mark the disconnect as operator-initiated so the admin reauth
+		 * notice can swap its copy. Without this, an intentional click on
+		 * Disconnect produces the same "session has expired" warning the
+		 * notice fires for a permanent refresh failure — misleading copy
+		 * for a state the user just chose. The marker is cleared on the
+		 * next successful authorization (see `handle_callback()`).
+		 */
+		\update_option( self::DISCONNECTED_OPTION, \time(), false );
 
 		/*
 		 * Sweep a stale option from 1.0.0 installs. `atmosphere_publication_uri`

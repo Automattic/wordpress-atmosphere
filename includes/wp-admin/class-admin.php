@@ -751,20 +751,18 @@ class Admin {
 		\check_admin_referer( 'atmosphere_disconnect', 'atmosphere_nonce' );
 
 		/*
-		 * Best-effort handle revert BEFORE the disconnect drops the OAuth
-		 * token: if the site previously set the handle to its domain, restore
-		 * the snapshotted previous handle while the access token is still
-		 * valid. The call posts a notice on the way out; disconnect proceeds
-		 * regardless of result so a token-revoked or network-failed revert
-		 * can't trap the user in a connected state.
-		 */
-		Handle::maybe_revert_on_disconnect();
-
-		/*
-		 * Clear the snapshot regardless of revert outcome so it cannot be
-		 * revived by a future reconnect to a different account. Once the
-		 * OAuth token is gone there is no way to retry a failed revert
-		 * anyway, so the snapshot is dead weight after this point.
+		 * Drop the snapshot but do NOT call `Handle::updateHandle` to
+		 * revert the PDS handle. Reverting would change the PDS-side
+		 * handle off the user's domain (e.g. `example.com` back to
+		 * `alice.bsky.social`), which removes `example.com` from the
+		 * DID's `alsoKnownAs`. Bidirectional verification would then
+		 * fail on a subsequent reconnect attempt with the domain handle,
+		 * trapping the user even though `Client::disconnect()` now
+		 * preserves identity and the `.well-known/atproto-did` route
+		 * keeps serving. The snapshot itself is still cleared so it
+		 * cannot be revived by a future reconnect to a different
+		 * account; a user who genuinely wants to drop the domain handle
+		 * can update it from their PDS settings before disconnecting.
 		 */
 		\delete_option( Handle::OPTION_PREVIOUS_HANDLE );
 
@@ -822,6 +820,10 @@ class Admin {
 	 * user reconnects — without a visible nudge, an expired refresh
 	 * token can sit unnoticed for days. The notice is dismissible per
 	 * page-load only so the user is reminded again on their next visit.
+	 *
+	 * Swaps copy when the disconnect was operator-initiated (the user
+	 * clicked Disconnect) so the message does not falsely claim "your
+	 * session has expired" for a state the user just chose.
 	 */
 	public static function maybe_render_reauth_notice(): void {
 		if ( ! \current_user_can( 'manage_options' ) ) {
@@ -833,20 +835,27 @@ class Admin {
 		}
 
 		$settings_url = \admin_url( 'options-general.php?page=atmosphere' );
+		$disconnected = (bool) \get_option( Client::DISCONNECTED_OPTION, false );
+
+		if ( $disconnected ) {
+			$heading = \__( 'ATmosphere: disconnected', 'atmosphere' );
+			/* translators: %s: URL to the ATmosphere settings page. */
+			$message = \__( 'ATmosphere is disconnected from AT Protocol. New posts and comments will not publish until you <a href="%s">reconnect on the settings page</a>. Your publishing preferences and verification headers stay in place in the meantime.', 'atmosphere' );
+		} else {
+			$heading = \__( 'ATmosphere: reconnection required', 'atmosphere' );
+			/* translators: %s: URL to the ATmosphere settings page. */
+			$message = \__( 'Your AT Protocol session has expired. New posts and comments will not publish until you <a href="%s">reconnect on the settings page</a>. Your publishing preferences and verification headers stay in place in the meantime.', 'atmosphere' );
+		}
 
 		?>
 		<div class="notice notice-warning is-dismissible">
 			<p>
-				<strong><?php \esc_html_e( 'ATmosphere: reconnection required', 'atmosphere' ); ?></strong>
+				<strong><?php echo \esc_html( $heading ); ?></strong>
 			</p>
 			<p>
 				<?php
 				echo \wp_kses(
-					\sprintf(
-						/* translators: %s: URL to the ATmosphere settings page. */
-						\__( 'Your AT Protocol session has expired. New posts and comments will not publish until you <a href="%s">reconnect on the settings page</a>. Your publishing preferences and verification headers stay in place in the meantime.', 'atmosphere' ),
-						\esc_url( $settings_url )
-					),
+					\sprintf( $message, \esc_url( $settings_url ) ),
 					array( 'a' => array( 'href' => array() ) )
 				);
 				?>

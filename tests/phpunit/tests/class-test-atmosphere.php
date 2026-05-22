@@ -1501,6 +1501,31 @@ class Test_Atmosphere extends WP_UnitTestCase {
 	}
 
 	/**
+	 * `Client::disconnect` stamps the operator-initiated disconnect
+	 * marker so the admin reauth notice can swap its copy. Without
+	 * this, an intentional click on Disconnect would surface the same
+	 * "session has expired" warning that fires for a permanent refresh
+	 * failure — misleading copy for a state the user just chose.
+	 */
+	public function test_disconnect_sets_explicit_disconnect_marker() {
+		$before = \time();
+
+		\Atmosphere\OAuth\Client::disconnect();
+
+		$marker = \get_option( \Atmosphere\OAuth\Client::DISCONNECTED_OPTION );
+
+		$this->assertIsInt(
+			$marker,
+			'Client::disconnect must stamp the explicit-disconnect marker.'
+		);
+		$this->assertGreaterThanOrEqual(
+			$before,
+			$marker,
+			'Marker should record the time of the disconnect.'
+		);
+	}
+
+	/**
 	 * `Client::disconnect` sweeps the stale `atmosphere_publication_uri`
 	 * row that 1.0.0 used to write. Nothing in production consumes the
 	 * option (the well-known endpoint and Document transformer derive

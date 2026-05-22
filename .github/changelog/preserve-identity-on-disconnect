@@ -1,4 +1,4 @@
 Significance: patch
 Type: fixed
 
-Preserve the persisted AT Protocol identity when disconnecting so the `.well-known/atproto-did` route keeps serving. Sites that adopted a custom domain handle (`example.com` instead of `alice.bsky.social`) could not reconnect after a disconnect because the wiped identity left the well-known route 404'ing, and the handle resolver had nothing to find. Disconnect now drops only the OAuth session; reconnecting refreshes identity in place.
+Preserve your AT Protocol identity when disconnecting so a custom domain handle (`example.com` instead of `alice.bsky.social`) can be used to reconnect later. Disconnect no longer wipes the verification endpoint that the handle resolver depends on, no longer auto-reverts the Bluesky handle back to its pre-domain value, and shows a clearer "disconnected" notice instead of a "session expired" warning.

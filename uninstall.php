@@ -40,6 +40,9 @@ $atmosphere_options = array(
 	// Hardcoded here because `uninstall.php` runs before the plugin
 	// bootstrap is loaded, so the constant isn't available.
 	'_atmosphere_refresh_lock',
+	// Canonical value: `\Atmosphere\OAuth\Client::DISCONNECTED_OPTION`.
+	// Hardcoded for the same reason as `_atmosphere_refresh_lock`.
+	'atmosphere_disconnected',
 );
 
 foreach ( $atmosphere_options as $atmosphere_option ) {
