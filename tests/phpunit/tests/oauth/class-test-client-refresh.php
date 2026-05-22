@@ -320,6 +320,7 @@ class Test_Client_Refresh extends WP_UnitTestCase {
 		$result = Client::refresh();
 
 		$this->assertTrue( $result );
+		$this->assertFalse( \get_option( Client::DISCONNECTED_OPTION ) );
 	}
 
 	/**
@@ -338,6 +339,7 @@ class Test_Client_Refresh extends WP_UnitTestCase {
 
 		$this->assertWPError( $result );
 		$this->assertSame( 'atmosphere_refresh_locked', $result->get_error_code() );
+		$this->assertFalse( \get_option( Client::DISCONNECTED_OPTION ) );
 
 		$this->assertTrue(
 			Client::locked(),
