@@ -186,6 +186,47 @@ class Test_Reauth_Notice extends WP_UnitTestCase {
 	}
 
 	/**
+	 * Legacy state from installs that disconnected before the marker
+	 * was added (1.1.0 and earlier): identity preserved, connection row
+	 * gone, no marker. The gate must fall through to the session-expired
+	 * copy via `$disconnected = false && empty(...)` so existing
+	 * disconnected installs still get a notice on upgrade.
+	 */
+	public function test_renders_session_expired_copy_for_legacy_disconnect_without_marker(): void {
+		$this->become_admin();
+		$this->seed_identity();
+		// No atmosphere_connection row; no DISCONNECTED_OPTION row.
+
+		$html = $this->capture_notice();
+
+		$this->assertStringContainsString(
+			'ATmosphere: reconnection required',
+			$html,
+			'Legacy disconnected installs (no marker) must still render a notice — the gate falls through to the session-expired copy.'
+		);
+		$this->assertStringNotContainsString( 'ATmosphere: disconnected', $html );
+	}
+
+	/**
+	 * Defensive: marker present but identity absent. `needs_reauth()`
+	 * short-circuits on `has_identity()` and the notice must produce
+	 * no output regardless of the marker. A regression that moved the
+	 * marker read above the needs_reauth gate (or rewrote needs_reauth
+	 * to no longer require identity) would surface a notice on a fresh
+	 * install where the marker somehow leaked in (partial uninstall,
+	 * manual option insertion, downgrade-then-upgrade).
+	 */
+	public function test_no_output_when_marker_present_but_identity_absent(): void {
+		$this->become_admin();
+		// No atmosphere_identity row.
+		\update_option( Client::DISCONNECTED_OPTION, \time(), false );
+
+		$html = $this->capture_notice();
+
+		$this->assertSame( '', $html );
+	}
+
+	/**
 	 * Healthy session: no notice should render at all.
 	 */
 	public function test_no_output_when_connection_is_healthy(): void {

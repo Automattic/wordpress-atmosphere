@@ -425,6 +425,7 @@ class Test_Client_Refresh extends WP_UnitTestCase {
 
 		$this->assertWPError( $result );
 		$this->assertNotFalse( \get_option( 'atmosphere_connection' ) );
+		$this->assertFalse( \get_option( Client::DISCONNECTED_OPTION ) );
 	}
 
 	/**
@@ -440,6 +441,7 @@ class Test_Client_Refresh extends WP_UnitTestCase {
 
 		$this->assertWPError( $result );
 		$this->assertNotFalse( \get_option( 'atmosphere_connection' ) );
+		$this->assertFalse( \get_option( Client::DISCONNECTED_OPTION ) );
 	}
 
 	/**
@@ -455,6 +457,7 @@ class Test_Client_Refresh extends WP_UnitTestCase {
 
 		$this->assertWPError( $result );
 		$this->assertNotFalse( \get_option( 'atmosphere_connection' ) );
+		$this->assertFalse( \get_option( Client::DISCONNECTED_OPTION ) );
 	}
 
 	/**
@@ -483,6 +486,7 @@ class Test_Client_Refresh extends WP_UnitTestCase {
 
 		$this->assertWPError( $result );
 		$this->assertNotFalse( \get_option( 'atmosphere_connection' ) );
+		$this->assertFalse( \get_option( Client::DISCONNECTED_OPTION ) );
 	}
 
 	/**
@@ -498,5 +502,6 @@ class Test_Client_Refresh extends WP_UnitTestCase {
 		$this->assertWPError( $result );
 		$this->assertSame( 'atmosphere_no_refresh', $result->get_error_code() );
 		$this->assertNotFalse( \get_option( 'atmosphere_connection' ) );
+		$this->assertFalse( \get_option( Client::DISCONNECTED_OPTION ) );
 	}
 }

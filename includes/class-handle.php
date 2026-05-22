@@ -54,7 +54,7 @@ class Handle {
 		 * Filter whether the domain-handle feature is enabled.
 		 *
 		 * Filter to false to fully disable: the Settings panel suppresses
-		 * the confirm button, and disconnect does not attempt to revert.
+		 * the confirm button.
 		 *
 		 * @param bool $enabled Default true.
 		 */
