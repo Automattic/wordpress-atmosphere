@@ -538,6 +538,30 @@ class Client {
 		);
 
 		/*
+		 * Clear any prior explicit-disconnect marker BEFORE persisting
+		 * the new connection. Doing so afterward exposes a cross-tab
+		 * race: a stale Disconnect link fired from another admin tab
+		 * during the OAuth callback would land between the
+		 * `update_option('atmosphere_connection', ...)` and the
+		 * `delete_option(DISCONNECTED_OPTION)`, stamping a fresh marker
+		 * (Client::disconnect() also runs `delete_option`) — the
+		 * callback would then clear the new marker on its way out.
+		 * Final state: identity preserved, connection gone, marker
+		 * gone — the reauth notice would fall through to "session
+		 * expired" copy when the user actually triggered a deliberate
+		 * disconnect from another tab.
+		 *
+		 * Clearing first means: any concurrent disconnect that lands
+		 * between this delete and the persist below leaves the marker
+		 * set AND the connection gone, which the notice gate correctly
+		 * renders as "disconnected." The disconnect's own marker write
+		 * is the authoritative signal of operator intent. Safe to call
+		 * when nothing was set — `delete_option` is a no-op for missing
+		 * rows.
+		 */
+		\delete_option( self::DISCONNECTED_OPTION );
+
+		/*
 		 * Encrypted token blobs do not need to ride along in every
 		 * request's `alloptions` payload; they're only read on the
 		 * paths that actually talk to the PDS. WP 6.6+ honours the
@@ -545,14 +569,6 @@ class Client {
 		 * existing autoloaded rows flip on the next reconnect.
 		 */
 		\update_option( 'atmosphere_connection', $connection, false );
-
-		/*
-		 * Clear any prior explicit-disconnect marker so the reauth notice
-		 * stops reporting "you disconnected" once a fresh session lands.
-		 * Safe to call when nothing was set — `delete_option` is a no-op
-		 * for missing rows.
-		 */
-		\delete_option( self::DISCONNECTED_OPTION );
 
 		return true;
 	}

@@ -1700,6 +1700,91 @@ class Test_Atmosphere extends WP_UnitTestCase {
 	}
 
 	/**
+	 * Capture what `output_document_link()` prints to stdout.
+	 *
+	 * @return string Output (empty when the method bails before emit).
+	 */
+	private function capture_document_link(): string {
+		\ob_start();
+		$this->atmosphere->output_document_link();
+		return (string) \ob_get_clean();
+	}
+
+	/**
+	 * Document link emits for a previously-published post (META_URI on
+	 * file) even with no live OAuth session. The verification link is
+	 * the bidirectional anchor required by standard.site; it MUST keep
+	 * serving across a transient refresh failure or an explicit
+	 * disconnect so consumers do not lose the page <-> record binding.
+	 */
+	public function test_output_document_link_emits_for_published_post_with_meta_uri() {
+		\update_option(
+			'atmosphere_identity',
+			array(
+				'did'          => 'did:plc:test123',
+				'handle'       => 'example.com',
+				'pds_endpoint' => 'https://pds.example.com',
+			),
+			true
+		);
+		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		\update_post_meta(
+			$post_id,
+			\Atmosphere\Transformer\Post::META_URI,
+			'at://did:plc:test123/app.bsky.feed.post/3krealrecord00'
+		);
+
+		$this->go_to_post( $post_id );
+		$output = $this->capture_document_link();
+
+		$this->assertStringContainsString(
+			'<link rel="site.standard.document" href="at://did:plc:test123/site.standard.document/',
+			$output,
+			'A previously-published post must continue advertising its document link even after disconnect.'
+		);
+	}
+
+	/**
+	 * Document link stays silent for a post with no `META_URI` — the
+	 * Publisher never wrote a record to the PDS, so advertising an
+	 * AT-URI would point federation/discovery consumers at a 404. Lazy-
+	 * minting META_TID via `Document::get_rkey()` during page render is
+	 * specifically avoided here so a disconnected site does not seed
+	 * non-existent records into its post meta. Pins the gate added in
+	 * response to a Codex finding where preserved identity across
+	 * disconnect would silently emit document links for unpublished
+	 * posts.
+	 */
+	public function test_output_document_link_silent_for_unpublished_post_without_meta_uri() {
+		\update_option(
+			'atmosphere_identity',
+			array(
+				'did'          => 'did:plc:test123',
+				'handle'       => 'example.com',
+				'pds_endpoint' => 'https://pds.example.com',
+			),
+			true
+		);
+		\delete_option( 'atmosphere_connection' );
+		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		// No META_URI on the post — Publisher never ran.
+
+		$this->go_to_post( $post_id );
+		$output = $this->capture_document_link();
+
+		$this->assertSame(
+			'',
+			$output,
+			'A post that has never been published must not advertise a document link.'
+		);
+		$this->assertSame(
+			'',
+			\get_post_meta( $post_id, \Atmosphere\Transformer\Document::META_TID, true ),
+			'Frontend render must not lazy-mint META_TID for an unpublished post.'
+		);
+	}
+
+	/**
 	 * Publication link tag fires on a singular publishable post whenever
 	 * the site has minted its publication TID — that's the URL a third-
 	 * party resolver would land on after following a permalink from a
