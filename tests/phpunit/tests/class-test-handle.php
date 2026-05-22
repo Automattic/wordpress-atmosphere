@@ -51,7 +51,6 @@ class Test_Handle extends WP_UnitTestCase {
 
 		\delete_option( 'atmosphere_connection' );
 		\delete_option( 'atmosphere_identity' );
-		\delete_option( Handle::OPTION_PREVIOUS_HANDLE );
 
 		parent::tear_down();
 	}
@@ -88,7 +87,6 @@ class Test_Handle extends WP_UnitTestCase {
 	public function test_constants(): void {
 		$this->assertSame( 'atmosphere_domain_handle_enabled', Handle::FILTER_ENABLED );
 		$this->assertSame( 'atmosphere_pre_update_handle', Handle::FILTER_PRE_UPDATE );
-		$this->assertSame( 'atmosphere_previous_handle', Handle::OPTION_PREVIOUS_HANDLE );
 		$this->assertSame( 'atmosphere', Handle::NOTICE_SETTING );
 	}
 
@@ -327,7 +325,6 @@ class Test_Handle extends WP_UnitTestCase {
 		$result = Handle::set_handle();
 
 		$this->assertTrue( $result );
-		$this->assertSame( 'alice.bsky.social', \get_option( Handle::OPTION_PREVIOUS_HANDLE ) );
 		$this->assertSame( 'example.com', \get_option( 'atmosphere_connection' )['handle'] );
 	}
 

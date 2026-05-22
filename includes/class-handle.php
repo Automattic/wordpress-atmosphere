@@ -45,13 +45,6 @@ class Handle {
 	public const NOTICE_SETTING = 'atmosphere';
 
 	/**
-	 * Option storing the previous handle so disconnect can revert.
-	 *
-	 * @var string
-	 */
-	public const OPTION_PREVIOUS_HANDLE = 'atmosphere_previous_handle';
-
-	/**
 	 * Whether the entire feature is enabled.
 	 *
 	 * @return bool
@@ -136,9 +129,9 @@ class Handle {
 	 * `updateHandle` against the user's connected account without an
 	 * explicit cap-bearing context.
 	 *
-	 * On success: snapshots the current handle (so disconnect can revert),
-	 * invokes `com.atproto.identity.updateHandle` via Atmosphere's DPoP
-	 * client, and posts a settings notice describing the outcome.
+	 * On success: invokes `com.atproto.identity.updateHandle` via
+	 * Atmosphere's DPoP client and posts a settings notice describing
+	 * the outcome.
 	 *
 	 * @return true|\WP_Error|null Null when the feature is disabled, the
 	 *                              install is ineligible, the current user
@@ -177,16 +170,6 @@ class Handle {
 
 		if ( $current === $target ) {
 			return null;
-		}
-
-		if ( '' !== $current ) {
-			/*
-			 * Snapshot the current handle BEFORE the XRPC call. If the call
-			 * succeeds, the snapshot is what we revert to on disconnect. If it
-			 * fails, the PDS handle is unchanged, so the snapshot still equals
-			 * the user's actual handle and a later revert call is a safe no-op.
-			 */
-			\update_option( self::OPTION_PREVIOUS_HANDLE, $current, false );
 		}
 
 		$result = self::call_update_handle( $target );

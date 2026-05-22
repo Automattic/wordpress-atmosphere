@@ -1160,18 +1160,31 @@ class Client {
 			);
 		}
 
-		\delete_option( 'atmosphere_connection' );
-		\delete_option( self::REFRESH_LOCK_OPTION );
-
 		/*
-		 * Mark the disconnect as operator-initiated so the admin reauth
-		 * notice can swap its copy. Without this, an intentional click on
-		 * Disconnect produces the same "session has expired" warning the
-		 * notice fires for a permanent refresh failure — misleading copy
-		 * for a state the user just chose. The marker is cleared on the
-		 * next successful authorization (see `handle_callback()`).
+		 * Mark the disconnect as operator-initiated BEFORE wiping the
+		 * connection row so the admin reauth notice's copy swap is
+		 * race-free. With the marker set first, any concurrent admin
+		 * request that loads `Admin::maybe_render_reauth_notice()` while
+		 * this method is in-flight sees either: (a) a live connection
+		 * (needs_reauth false, notice silent), or (b) a missing
+		 * connection AND a set marker (the "disconnected" copy renders).
+		 * Reversing the order would expose a narrow window where the
+		 * connection is gone but the marker is not yet present — the
+		 * gate would fall through to the misleading "session has
+		 * expired" wording the marker exists to suppress. Set with
+		 * `autoload = false` because the value is only consulted by the
+		 * admin notice (single per-request read after a needs_reauth
+		 * gate), so paying for it on every page-load is wasteful.
+		 *
+		 * Stamped with `\time()` so a future caller could expire stale
+		 * markers (e.g. after N days); the notice gate itself only
+		 * reads truthiness. Cleared on the next successful
+		 * authorization (see `handle_callback()`).
 		 */
 		\update_option( self::DISCONNECTED_OPTION, \time(), false );
+
+		\delete_option( 'atmosphere_connection' );
+		\delete_option( self::REFRESH_LOCK_OPTION );
 
 		/*
 		 * Sweep a stale option from 1.0.0 installs. `atmosphere_publication_uri`

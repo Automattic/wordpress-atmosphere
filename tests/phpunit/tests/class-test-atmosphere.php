@@ -56,6 +56,7 @@ class Test_Atmosphere extends WP_UnitTestCase {
 		\delete_option( 'atmosphere_connection' );
 		\delete_option( 'atmosphere_identity' );
 		\delete_option( 'atmosphere_publication_tid' );
+		\delete_option( \Atmosphere\OAuth\Client::DISCONNECTED_OPTION );
 
 		\wp_clear_scheduled_hook( 'atmosphere_publish_post' );
 		\wp_clear_scheduled_hook( 'atmosphere_update_post' );
@@ -1508,10 +1509,17 @@ class Test_Atmosphere extends WP_UnitTestCase {
 	 * failure — misleading copy for a state the user just chose.
 	 */
 	public function test_disconnect_sets_explicit_disconnect_marker() {
+		// Pre-clear so the assertion below cannot pass against a marker
+		// left over from a prior test (the suite shares process state
+		// inside a single transaction, and a stale recent timestamp
+		// would satisfy the lower-bound check even on a no-op).
+		\delete_option( \Atmosphere\OAuth\Client::DISCONNECTED_OPTION );
+
 		$before = \time();
 
 		\Atmosphere\OAuth\Client::disconnect();
 
+		$after  = \time();
 		$marker = \get_option( \Atmosphere\OAuth\Client::DISCONNECTED_OPTION );
 
 		$this->assertIsInt(
@@ -1521,7 +1529,12 @@ class Test_Atmosphere extends WP_UnitTestCase {
 		$this->assertGreaterThanOrEqual(
 			$before,
 			$marker,
-			'Marker should record the time of the disconnect.'
+			'Marker timestamp should be no earlier than the disconnect call.'
+		);
+		$this->assertLessThanOrEqual(
+			$after,
+			$marker,
+			'Marker timestamp should be no later than the disconnect call.'
 		);
 	}
 

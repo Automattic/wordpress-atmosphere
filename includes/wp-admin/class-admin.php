@@ -750,22 +750,6 @@ class Admin {
 
 		\check_admin_referer( 'atmosphere_disconnect', 'atmosphere_nonce' );
 
-		/*
-		 * Drop the snapshot but do NOT call `Handle::updateHandle` to
-		 * revert the PDS handle. Reverting would change the PDS-side
-		 * handle off the user's domain (e.g. `example.com` back to
-		 * `alice.bsky.social`), which removes `example.com` from the
-		 * DID's `alsoKnownAs`. Bidirectional verification would then
-		 * fail on a subsequent reconnect attempt with the domain handle,
-		 * trapping the user even though `Client::disconnect()` now
-		 * preserves identity and the `.well-known/atproto-did` route
-		 * keeps serving. The snapshot itself is still cleared so it
-		 * cannot be revived by a future reconnect to a different
-		 * account; a user who genuinely wants to drop the domain handle
-		 * can update it from their PDS settings before disconnecting.
-		 */
-		\delete_option( Handle::OPTION_PREVIOUS_HANDLE );
-
 		Client::disconnect();
 
 		\add_settings_error(
@@ -835,7 +819,22 @@ class Admin {
 		}
 
 		$settings_url = \admin_url( 'options-general.php?page=atmosphere' );
-		$disconnected = (bool) \get_option( Client::DISCONNECTED_OPTION, false );
+
+		/*
+		 * Treat the explicit-disconnect marker as authoritative only
+		 * when the connection row is genuinely empty. `Client::disconnect()`
+		 * deletes `atmosphere_connection` before any other admin request
+		 * can land, so a missing connection alongside the marker is a
+		 * true operator-initiated disconnect. After a refresh failure,
+		 * the connection row stays put (with `needs_reauth = true` and
+		 * an emptied access_token) — if a stale marker from an earlier
+		 * disconnect survived (e.g. `handle_callback()`'s `delete_option`
+		 * silently failed at a cache layer), the connection's presence
+		 * outs the marker as stale and the gate falls through to the
+		 * "session expired" copy, which is the accurate framing for the
+		 * actual failure mode.
+		 */
+		$disconnected = \get_option( Client::DISCONNECTED_OPTION, false ) && empty( get_connection() );
 
 		if ( $disconnected ) {
 			$heading = \__( 'ATmosphere: disconnected', 'atmosphere' );

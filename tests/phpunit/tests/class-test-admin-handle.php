@@ -48,7 +48,6 @@ class Test_Admin_Handle extends WP_UnitTestCase {
 
 		\wp_set_current_user( 0 );
 		\delete_option( 'atmosphere_connection' );
-		\delete_option( Handle::OPTION_PREVIOUS_HANDLE );
 
 		parent::tear_down();
 	}
