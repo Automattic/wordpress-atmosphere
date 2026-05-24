@@ -160,7 +160,19 @@ class CLI {
 
 		$post_types = $supported;
 
-		if ( '' !== $post_type_arg ) {
+		/*
+		 * When --ids is supplied, the explicit list takes precedence
+		 * and --post-type has no effect on which posts get published.
+		 * Validating it anyway would block a backfill on a flag the
+		 * help text says is ignored — so skip both the supported-types
+		 * check and the $post_types narrowing, and just warn the
+		 * operator that --post-type had no effect.
+		 */
+		if ( '' !== $ids_arg && '' !== $post_type_arg ) {
+			\WP_CLI::warning(
+				\__( '--post-type is ignored when --ids is supplied; the explicit ID list takes precedence.', 'atmosphere' )
+			);
+		} elseif ( '' !== $post_type_arg ) {
 			if ( ! \in_array( $post_type_arg, $supported, true ) ) {
 				\WP_CLI::error(
 					\sprintf(
@@ -173,12 +185,6 @@ class CLI {
 			}
 
 			$post_types = array( $post_type_arg );
-		}
-
-		if ( '' !== $ids_arg && '' !== $post_type_arg ) {
-			\WP_CLI::warning(
-				\__( '--post-type is ignored when --ids is supplied; the explicit ID list takes precedence.', 'atmosphere' )
-			);
 		}
 
 		if ( '' !== $ids_arg ) {
@@ -266,7 +272,6 @@ class CLI {
 		$batch_ids = array();
 
 		foreach ( $post_ids as $post_id ) {
-			$post_id       = (int) $post_id;
 			$tick_progress = true;
 
 			$post = \get_post( $post_id );
