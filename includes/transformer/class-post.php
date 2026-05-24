@@ -277,11 +277,65 @@ class Post extends Base {
 		$rkey = \get_post_meta( $this->object->ID, self::META_TID, true );
 
 		if ( empty( $rkey ) ) {
-			$rkey = TID::generate();
+			$rkey = self::mint_rkey( $this->object );
 			\update_post_meta( $this->object->ID, self::META_TID, $rkey );
 		}
 
 		return $rkey;
+	}
+
+	/**
+	 * Mint a new TID for this post, honoring the historical-TID filter.
+	 *
+	 * Default is a historical TID derived from `post_date_gmt`, so
+	 * backfilled posts land at their original publish position in the
+	 * AT Protocol repo. Filter listeners can return false to fall back
+	 * to a now-based TID — useful for sites that intentionally want
+	 * commit-order rkeys regardless of original publish date.
+	 *
+	 * Falls back to {@see TID::generate()} when `post_date_gmt` cannot
+	 * be parsed (e.g. the `0000-00-00 00:00:00` sentinel) so we never
+	 * mint an epoch-anchored TID.
+	 *
+	 * @since unreleased
+	 *
+	 * @param \WP_Post $post Post being published.
+	 * @return string TID rkey.
+	 */
+	private static function mint_rkey( \WP_Post $post ): string {
+		/**
+		 * Filters whether to mint a historical TID based on the post's
+		 * original publish date.
+		 *
+		 * Defaults to true so backfilled posts get rkeys that reflect
+		 * the original publish time rather than the time of the
+		 * backfill run. Return false to fall back to the live-publish
+		 * `TID::generate()` path (now-based, with the monotonic floor).
+		 *
+		 * @since unreleased
+		 *
+		 * @param bool                    $use_historical Whether to mint a historical TID.
+		 * @param \WP_Post|\WP_Comment $object         WordPress object being transformed.
+		 * @param string                  $collection     AT Protocol collection NSID.
+		 */
+		$use_historical = (bool) \apply_filters(
+			'atmosphere_use_historical_tid',
+			true,
+			$post,
+			'app.bsky.feed.post'
+		);
+
+		if ( ! $use_historical ) {
+			return TID::generate();
+		}
+
+		$microseconds = TID::microseconds_from_post_date( (string) $post->post_date_gmt, (int) $post->ID );
+
+		if ( $microseconds <= 0 ) {
+			return TID::generate();
+		}
+
+		return TID::generate_for_time( $microseconds );
 	}
 
 	/**

@@ -1,0 +1,4 @@
+Significance: minor
+Type: added
+
+Backfilled posts can now publish with rkeys that reflect the original publish date.

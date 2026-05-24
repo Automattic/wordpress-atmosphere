@@ -186,6 +186,85 @@ class TID {
 	}
 
 	/**
+	 * Generate a TID that encodes a specific historical microsecond.
+	 *
+	 * Unlike {@see self::generate()}, this path is intentionally
+	 * floor-free: backfilled records carry timestamps far older than
+	 * any current-time floor would allow, so consulting or updating
+	 * `OPTION_LAST_TS` (or `self::$last_ts`) would either snap the
+	 * value forward to "now" — defeating the entire point — or
+	 * regress the floor used by live publishing. Callers are
+	 * responsible for supplying a microsecond value that is
+	 * collision-resistant within their batch (see
+	 * {@see self::microseconds_from_post_date()} for the standard
+	 * deterministic helper).
+	 *
+	 * @since unreleased
+	 *
+	 * @param int $microseconds Microseconds since the Unix epoch.
+	 * @return string 13-character identifier.
+	 */
+	public static function generate_for_time( int $microseconds ): string {
+		if ( null === self::$clock_id ) {
+			/*
+			 * Same fallback shape as `generate()`: `random_int`
+			 * throws on systems without a usable CSPRNG; fall back
+			 * to `wp_rand` so a missing entropy source can't break
+			 * historical backfills.
+			 */
+			try {
+				self::$clock_id = \random_int( 0, 1023 );
+			} catch ( \Throwable $e ) {
+				self::$clock_id = \wp_rand( 0, 1023 );
+			}
+		}
+
+		return self::encode( ( $microseconds << 10 ) | self::$clock_id );
+	}
+
+	/**
+	 * Convert a GMT datetime + post ID into a deterministic microsecond value.
+	 *
+	 * `post_date_gmt` is MySQL second resolution, so two posts
+	 * published in the same second would otherwise hash to identical
+	 * microseconds and collide on the 10-bit clock identifier within
+	 * a single backfill run. Mixing the post ID (modulo one second
+	 * of microseconds) into the microsecond portion disambiguates
+	 * those collisions deterministically — re-running the backfill
+	 * mints the same TID for the same post, which keeps the operation
+	 * idempotent against `applyWrites`.
+	 *
+	 * Returns `0` if the datetime can't be parsed; callers should
+	 * decide whether to fall back to {@see self::generate()} in that
+	 * case rather than minting an epoch-anchored TID.
+	 *
+	 * @since unreleased
+	 *
+	 * @param string $gmt_datetime GMT datetime string (e.g. `post_date_gmt`).
+	 * @param int    $post_id      Post or comment identifier for disambiguation.
+	 * @return int Microseconds since the Unix epoch, or 0 on parse failure.
+	 */
+	public static function microseconds_from_post_date( string $gmt_datetime, int $post_id ): int {
+		$trimmed = \trim( $gmt_datetime );
+
+		// MySQL zero-date sentinel and empty strings: bail before
+		// `strtotime` (which interprets `0000-00-00 00:00:00` as year
+		// zero on some PHP builds, yielding a far-past-or-future
+		// timestamp that would mint a meaningless TID).
+		if ( '' === $trimmed || '0000-00-00 00:00:00' === $trimmed ) {
+			return 0;
+		}
+
+		$seconds = \strtotime( $trimmed . ' UTC' );
+
+		if ( false === $seconds || $seconds <= 0 ) {
+			return 0;
+		}
+
+		return ( $seconds * 1_000_000 ) + ( $post_id % 1_000_000 );
+	}
+
+	/**
 	 * Check whether a string looks like a valid TID.
 	 *
 	 * @param string $tid Candidate string.
