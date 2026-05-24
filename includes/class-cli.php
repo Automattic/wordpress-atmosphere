@@ -182,7 +182,25 @@ class CLI {
 		}
 
 		if ( '' !== $ids_arg ) {
-			$post_ids = self::parse_ids( $ids_arg );
+			$parsed   = self::parse_ids( $ids_arg );
+			$post_ids = $parsed['ids'];
+
+			if ( ! empty( $parsed['rejected'] ) ) {
+				/*
+				 * Loud failure on partially numeric / non-digit tokens.
+				 * A silent drop of `"1.5"` (operator meant "15") would
+				 * publish post 1 instead — the kind of false positive
+				 * that's strictly worse than refusing to run for a CLI
+				 * whose action is publish-to-the-internet.
+				 */
+				\WP_CLI::error(
+					\sprintf(
+						/* translators: %s: comma-separated list of rejected tokens. */
+						\__( 'Invalid post ID tokens in --ids: %s. Expected a comma-separated list of positive integers; aborting before any publish.', 'atmosphere' ),
+						\implode( ', ', $parsed['rejected'] )
+					)
+				);
+			}
 
 			if ( empty( $post_ids ) ) {
 				\WP_CLI::error(
@@ -418,31 +436,68 @@ class CLI {
 	}
 
 	/**
-	 * Parse the `--ids=<csv>` flag into a deduped list of positive integers.
+	 * Parse the `--ids=<csv>` flag into a deduped list of positive
+	 * integers plus a list of rejected raw tokens.
 	 *
-	 * Preserves the order the user supplied — the CLI run will visit
-	 * them in that order, which is the principle of least surprise for
-	 * scripted invocations that have already sorted their input.
+	 * Returns a `{ids, rejected}` array:
 	 *
-	 * Public so the test suite can exercise the input-parsing rules
-	 * without resorting to reflection; the rules are part of the CLI's
+	 * - `ids`      — deduped list of positive integers, in the order
+	 *                the user supplied them.
+	 * - `rejected` — raw tokens that failed strict validation. The CLI
+	 *                surfaces this list as a fatal error before any
+	 *                publish runs, so a typo like "1.5" (operator meant
+	 *                "15") never silently publishes post 1 instead.
+	 *
+	 * Empty and whitespace-only tokens are skipped without being
+	 * rejected (a trailing comma is not user error). Anything else
+	 * non-digit — including `1.5`, `123abc`, `1-2`, negatives — lands
+	 * in `rejected`, because PHP's `(int)` cast silently truncates
+	 * those to a different number than the operator typed.
+	 *
+	 * Public so the test suite can exercise the parsing rules without
+	 * resorting to reflection; the rules are part of the CLI's
 	 * documented contract.
 	 *
 	 * @param string $raw Raw flag value.
-	 * @return int[]
+	 * @return array{ids: int[], rejected: string[]}
 	 */
 	public static function parse_ids( string $raw ): array {
-		$parts = \explode( ',', $raw );
-		$ids   = array();
+		$parts    = \explode( ',', $raw );
+		$ids      = array();
+		$rejected = array();
 
 		foreach ( $parts as $part ) {
-			$id = (int) \trim( $part );
+			$trimmed = \trim( $part );
 
-			if ( $id > 0 ) {
-				$ids[] = $id;
+			if ( '' === $trimmed ) {
+				continue;
 			}
+
+			/*
+			 * Strict digit check. `(int) '1.5'` would silently become 1
+			 * and republish a different post than the operator typed —
+			 * exactly the safety bug codex flagged. `ctype_digit` only
+			 * accepts strings of digits 0-9, so leading signs, decimals,
+			 * range syntax (`1-2`), and trailing junk all land in
+			 * `$rejected` and the caller errors out before any publish.
+			 */
+			if ( ! \ctype_digit( $trimmed ) ) {
+				$rejected[] = $part;
+				continue;
+			}
+
+			$id = (int) $trimmed;
+
+			if ( $id <= 0 ) {
+				continue;
+			}
+
+			$ids[] = $id;
 		}
 
-		return \array_values( \array_unique( $ids ) );
+		return array(
+			'ids'      => \array_values( \array_unique( $ids ) ),
+			'rejected' => $rejected,
+		);
 	}
 }
