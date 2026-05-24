@@ -185,7 +185,7 @@ class Comment extends Base {
 			return TID::generate();
 		}
 
-		return TID::generate_for_time( $microseconds );
+		return TID::generate_for_time( $microseconds, 'comment:' . $comment->comment_ID );
 	}
 
 	/**

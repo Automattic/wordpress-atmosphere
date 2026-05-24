@@ -158,6 +158,32 @@ class Test_TID extends WP_UnitTestCase {
 	}
 
 	/**
+	 * The salt argument to generate_for_time() makes two records that
+	 * map to the same microsecond (e.g. IDs that collide modulo 1M
+	 * inside the same GMT second) mint distinct rkeys.
+	 */
+	public function test_generate_for_time_salt_disambiguates_modulo_collision() {
+		$gmt = '2019-03-14 15:09:26';
+
+		// IDs that collide on `% 1_000_000` produce identical microseconds.
+		$micros_a = TID::microseconds_from_post_date( $gmt, 42 );
+		$micros_b = TID::microseconds_from_post_date( $gmt, 1_000_042 );
+		$this->assertSame( $micros_a, $micros_b, 'Setup: ids differing by 1M must share microseconds.' );
+
+		// Without a salt, the rkey collides — that's the documented
+		// failure mode we are guarding against.
+		$rkey_no_salt_a = TID::generate_for_time( $micros_a );
+		$rkey_no_salt_b = TID::generate_for_time( $micros_b );
+		$this->assertSame( $rkey_no_salt_a, $rkey_no_salt_b, 'Sanity: no-salt path collides when microseconds match.' );
+
+		// With a per-record salt, the rkeys must differ even though
+		// the microsecond portion is identical.
+		$rkey_a = TID::generate_for_time( $micros_a, 'post:42' );
+		$rkey_b = TID::generate_for_time( $micros_b, 'post:1000042' );
+		$this->assertNotSame( $rkey_a, $rkey_b, 'Distinct salts must mint distinct rkeys.' );
+	}
+
+	/**
 	 * The namespace argument prevents collisions between WP_Post and
 	 * WP_Comment records that share an AT Protocol collection but have
 	 * matching IDs and timestamps.

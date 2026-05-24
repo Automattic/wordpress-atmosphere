@@ -185,22 +185,32 @@ class TID {
 	 * deterministic helper).
 	 *
 	 * The 10-bit clock identifier is derived deterministically from
-	 * the microsecond input rather than the per-process random value
-	 * used by `generate()`. Without this, retrying a backfill in a
-	 * different PHP worker before the record's TID meta is persisted
-	 * would mint a different rkey for the same post — the AT
-	 * Protocol create would then succeed twice and orphan the first
-	 * record. CRC32 over the microsecond value is stable across
-	 * workers, so the historical path is process-independent and
-	 * truly idempotent for the same input.
+	 * `$salt` rather than the per-process random value used by
+	 * `generate()`. Without that, retrying a backfill in a different
+	 * PHP worker before the record's TID meta is persisted would mint
+	 * a different rkey for the same post — the AT Protocol create
+	 * would then succeed twice and orphan the first record. Callers
+	 * should pass a salt that is unique to the record being minted
+	 * (a string composed of object id + kind is sufficient). The
+	 * companion {@see self::microseconds_from_post_date()} helper
+	 * folds the same ID into the microsecond portion, and the salt
+	 * provides the second-order entropy that protects against the
+	 * "IDs differ by a multiple of 1,000,000 inside the same GMT
+	 * second" modulo collision — both 10 bits of the rkey now depend
+	 * on the full object identity, not just the truncated portion.
 	 *
 	 * @since unreleased
 	 *
-	 * @param int $microseconds Microseconds since the Unix epoch.
+	 * @param int    $microseconds Microseconds since the Unix epoch.
+	 * @param string $salt         Deterministic disambiguation salt
+	 *                             (typically `$kind . ':' . $object_id`).
+	 *                             Defaults to the microseconds string so
+	 *                             ad-hoc callers still get a stable rkey.
 	 * @return string 13-character identifier.
 	 */
-	public static function generate_for_time( int $microseconds ): string {
-		$clock_id = \crc32( (string) $microseconds ) & 0x3FF;
+	public static function generate_for_time( int $microseconds, string $salt = '' ): string {
+		$clock_source = '' === $salt ? (string) $microseconds : $salt;
+		$clock_id     = \crc32( $clock_source ) & 0x3FF;
 
 		return self::encode( ( $microseconds << 10 ) | $clock_id );
 	}
