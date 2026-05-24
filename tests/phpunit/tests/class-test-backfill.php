@@ -260,6 +260,88 @@ class Test_Backfill extends WP_UnitTestCase {
 	}
 
 	/**
+	 * Page-boundary exact-multiple regression: when the candidate set
+	 * exactly fills an integer number of chunks, the do/while must
+	 * exit via the `0 === $chunk_count` branch rather than producing a
+	 * spurious extra query (or, worse, missing the last full chunk).
+	 */
+	public function test_paged_walk_handles_exact_multiple_of_chunk_size() {
+		\add_filter(
+			'atmosphere_backfill_query_chunk_size',
+			static function (): int {
+				return 5;
+			}
+		);
+
+		$created = array();
+		for ( $i = 0; $i < 10; $i++ ) {
+			$created[] = self::factory()->post->create(
+				array(
+					'post_status' => 'publish',
+					'post_date'   => \gmdate( 'Y-m-d H:i:s', \strtotime( '-' . ( 20 - $i ) . ' days' ) ),
+				)
+			);
+		}
+
+		$all = Backfill::get_unsynced_post_ids( 0, get_supported_post_types() );
+
+		$this->assertCount( 10, $all, 'Exact-multiple catalogue should return every unsynced post.' );
+
+		foreach ( $created as $id ) {
+			$this->assertContains( $id, $all, "Post {$id} missing from exact-multiple walk." );
+		}
+	}
+
+	/**
+	 * Combined limit + paging: the limit counter only ticks on
+	 * unsynced inserts. Across a page boundary, already-synced posts
+	 * in the first chunk must not consume any of the limit budget, so
+	 * a `--limit=1` request returns the first unsynced post regardless
+	 * of how many synced posts precede it.
+	 */
+	public function test_limit_only_counts_unsynced_across_page_boundary() {
+		\add_filter(
+			'atmosphere_backfill_query_chunk_size',
+			static function (): int {
+				return 2;
+			}
+		);
+
+		$created = array();
+		for ( $i = 0; $i < 6; $i++ ) {
+			$created[] = self::factory()->post->create(
+				array(
+					'post_status' => 'publish',
+					'post_date'   => \gmdate( 'Y-m-d H:i:s', \strtotime( '-' . ( 20 - $i ) . ' days' ) ),
+				)
+			);
+		}
+
+		// Mark the two newest posts as already synced. With chunk size
+		// 2, the unsynced helper's first page returns only synced rows;
+		// the third-newest unsynced post lives on page 2.
+		\update_post_meta(
+			$created[5],
+			Document::META_URI,
+			'at://did:plc:test/site.standard.document/synced-newest'
+		);
+		\update_post_meta(
+			$created[4],
+			Document::META_URI,
+			'at://did:plc:test/site.standard.document/synced-second'
+		);
+
+		$capped = Backfill::get_unsynced_post_ids( 1, get_supported_post_types() );
+
+		$this->assertCount( 1, $capped );
+		$this->assertSame(
+			$created[3],
+			$capped[0],
+			'Limit budget should only tick on unsynced inserts, not iterated rows from the first page.'
+		);
+	}
+
+	/**
 	 * Data provider for {@see test_parse_ids()}.
 	 *
 	 * @return array<string, array{0: string, 1: int[]}>
@@ -274,6 +356,7 @@ class Test_Backfill extends WP_UnitTestCase {
 			'whitespace and commas only' => array( ' , , ', array() ),
 			'preserves user order'       => array( '7,3,11', array( 7, 3, 11 ) ),
 			'non-numeric drops to zero'  => array( 'abc,5,foo', array( 5 ) ),
+			'order survives dedup'       => array( '3,1,3,2,1', array( 3, 1, 2 ) ),
 		);
 	}
 
