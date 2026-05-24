@@ -232,13 +232,15 @@ class Test_TID extends WP_UnitTestCase {
 	}
 
 	/**
-	 * The namespace argument prevents collisions between WP_Post and
-	 * WP_Comment records that share an AT Protocol collection but have
-	 * matching IDs and timestamps.
+	 * The kind argument segregates Post/Document records (microseconds
+	 * 0..499,999 within each second) from Comment records (500,000..
+	 * 999,999), so they cannot share the microsecond field even with
+	 * matching IDs and timestamps. Idempotency per kind still holds.
 	 */
 	public function test_microseconds_from_post_date_namespace_disambiguates() {
-		$gmt = '2019-03-14 15:09:26';
-		$id  = 42;
+		$gmt     = '2019-03-14 15:09:26';
+		$id      = 42;
+		$seconds = (int) \strtotime( $gmt . ' UTC' );
 
 		$post    = TID::microseconds_from_post_date( $gmt, $id );
 		$comment = TID::microseconds_from_post_date( $gmt, $id, 'comment' );
@@ -250,8 +252,38 @@ class Test_TID extends WP_UnitTestCase {
 		$this->assertSame( $comment, $comment_again, 'Same namespace + id + second must be idempotent.' );
 
 		// Both still land inside the same GMT second.
-		$seconds = (int) \strtotime( $gmt . ' UTC' );
 		$this->assertSame( $seconds, \intdiv( $post, 1_000_000 ) );
 		$this->assertSame( $seconds, \intdiv( $comment, 1_000_000 ) );
+
+		// Disjoint ranges by construction: posts/documents in 0..499_999,
+		// comments in 500_000..999_999. Lock the exact offsets for id 42
+		// so a future refactor cannot silently shrink the segregation.
+		$this->assertSame( ( $seconds * 1_000_000 ) + 42, $post );
+		$this->assertSame( ( $seconds * 1_000_000 ) + 500_042, $comment );
+	}
+
+	/**
+	 * Regression test for the cross-kind microsecond collision codex
+	 * surfaced during PR 92 review. Post id 1288 and Comment id 350044
+	 * landed on identical microseconds under the old modulo+CRC32 scheme
+	 * because `(350044 + crc32('comment')) % 1_000_000 == 1288`, and the
+	 * salt-derived clock_id happened to collide on the same 1/1024
+	 * bucket — minting identical rkeys inside `app.bsky.feed.post` that
+	 * `applyWrites` would reject on the second create.
+	 *
+	 * The disjoint-range scheme eliminates the failure mode by
+	 * construction; this test locks the specific pair so we cannot
+	 * silently regress.
+	 */
+	public function test_microseconds_disambiguate_codex_collision_pair(): void {
+		$gmt            = '2020-01-01 00:00:00';
+		$post_micros    = TID::microseconds_from_post_date( $gmt, 1288, '' );
+		$comment_micros = TID::microseconds_from_post_date( $gmt, 350044, 'comment' );
+
+		$this->assertNotSame(
+			$post_micros,
+			$comment_micros,
+			'Post id 1288 and Comment id 350044 must not produce identical microseconds in the same second.'
+		);
 	}
 }

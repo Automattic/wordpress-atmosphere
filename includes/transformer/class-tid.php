@@ -244,24 +244,35 @@ class TID {
 	 * for the same record, which keeps the operation idempotent
 	 * against `applyWrites`.
 	 *
-	 * The `$kind` argument disambiguates records that share an AT
-	 * Protocol collection but are sourced from different WordPress
-	 * object kinds. Without it, a `WP_Post` with id N and a
-	 * `WP_Comment` with `comment_ID` N published in the same GMT
-	 * second within a single PHP process would mint the same rkey
-	 * inside `app.bsky.feed.post` and `applyWrites` would reject the
-	 * second create. The kind label is hashed into a sub-second offset
-	 * that's stable across runs (CRC32 is deterministic), preserving
-	 * idempotency per kind.
+	 * Cross-kind rkey collisions in the same collection (e.g. a Post
+	 * and a Comment both landing in `app.bsky.feed.post`) are
+	 * impossible by construction: posts/documents occupy microseconds
+	 * 0..499,999 within each second, comments occupy 500,000..999,999.
+	 * Even if the salt-derived 10-bit `clock_id` collides across kinds
+	 * (1/1024 chance through CRC32), the microsecond field differs and
+	 * the rkeys differ. Within a single kind, two records published in
+	 * the exact same second still need a matching `object_id % 500_000`
+	 * AND a `clock_id` collision — astronomically unlikely in practice.
+	 *
+	 * An earlier shape folded `crc32($kind)` into the same 0..999_999
+	 * window via modulo addition. That preserved idempotency per kind
+	 * but did not guarantee disjoint ranges, so specific cross-kind ID
+	 * pairs (e.g. post id 1288 vs comment id 350044 at the same GMT
+	 * second) could still collapse onto identical microseconds — and,
+	 * when the salt-derived clock_id also collided, identical rkeys.
+	 * Codex surfaced that pattern by construction during PR review;
+	 * range segregation removes the failure mode at its root rather
+	 * than relying on the hash space staying lucky.
 	 *
 	 * Bundled `$kind` values used by the plugin's transformers:
 	 *
 	 *   - `''` (default) — `Post` and `Document`. Their AT collections
 	 *     (`app.bsky.feed.post` and `site.standard.document`) don't
-	 *     overlap so no kind disambiguation is needed.
+	 *     overlap so no kind segregation is needed and they share the
+	 *     0..499,999 range.
 	 *   - `'comment'` — `Comment`. Shares `app.bsky.feed.post` with
-	 *     `Post`, so the kind offset is required to avoid the cross-
-	 *     kind ID collision described above. See `Comment::TID_KIND`.
+	 *     `Post`, so it occupies the 500,000..999,999 range. See
+	 *     `Comment::TID_KIND`.
 	 *
 	 * Returns `0` for any unparseable input — empty / whitespace-only
 	 * strings, the MySQL `0000-00-00 00:00:00` sentinel, pre-epoch
@@ -299,22 +310,24 @@ class TID {
 			return 0;
 		}
 
-		$offset = $object_id % 1_000_000;
+		/*
+		 * Reserve disjoint microsecond ranges per kind so cross-kind
+		 * rkeys can never share the microsecond field — eliminating
+		 * the failure mode regardless of whether the salt-derived
+		 * `clock_id` ever collides:
+		 *
+		 *   - `''` (post / document) → 0..499,999 within the second.
+		 *   - `'comment'`            → 500,000..999,999 within the second.
+		 *
+		 * Within a single kind the `(object_id % 500_000)` term still
+		 * disambiguates same-second records, paired with the
+		 * salt-derived `clock_id` for the final 10 bits.
+		 */
+		$kind_offset          = ( 'comment' === $kind ) ? 500_000 : 0;
+		$within_kind          = $object_id % 500_000;
+		$micros_within_second = $kind_offset + $within_kind;
 
-		if ( '' !== $kind ) {
-			/*
-			 * Fold the kind label into the same 0..999_999 microsecond
-			 * window so the result still lands inside the post's
-			 * original GMT second. CRC32 is deterministic across runs,
-			 * which preserves the idempotency property — same input
-			 * mints the same TID — while moving the two kinds far
-			 * enough apart in microsecond-space that an ID-level
-			 * collision across kinds is astronomically unlikely.
-			 */
-			$offset = ( $offset + \crc32( $kind ) ) % 1_000_000;
-		}
-
-		return ( $seconds * 1_000_000 ) + $offset;
+		return ( $seconds * 1_000_000 ) + $micros_within_second;
 	}
 
 	/**
