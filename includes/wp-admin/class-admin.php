@@ -52,13 +52,30 @@ class Admin {
 	 * Register the settings page under Settings.
 	 */
 	public static function add_menu(): void {
-		\add_options_page(
+		$hook = \add_options_page(
 			\__( 'ATmosphere', 'atmosphere' ),
 			\__( 'ATmosphere', 'atmosphere' ),
 			'manage_options',
 			'atmosphere',
 			array( self::class, 'render_page' )
 		);
+
+		if ( ! $hook ) {
+			return;
+		}
+
+		/*
+		 * Self-heal the well-known rewrite rules whenever an
+		 * administrator loads our settings page. This is the surface
+		 * where the rewrite-flush bug is most likely to be discovered
+		 * (admin checks settings after a downstream report that
+		 * domain-handle resolution is failing), so it is also the right
+		 * surface to silently fix it. Hooked on `load-{suffix}` so the
+		 * check runs before the page renders, but only on our page —
+		 * the cost is one extra option read per Atmosphere settings
+		 * pageview, not per admin request.
+		 */
+		\add_action( "load-{$hook}", array( Atmosphere::class, 'maybe_flush_wellknown_rewrites' ) );
 	}
 
 	/**

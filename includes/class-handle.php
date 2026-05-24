@@ -189,6 +189,19 @@ class Handle {
 			\update_option( self::OPTION_PREVIOUS_HANDLE, $current, false );
 		}
 
+		/*
+		 * Self-heal the well-known rewrite before the XRPC call. The PDS
+		 * fetches `/.well-known/atproto-did` on this domain within
+		 * milliseconds of `updateHandle`, and on installs where the
+		 * persisted `rewrite_rules` option never picked up our pattern
+		 * (FOSSE bundle, mu-plugin load, rules wiped by another plugin)
+		 * that fetch returns the default WP 404 template — the PDS then
+		 * replies with "External handle did not resolve to DID" while
+		 * the admin's settings UI still shows a healthy connection.
+		 * Flushing here closes the bug at its actual failure surface.
+		 */
+		Atmosphere::maybe_flush_wellknown_rewrites();
+
 		$result = self::call_update_handle( $target );
 
 		if ( \is_wp_error( $result ) ) {
