@@ -11,6 +11,9 @@ namespace Atmosphere\Tests\Transformer;
 
 use WP_UnitTestCase;
 use Atmosphere\Transformer\Post;
+use Atmosphere\Transformer\TID;
+
+require_once __DIR__ . '/class-tid-decoder.php';
 
 /**
  * Post transformer tests.
@@ -28,6 +31,7 @@ class Test_Post extends WP_UnitTestCase {
 		\remove_all_filters( 'atmosphere_teaser_thread_posts' );
 		\remove_all_filters( 'atmosphere_transform_bsky_post' );
 		\remove_all_filters( 'atmosphere_post_embed' );
+		\remove_all_filters( 'atmosphere_use_historical_tid' );
 		\remove_all_actions( 'atmosphere_long_form_strategy_downgraded' );
 		parent::tear_down();
 	}
@@ -2029,5 +2033,64 @@ class Test_Post extends WP_UnitTestCase {
 		);
 
 		$this->assertNull( Post::get_attachment_aspect_ratio( $attachment_id ) );
+	}
+
+	/**
+	 * By default, Post::get_rkey() mints a historical TID anchored on
+	 * the post's original publish date. The decoded microseconds must
+	 * match microseconds_from_post_date(), locking the encoding
+	 * contract end-to-end.
+	 *
+	 * @covers ::get_rkey
+	 */
+	public function test_get_rkey_defaults_to_historical_tid() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_date'     => '2012-06-15 09:30:00',
+				'post_date_gmt' => '2012-06-15 09:30:00',
+			)
+		);
+
+		$historical_rkey = ( new Post( $post ) )->get_rkey();
+		$current_rkey    = TID::generate();
+
+		$this->assertNotEmpty( $historical_rkey );
+		$this->assertTrue( TID::is_valid( $historical_rkey ) );
+		$this->assertLessThan( $current_rkey, $historical_rkey, '2012-anchored rkey must sort before a now-minted TID.' );
+
+		$expected_microseconds = TID::microseconds_from_post_date( '2012-06-15 09:30:00', $post->ID );
+		$this->assertSame(
+			$expected_microseconds,
+			TID_Decoder::tid_to_microseconds( $historical_rkey ),
+			'Decoded rkey microseconds must match microseconds_from_post_date().'
+		);
+	}
+
+	/**
+	 * Listeners returning false from atmosphere_use_historical_tid
+	 * fall back to the now-based TID::generate() path even when the
+	 * post has a usable historical date.
+	 *
+	 * @covers ::get_rkey
+	 */
+	public function test_get_rkey_filter_opt_out_uses_current_time() {
+		\add_filter( 'atmosphere_use_historical_tid', '__return_false' );
+
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_date'     => '2012-06-15 09:30:00',
+				'post_date_gmt' => '2012-06-15 09:30:00',
+			)
+		);
+
+		$baseline        = TID::generate();
+		$rkey            = ( new Post( $post ) )->get_rkey();
+		$historical_2012 = TID::generate_for_time(
+			TID::microseconds_from_post_date( '2012-06-15 09:30:00', $post->ID ),
+			Post::TID_SALT_PREFIX . $post->ID
+		);
+
+		$this->assertGreaterThan( $baseline, $rkey, 'Opting out via filter must mint a now-based TID.' );
+		$this->assertGreaterThan( $historical_2012, $rkey, 'Opted-out TID must sort after a 2012 historical TID.' );
 	}
 }

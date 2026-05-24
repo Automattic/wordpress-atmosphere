@@ -13,6 +13,9 @@ use WP_UnitTestCase;
 use Atmosphere\Reaction_Sync;
 use Atmosphere\Transformer\Comment;
 use Atmosphere\Transformer\Post;
+use Atmosphere\Transformer\TID;
+
+require_once __DIR__ . '/class-tid-decoder.php';
 
 /**
  * Comment transformer tests.
@@ -58,6 +61,7 @@ class Test_Comment extends WP_UnitTestCase {
 	 */
 	public function tear_down(): void {
 		\remove_all_filters( 'atmosphere_transform_comment' );
+		\remove_all_filters( 'atmosphere_use_historical_tid' );
 		parent::tear_down();
 	}
 
@@ -297,5 +301,149 @@ class Test_Comment extends WP_UnitTestCase {
 		$record = ( new Comment( \get_comment( $comment_id ) ) )->transform();
 
 		$this->assertLessThanOrEqual( 300, \mb_strlen( $record['text'] ) );
+	}
+
+	/**
+	 * By default, Comment::get_rkey() mints a historical TID anchored
+	 * on `comment_date_gmt`. The decoded microseconds must match the
+	 * helper output (including the `comment` kind label that offsets
+	 * comments away from posts in the shared collection).
+	 *
+	 * @covers ::get_rkey
+	 */
+	public function test_get_rkey_defaults_to_historical_tid() {
+		$comment_id = self::factory()->comment->create(
+			array(
+				'comment_post_ID'  => $this->post_id,
+				'comment_date'     => '2014-08-20 10:15:00',
+				'comment_date_gmt' => '2014-08-20 10:15:00',
+				'comment_content'  => 'Historical comment.',
+				'user_id'          => 1,
+			)
+		);
+
+		$comment         = \get_comment( $comment_id );
+		$historical_rkey = ( new Comment( $comment ) )->get_rkey();
+		$current_rkey    = TID::generate();
+
+		$this->assertNotEmpty( $historical_rkey );
+		$this->assertTrue( TID::is_valid( $historical_rkey ) );
+		$this->assertLessThan( $current_rkey, $historical_rkey, '2014-anchored rkey must sort before a now-minted TID.' );
+
+		$expected_microseconds = TID::microseconds_from_post_date(
+			'2014-08-20 10:15:00',
+			(int) $comment_id,
+			Comment::TID_KIND
+		);
+		$this->assertSame(
+			$expected_microseconds,
+			TID_Decoder::tid_to_microseconds( $historical_rkey ),
+			'Decoded rkey microseconds must match microseconds_from_post_date() including the comment kind.'
+		);
+	}
+
+	/**
+	 * Listeners returning false from atmosphere_use_historical_tid
+	 * fall back to the now-based TID::generate() path for comments
+	 * just like posts.
+	 *
+	 * @covers ::get_rkey
+	 */
+	public function test_get_rkey_filter_opt_out_uses_current_time() {
+		\add_filter( 'atmosphere_use_historical_tid', '__return_false' );
+
+		$comment_id = self::factory()->comment->create(
+			array(
+				'comment_post_ID'  => $this->post_id,
+				'comment_date'     => '2014-08-20 10:15:00',
+				'comment_date_gmt' => '2014-08-20 10:15:00',
+				'user_id'          => 1,
+			)
+		);
+
+		$comment         = \get_comment( $comment_id );
+		$baseline        = TID::generate();
+		$rkey            = ( new Comment( $comment ) )->get_rkey();
+		$historical_2014 = TID::generate_for_time(
+			TID::microseconds_from_post_date( '2014-08-20 10:15:00', (int) $comment_id, Comment::TID_KIND ),
+			Comment::TID_SALT_PREFIX . $comment_id
+		);
+
+		$this->assertGreaterThan( $baseline, $rkey, 'Opting out via filter must mint a now-based TID.' );
+		$this->assertGreaterThan( $historical_2014, $rkey, 'Opted-out TID must sort after a 2014 historical TID.' );
+	}
+
+	/**
+	 * The headline test for the `$kind` argument: a Post with `ID == N`
+	 * and a Comment with `comment_ID == N`, both with matching
+	 * `*_date_gmt` values, must mint distinct rkeys even though both
+	 * live in `app.bsky.feed.post`. Without the kind offset, both would
+	 * collapse onto the same microsecond + salt-prefix-only-by-class
+	 * encoding and `applyWrites` would reject the second create.
+	 *
+	 * @covers ::get_rkey
+	 */
+	public function test_post_and_comment_with_matching_id_and_date_mint_distinct_rkeys() {
+		$gmt = '2018-04-01 12:00:00';
+
+		// Force matching IDs by inserting the comment with an explicit
+		// `comment_ID` equal to a known post ID. WordPress doesn't make
+		// `comment_ID` directly settable through the factory, so insert
+		// the post, then the comment, and assert on the *salt+kind*
+		// collision shape that would otherwise produce identical rkeys:
+		// equal numeric IDs (the disambiguator inside one second) and
+		// equal GMT seconds.
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_date'     => $gmt,
+				'post_date_gmt' => $gmt,
+			)
+		);
+
+		$comment_id = self::factory()->comment->create(
+			array(
+				'comment_post_ID'  => $this->post_id,
+				'comment_date'     => $gmt,
+				'comment_date_gmt' => $gmt,
+				'comment_content'  => 'Cross-kind test.',
+				'user_id'          => 1,
+			)
+		);
+
+		// Force the salt collision: assert directly on the TID helper
+		// with id parity, because comment_ID auto-increments separately
+		// from post IDs and we cannot guarantee equality through the
+		// factory. The transformer wiring then proves get_rkey() goes
+		// through the namespaced helper in production.
+		$shared_id = 4242;
+
+		$post_microseconds    = TID::microseconds_from_post_date( $gmt, $shared_id );
+		$comment_microseconds = TID::microseconds_from_post_date( $gmt, $shared_id, Comment::TID_KIND );
+
+		$this->assertNotSame(
+			$post_microseconds,
+			$comment_microseconds,
+			'A post and a comment with identical id+date must map to different microseconds.'
+		);
+
+		$post_rkey    = TID::generate_for_time( $post_microseconds, Post::TID_SALT_PREFIX . $shared_id );
+		$comment_rkey = TID::generate_for_time( $comment_microseconds, Comment::TID_SALT_PREFIX . $shared_id );
+
+		$this->assertNotSame(
+			$post_rkey,
+			$comment_rkey,
+			'Salt prefix + kind together must produce distinct rkeys for the collision case.'
+		);
+
+		// Sanity-check the production wiring: a real Post and Comment
+		// transformer with this same gmt still produce valid, distinct
+		// rkeys via get_rkey().
+		$comment       = \get_comment( $comment_id );
+		$real_post_key = ( new Post( $post ) )->get_rkey();
+		$real_comm_key = ( new Comment( $comment ) )->get_rkey();
+
+		$this->assertTrue( TID::is_valid( $real_post_key ) );
+		$this->assertTrue( TID::is_valid( $real_comm_key ) );
+		$this->assertNotSame( $real_post_key, $real_comm_key );
 	}
 }
