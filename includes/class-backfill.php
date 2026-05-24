@@ -132,11 +132,11 @@ class Backfill {
 		/**
 		 * Filters the page size for the paged unsynced-posts walk.
 		 *
-		 * Caps how many candidate post IDs are loaded into memory per
-		 * page before their meta is primed and the unsynced-filter loop
-		 * runs. Lower the value on memory-constrained installs or
-		 * pathological catalogues with very wide meta rows; raise it to
-		 * trade memory for fewer queries on healthy hosts.
+		 * Operators can lower the value on memory-constrained installs
+		 * or pathological catalogues with very wide meta rows, or raise
+		 * it to trade memory for fewer queries on healthy hosts. The
+		 * filter also gives the test suite a knob for driving the paged
+		 * loop with small fixtures.
 		 *
 		 * @since unreleased
 		 *
@@ -147,10 +147,13 @@ class Backfill {
 			self::DEFAULT_QUERY_CHUNK_SIZE
 		);
 
-		// Hard floor: 1 row per query is silly but safe; <= 0 would loop forever.
-		if ( $chunk_size < 1 ) {
-			$chunk_size = self::DEFAULT_QUERY_CHUNK_SIZE;
-		}
+		/*
+		 * Clamp to at least 1. <= 0 would loop forever without consuming
+		 * rows. `max()` approximates an operator's "smaller chunks please"
+		 * intent rather than silently reverting to the default — which
+		 * would mask filter misconfiguration in production logs.
+		 */
+		$chunk_size = \max( 1, $chunk_size );
 
 		$unsynced = array();
 		$page     = 1;
@@ -188,6 +191,15 @@ class Backfill {
 					break 2;
 				}
 			}
+
+			/*
+			 * Drop the chunk's primed post_meta rows before the next page
+			 * loads. Without this, a 50k-post walk accumulates meta for
+			 * every visited row in the in-process cache for the rest of
+			 * the request, undoing most of the bound-memory benefit of
+			 * the paged walk.
+			 */
+			\wp_cache_delete_multiple( $chunk, 'post_meta' );
 
 			++$page;
 		} while ( $chunk_count === $chunk_size );

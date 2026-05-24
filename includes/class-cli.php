@@ -59,8 +59,8 @@ class CLI {
 	 * [--limit=<n>]
 	 * : Maximum posts to process. Default: 0 (no cap). Note the AJAX UI
 	 * defaults to 10 posts per run; the CLI default is unlimited so a
-	 * scripted backfill can drain a queue in one invocation. Negative
-	 * values are rejected.
+	 * scripted backfill can drain a queue in one invocation. Non-numeric
+	 * or negative values are rejected.
 	 *
 	 * [--batch=<n>]
 	 * : Batch size used for progress reporting and periodic object-cache
@@ -116,22 +116,31 @@ class CLI {
 		$ids_arg       = isset( $assoc_args['ids'] ) ? (string) $assoc_args['ids'] : '';
 
 		/*
-		 * Reject negative --limit explicitly. The previous coercion to
-		 * 0 (= unbounded) silently turned a typo for `--limit=5` into a
-		 * full-catalogue run — the opposite of user intent. Literal `0`
-		 * and an absent flag still mean "no cap".
+		 * Validate --limit before coercion. A bare `--limit` (no value)
+		 * arrives as boolean true, which `(int)` would silently promote
+		 * to 1 — running a single-post backfill the user did not ask
+		 * for. A negative value would short-circuit our `> 0` cap check
+		 * and run unbounded. Reject both with a clear message; literal
+		 * `0` and an absent flag still mean "no cap".
 		 */
-		if ( isset( $assoc_args['limit'] ) && (int) $assoc_args['limit'] < 0 ) {
-			\WP_CLI::error(
-				\sprintf(
-					/* translators: %s: the rejected --limit value. */
-					\__( 'Invalid --limit value "%s": expected 0 (no cap) or a positive integer.', 'atmosphere' ),
-					(string) $assoc_args['limit']
-				)
-			);
+		if ( isset( $assoc_args['limit'] ) ) {
+			$raw_limit = $assoc_args['limit'];
+
+			if ( ! \is_numeric( $raw_limit ) || (int) $raw_limit < 0 ) {
+				\WP_CLI::error(
+					\sprintf(
+						/* translators: %s: the rejected --limit value. */
+						\__( 'Invalid --limit value "%s": expected 0 (no cap) or a positive integer.', 'atmosphere' ),
+						\is_scalar( $raw_limit ) ? (string) $raw_limit : \gettype( $raw_limit )
+					)
+				);
+			}
+
+			$limit = (int) $raw_limit;
+		} else {
+			$limit = 0;
 		}
 
-		$limit         = isset( $assoc_args['limit'] ) ? (int) $assoc_args['limit'] : 0;
 		$batch         = isset( $assoc_args['batch'] ) ? \max( 1, (int) $assoc_args['batch'] ) : self::DEFAULT_BATCH;
 		$dry_run       = ! empty( $assoc_args['dry-run'] );
 		$force         = ! empty( $assoc_args['force'] );
@@ -229,12 +238,14 @@ class CLI {
 			);
 		}
 
-		$synced  = 0;
-		$skipped = 0;
-		$errors  = 0;
-		$ticks   = 0;
+		$synced    = 0;
+		$skipped   = 0;
+		$errors    = 0;
+		$ticks     = 0;
+		$batch_ids = array();
 
 		foreach ( $post_ids as $post_id ) {
+			$post_id       = (int) $post_id;
 			$tick_progress = true;
 
 			$post = \get_post( $post_id );
@@ -313,20 +324,29 @@ class CLI {
 			}
 
 			++$ticks;
+			$batch_ids[] = $post_id;
 
 			/*
-			 * Every $batch posts, drop per-post object-cache entries the
-			 * loop just accumulated. Long runs (10k+ posts) would
-			 * otherwise hold every visited WP_Post + meta + term row in
-			 * the in-process cache for the entire process lifetime.
-			 * Per-post `clean_post_cache()` matches the rest of the
-			 * codebase's pattern (`Atmosphere::on_comment_insert`,
+			 * Every $batch posts, drop the per-post object-cache entries
+			 * accumulated since the last flush. Long runs (10k+ posts)
+			 * would otherwise hold every visited WP_Post + meta + term
+			 * row in the in-process cache for the entire process
+			 * lifetime. Per-post `clean_post_cache()` matches the rest
+			 * of the codebase's pattern
+			 * (`Atmosphere::on_comment_insert`,
 			 * `Publisher::publish_post`); it's narrower than a full
 			 * `wp_cache_flush()` so it does not evict unrelated entries
 			 * a long-running CLI script may have warmed.
+			 *
+			 * Important: evict every ID visited in the batch, not just
+			 * the boundary one — the boundary-only variant the previous
+			 * round shipped only freed 1 entry per `--batch` posts.
 			 */
 			if ( ! $dry_run && 0 === $ticks % $batch ) {
-				\clean_post_cache( (int) $post_id );
+				foreach ( $batch_ids as $cached_id ) {
+					\clean_post_cache( $cached_id );
+				}
+				$batch_ids = array();
 
 				if ( $ticks < $total ) {
 					\WP_CLI::log(
@@ -338,6 +358,13 @@ class CLI {
 						)
 					);
 				}
+			}
+		}
+
+		// Final-batch sweep so the trailing posts under one full $batch are not left cached.
+		if ( ! $dry_run && ! empty( $batch_ids ) ) {
+			foreach ( $batch_ids as $cached_id ) {
+				\clean_post_cache( $cached_id );
 			}
 		}
 
