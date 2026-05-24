@@ -1,0 +1,4 @@
+Significance: minor
+Type: added
+
+A new WP-CLI command can backfill existing posts to AT Protocol from the command line.

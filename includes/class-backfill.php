@@ -3,7 +3,9 @@
  * AJAX-driven backfill for existing posts.
  *
  * The admin UI requests a count of unsynced posts, then sends
- * batches of post IDs for synchronisation.
+ * batches of post IDs for synchronisation. The CLI command in
+ * {@see CLI::backfill()} reuses {@see Backfill::get_unsynced_post_ids()}
+ * so the two paths cannot drift on which posts qualify for sync.
  *
  * @package Atmosphere
  */
@@ -63,6 +65,45 @@ class Backfill {
 		 */
 		$limit = (int) \apply_filters( 'atmosphere_backfill_limit', 10 );
 
+		$unsynced = self::get_unsynced_post_ids( $limit, $post_types );
+
+		\wp_send_json_success(
+			array(
+				'total'    => \count( $unsynced ),
+				'post_ids' => $unsynced,
+			)
+		);
+	}
+
+	/**
+	 * Get post IDs for published posts that have not been synced yet.
+	 *
+	 * Shared between {@see Backfill::handle_count()} (the admin AJAX
+	 * path) and {@see CLI::backfill()} (the WP-CLI path) so the two
+	 * surfaces cannot drift on eligibility rules — anything that
+	 * tightens the unsynced query in one place tightens it in both.
+	 *
+	 * Returns the most-recent posts first. The result is capped at
+	 * `$limit` when `$limit > 0`; pass `0` (or any non-positive value)
+	 * for no cap. Posts that already carry the `Document::META_URI`
+	 * marker are excluded — that meta is the signal Publisher sets
+	 * after a successful publish.
+	 *
+	 * @since unreleased
+	 *
+	 * @param int      $limit      Maximum IDs to return. 0 or negative for no cap.
+	 * @param string[] $post_types Post type slugs to include. Caller should
+	 *                             pass {@see get_supported_post_types()}; an
+	 *                             empty array short-circuits to an empty
+	 *                             result so we do not fall back to the
+	 *                             default `post` query.
+	 * @return int[] Post IDs that still need to be synced.
+	 */
+	public static function get_unsynced_post_ids( int $limit, array $post_types ): array {
+		if ( empty( $post_types ) ) {
+			return array();
+		}
+
 		$all_ids = \get_posts(
 			array(
 				'post_type'      => $post_types,
@@ -80,7 +121,7 @@ class Backfill {
 		$unsynced = array();
 		foreach ( $all_ids as $id ) {
 			if ( ! \get_post_meta( $id, Document::META_URI, true ) ) {
-				$unsynced[] = $id;
+				$unsynced[] = (int) $id;
 			}
 
 			if ( $limit > 0 && \count( $unsynced ) >= $limit ) {
@@ -88,12 +129,7 @@ class Backfill {
 			}
 		}
 
-		\wp_send_json_success(
-			array(
-				'total'    => \count( $unsynced ),
-				'post_ids' => $unsynced,
-			)
-		);
+		return $unsynced;
 	}
 
 	/**
