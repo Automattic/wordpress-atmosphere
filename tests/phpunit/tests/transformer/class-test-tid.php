@@ -144,6 +144,18 @@ class Test_TID extends WP_UnitTestCase {
 	}
 
 	/**
+	 * Pre-epoch dates are rejected so the historical path never mints a
+	 * negative-encoded TID. Posts dated before 1970-01-01 UTC are
+	 * vanishingly rare in WordPress but possible (manual `post_date_gmt`
+	 * edits, imports from legacy systems); the explicit guard keeps the
+	 * caller-side fallback to {@see TID::generate()} working.
+	 */
+	public function test_microseconds_from_post_date_returns_zero_for_pre_epoch_date() {
+		$this->assertSame( 0, TID::microseconds_from_post_date( '1969-12-31 23:59:00', 42 ) );
+		$this->assertSame( 0, TID::microseconds_from_post_date( '1900-01-01 00:00:00', 42 ) );
+	}
+
+	/**
 	 * A historical-mint with an old timestamp produces a TID that sorts
 	 * well before a TID minted from `microtime(true)` — proving the
 	 * historical-ordering property end-to-end.
@@ -181,6 +193,42 @@ class Test_TID extends WP_UnitTestCase {
 		$rkey_a = TID::generate_for_time( $micros_a, 'post:42' );
 		$rkey_b = TID::generate_for_time( $micros_b, 'post:1000042' );
 		$this->assertNotSame( $rkey_a, $rkey_b, 'Distinct salts must mint distinct rkeys.' );
+	}
+
+	/**
+	 * Non-positive microseconds fall back to {@see TID::generate()}
+	 * rather than encoding a negative or epoch-anchored value. Mirrors
+	 * the parse-failure guard in `microseconds_from_post_date()` and
+	 * protects direct callers who hand the helper their own integer.
+	 */
+	public function test_generate_for_time_rejects_non_positive_microseconds() {
+		$zero_tid     = TID::generate_for_time( 0, 'post:1' );
+		$negative_tid = TID::generate_for_time( -1, 'post:1' );
+
+		$this->assertTrue( TID::is_valid( $zero_tid ), 'Zero microseconds must fall back to a valid TID.' );
+		$this->assertTrue( TID::is_valid( $negative_tid ), 'Negative microseconds must fall back to a valid TID.' );
+
+		// Fall-back path goes through `generate()` which uses the live
+		// monotonic floor, so the fallback rkey must sort after a 2010
+		// historical TID — the same ordering invariant that proves the
+		// fallback didn't accidentally mint a near-epoch garbage value.
+		$historical_2010 = TID::generate_for_time(
+			TID::microseconds_from_post_date( '2010-01-01 00:00:00', 1 ),
+			'post:1'
+		);
+		$this->assertGreaterThan( $historical_2010, $zero_tid );
+		$this->assertGreaterThan( $historical_2010, $negative_tid );
+	}
+
+	/**
+	 * Microsecond values large enough to overflow into negative when
+	 * shifted left by 10 bits also fall back to `generate()`. Guards
+	 * against caller bugs (e.g. an accidental double `* 1_000_000`).
+	 */
+	public function test_generate_for_time_rejects_oversized_microseconds() {
+		$overflow_tid = TID::generate_for_time( \PHP_INT_MAX, 'post:1' );
+
+		$this->assertTrue( TID::is_valid( $overflow_tid ), 'Oversized microseconds must fall back to a valid TID.' );
 	}
 
 	/**

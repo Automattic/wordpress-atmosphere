@@ -201,7 +201,26 @@ class TID {
 	 *
 	 * @since unreleased
 	 *
-	 * @param int    $microseconds Microseconds since the Unix epoch.
+	 * Non-positive `$microseconds` (zero or negative) fall through to
+	 * {@see self::generate()} rather than encoding garbage. This is a
+	 * second line of defence: the standard caller path goes through
+	 * {@see self::microseconds_from_post_date()} which already returns
+	 * 0 for unparseable input, but a direct caller that hands in `0`,
+	 * a negative pre-epoch timestamp, or a value large enough that
+	 * `($microseconds << 10)` overflows into a negative 64-bit integer
+	 * would otherwise mint an unsortable / negative-encoded TID and
+	 * silently violate the "13-character sortable identifier" contract.
+	 *
+	 * The upper bound is `PHP_INT_MAX >> 10` — anything above that
+	 * cannot survive the shift inside a signed 64-bit int. That bound
+	 * corresponds to roughly the year 294,247, so the guard is purely
+	 * defensive against caller bugs (a stray `* 1_000_000` applied
+	 * twice, for instance).
+	 *
+	 * @param int    $microseconds Microseconds since the Unix epoch. Must
+	 *                             be in `(0, PHP_INT_MAX >> 10]` to mint
+	 *                             a historical TID; out-of-range values
+	 *                             fall back to {@see self::generate()}.
 	 * @param string $salt         Deterministic disambiguation salt
 	 *                             (typically `$kind . ':' . $object_id`).
 	 *                             Defaults to the microseconds string so
@@ -209,6 +228,10 @@ class TID {
 	 * @return string 13-character identifier.
 	 */
 	public static function generate_for_time( int $microseconds, string $salt = '' ): string {
+		if ( $microseconds <= 0 || $microseconds > ( \PHP_INT_MAX >> 10 ) ) {
+			return self::generate();
+		}
+
 		$clock_source = '' === $salt ? (string) $microseconds : $salt;
 		$clock_id     = \crc32( $clock_source ) & 0x3FF;
 
