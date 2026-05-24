@@ -14,6 +14,7 @@ namespace Atmosphere\Tests;
 
 use WP_UnitTestCase;
 use Atmosphere\Backfill;
+use Atmosphere\CLI;
 use Atmosphere\Transformer\Document;
 use function Atmosphere\get_supported_post_types;
 
@@ -27,6 +28,7 @@ class Test_Backfill extends WP_UnitTestCase {
 	 */
 	public function tear_down(): void {
 		\remove_all_filters( 'atmosphere_syncable_post_types' );
+		\remove_all_filters( 'atmosphere_backfill_query_chunk_size' );
 		parent::tear_down();
 	}
 
@@ -60,6 +62,22 @@ class Test_Backfill extends WP_UnitTestCase {
 	}
 
 	/**
+	 * Locks the int[] return contract. A regression to string IDs
+	 * (from a missed (int) cast somewhere in the chunked walk) would
+	 * otherwise pass the looser `assertContains` checks elsewhere in
+	 * this file silently.
+	 */
+	public function test_returns_only_integers() {
+		self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		self::factory()->post->create( array( 'post_status' => 'publish' ) );
+
+		$ids = Backfill::get_unsynced_post_ids( 0, get_supported_post_types() );
+
+		$this->assertNotEmpty( $ids, 'Fixture should return at least one post.' );
+		$this->assertContainsOnly( 'integer', $ids, true );
+	}
+
+	/**
 	 * Posts that already carry the document URI meta are excluded.
 	 */
 	public function test_excludes_already_synced_posts() {
@@ -79,12 +97,18 @@ class Test_Backfill extends WP_UnitTestCase {
 	}
 
 	/**
-	 * Non-publish posts (draft, pending, private) and password-protected
-	 * posts are excluded by the underlying query.
+	 * Non-publish posts (draft, pending, private, future) and
+	 * password-protected posts are excluded by the underlying query.
 	 */
 	public function test_excludes_non_publish_and_password_protected_posts() {
 		$draft_id     = self::factory()->post->create( array( 'post_status' => 'draft' ) );
 		$private_id   = self::factory()->post->create( array( 'post_status' => 'private' ) );
+		$future_id    = self::factory()->post->create(
+			array(
+				'post_status' => 'future',
+				'post_date'   => \gmdate( 'Y-m-d H:i:s', \strtotime( '+1 month' ) ),
+			)
+		);
 		$password_id  = self::factory()->post->create(
 			array(
 				'post_status'   => 'publish',
@@ -98,6 +122,7 @@ class Test_Backfill extends WP_UnitTestCase {
 		$this->assertContains( $published_id, $ids );
 		$this->assertNotContains( $draft_id, $ids );
 		$this->assertNotContains( $private_id, $ids );
+		$this->assertNotContains( $future_id, $ids );
 		$this->assertNotContains( $password_id, $ids );
 	}
 
@@ -145,13 +170,16 @@ class Test_Backfill extends WP_UnitTestCase {
 	}
 
 	/**
-	 * The limit caps the number of returned IDs once unsynced posts
-	 * reach the cap. A limit of 0 (or negative) means no cap.
+	 * The limit caps the number of returned IDs. A limit of 0 (or
+	 * negative) means no cap. The cap counts unsynced posts, not
+	 * iterations — the paged walk must skip already-synced posts
+	 * without spending limit budget on them.
 	 */
 	public function test_limit_caps_results() {
-		$ids = array();
+		$created = array();
+		// Create five published posts, oldest first so the dates are stable.
 		for ( $i = 0; $i < 5; $i++ ) {
-			$ids[] = self::factory()->post->create(
+			$created[] = self::factory()->post->create(
 				array(
 					'post_status' => 'publish',
 					'post_date'   => \gmdate( 'Y-m-d H:i:s', \strtotime( '-' . ( 10 - $i ) . ' days' ) ),
@@ -159,14 +187,65 @@ class Test_Backfill extends WP_UnitTestCase {
 			);
 		}
 
-		$capped = Backfill::get_unsynced_post_ids( 2, get_supported_post_types() );
-		$this->assertCount( 2, $capped );
+		// Mark the most recent post as already synced. With --limit=1
+		// the helper should skip it and return the next-newest unsynced
+		// post (created[3]), not the newest iterated post (created[4]).
+		\update_post_meta(
+			$created[4],
+			Document::META_URI,
+			'at://did:plc:test/site.standard.document/already-synced'
+		);
+
+		$capped = Backfill::get_unsynced_post_ids( 1, get_supported_post_types() );
+		$this->assertCount( 1, $capped );
+		$this->assertSame( $created[3], $capped[0], 'Limit should count unsynced posts, not iterated posts.' );
+
+		$two = Backfill::get_unsynced_post_ids( 2, get_supported_post_types() );
+		$this->assertCount( 2, $two );
 
 		$all = Backfill::get_unsynced_post_ids( 0, get_supported_post_types() );
-		$this->assertGreaterThanOrEqual( 5, \count( $all ) );
+		// Four created posts are unsynced after marking created[4] above.
+		$this->assertCount( 4, $all );
 
 		$all_neg = Backfill::get_unsynced_post_ids( -1, get_supported_post_types() );
 		$this->assertSame( $all, $all_neg );
+	}
+
+	/**
+	 * The paged walk surfaces every unsynced post across page
+	 * boundaries when the chunk size is small relative to the
+	 * catalogue. Regression test for the OOM-on-large-catalogues fix.
+	 */
+	public function test_paged_walk_surfaces_results_across_chunk_boundaries() {
+		// Force chunk size 5 so 12 posts spans three pages.
+		\add_filter(
+			'atmosphere_backfill_query_chunk_size',
+			static function (): int {
+				return 5;
+			}
+		);
+
+		$created = array();
+		for ( $i = 0; $i < 12; $i++ ) {
+			$created[] = self::factory()->post->create(
+				array(
+					'post_status' => 'publish',
+					'post_date'   => \gmdate( 'Y-m-d H:i:s', \strtotime( '-' . ( 20 - $i ) . ' days' ) ),
+				)
+			);
+		}
+
+		$all = Backfill::get_unsynced_post_ids( 0, get_supported_post_types() );
+
+		foreach ( $created as $id ) {
+			$this->assertContains( $id, $all, "Post {$id} missing from paged walk." );
+		}
+
+		// A cap that lands mid-second-page should still return exactly
+		// that many results — confirms `break 2` exits the outer
+		// do/while as soon as the limit is reached.
+		$seven = Backfill::get_unsynced_post_ids( 7, get_supported_post_types() );
+		$this->assertCount( 7, $seven );
 	}
 
 	/**
@@ -178,5 +257,36 @@ class Test_Backfill extends WP_UnitTestCase {
 
 		$this->assertSame( array(), Backfill::get_unsynced_post_ids( 0, array() ) );
 		$this->assertSame( array(), Backfill::get_unsynced_post_ids( 10, array() ) );
+	}
+
+	/**
+	 * Data provider for {@see test_parse_ids()}.
+	 *
+	 * @return array<string, array{0: string, 1: int[]}>
+	 */
+	public function data_parse_ids(): array {
+		return array(
+			'simple csv'                 => array( '1,2,3', array( 1, 2, 3 ) ),
+			'whitespace tolerated'       => array( ' 1 , 2 ', array( 1, 2 ) ),
+			'dedupes repeats'            => array( '1,1,2', array( 1, 2 ) ),
+			'drops zero and negative'    => array( '0,-3,4', array( 4 ) ),
+			'empty string'               => array( '', array() ),
+			'whitespace and commas only' => array( ' , , ', array() ),
+			'preserves user order'       => array( '7,3,11', array( 7, 3, 11 ) ),
+			'non-numeric drops to zero'  => array( 'abc,5,foo', array( 5 ) ),
+		);
+	}
+
+	/**
+	 * The CLI input-parsing rules are part of the documented contract,
+	 * exercised here directly rather than through the WP-CLI runtime.
+	 *
+	 * @dataProvider data_parse_ids
+	 *
+	 * @param string $raw      Raw flag value.
+	 * @param int[]  $expected Expected parsed IDs.
+	 */
+	public function test_parse_ids( string $raw, array $expected ) {
+		$this->assertSame( $expected, CLI::parse_ids( $raw ) );
 	}
 }
