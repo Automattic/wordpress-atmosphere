@@ -23,19 +23,23 @@ use WP_UnitTestCase;
 class Test_Wellknown_Rewrite extends WP_UnitTestCase {
 
 	/**
-	 * Pattern keys the persisted `rewrite_rules` option must contain.
+	 * Pattern => query-target map the persisted `rewrite_rules` option
+	 * must contain after a heal.
 	 *
 	 * Lifted from {@see Atmosphere::WELLKNOWN_REWRITE_PATTERNS}; the
 	 * constant is private so the tests carry their own copy to assert
 	 * against. Keeping these in lockstep is part of what the assertions
-	 * here actually verify — if the production constant gains a new
-	 * pattern, these tests fail until the new pattern is added.
+	 * here actually verify — if the production constant gains, renames,
+	 * or re-targets a pattern, these tests fail until the copy matches.
+	 * Asserting the target (not just key presence) catches a regression
+	 * where the rule resolves to the wrong query var, which would
+	 * silently break verification even with the key present.
 	 *
-	 * @var string[]
+	 * @var array<string, string>
 	 */
 	private const WELLKNOWN_PATTERNS = array(
-		'^\.well-known/atproto-did$',
-		'^\.well-known/site\.standard\.publication$',
+		'^\.well-known/atproto-did$'                 => 'index.php?atmosphere_wellknown=atproto-did',
+		'^\.well-known/site\.standard\.publication$' => 'index.php?atmosphere_wellknown=publication',
 	);
 
 	/**
@@ -111,6 +115,20 @@ class Test_Wellknown_Rewrite extends WP_UnitTestCase {
 	}
 
 	/**
+	 * Assert the persisted rules contain every well-known pattern
+	 * resolving to its expected query target.
+	 *
+	 * @param mixed $rules The `rewrite_rules` option value after a heal.
+	 */
+	private function assertWellknownPatternsResolved( $rules ): void {
+		$this->assertIsArray( $rules );
+		foreach ( self::WELLKNOWN_PATTERNS as $pattern => $target ) {
+			$this->assertArrayHasKey( $pattern, $rules );
+			$this->assertSame( $target, $rules[ $pattern ] );
+		}
+	}
+
+	/**
 	 * No-op when both well-known patterns are already in the option.
 	 *
 	 * Asserts byte-identical state after the call so even a flush that
@@ -140,11 +158,7 @@ class Test_Wellknown_Rewrite extends WP_UnitTestCase {
 
 		Atmosphere::maybe_flush_wellknown_rewrites();
 
-		$rules = \get_option( 'rewrite_rules' );
-		$this->assertIsArray( $rules );
-		foreach ( self::WELLKNOWN_PATTERNS as $pattern ) {
-			$this->assertArrayHasKey( $pattern, $rules );
-		}
+		$this->assertWellknownPatternsResolved( \get_option( 'rewrite_rules' ) );
 	}
 
 	/**
@@ -163,11 +177,7 @@ class Test_Wellknown_Rewrite extends WP_UnitTestCase {
 
 		Atmosphere::maybe_flush_wellknown_rewrites();
 
-		$rules = \get_option( 'rewrite_rules' );
-		$this->assertIsArray( $rules );
-		foreach ( self::WELLKNOWN_PATTERNS as $pattern ) {
-			$this->assertArrayHasKey( $pattern, $rules );
-		}
+		$this->assertWellknownPatternsResolved( \get_option( 'rewrite_rules' ) );
 	}
 
 	/**
@@ -182,11 +192,70 @@ class Test_Wellknown_Rewrite extends WP_UnitTestCase {
 
 		Atmosphere::maybe_flush_wellknown_rewrites();
 
-		$rules = \get_option( 'rewrite_rules' );
-		$this->assertIsArray( $rules );
-		foreach ( self::WELLKNOWN_PATTERNS as $pattern ) {
-			$this->assertArrayHasKey( $pattern, $rules );
+		$this->assertWellknownPatternsResolved( \get_option( 'rewrite_rules' ) );
+	}
+
+	/**
+	 * No flush on a plain-permalink install.
+	 *
+	 * Without a permalink structure WordPress keeps `rewrite_rules`
+	 * empty and routes everything through the query string, so our
+	 * patterns can never be persisted and the well-known endpoints
+	 * cannot resolve via rewrite anyway. The helper must bail rather
+	 * than read the always-empty array as "patterns missing" and burn
+	 * an `update_option` write on every call (the re-flush loop a code
+	 * review flagged). Asserts the option is untouched.
+	 */
+	public function test_no_flush_on_plain_permalinks(): void {
+		\update_option( 'permalink_structure', '' );
+
+		global $wp_rewrite;
+		$wp_rewrite->init();
+
+		$sentinel = array( 'some/other/rule' => 'index.php?other=1' );
+		\update_option( 'rewrite_rules', $sentinel );
+
+		Atmosphere::maybe_flush_wellknown_rewrites();
+
+		$this->assertSame( $sentinel, \get_option( 'rewrite_rules' ) );
+	}
+
+	/**
+	 * `Admin::add_menu()` wires the self-heal onto the settings page
+	 * load hook. A cheap assertion guards against the wiring being
+	 * removed, renamed, or mis-targeted — the OAuth and `set_handle`
+	 * sites have behavioural coverage, this one would otherwise have
+	 * none.
+	 *
+	 * The exact `load-{suffix}` hook name depends on how far the admin
+	 * menu is bootstrapped (`settings_page_atmosphere` in a real admin
+	 * request, `admin_page_atmosphere` in the bare test harness), so the
+	 * assertion scans `$wp_filter` for whichever `load-*` hook the call
+	 * registered our callback on rather than hard-coding the suffix.
+	 */
+	public function test_add_menu_wires_self_heal_on_settings_page_load(): void {
+		$admin = self::factory()->user->create( array( 'role' => 'administrator' ) );
+		\wp_set_current_user( $admin );
+
+		\Atmosphere\WP_Admin\Admin::add_menu();
+
+		global $wp_filter;
+		$callback  = array( Atmosphere::class, 'maybe_flush_wellknown_rewrites' );
+		$load_hook = '';
+		foreach ( \array_keys( $wp_filter ) as $hook_name ) {
+			if ( \str_starts_with( $hook_name, 'load-' ) && false !== \has_action( $hook_name, $callback ) ) {
+				$load_hook = $hook_name;
+				break;
+			}
 		}
+
+		$this->assertNotSame(
+			'',
+			$load_hook,
+			'add_menu() should wire maybe_flush_wellknown_rewrites onto a settings-page load hook.'
+		);
+
+		\remove_action( $load_hook, $callback );
 	}
 
 	/**
@@ -222,11 +291,6 @@ class Test_Wellknown_Rewrite extends WP_UnitTestCase {
 		$result = Handle::set_handle();
 
 		$this->assertTrue( $result );
-
-		$rules = \get_option( 'rewrite_rules' );
-		$this->assertIsArray( $rules );
-		foreach ( self::WELLKNOWN_PATTERNS as $pattern ) {
-			$this->assertArrayHasKey( $pattern, $rules );
-		}
+		$this->assertWellknownPatternsResolved( \get_option( 'rewrite_rules' ) );
 	}
 }

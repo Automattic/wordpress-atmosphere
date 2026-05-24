@@ -536,14 +536,12 @@ class Client {
 
 		/*
 		 * Connecting is the moment our well-known endpoints become
-		 * meaningful — the PDS will start fetching
-		 * `/.well-known/atproto-did` to verify any domain handle, and
-		 * resolvers can hit `/.well-known/site.standard.publication`.
-		 * Ensure both patterns are present in the persisted
-		 * `rewrite_rules` array; install paths that bypass
-		 * `register_activation_hook` (FOSSE bundles, mu-plugin loads,
-		 * etc.) otherwise serve the default WP 404 here even though
-		 * the OAuth handshake just succeeded.
+		 * meaningful — the PDS starts fetching `/.well-known/atproto-did`
+		 * to verify a domain handle, and resolvers hit
+		 * `/.well-known/site.standard.publication`. Make sure the
+		 * persisted rewrite rules serve them on the very next request.
+		 * See {@see Atmosphere::maybe_flush_wellknown_rewrites()} for the
+		 * install paths that need this beyond activation.
 		 */
 		Atmosphere::maybe_flush_wellknown_rewrites();
 

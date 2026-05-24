@@ -389,20 +389,31 @@ class Atmosphere {
 	 * our rules take effect without touching the webserver config.
 	 */
 	public static function maybe_flush_wellknown_rewrites(): void {
+		/*
+		 * Plain permalinks (the WordPress default `?p=N` scheme, where
+		 * `permalink_structure` is empty) keep `rewrite_rules` empty and
+		 * route every request through the query string. Our
+		 * `^\.well-known/...$` patterns can never appear in the persisted
+		 * array on such a site, and the endpoints cannot resolve via
+		 * rewrite there regardless. Bail before the missing-pattern check
+		 * so we do not read an always-empty array as "patterns missing"
+		 * and burn an `update_option` write on every call.
+		 */
+		if ( '' === (string) \get_option( 'permalink_structure', '' ) ) {
+			return;
+		}
+
 		$rules = \get_option( 'rewrite_rules' );
 
 		if ( \is_array( $rules ) ) {
-			$missing = false;
 			foreach ( \array_keys( self::WELLKNOWN_REWRITE_PATTERNS ) as $pattern ) {
 				if ( ! isset( $rules[ $pattern ] ) ) {
-					$missing = true;
-					break;
+					\flush_rewrite_rules( false );
+					return;
 				}
 			}
 
-			if ( ! $missing ) {
-				return;
-			}
+			return;
 		}
 
 		\flush_rewrite_rules( false );
