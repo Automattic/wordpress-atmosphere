@@ -28,6 +28,20 @@ class Document extends Base {
 	 *
 	 * @var string
 	 */
+	/**
+	 * Salt prefix passed to {@see TID::generate_for_time()} for documents.
+	 *
+	 * Combined with the post ID it produces the deterministic clock-id
+	 * input for the historical TID path; namespacing by class keeps
+	 * `Document` and `Post` rkeys distinct even though both derive from
+	 * the same `WP_Post`.
+	 *
+	 * @since unreleased
+	 *
+	 * @var string
+	 */
+	public const TID_SALT_PREFIX = 'document:';
+
 	public const META_TID = '_atmosphere_doc_tid';
 
 	/**
@@ -199,51 +213,17 @@ class Document extends Base {
 		$rkey = \get_post_meta( $this->object->ID, self::META_TID, true );
 
 		if ( empty( $rkey ) ) {
-			$rkey = self::mint_rkey( $this->object );
+			$rkey = $this->mint_historical_rkey(
+				$this->get_collection(),
+				(string) $this->object->post_date_gmt,
+				(int) $this->object->ID,
+				self::TID_SALT_PREFIX,
+				$this->object
+			);
 			\update_post_meta( $this->object->ID, self::META_TID, $rkey );
 		}
 
 		return $rkey;
-	}
-
-	/**
-	 * Mint a new TID for this document, honoring the historical-TID filter.
-	 *
-	 * Default is a historical TID derived from `post_date_gmt`, so
-	 * backfilled documents land at their original publish position in
-	 * the AT Protocol repo. Filter listeners can return false to fall
-	 * back to a now-based TID — useful for sites that intentionally
-	 * want commit-order rkeys regardless of original publish date.
-	 *
-	 * Falls back to {@see TID::generate()} when `post_date_gmt` cannot
-	 * be parsed (e.g. the `0000-00-00 00:00:00` sentinel) so we never
-	 * mint an epoch-anchored TID.
-	 *
-	 * @since unreleased
-	 *
-	 * @param \WP_Post $post Post being published.
-	 * @return string TID rkey.
-	 */
-	private static function mint_rkey( \WP_Post $post ): string {
-		/** This filter is documented in includes/transformer/class-post.php */
-		$use_historical = (bool) \apply_filters(
-			'atmosphere_use_historical_tid',
-			true,
-			$post,
-			'site.standard.document'
-		);
-
-		if ( ! $use_historical ) {
-			return TID::generate();
-		}
-
-		$microseconds = TID::microseconds_from_post_date( (string) $post->post_date_gmt, (int) $post->ID );
-
-		if ( $microseconds <= 0 ) {
-			return TID::generate();
-		}
-
-		return TID::generate_for_time( $microseconds, 'document:' . $post->ID );
 	}
 
 	/**

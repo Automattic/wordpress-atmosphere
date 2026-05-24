@@ -73,6 +73,76 @@ abstract class Base {
 	}
 
 	/**
+	 * Mint an rkey that honors the historical-TID filter contract.
+	 *
+	 * Shared by `Post::get_rkey()`, `Document::get_rkey()`, and
+	 * `Comment::get_rkey()`. Each subclass calls this with its own
+	 * collection NSID, the relevant `*_date_gmt` string and ID, a
+	 * per-class salt prefix (so `applyWrites` can never see two records
+	 * collapse onto the same rkey within a single collection), and an
+	 * optional kind label that separates records of different WordPress
+	 * object kinds when they share an AT Protocol collection.
+	 *
+	 * The historical path falls back to `TID::generate()` when either
+	 * the filter opts out or the GMT datetime cannot be parsed
+	 * (empty string, MySQL `0000-00-00 00:00:00` sentinel, garbage),
+	 * so callers never need to handle the "no usable date" case.
+	 *
+	 * @since unreleased
+	 *
+	 * @param string               $collection   AT Protocol collection NSID.
+	 * @param string               $gmt_datetime GMT datetime string from the WP object.
+	 * @param int                  $object_id    Post or comment identifier.
+	 * @param string               $salt_prefix  Per-class salt prefix (e.g. `'post:'`).
+	 * @param \WP_Post|\WP_Comment $wp_object    WordPress object being transformed.
+	 * @param string               $kind         Optional kind label for collection-sharing
+	 *                                           record types (e.g. `'comment'`).
+	 * @return string Minted TID rkey.
+	 */
+	final protected function mint_historical_rkey(
+		string $collection,
+		string $gmt_datetime,
+		int $object_id,
+		string $salt_prefix,
+		\WP_Post|\WP_Comment $wp_object,
+		string $kind = ''
+	): string {
+		/**
+		 * Filters whether to mint a historical TID based on the post's
+		 * original publish date.
+		 *
+		 * Defaults to true so backfilled posts get rkeys that reflect
+		 * the original publish time rather than the time of the
+		 * backfill run. Return false to fall back to the live-publish
+		 * `TID::generate()` path (now-based, with the monotonic floor).
+		 *
+		 * @since unreleased
+		 *
+		 * @param bool                 $use_historical Whether to mint a historical TID.
+		 * @param \WP_Post|\WP_Comment $object         WordPress object being transformed.
+		 * @param string               $collection     AT Protocol collection NSID.
+		 */
+		$use_historical = (bool) \apply_filters(
+			'atmosphere_use_historical_tid',
+			true,
+			$wp_object,
+			$collection
+		);
+
+		if ( ! $use_historical ) {
+			return TID::generate();
+		}
+
+		$microseconds = TID::microseconds_from_post_date( $gmt_datetime, $object_id, $kind );
+
+		if ( $microseconds <= 0 ) {
+			return TID::generate();
+		}
+
+		return TID::generate_for_time( $microseconds, $salt_prefix . $object_id );
+	}
+
+	/**
 	 * WordPress locale as BCP-47 language tag array.
 	 *
 	 * @return string[]

@@ -31,6 +31,33 @@ class Comment extends Base {
 	 *
 	 * @var string
 	 */
+	/**
+	 * Salt prefix passed to {@see TID::generate_for_time()} for comments.
+	 *
+	 * Combined with the comment ID it produces the deterministic
+	 * clock-id input for the historical TID path.
+	 *
+	 * @since unreleased
+	 *
+	 * @var string
+	 */
+	public const TID_SALT_PREFIX = 'comment:';
+
+	/**
+	 * Kind label passed to {@see TID::microseconds_from_post_date()}.
+	 *
+	 * Comments share the `app.bsky.feed.post` collection with posts, so
+	 * a post-id-vs-comment-id collision inside a single GMT second would
+	 * otherwise mint identical rkeys. The kind label folds an extra
+	 * deterministic offset into the microsecond portion so posts and
+	 * comments occupy different sub-second windows.
+	 *
+	 * @since unreleased
+	 *
+	 * @var string
+	 */
+	public const TID_KIND = 'comment';
+
 	public const META_TID = '_atmosphere_bsky_tid';
 
 	/**
@@ -139,53 +166,18 @@ class Comment extends Base {
 		$rkey = \get_comment_meta( (int) $this->object->comment_ID, self::META_TID, true );
 
 		if ( empty( $rkey ) ) {
-			$rkey = self::mint_rkey( $this->object );
+			$rkey = $this->mint_historical_rkey(
+				$this->get_collection(),
+				(string) $this->object->comment_date_gmt,
+				(int) $this->object->comment_ID,
+				self::TID_SALT_PREFIX,
+				$this->object,
+				self::TID_KIND
+			);
 			\update_comment_meta( (int) $this->object->comment_ID, self::META_TID, $rkey );
 		}
 
 		return $rkey;
-	}
-
-	/**
-	 * Mint a new TID for this comment, honoring the historical-TID filter.
-	 *
-	 * Default is a historical TID derived from `comment_date_gmt`, so
-	 * backfilled comments land at their original post position in the
-	 * AT Protocol repo. Filter listeners can return false to fall back
-	 * to a now-based TID.
-	 *
-	 * Falls back to {@see TID::generate()} when `comment_date_gmt`
-	 * cannot be parsed so we never mint an epoch-anchored TID.
-	 *
-	 * @since unreleased
-	 *
-	 * @param \WP_Comment $comment Comment being published.
-	 * @return string TID rkey.
-	 */
-	private static function mint_rkey( \WP_Comment $comment ): string {
-		/** This filter is documented in includes/transformer/class-post.php */
-		$use_historical = (bool) \apply_filters(
-			'atmosphere_use_historical_tid',
-			true,
-			$comment,
-			'app.bsky.feed.post'
-		);
-
-		if ( ! $use_historical ) {
-			return TID::generate();
-		}
-
-		$microseconds = TID::microseconds_from_post_date(
-			(string) $comment->comment_date_gmt,
-			(int) $comment->comment_ID,
-			'comment'
-		);
-
-		if ( $microseconds <= 0 ) {
-			return TID::generate();
-		}
-
-		return TID::generate_for_time( $microseconds, 'comment:' . $comment->comment_ID );
 	}
 
 	/**
