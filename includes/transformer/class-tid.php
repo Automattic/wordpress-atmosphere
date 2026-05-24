@@ -167,22 +167,7 @@ class TID {
 			\wp_cache_delete( self::OPTION_LAST_TS, 'options' );
 		}
 
-		if ( null === self::$clock_id ) {
-			/*
-			 * `random_int` throws on systems without a usable CSPRNG
-			 * (essentially never on a working PHP install, but a worth
-			 * a fallback so a missing entropy source can't bring down
-			 * publishing). `wp_rand` is non-cryptographic but the
-			 * collision space is still 1024.
-			 */
-			try {
-				self::$clock_id = \random_int( 0, 1023 );
-			} catch ( \Throwable $e ) {
-				self::$clock_id = \wp_rand( 0, 1023 );
-			}
-		}
-
-		return self::encode( ( $ts << 10 ) | self::$clock_id );
+		return self::encode( ( $ts << 10 ) | self::ensure_clock_id() );
 	}
 
 	/**
@@ -205,21 +190,7 @@ class TID {
 	 * @return string 13-character identifier.
 	 */
 	public static function generate_for_time( int $microseconds ): string {
-		if ( null === self::$clock_id ) {
-			/*
-			 * Same fallback shape as `generate()`: `random_int`
-			 * throws on systems without a usable CSPRNG; fall back
-			 * to `wp_rand` so a missing entropy source can't break
-			 * historical backfills.
-			 */
-			try {
-				self::$clock_id = \random_int( 0, 1023 );
-			} catch ( \Throwable $e ) {
-				self::$clock_id = \wp_rand( 0, 1023 );
-			}
-		}
-
-		return self::encode( ( $microseconds << 10 ) | self::$clock_id );
+		return self::encode( ( $microseconds << 10 ) | self::ensure_clock_id() );
 	}
 
 	/**
@@ -282,6 +253,29 @@ class TID {
 		}
 
 		return true;
+	}
+
+	/**
+	 * Lazily seed and return the per-process clock identifier.
+	 *
+	 * Shared by {@see self::generate()} and {@see self::generate_for_time()}.
+	 * `random_int` throws on systems without a usable CSPRNG (essentially
+	 * never on a working PHP install, but worth a fallback so a missing
+	 * entropy source can't bring down publishing). `wp_rand` is
+	 * non-cryptographic but the collision space is still 1024.
+	 *
+	 * @return int 10-bit clock identifier.
+	 */
+	private static function ensure_clock_id(): int {
+		if ( null === self::$clock_id ) {
+			try {
+				self::$clock_id = \random_int( 0, 1023 );
+			} catch ( \Throwable $e ) {
+				self::$clock_id = \wp_rand( 0, 1023 );
+			}
+		}
+
+		return self::$clock_id;
 	}
 
 	/**
