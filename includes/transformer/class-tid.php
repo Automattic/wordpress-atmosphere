@@ -180,9 +180,9 @@ class TID {
 	 * value forward to "now" — defeating the entire point — or
 	 * regress the floor used by live publishing. Callers are
 	 * responsible for supplying a microsecond value that is
-	 * collision-resistant within their batch (see
+	 * collision-resistant within their batch; see
 	 * {@see self::microseconds_from_post_date()} for the standard
-	 * deterministic helper).
+	 * deterministic helper.
 	 *
 	 * The 10-bit clock identifier is derived deterministically from
 	 * `$salt` rather than the per-process random value used by
@@ -190,39 +190,32 @@ class TID {
 	 * PHP worker before the record's TID meta is persisted would mint
 	 * a different rkey for the same post — the AT Protocol create
 	 * would then succeed twice and orphan the first record. Callers
-	 * should pass a salt that is unique to the record being minted
-	 * (a string composed of object id + kind is sufficient). The
-	 * companion {@see self::microseconds_from_post_date()} helper
-	 * folds the same ID into the microsecond portion, and the salt
-	 * provides the second-order entropy that protects against the
-	 * "IDs differ by a multiple of 1,000,000 inside the same GMT
-	 * second" modulo collision — both 10 bits of the rkey now depend
-	 * on the full object identity, not just the truncated portion.
+	 * should pass a salt that is unique to the record being minted;
+	 * the conventional shape used in the bundled transformers is
+	 * `"{kind}:{object_id}"` (e.g. `"post:42"`, `"comment:128"`),
+	 * which together with the modulo-disambiguated microsecond
+	 * portion makes both 10-bit fields depend on the full object
+	 * identity — closing the "IDs differ by a multiple of 1,000,000
+	 * inside the same GMT second" modulo collision.
+	 *
+	 * Non-positive `$microseconds` (zero or negative) and values
+	 * above `PHP_INT_MAX >> 10` fall through to {@see self::generate()}
+	 * rather than encoding garbage. The standard caller path through
+	 * {@see self::microseconds_from_post_date()} already returns 0
+	 * for unparseable input, but this guard protects direct callers
+	 * who hand the helper their own integer (a stray `* 1_000_000`
+	 * applied twice, a negative pre-epoch timestamp) from silently
+	 * minting an unsortable / negative-encoded TID. The upper bound
+	 * corresponds to roughly the year 294,247.
 	 *
 	 * @since unreleased
-	 *
-	 * Non-positive `$microseconds` (zero or negative) fall through to
-	 * {@see self::generate()} rather than encoding garbage. This is a
-	 * second line of defence: the standard caller path goes through
-	 * {@see self::microseconds_from_post_date()} which already returns
-	 * 0 for unparseable input, but a direct caller that hands in `0`,
-	 * a negative pre-epoch timestamp, or a value large enough that
-	 * `($microseconds << 10)` overflows into a negative 64-bit integer
-	 * would otherwise mint an unsortable / negative-encoded TID and
-	 * silently violate the "13-character sortable identifier" contract.
-	 *
-	 * The upper bound is `PHP_INT_MAX >> 10` — anything above that
-	 * cannot survive the shift inside a signed 64-bit int. That bound
-	 * corresponds to roughly the year 294,247, so the guard is purely
-	 * defensive against caller bugs (a stray `* 1_000_000` applied
-	 * twice, for instance).
 	 *
 	 * @param int    $microseconds Microseconds since the Unix epoch. Must
 	 *                             be in `(0, PHP_INT_MAX >> 10]` to mint
 	 *                             a historical TID; out-of-range values
 	 *                             fall back to {@see self::generate()}.
-	 * @param string $salt         Deterministic disambiguation salt
-	 *                             (typically `$kind . ':' . $object_id`).
+	 * @param string $salt         Deterministic disambiguation salt,
+	 *                             conventionally `"{kind}:{object_id}"`.
 	 *                             Defaults to the microseconds string so
 	 *                             ad-hoc callers still get a stable rkey.
 	 * @return string 13-character identifier.
@@ -261,17 +254,33 @@ class TID {
 	 * that's stable across runs (CRC32 is deterministic), preserving
 	 * idempotency per kind.
 	 *
-	 * Returns `0` if the datetime can't be parsed; callers should
-	 * decide whether to fall back to {@see self::generate()} in that
-	 * case rather than minting an epoch-anchored TID.
+	 * Bundled `$kind` values used by the plugin's transformers:
+	 *
+	 *   - `''` (default) — `Post` and `Document`. Their AT collections
+	 *     (`app.bsky.feed.post` and `site.standard.document`) don't
+	 *     overlap so no kind disambiguation is needed.
+	 *   - `'comment'` — `Comment`. Shares `app.bsky.feed.post` with
+	 *     `Post`, so the kind offset is required to avoid the cross-
+	 *     kind ID collision described above. See `Comment::TID_KIND`.
+	 *
+	 * Returns `0` for any unparseable input — empty / whitespace-only
+	 * strings, the MySQL `0000-00-00 00:00:00` sentinel, pre-epoch
+	 * datetimes, or garbage `strtotime()` rejects. Callers must check
+	 * for the zero return and fall back to {@see self::generate()}
+	 * rather than passing the zero through to
+	 * {@see self::generate_for_time()} (which would itself fall back,
+	 * but the explicit check at the call site keeps the intent
+	 * obvious).
 	 *
 	 * @since unreleased
 	 *
 	 * @param string $gmt_datetime GMT datetime string (e.g. `post_date_gmt`).
 	 * @param int    $object_id    Post or comment identifier for disambiguation.
 	 * @param string $kind         Optional kind label to separate records
-	 *                             sharing a collection (e.g. `post`, `comment`).
-	 * @return int Microseconds since the Unix epoch, or 0 on parse failure.
+	 *                             sharing a collection. See list above for
+	 *                             the values used by bundled transformers.
+	 * @return int Microseconds since the Unix epoch, or 0 on parse failure
+	 *             / pre-epoch / sentinel input.
 	 */
 	public static function microseconds_from_post_date( string $gmt_datetime, int $object_id, string $kind = '' ): int {
 		$trimmed = \trim( $gmt_datetime );
