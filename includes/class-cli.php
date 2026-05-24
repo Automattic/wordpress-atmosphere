@@ -25,11 +25,13 @@ use Atmosphere\Transformer\Document;
 class CLI {
 
 	/**
-	 * Default batch size for progress reporting.
+	 * Default batch size for progress reporting and per-batch cache
+	 * eviction.
 	 *
-	 * The publish loop is one post at a time regardless; this only
-	 * affects how often the progress bar ticks and the cadence of
-	 * intermediate "n of m" log lines.
+	 * The publish loop is one post at a time regardless; this controls
+	 * how often the progress bar ticks an intermediate "n of m" log
+	 * line, and how often the per-loop object cache is flushed to keep
+	 * long runs from growing unboundedly.
 	 *
 	 * @var int
 	 */
@@ -46,7 +48,8 @@ class CLI {
 	 *
 	 * [--post-type=<type>]
 	 * : Limit the run to a single supported post type. Defaults to all
-	 * supported post types.
+	 * supported post types. Ignored when --ids is also supplied (a
+	 * warning is printed in that case).
 	 *
 	 * [--ids=<csv>]
 	 * : Explicit comma-separated list of post IDs. Bypasses the unsynced
@@ -56,12 +59,15 @@ class CLI {
 	 * [--limit=<n>]
 	 * : Maximum posts to process. Default: 0 (no cap). Note the AJAX UI
 	 * defaults to 10 posts per run; the CLI default is unlimited so a
-	 * scripted backfill can drain a queue in one invocation.
+	 * scripted backfill can drain a queue in one invocation. Negative
+	 * values are rejected.
 	 *
 	 * [--batch=<n>]
-	 * : Batch size for progress reporting. Default: 25. Does not change
-	 * the publish loop semantics — posts are still published one at a
-	 * time — but tunes how often progress ticks.
+	 * : Batch size used for progress reporting and periodic object-cache
+	 * eviction. Default: 25. Does not change the publish loop semantics —
+	 * posts are still published one at a time — but tunes how often
+	 * progress ticks and how often per-post caches are dropped to keep
+	 * long runs from growing memory unboundedly.
 	 *
 	 * [--dry-run]
 	 * : List the posts that would be published. Does NOT call the
@@ -72,11 +78,9 @@ class CLI {
 	 * meta. Without this flag, already-synced posts are skipped.
 	 *
 	 * [--original-time]
-	 * : Wired but currently a no-op. A follow-up to issue 89 will use
-	 * this flag to route published records through a historical TID so
-	 * the AT Protocol timeline reflects the original WordPress publish
-	 * date. Landing the flag now keeps the CLI's external contract
-	 * stable before that work merges.
+	 * : Use the original publish date when generating record identifiers.
+	 * Currently equivalent to the default; this flag is reserved for an
+	 * upcoming change that adds historical timestamp support.
 	 *
 	 * ## EXAMPLES
 	 *
@@ -110,7 +114,24 @@ class CLI {
 
 		$post_type_arg = isset( $assoc_args['post-type'] ) ? (string) $assoc_args['post-type'] : '';
 		$ids_arg       = isset( $assoc_args['ids'] ) ? (string) $assoc_args['ids'] : '';
-		$limit         = isset( $assoc_args['limit'] ) ? \max( 0, (int) $assoc_args['limit'] ) : 0;
+
+		/*
+		 * Reject negative --limit explicitly. The previous coercion to
+		 * 0 (= unbounded) silently turned a typo for `--limit=5` into a
+		 * full-catalogue run — the opposite of user intent. Literal `0`
+		 * and an absent flag still mean "no cap".
+		 */
+		if ( isset( $assoc_args['limit'] ) && (int) $assoc_args['limit'] < 0 ) {
+			\WP_CLI::error(
+				\sprintf(
+					/* translators: %s: the rejected --limit value. */
+					\__( 'Invalid --limit value "%s": expected 0 (no cap) or a positive integer.', 'atmosphere' ),
+					(string) $assoc_args['limit']
+				)
+			);
+		}
+
+		$limit         = isset( $assoc_args['limit'] ) ? (int) $assoc_args['limit'] : 0;
 		$batch         = isset( $assoc_args['batch'] ) ? \max( 1, (int) $assoc_args['batch'] ) : self::DEFAULT_BATCH;
 		$dry_run       = ! empty( $assoc_args['dry-run'] );
 		$force         = ! empty( $assoc_args['force'] );
@@ -118,8 +139,8 @@ class CLI {
 
 		/*
 		 * `--original-time` is intentionally captured but unused in this
-		 * PR. The follow-up to issue 89 will branch on this flag to call
-		 * a historical-TID code path. Reference the variable so static
+		 * PR. A follow-up will branch on this flag to call a
+		 * historical-TID code path. Reference the variable so static
 		 * analysers do not flag it as unused while the wire-up is in
 		 * flight.
 		 */
@@ -142,12 +163,30 @@ class CLI {
 			$post_types = array( $post_type_arg );
 		}
 
-		$post_ids = '' !== $ids_arg
-			? self::parse_ids( $ids_arg )
-			: Backfill::get_unsynced_post_ids( $limit, $post_types );
+		if ( '' !== $ids_arg && '' !== $post_type_arg ) {
+			\WP_CLI::warning(
+				\__( '--post-type is ignored when --ids is supplied; the explicit ID list takes precedence.', 'atmosphere' )
+			);
+		}
 
-		if ( '' !== $ids_arg && $limit > 0 && \count( $post_ids ) > $limit ) {
-			$post_ids = \array_slice( $post_ids, 0, $limit );
+		if ( '' !== $ids_arg ) {
+			$post_ids = self::parse_ids( $ids_arg );
+
+			if ( empty( $post_ids ) ) {
+				\WP_CLI::error(
+					\sprintf(
+						/* translators: %s: the raw --ids flag value. */
+						\__( 'No valid post IDs parsed from --ids "%s". Expected a comma-separated list of positive integers.', 'atmosphere' ),
+						$ids_arg
+					)
+				);
+			}
+
+			if ( $limit > 0 && \count( $post_ids ) > $limit ) {
+				$post_ids = \array_slice( $post_ids, 0, $limit );
+			}
+		} else {
+			$post_ids = Backfill::get_unsynced_post_ids( $limit, $post_types );
 		}
 
 		if ( empty( $post_ids ) ) {
@@ -158,22 +197,32 @@ class CLI {
 		$total = \count( $post_ids );
 
 		\WP_CLI::log(
-			\sprintf(
-				/* translators: 1: number of posts queued, 2: "(dry run)" suffix when dry-run is on, else empty. */
-				\_n(
-					'Preparing %1$d post for backfill%2$s.',
-					'Preparing %1$d posts for backfill%2$s.',
-					$total,
-					'atmosphere'
-				),
-				$total,
-				$dry_run ? ' (dry run)' : ''
-			)
+			$dry_run
+				? \sprintf(
+					/* translators: %d: number of posts queued. */
+					\_n(
+						'Preparing %d post for backfill (dry run).',
+						'Preparing %d posts for backfill (dry run).',
+						$total,
+						'atmosphere'
+					),
+					$total
+				)
+				: \sprintf(
+					/* translators: %d: number of posts queued. */
+					\_n(
+						'Preparing %d post for backfill.',
+						'Preparing %d posts for backfill.',
+						$total,
+						'atmosphere'
+					),
+					$total
+				)
 		);
 
 		$progress = null;
 
-		if ( ! $dry_run && \class_exists( '\WP_CLI\Utils\ProgressBar' ) ) {
+		if ( ! $dry_run && \function_exists( '\WP_CLI\Utils\make_progress_bar' ) ) {
 			$progress = \WP_CLI\Utils\make_progress_bar(
 				\__( 'Publishing posts', 'atmosphere' ),
 				$total
@@ -186,6 +235,8 @@ class CLI {
 		$ticks   = 0;
 
 		foreach ( $post_ids as $post_id ) {
+			$tick_progress = true;
+
 			$post = \get_post( $post_id );
 
 			if ( ! $post instanceof \WP_Post ) {
@@ -197,13 +248,7 @@ class CLI {
 					)
 				);
 				++$skipped;
-				if ( $progress ) {
-					$progress->tick();
-				}
-				continue;
-			}
-
-			if ( ! is_post_publishable( $post ) ) {
+			} elseif ( ! is_post_publishable( $post ) ) {
 				\WP_CLI::warning(
 					\sprintf(
 						/* translators: %d: post ID. */
@@ -212,86 +257,87 @@ class CLI {
 					)
 				);
 				++$skipped;
-				if ( $progress ) {
-					$progress->tick();
-				}
-				continue;
-			}
-
-			$already_synced = ! empty( \get_post_meta( $post_id, Document::META_URI, true ) );
-
-			if ( $already_synced && ! $force ) {
-				\WP_CLI::warning(
-					\sprintf(
-						/* translators: %d: post ID. */
-						\__( 'Skipping post %d: already synced. Pass --force to republish.', 'atmosphere' ),
-						$post_id
-					)
-				);
-				++$skipped;
-				if ( $progress ) {
-					$progress->tick();
-				}
-				continue;
-			}
-
-			if ( $dry_run ) {
-				\WP_CLI::log(
-					\sprintf(
-						/* translators: 1: post ID, 2: post title. */
-						\__( 'Would publish post %1$d: %2$s', 'atmosphere' ),
-						$post_id,
-						\get_the_title( $post )
-					)
-				);
-				++$synced;
-				continue;
-			}
-
-			$result = Publisher::publish_post( $post );
-
-			if ( \is_wp_error( $result ) ) {
-				\WP_CLI::warning(
-					\sprintf(
-						/* translators: 1: post ID, 2: error message. */
-						\__( 'Failed to publish post %1$d: %2$s', 'atmosphere' ),
-						$post_id,
-						$result->get_error_message()
-					)
-				);
-				++$errors;
 			} else {
-				\WP_CLI::success(
-					\sprintf(
-						/* translators: 1: post ID, 2: post title. */
-						\__( 'Published post %1$d: %2$s', 'atmosphere' ),
-						$post_id,
-						\get_the_title( $post )
-					)
-				);
-				++$synced;
+				$already_synced = ! empty( \get_post_meta( $post_id, Document::META_URI, true ) );
+
+				if ( $already_synced && ! $force ) {
+					\WP_CLI::warning(
+						\sprintf(
+							/* translators: %d: post ID. */
+							\__( 'Skipping post %d: already synced. Pass --force to republish.', 'atmosphere' ),
+							$post_id
+						)
+					);
+					++$skipped;
+				} elseif ( $dry_run ) {
+					\WP_CLI::log(
+						\sprintf(
+							/* translators: 1: post ID, 2: post title. */
+							\__( 'Would publish post %1$d: %2$s', 'atmosphere' ),
+							$post_id,
+							\get_the_title( $post )
+						)
+					);
+					++$synced;
+					// Dry-run does not drive the progress bar (none is created).
+					$tick_progress = false;
+				} else {
+					$result = Publisher::publish_post( $post );
+
+					if ( \is_wp_error( $result ) ) {
+						\WP_CLI::warning(
+							\sprintf(
+								/* translators: 1: post ID, 2: error message. */
+								\__( 'Failed to publish post %1$d: %2$s', 'atmosphere' ),
+								$post_id,
+								$result->get_error_message()
+							)
+						);
+						++$errors;
+					} else {
+						\WP_CLI::success(
+							\sprintf(
+								/* translators: 1: post ID, 2: post title. */
+								\__( 'Published post %1$d: %2$s', 'atmosphere' ),
+								$post_id,
+								\get_the_title( $post )
+							)
+						);
+						++$synced;
+					}
+				}
 			}
 
-			if ( $progress ) {
+			if ( $progress && $tick_progress ) {
 				$progress->tick();
 			}
 
 			++$ticks;
 
 			/*
-			 * `--batch` only controls the cadence of intermediate
-			 * progress lines. The publish loop itself is per-post; we
-			 * do not bulk the Publisher calls.
+			 * Every $batch posts, drop per-post object-cache entries the
+			 * loop just accumulated. Long runs (10k+ posts) would
+			 * otherwise hold every visited WP_Post + meta + term row in
+			 * the in-process cache for the entire process lifetime.
+			 * Per-post `clean_post_cache()` matches the rest of the
+			 * codebase's pattern (`Atmosphere::on_comment_insert`,
+			 * `Publisher::publish_post`); it's narrower than a full
+			 * `wp_cache_flush()` so it does not evict unrelated entries
+			 * a long-running CLI script may have warmed.
 			 */
-			if ( ! $dry_run && 0 === $ticks % $batch && $ticks < $total ) {
-				\WP_CLI::log(
-					\sprintf(
-						/* translators: 1: number processed, 2: total. */
-						\__( 'Progress: %1$d of %2$d posts processed.', 'atmosphere' ),
-						$ticks,
-						$total
-					)
-				);
+			if ( ! $dry_run && 0 === $ticks % $batch ) {
+				\clean_post_cache( (int) $post_id );
+
+				if ( $ticks < $total ) {
+					\WP_CLI::log(
+						\sprintf(
+							/* translators: 1: number processed, 2: total. */
+							\__( 'Progress: %1$d of %2$d posts processed.', 'atmosphere' ),
+							$ticks,
+							$total
+						)
+					);
+				}
 			}
 		}
 
@@ -299,16 +345,27 @@ class CLI {
 			$progress->finish();
 		}
 
-		\WP_CLI::success(
-			\sprintf(
-				/* translators: 1: synced count, 2: total count, 3: skipped count, 4: error count. */
-				\__( 'Synced %1$d of %2$d posts (%3$d skipped, %4$d errors).', 'atmosphere' ),
-				$synced,
-				$total,
-				$skipped,
-				$errors
-			)
+		$summary = \sprintf(
+			/* translators: 1: synced count, 2: total count, 3: skipped count, 4: error count. */
+			\__( 'Synced %1$d of %2$d posts (%3$d skipped, %4$d errors).', 'atmosphere' ),
+			$synced,
+			$total,
+			$skipped,
+			$errors
 		);
+
+		/*
+		 * Surface a non-zero exit when at least one post failed to
+		 * publish. Scripted callers (the entire point of the CLI command)
+		 * detect failure via the process exit code — `success()` would
+		 * exit 0 even when every publish errored, hiding the failure from
+		 * cron and CI wrappers.
+		 */
+		if ( $errors > 0 ) {
+			\WP_CLI::error( $summary );
+		}
+
+		\WP_CLI::success( $summary );
 	}
 
 	/**
@@ -318,10 +375,14 @@ class CLI {
 	 * them in that order, which is the principle of least surprise for
 	 * scripted invocations that have already sorted their input.
 	 *
+	 * Public so the test suite can exercise the input-parsing rules
+	 * without resorting to reflection; the rules are part of the CLI's
+	 * documented contract.
+	 *
 	 * @param string $raw Raw flag value.
 	 * @return int[]
 	 */
-	private static function parse_ids( string $raw ): array {
+	public static function parse_ids( string $raw ): array {
 		$parts = \explode( ',', $raw );
 		$ids   = array();
 
