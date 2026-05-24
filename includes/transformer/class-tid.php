@@ -184,13 +184,25 @@ class TID {
 	 * {@see self::microseconds_from_post_date()} for the standard
 	 * deterministic helper).
 	 *
+	 * The 10-bit clock identifier is derived deterministically from
+	 * the microsecond input rather than the per-process random value
+	 * used by `generate()`. Without this, retrying a backfill in a
+	 * different PHP worker before the record's TID meta is persisted
+	 * would mint a different rkey for the same post — the AT
+	 * Protocol create would then succeed twice and orphan the first
+	 * record. CRC32 over the microsecond value is stable across
+	 * workers, so the historical path is process-independent and
+	 * truly idempotent for the same input.
+	 *
 	 * @since unreleased
 	 *
 	 * @param int $microseconds Microseconds since the Unix epoch.
 	 * @return string 13-character identifier.
 	 */
 	public static function generate_for_time( int $microseconds ): string {
-		return self::encode( ( $microseconds << 10 ) | self::ensure_clock_id() );
+		$clock_id = \crc32( (string) $microseconds ) & 0x3FF;
+
+		return self::encode( ( $microseconds << 10 ) | $clock_id );
 	}
 
 	/**

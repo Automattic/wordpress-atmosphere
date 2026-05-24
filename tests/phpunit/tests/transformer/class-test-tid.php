@@ -67,11 +67,13 @@ class Test_TID extends WP_UnitTestCase {
 	}
 
 	/**
-	 * The generate_for_time() helper is deterministic across calls with
-	 * the same microsecond value within the same process (the clock_id
-	 * is a per-process static, so a second call mints the same encoding).
+	 * The generate_for_time() helper is fully deterministic for the
+	 * same microsecond input. The clock_id is derived from the input
+	 * rather than the per-process random value, so a retry in a
+	 * different PHP worker reconstructs the same rkey — which is the
+	 * idempotency guarantee the backfill flow depends on.
 	 */
-	public function test_generate_for_time_deterministic_within_process() {
+	public function test_generate_for_time_is_deterministic() {
 		$microseconds = 1_500_000_000_000_000;
 
 		$first  = TID::generate_for_time( $microseconds );
