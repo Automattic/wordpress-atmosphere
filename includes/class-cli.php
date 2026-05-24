@@ -74,8 +74,11 @@ class CLI {
 	 * publisher.
 	 *
 	 * [--force]
-	 * : Republish posts even when they already carry the document URI
-	 * meta. Without this flag, already-synced posts are skipped.
+	 * : Re-sync posts even when they already carry the document URI
+	 * meta. Posts with a prior successful publish are updated in place
+	 * (existing TIDs and URIs are preserved; the PDS replaces the
+	 * record contents with the current WordPress state). Without this
+	 * flag, already-synced posts are skipped.
 	 *
 	 * [--original-time]
 	 * : Use the original publish date when generating record identifiers.
@@ -293,7 +296,20 @@ class CLI {
 					// Dry-run does not drive the progress bar (none is created).
 					$tick_progress = false;
 				} else {
-					$result = Publisher::publish_post( $post );
+					/*
+					 * `--force` on an already-synced post routes through
+					 * `update_post()`, not `publish_post()`. The publish path
+					 * issues `applyWrites#create` ops keyed off the stored
+					 * TIDs; the PDS rejects creates whose rkey already
+					 * exists. The update path issues `applyWrites#update`
+					 * against the same TIDs and preserves the records'
+					 * external engagement (likes, reposts, replies) instead
+					 * of orphaning it. The skip check above ensures we only
+					 * land here with $force when META_URI is set.
+					 */
+					$result = $already_synced
+						? Publisher::update_post( $post )
+						: Publisher::publish_post( $post );
 
 					if ( \is_wp_error( $result ) ) {
 						\WP_CLI::warning(
@@ -306,13 +322,19 @@ class CLI {
 						);
 						++$errors;
 					} else {
+						/*
+						 * Both branches pass the same placeholders so PHPCS's
+						 * translators-comment sniff is satisfied by attaching
+						 * the comment to each `__()` site rather than to the
+						 * `sprintf()` site.
+						 */
+						$message = $already_synced
+							/* translators: 1: post ID, 2: post title. */
+							? \__( 'Updated post %1$d: %2$s', 'atmosphere' )
+							/* translators: 1: post ID, 2: post title. */
+							: \__( 'Published post %1$d: %2$s', 'atmosphere' );
 						\WP_CLI::success(
-							\sprintf(
-								/* translators: 1: post ID, 2: post title. */
-								\__( 'Published post %1$d: %2$s', 'atmosphere' ),
-								$post_id,
-								\get_the_title( $post )
-							)
+							\sprintf( $message, $post_id, \get_the_title( $post ) )
 						);
 						++$synced;
 					}
