@@ -194,16 +194,27 @@ class TID {
 	}
 
 	/**
-	 * Convert a GMT datetime + post ID into a deterministic microsecond value.
+	 * Convert a GMT datetime + object ID into a deterministic microsecond value.
 	 *
-	 * `post_date_gmt` is MySQL second resolution, so two posts
-	 * published in the same second would otherwise hash to identical
-	 * microseconds and collide on the 10-bit clock identifier within
-	 * a single backfill run. Mixing the post ID (modulo one second
-	 * of microseconds) into the microsecond portion disambiguates
-	 * those collisions deterministically — re-running the backfill
-	 * mints the same TID for the same post, which keeps the operation
-	 * idempotent against `applyWrites`.
+	 * `post_date_gmt` and `comment_date_gmt` are MySQL second
+	 * resolution, so two records published in the same second would
+	 * otherwise hash to identical microseconds and collide on the
+	 * 10-bit clock identifier within a single backfill run. Mixing
+	 * the object ID (modulo one second of microseconds) into the
+	 * microsecond portion disambiguates those collisions
+	 * deterministically — re-running the backfill mints the same TID
+	 * for the same record, which keeps the operation idempotent
+	 * against `applyWrites`.
+	 *
+	 * The `$kind` argument disambiguates records that share an AT
+	 * Protocol collection but are sourced from different WordPress
+	 * object kinds. Without it, a `WP_Post` with id N and a
+	 * `WP_Comment` with `comment_ID` N published in the same GMT
+	 * second within a single PHP process would mint the same rkey
+	 * inside `app.bsky.feed.post` and `applyWrites` would reject the
+	 * second create. The kind label is hashed into a sub-second offset
+	 * that's stable across runs (CRC32 is deterministic), preserving
+	 * idempotency per kind.
 	 *
 	 * Returns `0` if the datetime can't be parsed; callers should
 	 * decide whether to fall back to {@see self::generate()} in that
@@ -212,10 +223,12 @@ class TID {
 	 * @since unreleased
 	 *
 	 * @param string $gmt_datetime GMT datetime string (e.g. `post_date_gmt`).
-	 * @param int    $post_id      Post or comment identifier for disambiguation.
+	 * @param int    $object_id    Post or comment identifier for disambiguation.
+	 * @param string $kind         Optional kind label to separate records
+	 *                             sharing a collection (e.g. `post`, `comment`).
 	 * @return int Microseconds since the Unix epoch, or 0 on parse failure.
 	 */
-	public static function microseconds_from_post_date( string $gmt_datetime, int $post_id ): int {
+	public static function microseconds_from_post_date( string $gmt_datetime, int $object_id, string $kind = '' ): int {
 		$trimmed = \trim( $gmt_datetime );
 
 		// MySQL zero-date sentinel and empty strings: bail before
@@ -232,7 +245,22 @@ class TID {
 			return 0;
 		}
 
-		return ( $seconds * 1_000_000 ) + ( $post_id % 1_000_000 );
+		$offset = $object_id % 1_000_000;
+
+		if ( '' !== $kind ) {
+			/*
+			 * Fold the kind label into the same 0..999_999 microsecond
+			 * window so the result still lands inside the post's
+			 * original GMT second. CRC32 is deterministic across runs,
+			 * which preserves the idempotency property — same input
+			 * mints the same TID — while moving the two kinds far
+			 * enough apart in microsecond-space that an ID-level
+			 * collision across kinds is astronomically unlikely.
+			 */
+			$offset = ( $offset + \crc32( $kind ) ) % 1_000_000;
+		}
+
+		return ( $seconds * 1_000_000 ) + $offset;
 	}
 
 	/**

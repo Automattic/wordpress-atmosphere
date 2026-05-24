@@ -154,4 +154,28 @@ class Test_TID extends WP_UnitTestCase {
 
 		$this->assertLessThan( $current, $historical, 'A 2010 TID must sort before a now-minted TID.' );
 	}
+
+	/**
+	 * The namespace argument prevents collisions between WP_Post and
+	 * WP_Comment records that share an AT Protocol collection but have
+	 * matching IDs and timestamps.
+	 */
+	public function test_microseconds_from_post_date_namespace_disambiguates() {
+		$gmt = '2019-03-14 15:09:26';
+		$id  = 42;
+
+		$post    = TID::microseconds_from_post_date( $gmt, $id );
+		$comment = TID::microseconds_from_post_date( $gmt, $id, 'comment' );
+
+		$this->assertNotSame( $post, $comment, 'Namespaced and bare results must differ for the same id+second.' );
+
+		// Namespace must be deterministic across calls.
+		$comment_again = TID::microseconds_from_post_date( $gmt, $id, 'comment' );
+		$this->assertSame( $comment, $comment_again, 'Same namespace + id + second must be idempotent.' );
+
+		// Both still land inside the same GMT second.
+		$seconds = (int) \strtotime( $gmt . ' UTC' );
+		$this->assertSame( $seconds, \intdiv( $post, 1_000_000 ) );
+		$this->assertSame( $seconds, \intdiv( $comment, 1_000_000 ) );
+	}
 }

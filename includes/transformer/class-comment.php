@@ -177,7 +177,8 @@ class Comment extends Base {
 
 		$microseconds = TID::microseconds_from_post_date(
 			(string) $comment->comment_date_gmt,
-			(int) $comment->comment_ID
+			(int) $comment->comment_ID,
+			'comment'
 		);
 
 		if ( $microseconds <= 0 ) {
