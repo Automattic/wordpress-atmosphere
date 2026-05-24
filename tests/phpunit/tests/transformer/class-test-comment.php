@@ -381,18 +381,17 @@ class Test_Comment extends WP_UnitTestCase {
 	 * collapse onto the same microsecond + salt-prefix-only-by-class
 	 * encoding and `applyWrites` would reject the second create.
 	 *
+	 * Forces the ID collision via direct `$wpdb` insert because
+	 * `comment_ID` and `post_ID` auto-increment from separate
+	 * sequences — the test factories can't guarantee equality.
+	 *
 	 * @covers ::get_rkey
 	 */
 	public function test_post_and_comment_with_matching_id_and_date_mint_distinct_rkeys() {
+		global $wpdb;
+
 		$gmt = '2018-04-01 12:00:00';
 
-		// Force matching IDs by inserting the comment with an explicit
-		// `comment_ID` equal to a known post ID. WordPress doesn't make
-		// `comment_ID` directly settable through the factory, so insert
-		// the post, then the comment, and assert on the *salt+kind*
-		// collision shape that would otherwise produce identical rkeys:
-		// equal numeric IDs (the disambiguator inside one second) and
-		// equal GMT seconds.
 		$post = self::factory()->post->create_and_get(
 			array(
 				'post_date'     => $gmt,
@@ -400,50 +399,56 @@ class Test_Comment extends WP_UnitTestCase {
 			)
 		);
 
-		$comment_id = self::factory()->comment->create(
+		// Insert a comment whose `comment_ID` literally equals the
+		// post ID. Bypass the factory + `wp_insert_comment` because
+		// neither honors a caller-supplied `comment_ID`; the AUTO_INCREMENT
+		// override is the whole point of the test. Use the same
+		// `$wpdb` direct-write pattern that lives in `class-tid.php`
+		// for its CAS write, with the same phpcs disable comment.
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.DirectDatabaseQuery.SchemaChange
+		$wpdb->insert(
+			$wpdb->comments,
 			array(
-				'comment_post_ID'  => $this->post_id,
-				'comment_date'     => $gmt,
-				'comment_date_gmt' => $gmt,
-				'comment_content'  => 'Cross-kind test.',
-				'user_id'          => 1,
+				'comment_ID'           => $post->ID,
+				'comment_post_ID'      => $this->post_id,
+				'comment_author'       => 'tester',
+				'comment_author_email' => 'tester@example.com',
+				'comment_date'         => $gmt,
+				'comment_date_gmt'     => $gmt,
+				'comment_content'      => 'Cross-kind test.',
+				'comment_approved'     => '1',
+				'user_id'              => 1,
 			)
 		);
+		\clean_comment_cache( $post->ID );
 
-		// Force the salt collision: assert directly on the TID helper
-		// with id parity, because comment_ID auto-increments separately
-		// from post IDs and we cannot guarantee equality through the
-		// factory. The transformer wiring then proves get_rkey() goes
-		// through the namespaced helper in production.
-		$shared_id = 4242;
+		$comment = \get_comment( $post->ID );
+		$this->assertNotNull( $comment, 'Sanity: the forced-ID comment must round-trip through get_comment().' );
+		$this->assertSame( (int) $post->ID, (int) $comment->comment_ID, 'Setup: comment_ID must equal post ID.' );
+		$this->assertSame( $gmt, $comment->comment_date_gmt, 'Setup: comment_date_gmt must match the post.' );
 
-		$post_microseconds    = TID::microseconds_from_post_date( $gmt, $shared_id );
-		$comment_microseconds = TID::microseconds_from_post_date( $gmt, $shared_id, Comment::TID_KIND );
+		// End-to-end: each transformer mints through `get_rkey()` (which
+		// goes through `Base::mint_historical_rkey()` with the per-class
+		// salt + kind), and the resulting rkeys must differ even though
+		// both live inside `app.bsky.feed.post` with identical ID + date.
+		$post_rkey    = ( new Post( $post ) )->get_rkey();
+		$comment_rkey = ( new Comment( $comment ) )->get_rkey();
 
-		$this->assertNotSame(
-			$post_microseconds,
-			$comment_microseconds,
-			'A post and a comment with identical id+date must map to different microseconds.'
-		);
-
-		$post_rkey    = TID::generate_for_time( $post_microseconds, Post::TID_SALT_PREFIX . $shared_id );
-		$comment_rkey = TID::generate_for_time( $comment_microseconds, Comment::TID_SALT_PREFIX . $shared_id );
-
+		$this->assertTrue( TID::is_valid( $post_rkey ) );
+		$this->assertTrue( TID::is_valid( $comment_rkey ) );
 		$this->assertNotSame(
 			$post_rkey,
 			$comment_rkey,
-			'Salt prefix + kind together must produce distinct rkeys for the collision case.'
+			'Post and Comment with identical id+date must mint distinct rkeys via the kind namespace.'
 		);
 
-		// Sanity-check the production wiring: a real Post and Comment
-		// transformer with this same gmt still produce valid, distinct
-		// rkeys via get_rkey().
-		$comment       = \get_comment( $comment_id );
-		$real_post_key = ( new Post( $post ) )->get_rkey();
-		$real_comm_key = ( new Comment( $comment ) )->get_rkey();
-
-		$this->assertTrue( TID::is_valid( $real_post_key ) );
-		$this->assertTrue( TID::is_valid( $real_comm_key ) );
-		$this->assertNotSame( $real_post_key, $real_comm_key );
+		// Both transformers share the `app.bsky.feed.post` collection,
+		// so the rkeys must also differ at the microsecond level — not
+		// just at the 10-bit clock_id derived from the salt.
+		$this->assertNotSame(
+			TID_Decoder::tid_to_microseconds( $post_rkey ),
+			TID_Decoder::tid_to_microseconds( $comment_rkey ),
+			'Microsecond portions must differ — the kind label offsets one of them inside the GMT second.'
+		);
 	}
 }

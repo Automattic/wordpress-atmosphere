@@ -24,11 +24,6 @@ use function Atmosphere\sanitize_text;
 class Document extends Base {
 
 	/**
-	 * Post meta key for the document TID.
-	 *
-	 * @var string
-	 */
-	/**
 	 * Salt prefix passed to {@see TID::generate_for_time()} for documents.
 	 *
 	 * Combined with the post ID it produces the deterministic clock-id
@@ -42,6 +37,11 @@ class Document extends Base {
 	 */
 	public const TID_SALT_PREFIX = 'document:';
 
+	/**
+	 * Post meta key for the document TID.
+	 *
+	 * @var string
+	 */
 	public const META_TID = '_atmosphere_doc_tid';
 
 	/**

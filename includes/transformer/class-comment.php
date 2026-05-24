@@ -27,11 +27,6 @@ use function Atmosphere\truncate_text;
 class Comment extends Base {
 
 	/**
-	 * Comment meta key for the bsky post TID (rkey).
-	 *
-	 * @var string
-	 */
-	/**
 	 * Salt prefix passed to {@see TID::generate_for_time()} for comments.
 	 *
 	 * Combined with the comment ID it produces the deterministic
@@ -58,6 +53,11 @@ class Comment extends Base {
 	 */
 	public const TID_KIND = 'comment';
 
+	/**
+	 * Comment meta key for the bsky post TID (rkey).
+	 *
+	 * @var string
+	 */
 	public const META_TID = '_atmosphere_bsky_tid';
 
 	/**

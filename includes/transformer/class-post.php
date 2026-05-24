@@ -23,11 +23,6 @@ use function Atmosphere\truncate_text;
 class Post extends Base {
 
 	/**
-	 * Post meta key for the bsky post TID.
-	 *
-	 * @var string
-	 */
-	/**
 	 * Salt prefix passed to {@see TID::generate_for_time()} for posts.
 	 *
 	 * Combined with the post ID it produces the deterministic clock-id
@@ -41,6 +36,11 @@ class Post extends Base {
 	 */
 	public const TID_SALT_PREFIX = 'post:';
 
+	/**
+	 * Post meta key for the bsky post TID.
+	 *
+	 * @var string
+	 */
 	public const META_TID = '_atmosphere_bsky_tid';
 
 	/**

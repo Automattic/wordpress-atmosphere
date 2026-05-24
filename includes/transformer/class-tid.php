@@ -206,7 +206,7 @@ class TID {
 	 * who hand the helper their own integer (a stray `* 1_000_000`
 	 * applied twice, a negative pre-epoch timestamp) from silently
 	 * minting an unsortable / negative-encoded TID. The upper bound
-	 * corresponds to roughly the year 294,247.
+	 * corresponds to roughly the year 2255.
 	 *
 	 * @since unreleased
 	 *
