@@ -2104,4 +2104,180 @@ class Test_Post extends WP_UnitTestCase {
 			$record['embed']['images'][0]['aspectRatio']
 		);
 	}
+
+	/**
+	 * A short-form post with an in-body `core/image` block uses that
+	 * image — not the featured image — in the embed.
+	 *
+	 * @covers ::transform
+	 */
+	public function test_short_form_with_inbody_image_block_uses_inbody_image() {
+		// Featured image — should be ignored when an in-body image exists.
+		$featured_id = self::factory()->attachment->create_object(
+			array(
+				'file'           => 'featured.jpg',
+				'post_mime_type' => 'image/jpeg',
+			),
+			0,
+			array( 'post_title' => 'Featured attachment' )
+		);
+		\update_post_meta(
+			$featured_id,
+			'_atmosphere_blob_ref',
+			array(
+				'cid'      => 'bafyfeatured',
+				'mimeType' => 'image/jpeg',
+				'size'     => 1,
+			)
+		);
+
+		// In-body image.
+		$inbody_id = self::factory()->attachment->create_object(
+			array(
+				'file'           => 'inbody.jpg',
+				'post_mime_type' => 'image/jpeg',
+			),
+			0,
+			array( 'post_title' => 'In-body attachment' )
+		);
+		\update_post_meta(
+			$inbody_id,
+			'_atmosphere_blob_ref',
+			array(
+				'cid'      => 'bafyinbody',
+				'mimeType' => 'image/jpeg',
+				'size'     => 2,
+			)
+		);
+		\update_post_meta( $inbody_id, '_wp_attachment_image_alt', 'An in-body image' );
+
+		$content = '<!-- wp:paragraph --><p>Just an aside.</p><!-- /wp:paragraph -->'
+			. "\n\n"
+			. '<!-- wp:image {"id":' . $inbody_id . ',"sizeSlug":"large"} -->'
+			. '<figure class="wp-block-image size-large"><img src="" alt="" class="wp-image-' . $inbody_id . '"/></figure>'
+			. '<!-- /wp:image -->';
+
+		$post_id = self::factory()->post->create(
+			array(
+				'post_title'   => 'Aside with inline image',
+				'post_content' => $content,
+			)
+		);
+		\set_post_format( $post_id, 'aside' );
+		\set_post_thumbnail( $post_id, $featured_id );
+		$post = \get_post( $post_id );
+
+		$record = ( new Post( $post ) )->transform();
+
+		$this->assertArrayHasKey( 'embed', $record );
+		$this->assertSame( 'app.bsky.embed.images', $record['embed']['$type'] );
+		$this->assertCount( 1, $record['embed']['images'] );
+		$this->assertSame( 'An in-body image', $record['embed']['images'][0]['alt'] );
+		$this->assertSame( 'bafyinbody', $record['embed']['images'][0]['image']['cid'] );
+	}
+
+	/**
+	 * Up to 4 in-body images attach; duplicates are removed in document
+	 * order; the 5th and beyond are dropped.
+	 *
+	 * @covers ::transform
+	 */
+	public function test_short_form_with_many_inbody_images_caps_at_four() {
+		$ids = array();
+		for ( $i = 0; $i < 5; $i++ ) {
+			$id = self::factory()->attachment->create_object(
+				array(
+					'file'           => "img{$i}.jpg",
+					'post_mime_type' => 'image/jpeg',
+				),
+				0,
+				array( 'post_title' => "Image {$i}" )
+			);
+			\update_post_meta(
+				$id,
+				'_atmosphere_blob_ref',
+				array(
+					'cid'      => "bafy{$i}",
+					'mimeType' => 'image/jpeg',
+					'size'     => $i + 1,
+				)
+			);
+			$ids[] = $id;
+		}
+
+		// Sequence: id0, id1, id2, id0 (dup), id3, id4 — after dedup we
+		// expect [ id0, id1, id2, id3, id4 ], capped to first 4.
+		$sequence = array( $ids[0], $ids[1], $ids[2], $ids[0], $ids[3], $ids[4] );
+		$content  = '<!-- wp:paragraph --><p>Look at these images.</p><!-- /wp:paragraph -->' . "\n\n";
+		foreach ( $sequence as $id ) {
+			$content .= '<!-- wp:image {"id":' . $id . '} -->'
+				. '<figure class="wp-block-image"><img class="wp-image-' . $id . '"/></figure>'
+				. "<!-- /wp:image -->\n";
+		}
+
+		$post_id = self::factory()->post->create(
+			array(
+				'post_title'   => 'Many images aside',
+				'post_content' => $content,
+			)
+		);
+		\set_post_format( $post_id, 'aside' );
+		$post = \get_post( $post_id );
+
+		$record = ( new Post( $post ) )->transform();
+
+		$this->assertCount( 4, $record['embed']['images'] );
+		$cids = \array_map( static fn( $img ) => $img['image']['cid'], $record['embed']['images'] );
+		$this->assertSame( array( 'bafy0', 'bafy1', 'bafy2', 'bafy3' ), $cids );
+	}
+
+	/**
+	 * `core/image` blocks nested inside `core/group` (and other container
+	 * blocks via `innerBlocks`) are picked up by the recursive walk.
+	 *
+	 * @covers ::transform
+	 */
+	public function test_short_form_collects_nested_image_blocks() {
+		$inner_id = self::factory()->attachment->create_object(
+			array(
+				'file'           => 'nested.jpg',
+				'post_mime_type' => 'image/jpeg',
+			),
+			0,
+			array( 'post_title' => 'Nested attachment' )
+		);
+		\update_post_meta(
+			$inner_id,
+			'_atmosphere_blob_ref',
+			array(
+				'cid'      => 'bafynested',
+				'mimeType' => 'image/jpeg',
+				'size'     => 1,
+			)
+		);
+
+		$content = '<!-- wp:paragraph --><p>Nested image aside.</p><!-- /wp:paragraph -->'
+			. "\n\n"
+			. '<!-- wp:group -->'
+			. '<div class="wp-block-group">'
+			. '<!-- wp:image {"id":' . $inner_id . '} -->'
+			. '<figure class="wp-block-image"><img class="wp-image-' . $inner_id . '"/></figure>'
+			. '<!-- /wp:image -->'
+			. '</div>'
+			. '<!-- /wp:group -->';
+
+		$post_id = self::factory()->post->create(
+			array(
+				'post_title'   => 'Group with nested image',
+				'post_content' => $content,
+			)
+		);
+		\set_post_format( $post_id, 'aside' );
+		$post = \get_post( $post_id );
+
+		$record = ( new Post( $post ) )->transform();
+
+		$this->assertArrayHasKey( 'embed', $record );
+		$this->assertSame( 'bafynested', $record['embed']['images'][0]['image']['cid'] );
+	}
 }
