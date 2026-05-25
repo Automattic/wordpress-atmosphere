@@ -339,7 +339,9 @@ class Post extends Base {
 	 *      images are found.
 	 *
 	 * Returns null when neither source yields an image, when every
-	 * attempted blob upload fails, or for redacted posts. Used by the
+	 * attempted blob upload fails, or for redacted posts. Partial upload
+	 * failures are silently skipped; the record ships with whatever
+	 * uploaded successfully. Used by the
 	 * short-form `transform()` path so aside/status/quote posts that
 	 * contain images actually ship them to Bluesky instead of silently
 	 * dropping them with the post content's HTML.
@@ -403,7 +405,10 @@ class Post extends Base {
 	 * Walks the block tree recursively (into `innerBlocks`) so an image
 	 * nested in a group, column, or cover block is still picked up.
 	 * Order is document order; duplicates are removed; non-positive IDs
-	 * are skipped.
+	 * are skipped. Only `core/image` blocks are inspected — `core/cover`
+	 * background images and `core/media-text` images are intentionally
+	 * out of scope; consumers needing those can wire them in via the
+	 * `atmosphere_post_embed` filter.
 	 *
 	 * @return int[]
 	 */

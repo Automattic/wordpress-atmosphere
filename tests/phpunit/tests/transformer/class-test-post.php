@@ -2396,4 +2396,48 @@ class Test_Post extends WP_UnitTestCase {
 
 		$this->assertArrayNotHasKey( 'embed', $record );
 	}
+
+	/**
+	 * A redacted (password-protected) short-form post with a featured
+	 * image must not ship the image — mirrors the existing redaction
+	 * posture for text and tags. Protects against leaking protected
+	 * attachments to Bluesky.
+	 *
+	 * @covers ::transform
+	 */
+	public function test_short_form_with_password_does_not_attach_images_embed() {
+		$attachment_id = self::factory()->attachment->create_object(
+			array(
+				'file'           => 'protected.jpg',
+				'post_mime_type' => 'image/jpeg',
+			),
+			0,
+			array( 'post_title' => 'Protected attachment' )
+		);
+		\update_post_meta(
+			$attachment_id,
+			'_atmosphere_blob_ref',
+			array(
+				'cid'      => 'bafyprotected',
+				'mimeType' => 'image/jpeg',
+				'size'     => 1,
+			)
+		);
+
+		$post_id = self::factory()->post->create(
+			array(
+				'post_status'   => 'publish',
+				'post_title'    => 'Protected aside',
+				'post_content'  => 'Secret body.',
+				'post_password' => 'secret',
+			)
+		);
+		\set_post_format( $post_id, 'aside' );
+		\set_post_thumbnail( $post_id, $attachment_id );
+		$post = \get_post( $post_id );
+
+		$record = ( new Post( $post ) )->transform();
+
+		$this->assertArrayNotHasKey( 'embed', $record );
+	}
 }
