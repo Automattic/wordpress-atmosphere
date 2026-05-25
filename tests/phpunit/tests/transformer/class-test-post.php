@@ -2280,4 +2280,98 @@ class Test_Post extends WP_UnitTestCase {
 		$this->assertArrayHasKey( 'embed', $record );
 		$this->assertSame( 'bafynested', $record['embed']['images'][0]['image']['cid'] );
 	}
+
+	/**
+	 * `atmosphere_post_embed` returning null suppresses the new default
+	 * image embed on short-form posts — preserves the existing override
+	 * contract.
+	 *
+	 * @covers ::transform
+	 */
+	public function test_post_embed_filter_returning_null_suppresses_short_form_images_embed() {
+		$attachment_id = self::factory()->attachment->create_object(
+			array(
+				'file'           => 'img.jpg',
+				'post_mime_type' => 'image/jpeg',
+			),
+			0,
+			array( 'post_title' => 'Attachment' )
+		);
+		\update_post_meta(
+			$attachment_id,
+			'_atmosphere_blob_ref',
+			array(
+				'cid'      => 'bafy',
+				'mimeType' => 'image/jpeg',
+				'size'     => 1,
+			)
+		);
+
+		$post_id = self::factory()->post->create(
+			array(
+				'post_title'   => 'Aside with image',
+				'post_content' => 'Body text.',
+			)
+		);
+		\set_post_format( $post_id, 'aside' );
+		\set_post_thumbnail( $post_id, $attachment_id );
+		$post = \get_post( $post_id );
+
+		\add_filter( 'atmosphere_post_embed', '__return_null' );
+
+		$record = ( new Post( $post ) )->transform();
+
+		$this->assertArrayNotHasKey( 'embed', $record );
+	}
+
+	/**
+	 * The `atmosphere_post_embed` filter receives the new image embed as
+	 * the default value (not `null`) on a short-form post with an image,
+	 * so listeners that want to inspect / augment the default can.
+	 *
+	 * @covers ::transform
+	 */
+	public function test_post_embed_filter_receives_images_default_on_short_form() {
+		$attachment_id = self::factory()->attachment->create_object(
+			array(
+				'file'           => 'img.jpg',
+				'post_mime_type' => 'image/jpeg',
+			),
+			0,
+			array( 'post_title' => 'Attachment' )
+		);
+		\update_post_meta(
+			$attachment_id,
+			'_atmosphere_blob_ref',
+			array(
+				'cid'      => 'bafy',
+				'mimeType' => 'image/jpeg',
+				'size'     => 1,
+			)
+		);
+
+		$post_id = self::factory()->post->create(
+			array(
+				'post_title'   => 'Aside with image',
+				'post_content' => 'Body text.',
+			)
+		);
+		\set_post_format( $post_id, 'aside' );
+		\set_post_thumbnail( $post_id, $attachment_id );
+		$post = \get_post( $post_id );
+
+		$seen = null;
+		\add_filter(
+			'atmosphere_post_embed',
+			static function ( $embed ) use ( &$seen ) {
+				$seen = $embed;
+				return $embed;
+			}
+		);
+
+		( new Post( $post ) )->transform();
+
+		$this->assertIsArray( $seen );
+		$this->assertSame( 'app.bsky.embed.images', $seen['$type'] );
+	}
 }
