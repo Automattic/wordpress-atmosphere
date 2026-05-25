@@ -181,6 +181,26 @@ class Test_Wellknown_Rewrite extends WP_UnitTestCase {
 	}
 
 	/**
+	 * Second consecutive call is a no-op once the patterns are present.
+	 *
+	 * This is the loop-prevention property: the helper fires from
+	 * surfaces that can recur (every settings pageview), so a healthy
+	 * site must not re-flush each time. The first call heals; the second
+	 * must leave the persisted array byte-identical.
+	 */
+	public function test_second_call_is_a_noop_once_healed(): void {
+		\delete_option( 'rewrite_rules' );
+
+		Atmosphere::maybe_flush_wellknown_rewrites();
+		$healed = \get_option( 'rewrite_rules' );
+		$this->assertWellknownPatternsResolved( $healed );
+
+		Atmosphere::maybe_flush_wellknown_rewrites();
+
+		$this->assertSame( $healed, \get_option( 'rewrite_rules' ) );
+	}
+
+	/**
 	 * Defensive: flush when the option holds a non-array value.
 	 *
 	 * Some caches or hosts can stash an empty string or other scalar

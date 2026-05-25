@@ -318,12 +318,13 @@ class Atmosphere {
 	/**
 	 * Regex patterns of the well-known rewrite rules this plugin owns.
 	 *
-	 * Kept as a single source of truth so {@see register_wellknown_rewrite()}
-	 * and {@see maybe_flush_wellknown_rewrites()} stay in lockstep — if a
+	 * Maps each pattern to its `index.php` query target. Kept as a single
+	 * source of truth so {@see register_wellknown_rewrite()} and
+	 * {@see maybe_flush_wellknown_rewrites()} stay in lockstep — if a
 	 * future rule is added or renamed, both surfaces pick it up without
 	 * a separate edit, and the persisted-rules check still detects drift.
 	 *
-	 * @var string[]
+	 * @var array<string, string>
 	 */
 	private const WELLKNOWN_REWRITE_PATTERNS = array(
 		'^\.well-known/atproto-did$'                 => 'index.php?atmosphere_wellknown=atproto-did',
@@ -389,17 +390,26 @@ class Atmosphere {
 	 * our rules take effect without touching the webserver config.
 	 */
 	public static function maybe_flush_wellknown_rewrites(): void {
+		global $wp_rewrite;
+
 		/*
-		 * Plain permalinks (the WordPress default `?p=N` scheme, where
-		 * `permalink_structure` is empty) keep `rewrite_rules` empty and
-		 * route every request through the query string. Our
-		 * `^\.well-known/...$` patterns can never appear in the persisted
-		 * array on such a site, and the endpoints cannot resolve via
-		 * rewrite there regardless. Bail before the missing-pattern check
-		 * so we do not read an always-empty array as "patterns missing"
-		 * and burn an `update_option` write on every call.
+		 * Plain permalinks (the WordPress default `?p=N` scheme) keep
+		 * `rewrite_rules` empty and route every request through the query
+		 * string. Our `^\.well-known/...$` patterns can never appear in
+		 * the persisted array on such a site, and the endpoints cannot
+		 * resolve via rewrite there regardless. Bail before the
+		 * missing-pattern check so we do not read an always-empty array
+		 * as "patterns missing" and burn an `update_option` write on
+		 * every call.
+		 *
+		 * Read the state from `$wp_rewrite` rather than the
+		 * `permalink_structure` option: `flush_rewrite_rules()` rebuilds
+		 * from `$wp_rewrite`'s in-memory structure, so gating on the same
+		 * source keeps the guard and the flush in agreement even if
+		 * something wrote the option directly after `WP_Rewrite::init()`
+		 * ran this request.
 		 */
-		if ( '' === (string) \get_option( 'permalink_structure', '' ) ) {
+		if ( ! $wp_rewrite instanceof \WP_Rewrite || ! $wp_rewrite->using_permalinks() ) {
 			return;
 		}
 
