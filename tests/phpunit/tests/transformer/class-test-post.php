@@ -2374,4 +2374,26 @@ class Test_Post extends WP_UnitTestCase {
 		$this->assertIsArray( $seen );
 		$this->assertSame( 'app.bsky.embed.images', $seen['$type'] );
 	}
+
+	/**
+	 * A short-form post with neither an in-body image block nor a
+	 * featured image still ships without an embed — the default doesn't
+	 * synthesize one out of nothing.
+	 *
+	 * @covers ::transform
+	 */
+	public function test_short_form_without_any_image_has_no_embed() {
+		$post_id = self::factory()->post->create(
+			array(
+				'post_title'   => 'Aside no image',
+				'post_content' => 'Just words.',
+			)
+		);
+		\set_post_format( $post_id, 'aside' );
+		$post = \get_post( $post_id );
+
+		$record = ( new Post( $post ) )->transform();
+
+		$this->assertArrayNotHasKey( 'embed', $record );
+	}
 }
