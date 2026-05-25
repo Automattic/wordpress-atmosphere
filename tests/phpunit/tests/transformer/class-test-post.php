@@ -2030,4 +2030,78 @@ class Test_Post extends WP_UnitTestCase {
 
 		$this->assertNull( Post::get_attachment_aspect_ratio( $attachment_id ) );
 	}
+
+	/*
+	 * -----------------------------------------------------------------
+	 * Short-form image embed — auto-extract from post content / featured image.
+	 * -----------------------------------------------------------------
+	 */
+
+	/**
+	 * A short-form post with no in-body images but with a featured image
+	 * attaches an `app.bsky.embed.images` record with that single image.
+	 *
+	 * @covers ::transform
+	 */
+	public function test_short_form_with_featured_image_attaches_images_embed() {
+		$attachment_id = self::factory()->attachment->create_object(
+			array(
+				'file'           => 'featured.jpg',
+				'post_mime_type' => 'image/jpeg',
+			),
+			0,
+			array(
+				'post_title' => 'Featured attachment',
+			)
+		);
+		\update_post_meta(
+			$attachment_id,
+			'_atmosphere_blob_ref',
+			array(
+				'cid'      => 'bafyfeatured',
+				'mimeType' => 'image/jpeg',
+				'size'     => 123,
+			)
+		);
+		\update_post_meta( $attachment_id, '_wp_attachment_image_alt', 'A featured image' );
+		\wp_update_attachment_metadata(
+			$attachment_id,
+			array(
+				'width'  => 1600,
+				'height' => 1200,
+			)
+		);
+
+		$post_id = self::factory()->post->create(
+			array(
+				'post_title'   => 'Aside with featured image',
+				'post_content' => 'Just text in the body.',
+			)
+		);
+		\set_post_format( $post_id, 'aside' );
+		\set_post_thumbnail( $post_id, $attachment_id );
+		$post = \get_post( $post_id );
+
+		$record = ( new Post( $post ) )->transform();
+
+		$this->assertArrayHasKey( 'embed', $record );
+		$this->assertSame( 'app.bsky.embed.images', $record['embed']['$type'] );
+		$this->assertCount( 1, $record['embed']['images'] );
+		$this->assertSame( 'A featured image', $record['embed']['images'][0]['alt'] );
+		$this->assertSame(
+			array(
+				'cid'      => 'bafyfeatured',
+				'mimeType' => 'image/jpeg',
+				'size'     => 123,
+			),
+			$record['embed']['images'][0]['image']
+		);
+		$this->assertSame(
+			array(
+				'width'  => 1600,
+				'height' => 1200,
+			),
+			$record['embed']['images'][0]['aspectRatio']
+		);
+	}
 }

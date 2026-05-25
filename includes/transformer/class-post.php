@@ -156,9 +156,13 @@ class Post extends Base {
 		$text  = $redacted ? '' : ( $is_short ? $this->build_short_form_text() : '' );
 		$embed = null;
 
-		if ( ! $redacted && '' === $text ) {
-			$text  = $this->build_text();
-			$embed = $this->build_embed();
+		if ( ! $redacted ) {
+			if ( '' === $text ) {
+				$text  = $this->build_text();
+				$embed = $this->build_embed();
+			} elseif ( $is_short ) {
+				$embed = $this->build_images_embed();
+			}
 		}
 
 		if ( ! $redacted ) {
@@ -323,6 +327,132 @@ class Post extends Base {
 		$prose = truncate_text( $prose, $available );
 
 		return $prose . "\n\n" . $permalink;
+	}
+
+	/**
+	 * Build an `app.bsky.embed.images` record from the post's images.
+	 *
+	 * Source priority:
+	 *   1. `core/image` blocks parsed from `post_content` (deduped,
+	 *      document order, capped at 4).
+	 *   2. Featured image (`get_post_thumbnail_id`) when no in-body
+	 *      images are found.
+	 *
+	 * Returns null when neither source yields an image, when every
+	 * attempted blob upload fails, or for redacted posts. Used by the
+	 * short-form `transform()` path so aside/status/quote posts that
+	 * contain images actually ship them to Bluesky instead of silently
+	 * dropping them with the post content's HTML.
+	 *
+	 * @return array|null app.bsky.embed.images record or null.
+	 */
+	private function build_images_embed(): ?array {
+		if ( $this->is_redacted() ) {
+			return null;
+		}
+
+		$attachment_ids = $this->collect_image_attachment_ids();
+
+		if ( empty( $attachment_ids ) ) {
+			$thumb_id = \get_post_thumbnail_id( $this->object );
+			if ( $thumb_id ) {
+				$attachment_ids[] = (int) $thumb_id;
+			}
+		}
+
+		if ( empty( $attachment_ids ) ) {
+			return null;
+		}
+
+		// AT Protocol `app.bsky.embed.images` caps at 4 images.
+		$attachment_ids = \array_slice( $attachment_ids, 0, 4 );
+
+		$images = array();
+		foreach ( $attachment_ids as $attachment_id ) {
+			$blob = self::upload_image_blob( $attachment_id );
+			if ( ! $blob ) {
+				continue;
+			}
+
+			$image = array(
+				'image' => $blob,
+				'alt'   => $this->image_alt_text( $attachment_id ),
+			);
+
+			$aspect_ratio = self::get_attachment_aspect_ratio( $attachment_id );
+			if ( null !== $aspect_ratio ) {
+				$image['aspectRatio'] = $aspect_ratio;
+			}
+
+			$images[] = $image;
+		}
+
+		if ( empty( $images ) ) {
+			return null;
+		}
+
+		return array(
+			'$type'  => 'app.bsky.embed.images',
+			'images' => $images,
+		);
+	}
+
+	/**
+	 * Collect attachment IDs from `core/image` blocks in post_content.
+	 *
+	 * Walks the block tree recursively (into `innerBlocks`) so an image
+	 * nested in a group, column, or cover block is still picked up.
+	 * Order is document order; duplicates are removed; non-positive IDs
+	 * are skipped.
+	 *
+	 * @return int[]
+	 */
+	private function collect_image_attachment_ids(): array {
+		$content = (string) $this->object->post_content;
+
+		if ( '' === $content || ! \has_blocks( $content ) ) {
+			return array();
+		}
+
+		$blocks = \parse_blocks( $content );
+		$ids    = array();
+
+		$walker = static function ( array $blocks ) use ( &$walker, &$ids ): void {
+			foreach ( $blocks as $block ) {
+				if ( ( $block['blockName'] ?? '' ) === 'core/image'
+					&& isset( $block['attrs']['id'] )
+					&& (int) $block['attrs']['id'] > 0
+				) {
+					$ids[] = (int) $block['attrs']['id'];
+				}
+
+				if ( ! empty( $block['innerBlocks'] ) && \is_array( $block['innerBlocks'] ) ) {
+					$walker( $block['innerBlocks'] );
+				}
+			}
+		};
+
+		$walker( $blocks );
+
+		return \array_values( \array_unique( $ids ) );
+	}
+
+	/**
+	 * Resolve the alt text for an attachment.
+	 *
+	 * Uses the WordPress canonical attachment alt meta key
+	 * (`_wp_attachment_image_alt`). Returns an empty string when the meta
+	 * is missing or non-string — AT Protocol's `app.bsky.embed.images`
+	 * requires the `alt` field to be present, and an empty string is a
+	 * valid value.
+	 *
+	 * @param int $attachment_id Attachment ID.
+	 * @return string
+	 */
+	private function image_alt_text( int $attachment_id ): string {
+		$alt = \get_post_meta( $attachment_id, '_wp_attachment_image_alt', true );
+
+		return \is_string( $alt ) ? $alt : '';
 	}
 
 	/**
