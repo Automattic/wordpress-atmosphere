@@ -376,7 +376,6 @@ class Reaction_Sync {
 		}
 
 		$parent_uri = $record['reply']['parent']['uri'] ?? '';
-		$root_uri   = $record['reply']['root']['uri'] ?? '';
 
 		if ( empty( $parent_uri ) ) {
 			return false;
@@ -399,11 +398,27 @@ class Reaction_Sync {
 			}
 		}
 
-		if ( ! $post_id ) {
-			// Deep thread rooted at one of our posts.
-			$post_id = self::find_post_by_bsky_uri( $root_uri );
-		}
-
+		/*
+		 * Drop replies whose parent we can't resolve. A parent that
+		 * doesn't match a local WP post or a previously-synced WP
+		 * comment is either:
+		 *
+		 *   - Orphaned: the parent was deleted on Bluesky (e.g. blocked
+		 *     user, account deletion) or removed from our moderation
+		 *     queue. Falling back to the root post would re-attach
+		 *     every subsequent re-walk as a top-level orphan, looping
+		 *     the moderation queue indefinitely until the watermark
+		 *     advances past it.
+		 *
+		 *   - Out-of-order: a deep reply seen before its parent in the
+		 *     same `listNotifications`/`listRecords` page. Dropping
+		 *     here is recoverable: the parent gets synced in the same
+		 *     run, the child re-enters via the WATERMARK_GRACE window
+		 *     on the next run, and parent resolution succeeds.
+		 *
+		 * Direct replies (parent_uri is one of our WP posts) and
+		 * resolved nested replies are unaffected.
+		 */
 		if ( ! $post_id ) {
 			return false;
 		}
