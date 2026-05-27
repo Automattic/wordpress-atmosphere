@@ -27,6 +27,7 @@ class Test_Client_Metadata_Filter extends WP_UnitTestCase {
 	 */
 	public function tear_down(): void {
 		\remove_all_filters( 'atmosphere_client_metadata' );
+		\remove_all_filters( 'pre_option_blogname' );
 		parent::tear_down();
 	}
 
@@ -238,6 +239,20 @@ class Test_Client_Metadata_Filter extends WP_UnitTestCase {
 			'nested-array' => array( array( 'nested' ) ),
 			'bool'         => array( true ),
 		);
+	}
+
+	/**
+	 * The OAuth client name is HTML-entity decoded. WordPress stores
+	 * `blogname` entity-encoded (esc_html at save time), so without
+	 * decoding the consent screen would render raw codes like `&#039;`.
+	 */
+	public function test_client_name_decodes_html_entities() {
+		\add_filter( 'pre_option_blogname', static fn() => 'Toni&#039;s blog' );
+
+		$response = Admin::serve_client_metadata();
+		$data     = $response->get_data();
+
+		$this->assertSame( "Toni's blog (ATmosphere)", $data['client_name'] );
 	}
 
 	/**
