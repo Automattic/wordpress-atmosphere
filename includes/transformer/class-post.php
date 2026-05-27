@@ -410,6 +410,13 @@ class Post extends Base {
 	 * out of scope; consumers needing those can wire them in via the
 	 * `atmosphere_post_embed` filter.
 	 *
+	 * The walker stops collecting once 32 IDs have been gathered — well
+	 * above the 4-image AT Protocol cap, but enough headroom that dedupe
+	 * still preserves document order on realistic posts. Bounds the
+	 * memory profile so an attacker-controlled `post_content` packed with
+	 * thousands of `core/image` blocks can't grow the working array
+	 * past a constant ceiling.
+	 *
 	 * @return int[]
 	 */
 	private function collect_image_attachment_ids(): array {
@@ -422,8 +429,17 @@ class Post extends Base {
 		$blocks = \parse_blocks( $content );
 		$ids    = array();
 
-		$walker = static function ( array $blocks ) use ( &$walker, &$ids ): void {
+		// Generous ceiling: well above the 4-image cap, enough that
+		// dedupe still preserves document order on realistic posts,
+		// small enough to bound attacker-controlled memory growth.
+		$max_ids = 32;
+
+		$walker = static function ( array $blocks ) use ( &$walker, &$ids, $max_ids ): void {
 			foreach ( $blocks as $block ) {
+				if ( \count( $ids ) >= $max_ids ) {
+					return;
+				}
+
 				if ( ( $block['blockName'] ?? '' ) === 'core/image'
 					&& isset( $block['attrs']['id'] )
 					&& (int) $block['attrs']['id'] > 0
@@ -635,7 +651,9 @@ class Post extends Base {
 	 * applyWrites batch from a malformed embed.
 	 *
 	 * @param array|null $embed    Default embed for this strategy
-	 *                             (null for short-form, an
+	 *                             (an `app.bsky.embed.images` record for
+	 *                             short-form posts with images, null for
+	 *                             short-form posts without images, an
 	 *                             `app.bsky.embed.external` card for the
 	 *                             link-card and teaser-thread strategies).
 	 * @param string     $strategy Composition strategy: 'short-form',
@@ -646,15 +664,16 @@ class Post extends Base {
 		/**
 		 * Filters the embed attached to a Bluesky post record.
 		 *
-		 * Fires for every composition strategy, including short-form
-		 * (where the default is `null` — short-form posts ship without
-		 * an embed unless something opts in). Consumers can:
+		 * Fires for every composition strategy. The default for short-form
+		 * posts is an `app.bsky.embed.images` record when the post has
+		 * images (in-body `core/image` blocks, or the featured image as a
+		 * fallback), and `null` otherwise. Consumers can:
 		 *
 		 *   - Replace the default external link card with a richer
 		 *     embed type (`app.bsky.embed.images`, `app.bsky.embed.video`,
 		 *     `app.bsky.embed.record`).
 		 *   - Attach an embed to a short-form post that would otherwise
-		 *     ship plain.
+		 *     ship plain (e.g. an image-free aside).
 		 *   - Suppress the default embed by returning null.
 		 *
 		 * Valid returns are `null` or an array with a non-empty string
@@ -675,9 +694,12 @@ class Post extends Base {
 		 * post object to embed filters would leak the protected payload.
 		 *
 		 * @param array|null $embed    Default embed for this strategy
-		 *                             (null for short-form, an
-		 *                             `app.bsky.embed.external` card
-		 *                             otherwise).
+		 *                             (an `app.bsky.embed.images` record
+		 *                             for short-form posts with images,
+		 *                             null for short-form posts without
+		 *                             images, an `app.bsky.embed.external`
+		 *                             card for the link-card and
+		 *                             teaser-thread strategies).
 		 * @param \WP_Post   $post     The post being transformed.
 		 * @param string     $strategy Composition strategy: 'short-form',
 		 *                             'link-card', or 'teaser-thread'.

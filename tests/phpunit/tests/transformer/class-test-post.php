@@ -2440,4 +2440,110 @@ class Test_Post extends WP_UnitTestCase {
 
 		$this->assertArrayNotHasKey( 'embed', $record );
 	}
+
+	/**
+	 * `core/image` blocks with non-positive or missing IDs are skipped by
+	 * the collector. Locks the `> 0` and `isset` guards so a future
+	 * refactor that drops them surfaces in CI rather than shipping
+	 * placeholder/template blocks to Bluesky.
+	 *
+	 * @covers ::transform
+	 */
+	public function test_short_form_skips_image_blocks_with_invalid_ids() {
+		$featured_id = self::factory()->attachment->create_object(
+			array(
+				'file'           => 'fallback.jpg',
+				'post_mime_type' => 'image/jpeg',
+			),
+			0,
+			array( 'post_title' => 'Fallback attachment' )
+		);
+		\update_post_meta(
+			$featured_id,
+			'_atmosphere_blob_ref',
+			array(
+				'cid'      => 'bafyfallback',
+				'mimeType' => 'image/jpeg',
+				'size'     => 1,
+			)
+		);
+
+		/*
+		 * Paragraph keeps the post on the short-form path (otherwise
+		 * `build_short_form_text()` returns empty and we fall back to
+		 * long-form). Three image blocks that should all be skipped:
+		 * id=0 (non-positive), missing id, and id="foo" (cast to int
+		 * yields 0).
+		 */
+		$content = '<!-- wp:paragraph --><p>Aside body.</p><!-- /wp:paragraph -->'
+			. '<!-- wp:image {"id":0} --><figure></figure><!-- /wp:image -->'
+			. '<!-- wp:image {"sizeSlug":"large"} --><figure></figure><!-- /wp:image -->'
+			. '<!-- wp:image {"id":"foo"} --><figure></figure><!-- /wp:image -->';
+
+		$post_id = self::factory()->post->create(
+			array(
+				'post_title'   => 'Aside with invalid ids',
+				'post_content' => $content,
+			)
+		);
+		\set_post_format( $post_id, 'aside' );
+		\set_post_thumbnail( $post_id, $featured_id );
+		$post = \get_post( $post_id );
+
+		$record = ( new Post( $post ) )->transform();
+
+		// Featured-image fallback applies because no valid in-body IDs
+		// were collected. The single image is the featured image, not
+		// any of the placeholder blocks.
+		$this->assertArrayHasKey( 'embed', $record );
+		$this->assertSame( 'app.bsky.embed.images', $record['embed']['$type'] );
+		$this->assertCount( 1, $record['embed']['images'] );
+		$this->assertSame( 'bafyfallback', $record['embed']['images'][0]['image']['cid'] );
+	}
+
+	/**
+	 * When the attachment has no `_wp_attachment_image_alt` meta set at
+	 * all, the embed still includes an `alt` field with an empty string —
+	 * the Lexicon requires `alt` to be present on every image entry.
+	 *
+	 * @covers ::transform
+	 */
+	public function test_short_form_image_embed_alt_is_empty_string_when_meta_missing() {
+		$attachment_id = self::factory()->attachment->create_object(
+			array(
+				'file'           => 'no-alt.jpg',
+				'post_mime_type' => 'image/jpeg',
+			),
+			0,
+			array( 'post_title' => 'No-alt attachment' )
+		);
+		\update_post_meta(
+			$attachment_id,
+			'_atmosphere_blob_ref',
+			array(
+				'cid'      => 'bafynoalt',
+				'mimeType' => 'image/jpeg',
+				'size'     => 1,
+			)
+		);
+		// Intentionally do not set `_wp_attachment_image_alt`.
+
+		$post_id = self::factory()->post->create(
+			array(
+				'post_title'   => 'Aside no alt',
+				'post_content' => 'Words.',
+			)
+		);
+		\set_post_format( $post_id, 'aside' );
+		\set_post_thumbnail( $post_id, $attachment_id );
+		$post = \get_post( $post_id );
+
+		$record = ( new Post( $post ) )->transform();
+
+		$this->assertArrayHasKey( 'embed', $record );
+		$this->assertSame( 'app.bsky.embed.images', $record['embed']['$type'] );
+		$this->assertCount( 1, $record['embed']['images'] );
+		$this->assertArrayHasKey( 'alt', $record['embed']['images'][0] );
+		$this->assertSame( '', $record['embed']['images'][0]['alt'] );
+	}
 }
