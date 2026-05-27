@@ -46,14 +46,20 @@ function build_at_uri( string $did, string $collection, string $rkey ): string {
 }
 
 /**
- * Strip HTML, decode entities, normalise whitespace.
+ * Decode entities, strip HTML, normalise whitespace.
  *
  * @param string $text Raw text.
  * @return string Clean text.
  */
 function sanitize_text( string $text ): string {
-	$text = \wp_strip_all_tags( $text );
+	// Decode BEFORE stripping. WordPress stores many strings HTML-entity
+	// encoded (esc_html at save time), so an entity-encoded tag such as
+	// `&lt;script&gt;` arrives with no literal angle brackets. Stripping
+	// first would leave it untouched and the later decode would turn it
+	// into live `<script>` markup in the record. Decoding first turns it
+	// into a real tag that wp_strip_all_tags then removes.
 	$text = \html_entity_decode( $text, ENT_QUOTES, 'UTF-8' );
+	$text = \wp_strip_all_tags( $text );
 	// `/u` matches Unicode whitespace too — without it NBSP (U+00A0),
 	// ideographic space (U+3000), and similar survive both this collapse
 	// and the trim() below, masquerading as real prose downstream.
