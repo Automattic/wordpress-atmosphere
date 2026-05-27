@@ -247,12 +247,13 @@ class Test_Client_Metadata_Filter extends WP_UnitTestCase {
 	 * decoding the consent screen would render raw codes like `&#039;`.
 	 */
 	public function test_client_name_decodes_html_entities() {
-		\add_filter( 'pre_option_blogname', static fn() => 'Toni&#039;s blog' );
+		// Covers both a numeric entity (&#039;) and a named entity (&amp;).
+		\add_filter( 'pre_option_blogname', static fn() => 'Tom &amp; Toni&#039;s blog' );
 
 		$response = Admin::serve_client_metadata();
 		$data     = $response->get_data();
 
-		$this->assertSame( "Toni's blog (ATmosphere)", $data['client_name'] );
+		$this->assertSame( "Tom & Toni's blog (ATmosphere)", $data['client_name'] );
 	}
 
 	/**

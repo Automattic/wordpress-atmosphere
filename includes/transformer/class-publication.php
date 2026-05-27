@@ -12,7 +12,6 @@ namespace Atmosphere\Transformer;
 
 \defined( 'ABSPATH' ) || exit;
 
-use function Atmosphere\get_did;
 use function Atmosphere\sanitize_text;
 
 /**
@@ -33,6 +32,10 @@ class Publication extends Base {
 	 * @return array site.standard.publication record.
 	 */
 	public function transform(): array {
+		// WordPress stores the site name and tagline HTML-entity encoded
+		// (esc_html at save time). sanitize_text() decodes those entities —
+		// and also strips tags and collapses whitespace — so the record
+		// carries clean plain text rather than codes like `&#039;`.
 		$record = array(
 			'$type'       => 'site.standard.publication',
 			'url'         => \home_url( '/' ),

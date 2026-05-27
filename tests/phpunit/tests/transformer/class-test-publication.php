@@ -98,8 +98,34 @@ class Test_Publication extends WP_UnitTestCase {
 
 		$record = ( new Publication( null ) )->transform();
 
+		$this->assertSame( 'site.standard.publication', $record['$type'] );
 		$this->assertSame( $blob, $record['icon'], 'Site icon should populate the spec `icon` field.' );
 		$this->assertArrayNotHasKey( 'avatar', $record, 'The non-spec `avatar` field must not be present.' );
+	}
+
+	/**
+	 * When a site icon is set but its blob cannot be uploaded, the `icon`
+	 * key is omitted rather than written as null. The attachment has no
+	 * backing file and no cached blob ref, so upload_image_blob() returns
+	 * null at its `! $file` guard without a network call.
+	 */
+	public function test_site_icon_omitted_when_blob_upload_fails() {
+		$attachment_id = self::factory()->attachment->create_object(
+			array(
+				'file'           => 'missing.png',
+				'post_mime_type' => 'image/png',
+			),
+			0,
+			array(
+				'post_title' => 'Site icon',
+			)
+		);
+		\delete_post_meta( $attachment_id, '_wp_attached_file' );
+		\update_option( 'site_icon', $attachment_id );
+
+		$record = ( new Publication( null ) )->transform();
+
+		$this->assertArrayNotHasKey( 'icon', $record );
 	}
 
 	/**
