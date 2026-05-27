@@ -12,7 +12,7 @@ namespace Atmosphere\Transformer;
 
 \defined( 'ABSPATH' ) || exit;
 
-use function Atmosphere\get_did;
+use function Atmosphere\sanitize_text;
 
 /**
  * Standard.site publication transformer.
@@ -32,20 +32,25 @@ class Publication extends Base {
 	 * @return array site.standard.publication record.
 	 */
 	public function transform(): array {
+		// WordPress stores the site name and tagline HTML-entity encoded
+		// (esc_html at save time). sanitize_text() strips tags, decodes
+		// those entities, and collapses whitespace, so the record carries
+		// clean plain text rather than codes like `&#039;`.
 		$record = array(
 			'$type'       => 'site.standard.publication',
 			'url'         => \home_url( '/' ),
-			'name'        => \get_bloginfo( 'name' ),
-			'displayName' => \get_bloginfo( 'name' ),
-			'description' => \get_bloginfo( 'description' ),
+			'name'        => sanitize_text( \get_bloginfo( 'name' ) ),
+			'description' => sanitize_text( \get_bloginfo( 'description' ) ),
 		);
 
-		// Site icon as avatar.
+		// Site icon. The site.standard.publication lexicon expects a square
+		// `icon` blob (at least 256x256). The Site Icon control crops to a
+		// square and recommends 512px, which clears that guideline.
 		$icon_id = \get_option( 'site_icon' );
 		if ( $icon_id ) {
 			$blob = Post::upload_thumbnail( (int) $icon_id );
 			if ( $blob ) {
-				$record['avatar'] = $blob;
+				$record['icon'] = $blob;
 			}
 		}
 
