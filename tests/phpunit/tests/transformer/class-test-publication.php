@@ -134,4 +134,27 @@ class Test_Publication extends WP_UnitTestCase {
 		$this->assertSame( "Toni's blog", $record['name'] );
 		$this->assertSame( 'Tom & Jerry', $record['description'] );
 	}
+
+	/**
+	 * End-to-end proof against WordPress's real storage path: a site name
+	 * and tagline saved with special characters round-trip to clean text
+	 * in the record.
+	 *
+	 * `update_option()` runs the value through `sanitize_option()`, which
+	 * `esc_html()`s `blogname` / `blogdescription` exactly once. `esc_html()`
+	 * is idempotent (`_wp_specialchars()` defaults to `$double_encode =
+	 * false`), so the stored value is always single-encoded — a single
+	 * `html_entity_decode()` pass in `sanitize_text()` fully decodes it.
+	 * This is the realistic counterpart to the `pre_option_*` test above,
+	 * which injects an arbitrary encoded string directly.
+	 */
+	public function test_name_and_description_round_trip_real_option_values() {
+		\update_option( 'blogname', "Toni's blog & Co" );
+		\update_option( 'blogdescription', "Books, coffee & friends'" );
+
+		$record = ( new Publication( null ) )->transform();
+
+		$this->assertSame( "Toni's blog & Co", $record['name'] );
+		$this->assertSame( "Books, coffee & friends'", $record['description'] );
+	}
 }
