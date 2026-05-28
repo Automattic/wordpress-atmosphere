@@ -19,6 +19,7 @@ use function Atmosphere\get_supported_post_types;
 use function Atmosphere\has_identity;
 use function Atmosphere\is_connected;
 use function Atmosphere\needs_reauth;
+use function Atmosphere\sanitize_text;
 
 /**
  * Admin class.
@@ -893,7 +894,7 @@ class Admin {
 	public static function serve_client_metadata(): \WP_REST_Response {
 		$metadata = array(
 			'client_id'                  => Client::client_id(),
-			'client_name'                => \get_bloginfo( 'name' ) . ' (ATmosphere)',
+			'client_name'                => sanitize_text( \get_bloginfo( 'name' ) ) . ' (ATmosphere)',
 			'client_uri'                 => \home_url( '/' ),
 			'redirect_uris'              => array( Client::redirect_uri() ),
 			'grant_types'                => array( 'authorization_code', 'refresh_token' ),

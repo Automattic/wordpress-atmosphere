@@ -60,6 +60,19 @@ class Test_Functions extends WP_UnitTestCase {
 	}
 
 	/**
+	 * Entity-encoded markup must not survive as live tags. WordPress stores
+	 * values like the site title HTML-entity encoded, so `<b>` arrives as
+	 * `&lt;b&gt;`. sanitize_text() decodes before stripping, so the decoded
+	 * tag is removed rather than re-materialising as live markup in the
+	 * record.
+	 */
+	public function test_sanitize_text_removes_entity_encoded_markup() {
+		$this->assertSame( 'Bad', sanitize_text( '&lt;b&gt;Bad&lt;/b&gt;' ) );
+		$this->assertSame( '', sanitize_text( '&lt;script&gt;alert(1)&lt;/script&gt;' ) );
+		$this->assertStringNotContainsString( '<', sanitize_text( '&lt;img src=x onerror=alert(1)&gt;' ) );
+	}
+
+	/**
 	 * Unicode whitespace (NBSP, ideographic space) collapses and trims
 	 * just like ASCII whitespace. Without the `/u` regex flag a NBSP-only
 	 * string would survive both the collapse and the trim and leak
