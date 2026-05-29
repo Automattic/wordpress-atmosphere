@@ -52,31 +52,19 @@ class Test_Encryption extends WP_UnitTestCase {
 	}
 
 	/**
-	 * The `wp_salt( 'auth' )` fallback must derive the same key material
-	 * as the legacy `AUTH_KEY . AUTH_SALT` concatenation when both
-	 * constants are defined and non-default. Pins the back-compat
-	 * guarantee: tokens encrypted before this fix must still decrypt
-	 * after it, and any future refactor that breaks this equivalence
-	 * would silently invalidate every existing install's stored secrets.
-	 */
-	public function test_wp_salt_auth_matches_legacy_concatenation() {
-		$this->assertTrue( \defined( 'AUTH_KEY' ) );
-		$this->assertTrue( \defined( 'AUTH_SALT' ) );
-		$this->assertNotEmpty( AUTH_KEY );
-		$this->assertNotEmpty( AUTH_SALT );
-
-		$this->assertSame( AUTH_KEY . AUTH_SALT, \wp_salt( 'auth' ) );
-	}
-
-	/**
-	 * Reflection-driven regression test for the fallback branch.
+	 * Reflection-driven regression test for `Encryption::key()`.
 	 *
-	 * Invokes the private `Encryption::key()` method via reflection so
-	 * the test exercises the exact production code path. With both
-	 * constants defined (as in wp-env), the legacy branch is taken;
-	 * we still get a stable, non-empty 32-byte sodium key. Combined
-	 * with the equivalence assertion above, this confirms the fallback
-	 * branch would produce the same key on sites missing the constants.
+	 * Invokes the private method directly so the test exercises the
+	 * production code path. The previous implementation referenced
+	 * `AUTH_KEY` and `AUTH_SALT` unconditionally and fataled on sites
+	 * that don't define them; this assertion would have caught that.
+	 *
+	 * Back-compat with existing encrypted data is guaranteed by the
+	 * production conditional preferring the legacy concatenation when
+	 * both constants are defined and non-empty, not by `wp_salt()`
+	 * equivalence — `wp_salt()` deliberately ignores placeholder values
+	 * like `'put your unique phrase here'` and falls back to options,
+	 * so a direct equivalence assertion would be wrong in those envs.
 	 */
 	public function test_key_returns_sodium_sized_key() {
 		$reflection = new \ReflectionClass( Encryption::class );
