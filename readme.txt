@@ -1,5 +1,5 @@
 === ATmosphere ===
-Contributors: automattic, pfefferle, kraftbj, ryancowles
+Contributors: automattic, pfefferle, kraftbj, ryanc413
 Tags: at-protocol, bluesky, fediverse, atproto, crossposting
 Requires at least: 6.2
 Tested up to: 7.0
