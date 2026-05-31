@@ -1,0 +1,4 @@
+Significance: patch
+Type: fixed
+
+Fix unexpected disconnections by refreshing the AT Protocol session more reliably.

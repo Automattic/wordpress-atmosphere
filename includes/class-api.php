@@ -24,13 +24,16 @@ class API {
 	/**
 	 * Send a DPoP-authenticated request to the connected PDS.
 	 *
-	 * @param string      $method   HTTP method.
-	 * @param string      $endpoint XRPC path, e.g. /xrpc/com.atproto.repo.createRecord.
-	 * @param array       $args     wp_safe_remote_request() arguments.
-	 * @param string|null $nonce    Explicit DPoP nonce (used on retry).
+	 * @param string      $method       HTTP method.
+	 * @param string      $endpoint     XRPC path, e.g. /xrpc/com.atproto.repo.createRecord.
+	 * @param array       $args         wp_safe_remote_request() arguments.
+	 * @param string|null $nonce        Explicit DPoP nonce (used on retry).
+	 * @param bool        $auth_retried Internal marker: set on the recursive call after a
+	 *                                  proactive refresh so a still-failing token does not
+	 *                                  loop.
 	 * @return array|\WP_Error Decoded JSON body or error.
 	 */
-	public static function request( string $method, string $endpoint, array $args = array(), ?string $nonce = null ): array|\WP_Error {
+	public static function request( string $method, string $endpoint, array $args = array(), ?string $nonce = null, bool $auth_retried = false ): array|\WP_Error {
 		$original_args = $args;
 
 		$access_token = Client::access_token();
@@ -98,6 +101,42 @@ class API {
 			&& ( $body['error'] ?? '' ) === 'use_dpop_nonce'
 		) {
 			return self::request( $method, $endpoint, $original_args, $response_nonce );
+		}
+
+		/*
+		 * Retry once after a proactive token refresh when the PDS rejects
+		 * the access token as expired or invalid. The previous behaviour
+		 * surfaced these as a hard `atmosphere_pds` error even though a
+		 * refresh-then-retry would have recovered the request — the most
+		 * common reason for hitting this branch is an access token that
+		 * `Client::access_token()` considered fresh (because `expires_at`
+		 * was still in the future) but the auth server has revoked or
+		 * rotated under us.
+		 *
+		 * Only recurse if the refresh either succeeded or is racing
+		 * another worker (`atmosphere_refresh_locked`, in which case the
+		 * recursive `Client::access_token()` will wait for that worker to
+		 * land a new token). On any other refresh error — missing refresh
+		 * token, decrypt failure, transient network blip — surface that
+		 * error instead of retrying with the same stale access token; the
+		 * second PDS call would just hit the same 401 and mask the more
+		 * actionable upstream cause.
+		 */
+		if ( ! $auth_retried
+			&& 401 === $status
+			&& \in_array(
+				$body['error'] ?? '',
+				array( 'InvalidToken', 'ExpiredToken', 'AuthenticationRequired' ),
+				true
+			)
+		) {
+			$refresh = Client::refresh();
+			if ( \is_wp_error( $refresh )
+				&& 'atmosphere_refresh_locked' !== $refresh->get_error_code()
+			) {
+				return $refresh;
+			}
+			return self::request( $method, $endpoint, $original_args, null, true );
 		}
 
 		if ( $status >= 400 ) {
