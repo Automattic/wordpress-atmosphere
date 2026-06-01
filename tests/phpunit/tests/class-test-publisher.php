@@ -2370,4 +2370,97 @@ class Test_Publisher extends WP_UnitTestCase {
 		$this->assertWPError( $result );
 		$this->assertSame( 'atmosphere_not_connected', $result->get_error_code() );
 	}
+
+	/**
+	 * A successful `sync_publication()` captures the publication's CID
+	 * from the PDS response into the dedicated option. Without this
+	 * write, every post publish would have to round-trip `getRecord`
+	 * before it could build the `embed.external.associatedRefs`
+	 * strongRef to the publication. The CID rotates on every successful
+	 * putRecord (the publication's content hash changes whenever a
+	 * site option re-syncs the record), so the option must be
+	 * overwritten on each call rather than only set once.
+	 */
+	public function test_sync_publication_captures_cid_into_option() {
+		\update_option(
+			'atmosphere_identity',
+			array(
+				'did'          => 'did:plc:test123',
+				'handle'       => 'example.com',
+				'pds_endpoint' => 'https://pds.example.com',
+			),
+			false
+		);
+		\delete_option( \Atmosphere\Transformer\Publication::OPTION_CID );
+
+		$captured_url = '';
+		\add_filter(
+			'pre_http_request',
+			static function ( $response, $args, $url ) use ( &$captured_url ) {
+				if ( false === \strpos( $url, '/xrpc/com.atproto.repo.putRecord' ) ) {
+					return $response;
+				}
+
+				$captured_url = $url;
+				return array(
+					'response' => array( 'code' => 200 ),
+					'headers'  => new \WpOrg\Requests\Utility\CaseInsensitiveDictionary( array() ),
+					'body'     => (string) \wp_json_encode(
+						array(
+							'uri' => 'at://did:plc:test123/site.standard.publication/3kpub00000000',
+							'cid' => 'bafyreipubfirstwrite00000000000000000000000000000000000000000',
+						)
+					),
+				);
+			},
+			10,
+			3
+		);
+
+		$result = Publisher::sync_publication();
+
+		$this->assertIsArray( $result );
+		$this->assertStringContainsString( 'putRecord', $captured_url );
+		$this->assertSame(
+			'bafyreipubfirstwrite00000000000000000000000000000000000000000',
+			\get_option( \Atmosphere\Transformer\Publication::OPTION_CID )
+		);
+
+		// A subsequent successful sync must overwrite the cached CID —
+		// every putRecord produces a new content hash for the publication.
+		\remove_all_filters( 'pre_http_request' );
+		\add_filter(
+			'pre_http_request',
+			static function ( $response, $args, $url ) {
+				if ( false === \strpos( $url, '/xrpc/com.atproto.repo.putRecord' ) ) {
+					return $response;
+				}
+
+				return array(
+					'response' => array( 'code' => 200 ),
+					'headers'  => new \WpOrg\Requests\Utility\CaseInsensitiveDictionary( array() ),
+					'body'     => (string) \wp_json_encode(
+						array(
+							'uri' => 'at://did:plc:test123/site.standard.publication/3kpub00000000',
+							'cid' => 'bafyreipubsecondwrite0000000000000000000000000000000000000000',
+						)
+					),
+				);
+			},
+			10,
+			3
+		);
+
+		Publisher::sync_publication();
+
+		$this->assertSame(
+			'bafyreipubsecondwrite0000000000000000000000000000000000000000',
+			\get_option( \Atmosphere\Transformer\Publication::OPTION_CID ),
+			'Each successful sync must overwrite the cached publication CID.'
+		);
+
+		\remove_all_filters( 'pre_http_request' );
+		\delete_option( 'atmosphere_identity' );
+		\delete_option( \Atmosphere\Transformer\Publication::OPTION_CID );
+	}
 }

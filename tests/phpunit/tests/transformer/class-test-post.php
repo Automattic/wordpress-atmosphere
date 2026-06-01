@@ -11,6 +11,7 @@ namespace Atmosphere\Tests\Transformer;
 
 use WP_UnitTestCase;
 use Atmosphere\Transformer\Post;
+use Atmosphere\Transformer\Publication;
 
 /**
  * Post transformer tests.
@@ -2029,5 +2030,113 @@ class Test_Post extends WP_UnitTestCase {
 		);
 
 		$this->assertNull( Post::get_attachment_aspect_ratio( $attachment_id ) );
+	}
+
+	/*
+	 * -----------------------------------------------------------------
+	 * Link-card embed — associatedRefs for the publication strongRef.
+	 * -----------------------------------------------------------------
+	 */
+
+	/**
+	 * Long-form posts ship the site's publication strongRef in
+	 * `embed.external.associatedRefs` when the publication TID + CID
+	 * are both on file. Lifts the link-card embed close to parity with
+	 * what Bluesky's manual-share UI emits when it follows the
+	 * standard.site link tags from the same URL — without the ref,
+	 * downstream consumers can't navigate from the bsky post back to
+	 * the publication record.
+	 *
+	 * @covers ::transform
+	 */
+	public function test_long_form_embed_includes_publication_associated_ref_when_state_present() {
+		\update_option( 'atmosphere_identity', array( 'did' => 'did:plc:test123' ), false );
+		\update_option( Publication::OPTION_TID, '3kpub00000000', false );
+		\update_option( Publication::OPTION_CID, 'bafyreipublication000000000000000000000000000000000000000000', false );
+
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'A Titled Post',
+				'post_content' => 'Long-form blog body.',
+				'post_excerpt' => 'Teaser excerpt.',
+			)
+		);
+
+		$record = ( new Post( $post ) )->transform();
+
+		$this->assertSame( 'app.bsky.embed.external', $record['embed']['$type'] );
+		$this->assertArrayHasKey( 'associatedRefs', $record['embed']['external'] );
+		$this->assertCount( 1, $record['embed']['external']['associatedRefs'] );
+
+		$ref = $record['embed']['external']['associatedRefs'][0];
+		$this->assertSame( 'com.atproto.repo.strongRef', $ref['$type'] );
+		$this->assertSame( 'at://did:plc:test123/site.standard.publication/3kpub00000000', $ref['uri'] );
+		$this->assertSame( 'bafyreipublication000000000000000000000000000000000000000000', $ref['cid'] );
+
+		\delete_option( 'atmosphere_identity' );
+		\delete_option( Publication::OPTION_TID );
+		\delete_option( Publication::OPTION_CID );
+	}
+
+	/**
+	 * On a fresh install where `Publisher::sync_publication()` has not
+	 * yet captured a CID, the link-card embed must ship without
+	 * `associatedRefs` rather than with a malformed (CID-less)
+	 * strongRef. Locks the graceful-degradation contract: every other
+	 * field on `external` must still be emitted normally.
+	 *
+	 * @covers ::transform
+	 */
+	public function test_long_form_embed_omits_associated_refs_when_publication_cid_is_missing() {
+		\update_option( 'atmosphere_identity', array( 'did' => 'did:plc:test123' ), false );
+		\update_option( Publication::OPTION_TID, '3kpub00000000', false );
+		\delete_option( Publication::OPTION_CID );
+
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'A Titled Post',
+				'post_content' => 'Long-form blog body.',
+			)
+		);
+
+		$record = ( new Post( $post ) )->transform();
+
+		$this->assertSame( 'app.bsky.embed.external', $record['embed']['$type'] );
+		$this->assertArrayNotHasKey( 'associatedRefs', $record['embed']['external'] );
+		$this->assertArrayHasKey( 'uri', $record['embed']['external'] );
+		$this->assertArrayHasKey( 'title', $record['embed']['external'] );
+
+		\delete_option( 'atmosphere_identity' );
+		\delete_option( Publication::OPTION_TID );
+	}
+
+	/**
+	 * Short-form posts use `app.bsky.embed.images` (or no embed at all),
+	 * not `app.bsky.embed.external` — `associatedRefs` is a field on the
+	 * external embed type, so it must not leak onto the short-form
+	 * path even when the publication state is fully populated.
+	 *
+	 * @covers ::transform
+	 */
+	public function test_short_form_post_never_carries_publication_associated_ref() {
+		\update_option( 'atmosphere_identity', array( 'did' => 'did:plc:test123' ), false );
+		\update_option( Publication::OPTION_TID, '3kpub00000000', false );
+		\update_option( Publication::OPTION_CID, 'bafyreipublication000000000000000000000000000000000000000000', false );
+
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => '',
+				'post_content' => 'A quick untitled thought.',
+			)
+		);
+
+		$record = ( new Post( $post ) )->transform();
+
+		$this->assertSame( 'A quick untitled thought.', $record['text'] );
+		$this->assertArrayNotHasKey( 'embed', $record );
+
+		\delete_option( 'atmosphere_identity' );
+		\delete_option( Publication::OPTION_TID );
+		\delete_option( Publication::OPTION_CID );
 	}
 }

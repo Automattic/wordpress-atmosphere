@@ -12,6 +12,8 @@ namespace Atmosphere\Transformer;
 
 \defined( 'ABSPATH' ) || exit;
 
+use function Atmosphere\build_at_uri;
+use function Atmosphere\get_did;
 use function Atmosphere\sanitize_text;
 
 /**
@@ -25,6 +27,31 @@ class Publication extends Base {
 	 * @var string
 	 */
 	public const OPTION_TID = 'atmosphere_publication_tid';
+
+	/**
+	 * Option key for the publication CID captured at the last successful
+	 * `sync_publication()` write.
+	 *
+	 * Stored so callers building strongRefs (currently the link-card
+	 * `embed.external.associatedRefs` array on outbound posts) don't need
+	 * to round-trip `getRecord` for a value the PDS already returned to
+	 * us when the publication was last written. The CID is allowed to be
+	 * stale relative to the live record — `getRecord` resolves by URI,
+	 * and the strongRef's CID just freezes the version we observed at
+	 * publish time, exactly the same snapshot semantics Bluesky's own
+	 * share UI uses when it builds `associatedRefs` from a URL's
+	 * standard.site links.
+	 *
+	 * `OPTION_TID` is the stable AT-URI identifier and survives
+	 * reconnect-to-the-same-account; the CID rotates every time the
+	 * publication record's content changes (theme color, site title,
+	 * etc.) and is re-captured on the next sync. Both options are
+	 * cleared on uninstall; neither is cleared on disconnect for the
+	 * same reason TID is preserved across disconnect today.
+	 *
+	 * @var string
+	 */
+	public const OPTION_CID = 'atmosphere_publication_cid';
 
 	/**
 	 * Transform site settings into a publication record.
@@ -101,6 +128,48 @@ class Publication extends Base {
 		}
 
 		return $rkey;
+	}
+
+	/**
+	 * Build a {@link https://atproto.com/specs/lexicon com.atproto.repo.strongRef}
+	 * pointing at the connected site's publication record, or null when
+	 * the strongRef cannot be safely constructed.
+	 *
+	 * Both the TID and the CID are required: the URI half is derivable
+	 * from the connected DID + the stored TID, but the strongRef shape
+	 * also needs the content-hash from {@see self::OPTION_CID}, which is
+	 * only populated after {@see \Atmosphere\Publisher::sync_publication()}
+	 * has successfully written the publication and read back the CID
+	 * from the PDS response. A fresh-connect install that has not yet
+	 * triggered a sync (typically through one of the `update_option_*`
+	 * triggers wired up in `Atmosphere::init()`) returns null here and
+	 * the caller — currently the link-card embed builder in
+	 * {@see \Atmosphere\Transformer\Post::build_embed()} — emits the
+	 * `embed.external` block without `associatedRefs`. The next sync
+	 * captures the CID and subsequent publishes pick the ref up
+	 * automatically.
+	 *
+	 * @return array{$type: string, uri: string, cid: string}|null
+	 */
+	public static function get_strong_ref(): ?array {
+		$tid = (string) \get_option( self::OPTION_TID, '' );
+		$cid = (string) \get_option( self::OPTION_CID, '' );
+
+		if ( '' === $tid || '' === $cid ) {
+			return null;
+		}
+
+		$did = get_did();
+
+		if ( '' === $did ) {
+			return null;
+		}
+
+		return array(
+			'$type' => 'com.atproto.repo.strongRef',
+			'uri'   => build_at_uri( $did, 'site.standard.publication', $tid ),
+			'cid'   => $cid,
+		);
 	}
 
 	/**

@@ -353,6 +353,26 @@ class Post extends Base {
 			}
 		}
 
+		/*
+		 * Attach the site's `site.standard.publication` strongRef so
+		 * AT Protocol consumers can navigate from the bsky post back
+		 * to the standard.site source. The Lexicon (`#external`) lists
+		 * `associatedRefs` as an array of strongRefs of the records
+		 * that backed the embed; Bluesky's manual-share UI already
+		 * emits this for URLs whose HTML carries our
+		 * `<link rel="site.standard.publication">` and document tags.
+		 * Building the embed by hand bypasses that lookup, so a
+		 * post published through Atmosphere otherwise ships with an
+		 * empty `associatedRefs`. The document strongRef cannot be
+		 * filled in here yet — its CID only exists after the
+		 * Publisher's atomic applyWrites — so this batch lands the
+		 * publication ref only; the document ref is a follow-up.
+		 */
+		$publication_ref = Publication::get_strong_ref();
+		if ( null !== $publication_ref ) {
+			$external['associatedRefs'] = array( $publication_ref );
+		}
+
 		return array(
 			'$type'    => 'app.bsky.embed.external',
 			'external' => $external,

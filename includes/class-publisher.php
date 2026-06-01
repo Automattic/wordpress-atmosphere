@@ -1346,7 +1346,7 @@ class Publisher {
 		 * reconnects, so the record always lands at the same address
 		 * for the active owner.
 		 */
-		return API::post(
+		$result = API::post(
 			'/xrpc/com.atproto.repo.putRecord',
 			array(
 				'repo'       => $did,
@@ -1355,6 +1355,23 @@ class Publisher {
 				'record'     => $pub->transform(),
 			)
 		);
+
+		/*
+		 * Capture the CID returned by the PDS so subsequent post
+		 * publishes can build an `app.bsky.embed.external#external`
+		 * `associatedRefs` strongRef without an extra `getRecord`
+		 * round-trip. The CID changes on every successful putRecord
+		 * (the publication's content hash changes whenever a site
+		 * option re-syncs the record), so it must be refreshed every
+		 * time, not just on the first write. A failure path here is
+		 * fine — the strongRef helper bails when the CID is missing
+		 * and the post still publishes with no `associatedRefs`.
+		 */
+		if ( ! \is_wp_error( $result ) && ! empty( $result['cid'] ) ) {
+			\update_option( Publication::OPTION_CID, (string) $result['cid'], false );
+		}
+
+		return $result;
 	}
 
 	/**

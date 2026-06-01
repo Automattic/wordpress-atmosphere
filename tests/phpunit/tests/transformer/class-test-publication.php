@@ -183,4 +183,63 @@ class Test_Publication extends WP_UnitTestCase {
 		$this->assertSame( "Toni's blog & Co", $record['name'] );
 		$this->assertSame( "Books, coffee & friends'", $record['description'] );
 	}
+
+	/**
+	 * `get_strong_ref()` returns a well-formed strongRef when both the
+	 * TID and CID options are populated and the site has an identity.
+	 * Locks the at-uri composition (`at://<did>/<collection>/<tid>`)
+	 * and the strongRef shape the Lexicon expects.
+	 */
+	public function test_get_strong_ref_returns_shape_when_all_state_is_present() {
+		\update_option( 'atmosphere_identity', array( 'did' => 'did:plc:test123' ), false );
+		\update_option( Publication::OPTION_TID, '3kpub00000000', false );
+		\update_option( Publication::OPTION_CID, 'bafyreipublication000000000000000000000000000000000000000000', false );
+
+		$ref = Publication::get_strong_ref();
+
+		$this->assertIsArray( $ref );
+		$this->assertSame( 'com.atproto.repo.strongRef', $ref['$type'] );
+		$this->assertSame( 'at://did:plc:test123/site.standard.publication/3kpub00000000', $ref['uri'] );
+		$this->assertSame( 'bafyreipublication000000000000000000000000000000000000000000', $ref['cid'] );
+
+		\delete_option( 'atmosphere_identity' );
+		\delete_option( Publication::OPTION_TID );
+		\delete_option( Publication::OPTION_CID );
+	}
+
+	/**
+	 * `get_strong_ref()` returns null when the CID has not yet been
+	 * captured by a successful `sync_publication()`. Reaching the AT-URI
+	 * is fine on its own (TID is generated lazily by `get_rkey()`), but
+	 * a strongRef without a CID is malformed — graceful degradation is
+	 * the right behaviour so the caller skips the `associatedRefs`
+	 * entry until the publication has actually been written.
+	 */
+	public function test_get_strong_ref_returns_null_when_cid_is_missing() {
+		\update_option( 'atmosphere_identity', array( 'did' => 'did:plc:test123' ), false );
+		\update_option( Publication::OPTION_TID, '3kpub00000000', false );
+		\delete_option( Publication::OPTION_CID );
+
+		$this->assertNull( Publication::get_strong_ref() );
+
+		\delete_option( 'atmosphere_identity' );
+		\delete_option( Publication::OPTION_TID );
+	}
+
+	/**
+	 * `get_strong_ref()` returns null on a disconnected install — no
+	 * identity means no DID to base the at-uri on, even if the TID +
+	 * CID survived a previous connection. Prevents a stale strongRef
+	 * pointing at a DID the current install does not own.
+	 */
+	public function test_get_strong_ref_returns_null_without_identity() {
+		\delete_option( 'atmosphere_identity' );
+		\update_option( Publication::OPTION_TID, '3kpub00000000', false );
+		\update_option( Publication::OPTION_CID, 'bafyreipublication000000000000000000000000000000000000000000', false );
+
+		$this->assertNull( Publication::get_strong_ref() );
+
+		\delete_option( Publication::OPTION_TID );
+		\delete_option( Publication::OPTION_CID );
+	}
 }
