@@ -53,12 +53,24 @@ class CID {
 	 * record and computes its CID independently, they must get the
 	 * same string.
 	 *
+	 * Returns a `WP_Error` if the encoder hits a record shape it cannot
+	 * handle (an unsupported value type, NaN / Infinity float, a
+	 * malformed `$link` cid-link, etc.). Callers in the publish path
+	 * treat that as "skip the optional strongRef" rather than aborting
+	 * the publish — the record still ships, just without the
+	 * `associatedRefs` entry that depended on the failed CID.
+	 *
 	 * @param array $record Record value (typically a transformer's
 	 *                      `transform()` output).
-	 * @return string CID string with multibase prefix `b`.
+	 * @return string|\WP_Error CID string with multibase prefix `b`, or
+	 *                          an error from the encoder.
 	 */
-	public static function from_record( array $record ): string {
-		$bytes  = self::encode( $record );
+	public static function from_record( array $record ): string|\WP_Error {
+		$bytes = self::encode( $record );
+		if ( \is_wp_error( $bytes ) ) {
+			return $bytes;
+		}
+
 		$digest = \hash( 'sha256', $bytes, true );
 
 		/*
@@ -85,20 +97,31 @@ class CID {
 	 * verify a CID independently of the multibase form.
 	 *
 	 * @param string $cid_string CID string (must start with `b` multibase prefix).
-	 * @return string Raw CIDv1 bytes.
-	 * @throws \InvalidArgumentException When the multibase prefix is missing or invalid.
+	 * @return string|\WP_Error Raw CIDv1 bytes, or `atmosphere_cid_invalid_*`
+	 *                          when the prefix is missing or the base32 body
+	 *                          contains characters outside the alphabet.
 	 */
-	public static function decode_string( string $cid_string ): string {
+	public static function decode_string( string $cid_string ): string|\WP_Error {
 		if ( '' === $cid_string || 'b' !== $cid_string[0] ) {
-			/*
-			 * CIDs are technical identifiers, not user-facing content;
-			 * embedding the raw value in the exception is safe and
-			 * observably useful in error logs.
-			 */
-			throw new \InvalidArgumentException( 'CID must use the base32 multibase prefix "b": ' . \esc_html( $cid_string ) ); // phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped
+			return new \WP_Error(
+				'atmosphere_cid_invalid_multibase',
+				\sprintf(
+					/* translators: %s: the raw CID string the caller passed in. */
+					\__( 'CID must use the base32 multibase prefix "b": %s', 'atmosphere' ),
+					$cid_string
+				)
+			);
 		}
 
-		return self::base32_lower_decode( \substr( $cid_string, 1 ) );
+		$decoded = self::base32_lower_decode( \substr( $cid_string, 1 ) );
+		if ( false === $decoded ) {
+			return new \WP_Error(
+				'atmosphere_cid_invalid_base32',
+				\__( 'CID body contains characters outside the base32 alphabet.', 'atmosphere' )
+			);
+		}
+
+		return $decoded;
 	}
 
 	/**
@@ -114,10 +137,11 @@ class CID {
 	 * requires exactly one key).
 	 *
 	 * @param mixed $value PHP value.
-	 * @return string DAG-CBOR encoded bytes.
-	 * @throws \InvalidArgumentException When the value type cannot be encoded.
+	 * @return string|\WP_Error DAG-CBOR encoded bytes, or an
+	 *                          `atmosphere_cid_*` error for an
+	 *                          unsupported value type / shape.
 	 */
-	public static function encode( $value ): string {
+	public static function encode( $value ): string|\WP_Error {
 		if ( null === $value ) {
 			return "\xf6";
 		}
@@ -162,8 +186,13 @@ class CID {
 			return self::encode_float( $value );
 		}
 
-		throw new \InvalidArgumentException(
-			\sprintf( 'DAG-CBOR encoder cannot handle value of type %s.', \esc_html( \gettype( $value ) ) ) // phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped
+		return new \WP_Error(
+			'atmosphere_cid_unsupported_type',
+			\sprintf(
+				/* translators: %s: PHP type name (e.g. "object", "resource"). */
+				\__( 'DAG-CBOR encoder cannot handle value of type %s.', 'atmosphere' ),
+				\gettype( $value )
+			)
 		);
 	}
 
@@ -178,16 +207,11 @@ class CID {
 	 * handles values up to PHP_INT_MAX via `pack('J', ...)`.
 	 *
 	 * @param int $major_type CBOR major type (0..7).
-	 * @param int $argument   Length / value to encode.
+	 * @param int $argument   Length / value to encode (must be non-negative).
 	 * @return string CBOR header bytes.
-	 * @throws \InvalidArgumentException When the argument is negative.
 	 */
 	private static function encode_argument( int $major_type, int $argument ): string {
 		$prefix = $major_type << 5;
-
-		if ( $argument < 0 ) {
-			throw new \InvalidArgumentException( 'CBOR argument must be non-negative.' );
-		}
 
 		if ( $argument < 24 ) {
 			return \chr( $prefix | $argument );
@@ -249,14 +273,22 @@ class CID {
 	/**
 	 * Encode a list-shaped array (major type 4).
 	 *
+	 * Propagates the first `WP_Error` from a nested `encode()` call so
+	 * an unsupported value buried deep inside a record short-circuits
+	 * the whole encode without producing partial bytes.
+	 *
 	 * @param array $value List to encode.
-	 * @return string CBOR bytes.
+	 * @return string|\WP_Error CBOR bytes or the propagated error.
 	 */
-	private static function encode_array( array $value ): string {
+	private static function encode_array( array $value ): string|\WP_Error {
 		$bytes = self::encode_argument( 4, \count( $value ) );
 
 		foreach ( $value as $item ) {
-			$bytes .= self::encode( $item );
+			$encoded = self::encode( $item );
+			if ( \is_wp_error( $encoded ) ) {
+				return $encoded;
+			}
+			$bytes .= $encoded;
 		}
 
 		return $bytes;
@@ -271,9 +303,10 @@ class CID {
 	 * PDS depends on it.
 	 *
 	 * @param array $value Map to encode.
-	 * @return string CBOR bytes.
+	 * @return string|\WP_Error CBOR bytes or the propagated error from
+	 *                          a nested `encode()` call.
 	 */
-	private static function encode_map( array $value ): string {
+	private static function encode_map( array $value ): string|\WP_Error {
 		$keys = \array_map( 'strval', \array_keys( $value ) );
 
 		\usort(
@@ -289,8 +322,12 @@ class CID {
 
 		$bytes = self::encode_argument( 5, \count( $keys ) );
 		foreach ( $keys as $key ) {
-			$bytes .= self::encode_text_string( $key );
-			$bytes .= self::encode( $value[ $key ] );
+			$bytes  .= self::encode_text_string( $key );
+			$encoded = self::encode( $value[ $key ] );
+			if ( \is_wp_error( $encoded ) ) {
+				return $encoded;
+			}
+			$bytes .= $encoded;
 		}
 
 		return $bytes;
@@ -304,12 +341,16 @@ class CID {
 	 * float16 / float32 representations.
 	 *
 	 * @param float $value Float to encode.
-	 * @return string CBOR bytes.
-	 * @throws \InvalidArgumentException When the value is NaN or infinite.
+	 * @return string|\WP_Error CBOR bytes, or
+	 *                          `atmosphere_cid_invalid_float` for NaN /
+	 *                          ±Infinity.
 	 */
-	private static function encode_float( float $value ): string {
+	private static function encode_float( float $value ): string|\WP_Error {
 		if ( \is_nan( $value ) || \is_infinite( $value ) ) {
-			throw new \InvalidArgumentException( 'DAG-CBOR does not permit NaN or Infinity.' );
+			return new \WP_Error(
+				'atmosphere_cid_invalid_float',
+				\__( 'DAG-CBOR does not permit NaN or Infinity.', 'atmosphere' )
+			);
 		}
 
 		// 'E' = IEEE 754 double precision, big-endian (PHP 7.0.15+ / 7.1.1+).
@@ -325,10 +366,14 @@ class CID {
 	 * would not round-trip through atproto's own decoders.
 	 *
 	 * @param string $cid_string CID string (with multibase prefix `b`).
-	 * @return string CBOR bytes.
+	 * @return string|\WP_Error CBOR bytes, or the propagated decode error.
 	 */
-	private static function encode_cid_link( string $cid_string ): string {
+	private static function encode_cid_link( string $cid_string ): string|\WP_Error {
 		$cid_bytes = self::decode_string( $cid_string );
+
+		if ( \is_wp_error( $cid_bytes ) ) {
+			return $cid_bytes;
+		}
 
 		// 0xd8 0x2a = CBOR tag 42 with a 1-byte argument.
 		return "\xd8\x2a" . self::encode_byte_string( "\x00" . $cid_bytes );
@@ -367,11 +412,17 @@ class CID {
 	/**
 	 * Base32 RFC 4648 lowercase decode (no padding).
 	 *
+	 * Mirrors the `string|false` shape of the OAuth crypto / encoder
+	 * helpers ({@see \Atmosphere\OAuth\DPoP::base64url_decode()},
+	 * {@see \Atmosphere\OAuth\Encryption::decrypt()}) so callers
+	 * branch on `false === $decoded` rather than on a thrown
+	 * exception.
+	 *
 	 * @param string $value Base32 string.
-	 * @return string Raw bytes.
-	 * @throws \InvalidArgumentException When the input contains characters outside the base32 alphabet.
+	 * @return string|false Raw bytes, or false on a character outside
+	 *                      the base32 alphabet.
 	 */
-	private static function base32_lower_decode( string $value ): string {
+	private static function base32_lower_decode( string $value ): string|false {
 		static $lookup = null;
 		if ( null === $lookup ) {
 			$lookup = \array_flip( \str_split( 'abcdefghijklmnopqrstuvwxyz234567' ) );
@@ -385,7 +436,7 @@ class CID {
 		for ( $i = 0; $i < $length; $i++ ) {
 			$char = $value[ $i ];
 			if ( ! isset( $lookup[ $char ] ) ) {
-				throw new \InvalidArgumentException( 'Invalid base32 character: ' . \esc_html( $char ) ); // phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped
+				return false;
 			}
 			$buffer = ( $buffer << 5 ) | $lookup[ $char ];
 			$bits  += 5;

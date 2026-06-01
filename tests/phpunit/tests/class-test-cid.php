@@ -270,12 +270,46 @@ class Test_CID extends \WP_UnitTestCase {
 
 	/**
 	 * NaN / infinite floats are forbidden by DAG-CBOR. The encoder
-	 * throws rather than silently producing a record the PDS will
-	 * reject.
+	 * returns a `WP_Error` rather than silently producing a record
+	 * the PDS will reject, matching the `string|WP_Error` shape used
+	 * across the rest of the OAuth crypto / encoder helpers.
 	 */
 	public function test_encode_rejects_nan_and_infinity() {
-		$this->expectException( \InvalidArgumentException::class );
-		CID::encode( NAN );
+		$result = CID::encode( NAN );
+
+		$this->assertWPError( $result );
+		$this->assertSame( 'atmosphere_cid_invalid_float', $result->get_error_code() );
+	}
+
+	/**
+	 * An unsupported PHP type (object, resource) surfaces as a
+	 * `WP_Error` rather than silently encoding to nothing or throwing.
+	 * The encoder's contract is `string|WP_Error`; any caller relying
+	 * on the type-safety can branch on `is_wp_error()`.
+	 */
+	public function test_encode_rejects_unsupported_type() {
+		$result = CID::encode( new \stdClass() );
+
+		$this->assertWPError( $result );
+		$this->assertSame( 'atmosphere_cid_unsupported_type', $result->get_error_code() );
+	}
+
+	/**
+	 * An unsupported value buried inside a map propagates up through
+	 * the recursive `encode_map()` / `encode_array()` callers — the
+	 * encoder short-circuits on the first failure rather than
+	 * producing partial bytes that would silently corrupt the CID.
+	 */
+	public function test_encode_propagates_nested_error_through_map() {
+		$result = CID::encode(
+			array(
+				'ok'  => 'fine',
+				'bad' => new \stdClass(),
+			)
+		);
+
+		$this->assertWPError( $result );
+		$this->assertSame( 'atmosphere_cid_unsupported_type', $result->get_error_code() );
 	}
 
 	/**
@@ -305,7 +339,34 @@ class Test_CID extends \WP_UnitTestCase {
 	 * out of scope and would silently misencode if let through.
 	 */
 	public function test_decode_string_rejects_missing_multibase_prefix() {
-		$this->expectException( \InvalidArgumentException::class );
-		CID::decode_string( 'afyreieq64ytmsanutnt2zgob2nhuzmxgvqmjdecq3zh4hjli3khf6sf2m' );
+		$result = CID::decode_string( 'afyreieq64ytmsanutnt2zgob2nhuzmxgvqmjdecq3zh4hjli3khf6sf2m' );
+
+		$this->assertWPError( $result );
+		$this->assertSame( 'atmosphere_cid_invalid_multibase', $result->get_error_code() );
+	}
+
+	/**
+	 * Base32 input that contains characters outside the alphabet
+	 * surfaces as `atmosphere_cid_invalid_base32`, not as a silent
+	 * truncated decode.
+	 */
+	public function test_decode_string_rejects_invalid_base32_characters() {
+		// '!' is not in the lowercase base32 alphabet (`a-z 2-7`).
+		$result = CID::decode_string( 'bafy!!!' );
+
+		$this->assertWPError( $result );
+		$this->assertSame( 'atmosphere_cid_invalid_base32', $result->get_error_code() );
+	}
+
+	/**
+	 * `from_record()` propagates the underlying encode error so the
+	 * Publisher can branch on `is_wp_error()` without having to
+	 * differentiate "encode failed" from "CID build failed."
+	 */
+	public function test_from_record_propagates_encode_error() {
+		$result = CID::from_record( array( 'bad' => new \stdClass() ) );
+
+		$this->assertWPError( $result );
+		$this->assertSame( 'atmosphere_cid_unsupported_type', $result->get_error_code() );
 	}
 }

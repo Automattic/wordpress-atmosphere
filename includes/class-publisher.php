@@ -136,12 +136,35 @@ class Publisher {
 		 */
 		if ( ! $bsky_transformer->is_short_form_post() ) {
 			$doc_record = $doc_transformer->transform();
-			$bsky_transformer->set_document_strong_ref(
-				array(
-					'uri' => build_at_uri( get_did(), 'site.standard.document', $doc_transformer->get_rkey() ),
-					'cid' => CID::from_record( $doc_record ),
-				)
-			);
+			$doc_cid    = CID::from_record( $doc_record );
+
+			if ( ! \is_wp_error( $doc_cid ) ) {
+				$bsky_transformer->set_document_strong_ref(
+					array(
+						'uri' => build_at_uri( get_did(), 'site.standard.document', $doc_transformer->get_rkey() ),
+						'cid' => $doc_cid,
+					)
+				);
+			} else {
+				/*
+				 * Encoder hit a record shape it could not handle.
+				 * Surfacing the post error here would abort an
+				 * otherwise-fine publish; instead, log a breadcrumb
+				 * and let the publish proceed with publication-ref-only
+				 * (or no associatedRefs at all). The post still
+				 * reaches Bluesky — just without the AppView's rich
+				 * `source` / `associatedProfiles` enrichment for this
+				 * one record.
+				 */
+				// phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
+				\error_log(
+					\sprintf(
+						'[atmosphere] post %d: document CID precompute failed (%s) — publishing without document associatedRef',
+						$post->ID,
+						$doc_cid->get_error_code()
+					)
+				);
+			}
 		}
 
 		if ( $bsky_transformer->is_short_form_post() ) {
