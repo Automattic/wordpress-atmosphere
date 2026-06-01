@@ -100,7 +100,7 @@ class API {
 			&& \in_array( $status, array( 400, 401 ), true )
 			&& ( $body['error'] ?? '' ) === 'use_dpop_nonce'
 		) {
-			return self::request( $method, $endpoint, $original_args, $response_nonce );
+			return self::request( $method, $endpoint, $original_args, $response_nonce, $auth_retried );
 		}
 
 		/*
