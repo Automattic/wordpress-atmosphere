@@ -2546,4 +2546,171 @@ class Test_Post extends WP_UnitTestCase {
 		$this->assertArrayHasKey( 'alt', $record['embed']['images'][0] );
 		$this->assertSame( '', $record['embed']['images'][0]['alt'] );
 	}
+
+	/**
+	 * The walker stops collecting at 32 IDs even when the post contains
+	 * far more `core/image` blocks. Locks the breadth ceiling that
+	 * protects an attacker-controlled `post_content` from growing the
+	 * working array linearly. The downstream 4-image cap then trims
+	 * what ships in the embed, so this guards the intermediate working
+	 * set rather than the public Bluesky record.
+	 *
+	 * @covers ::transform
+	 */
+	public function test_short_form_image_collector_stops_at_breadth_cap() {
+		$valid_ids = array();
+		for ( $i = 0; $i < 4; $i++ ) {
+			$id = self::factory()->attachment->create_object(
+				array(
+					'file'           => "first{$i}.jpg",
+					'post_mime_type' => 'image/jpeg',
+				),
+				0,
+				array( 'post_title' => "First {$i}" )
+			);
+			\update_post_meta(
+				$id,
+				'_atmosphere_blob_ref',
+				array(
+					'cid'      => "bafyfirst{$i}",
+					'mimeType' => 'image/jpeg',
+					'size'     => $i + 1,
+				)
+			);
+			$valid_ids[] = $id;
+		}
+
+		// Tail attachment that sits at position 33+ in document order
+		// — past the breadth cap. Its blob ref is fully valid; what
+		// proves the cap held is its absence from the working set.
+		$tail_id = self::factory()->attachment->create_object(
+			array(
+				'file'           => 'tail.jpg',
+				'post_mime_type' => 'image/jpeg',
+			),
+			0,
+			array( 'post_title' => 'Tail attachment' )
+		);
+		\update_post_meta(
+			$tail_id,
+			'_atmosphere_blob_ref',
+			array(
+				'cid'      => 'bafytail',
+				'mimeType' => 'image/jpeg',
+				'size'     => 99,
+			)
+		);
+
+		$content = '<!-- wp:paragraph --><p>Lots of images aside.</p><!-- /wp:paragraph -->' . "\n\n";
+
+		// First four valid IDs at the head, then 30 placeholder blocks
+		// with synthetic IDs so the breadth cap fires before the tail
+		// attachment is seen. The tail then sits at position 35.
+		foreach ( $valid_ids as $id ) {
+			$content .= '<!-- wp:image {"id":' . $id . '} --><figure></figure><!-- /wp:image -->';
+		}
+		for ( $i = 0; $i < 30; $i++ ) {
+			$synthetic_id = 90000 + $i;
+			$content     .= '<!-- wp:image {"id":' . $synthetic_id . '} --><figure></figure><!-- /wp:image -->';
+		}
+		$content .= '<!-- wp:image {"id":' . $tail_id . '} --><figure></figure><!-- /wp:image -->';
+
+		$post_id = self::factory()->post->create(
+			array(
+				'post_title'   => 'Aside with many images',
+				'post_content' => $content,
+			)
+		);
+		\set_post_format( $post_id, 'aside' );
+		$post = \get_post( $post_id );
+
+		$record = ( new Post( $post ) )->transform();
+
+		// AT Protocol cap trims to 4. Order in the embed is the first
+		// four document-order IDs we wrote — proves the head wasn't
+		// displaced by anything past the cap.
+		$this->assertCount( 4, $record['embed']['images'] );
+		$cids = \array_map( static fn( $img ) => $img['image']['cid'], $record['embed']['images'] );
+		$this->assertSame(
+			array( 'bafyfirst0', 'bafyfirst1', 'bafyfirst2', 'bafyfirst3' ),
+			$cids
+		);
+
+		// The tail attachment was never collected — its blob ref would
+		// have surfaced as a fifth-position CID if the walker had
+		// continued past 32.
+		$this->assertNotContains( 'bafytail', $cids );
+	}
+
+	/**
+	 * The walker is depth-capped so a pathologically nested block tree
+	 * — many wrapper levels with no images — cannot blow PHP's stack
+	 * before the breadth guard ever fires. We construct a tree past the
+	 * 16-level cap with an image at the bottom; the image is dropped
+	 * because the walker bails before reaching it, and the call returns
+	 * cleanly without a fatal.
+	 *
+	 * Mirror test confirms an image at depth ≤ 16 IS still collected,
+	 * so the cap is a true upper bound rather than a regression of the
+	 * legitimate nested-image case already covered by
+	 * `test_short_form_collects_nested_image_blocks`.
+	 *
+	 * @covers ::transform
+	 */
+	public function test_short_form_image_collector_stops_at_depth_cap() {
+		$deep_id = self::factory()->attachment->create_object(
+			array(
+				'file'           => 'deep.jpg',
+				'post_mime_type' => 'image/jpeg',
+			),
+			0,
+			array( 'post_title' => 'Too-deep attachment' )
+		);
+		\update_post_meta(
+			$deep_id,
+			'_atmosphere_blob_ref',
+			array(
+				'cid'      => 'bafydeep',
+				'mimeType' => 'image/jpeg',
+				'size'     => 1,
+			)
+		);
+
+		// Build a 30-level deep nesting of `core/group` blocks wrapping
+		// a single `core/image` at the bottom. Anything beyond the
+		// walker's 16-level cap should be invisible to the collector.
+		$nesting = 30;
+		$open    = '';
+		$close   = '';
+		for ( $i = 0; $i < $nesting; $i++ ) {
+			$open  .= '<!-- wp:group --><div class="wp-block-group">';
+			$close .= '</div><!-- /wp:group -->';
+		}
+
+		$content = '<!-- wp:paragraph --><p>Deeply nested aside.</p><!-- /wp:paragraph -->'
+			. $open
+			. '<!-- wp:image {"id":' . $deep_id . '} -->'
+			. '<figure class="wp-block-image"><img class="wp-image-' . $deep_id . '"/></figure>'
+			. '<!-- /wp:image -->'
+			. $close;
+
+		$post_id = self::factory()->post->create(
+			array(
+				'post_title'   => 'Deeply nested image aside',
+				'post_content' => $content,
+			)
+		);
+		\set_post_format( $post_id, 'aside' );
+		$post = \get_post( $post_id );
+
+		// Past-cap image must be silently dropped and the call must
+		// return cleanly (no fatal, no PHP warning).
+		$record = ( new Post( $post ) )->transform();
+
+		$this->assertArrayNotHasKey(
+			'embed',
+			$record,
+			'Image past the 16-level depth cap must not surface in the embed.'
+		);
+	}
 }

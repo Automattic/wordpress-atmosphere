@@ -421,6 +421,15 @@ class Post extends Base {
 	 * thousands of `core/image` blocks can't grow the working array
 	 * past a constant ceiling.
 	 *
+	 * Recursion is also depth-capped at 16 levels. The 32-ID breadth cap
+	 * only protects against wide trees: a deeply-nested input with no
+	 * images (e.g. 500 nested `core/group` wrappers) would never
+	 * accumulate IDs and never trip the breadth guard, but each level
+	 * still costs a PHP frame on the C stack. 16 leaves ample headroom
+	 * over realistic theme/block nesting (cover → group → columns →
+	 * column → group → image is six) while keeping the worst-case stack
+	 * use bounded against an adversarial `post_content`.
+	 *
 	 * @return int[]
 	 */
 	private function collect_image_attachment_ids(): array {
@@ -436,9 +445,14 @@ class Post extends Base {
 		// Generous ceiling: well above the 4-image cap, enough that
 		// dedupe still preserves document order on realistic posts,
 		// small enough to bound attacker-controlled memory growth.
-		$max_ids = 32;
+		$max_ids   = 32;
+		$max_depth = 16;
 
-		$walker = static function ( array $blocks ) use ( &$walker, &$ids, $max_ids ): void {
+		$walker = static function ( array $blocks, int $depth ) use ( &$walker, &$ids, $max_ids, $max_depth ): void {
+			if ( $depth > $max_depth ) {
+				return;
+			}
+
 			foreach ( $blocks as $block ) {
 				if ( \count( $ids ) >= $max_ids ) {
 					return;
@@ -452,12 +466,12 @@ class Post extends Base {
 				}
 
 				if ( ! empty( $block['innerBlocks'] ) && \is_array( $block['innerBlocks'] ) ) {
-					$walker( $block['innerBlocks'] );
+					$walker( $block['innerBlocks'], $depth + 1 );
 				}
 			}
 		};
 
-		$walker( $blocks );
+		$walker( $blocks, 0 );
 
 		return \array_values( \array_unique( $ids ) );
 	}
