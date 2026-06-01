@@ -108,6 +108,42 @@ class Publisher {
 		$bsky_transformer = new Post( $post );
 		$doc_transformer  = new Document( $post );
 
+		/*
+		 * Pre-compute the document's CID locally and inject the
+		 * resulting strongRef into the post transformer BEFORE the
+		 * post record is built. The document and post are written
+		 * atomically in a single applyWrites batch, so without
+		 * client-side CID computation the post's
+		 * `embed.external.associatedRefs` cannot carry the document
+		 * ref at initial-create time — and Bluesky's AppView only
+		 * resolves `source` / `associatedProfiles` / document
+		 * `readingTime` enrichment from the initial-create payload
+		 * (subsequent `applyWrites#update` to add the ref doesn't
+		 * trigger re-indexing).
+		 *
+		 * Computed inside the same `publish_post()` invocation so the
+		 * document record we encode here is byte-identical to what
+		 * `publish_single()` / `publish_thread()` ultimately writes:
+		 * `Document::transform()` reads `Post::META_URI / META_CID`
+		 * to compose its `bskyPostRef`, and on a fresh publish both
+		 * are empty, so the bskyPostRef is omitted both here and at
+		 * write time. The CID matches.
+		 *
+		 * Short-form posts use `app.bsky.embed.images` rather than
+		 * `app.bsky.embed.external`, so the document strongRef has no
+		 * place to land. Skip the precompute on that path — it would
+		 * just be wasted work.
+		 */
+		if ( ! $bsky_transformer->is_short_form_post() ) {
+			$doc_record = $doc_transformer->transform();
+			$bsky_transformer->set_document_strong_ref(
+				array(
+					'uri' => build_at_uri( get_did(), 'site.standard.document', $doc_transformer->get_rkey() ),
+					'cid' => CID::from_record( $doc_record ),
+				)
+			);
+		}
+
 		if ( $bsky_transformer->is_short_form_post() ) {
 			// Short-form path: single record via today's transform().
 			$result = self::publish_single(
@@ -1346,7 +1382,7 @@ class Publisher {
 		 * reconnects, so the record always lands at the same address
 		 * for the active owner.
 		 */
-		return API::post(
+		$result = API::post(
 			'/xrpc/com.atproto.repo.putRecord',
 			array(
 				'repo'       => $did,
@@ -1355,6 +1391,19 @@ class Publisher {
 				'record'     => $pub->transform(),
 			)
 		);
+
+		/*
+		 * Capture the publication's CID from the PDS response so post
+		 * publishes can build the publication strongRef without an
+		 * extra `getRecord` round-trip. Overwritten on every
+		 * successful sync because the CID changes whenever the
+		 * publication's content changes.
+		 */
+		if ( ! \is_wp_error( $result ) && ! empty( $result['cid'] ) ) {
+			\update_option( Publication::OPTION_CID, (string) $result['cid'], false );
+		}
+
+		return $result;
 	}
 
 	/**
