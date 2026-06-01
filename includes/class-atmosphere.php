@@ -1062,9 +1062,23 @@ class Atmosphere {
 
 	/**
 	 * Cron: proactively refresh the access token.
+	 *
+	 * Skips when the stored access token still has more than ten
+	 * minutes of life on it — the hourly cadence catches up before
+	 * any genuine expiry, and an unconditional refresh on every tick
+	 * burns a refresh-token rotation that does not need to happen.
+	 * Each rotation is also another chance for the dead-holder
+	 * scenario (worker dies mid-flight after the auth server has
+	 * already rotated) to bite, so refreshing less aggressively is
+	 * strictly more reliable on a healthy session.
 	 */
 	public function cron_refresh_token(): void {
 		if ( ! is_connected() ) {
+			return;
+		}
+
+		$conn = \get_option( 'atmosphere_connection', array() );
+		if ( ! empty( $conn['expires_at'] ) && $conn['expires_at'] > \time() + 600 ) {
 			return;
 		}
 
