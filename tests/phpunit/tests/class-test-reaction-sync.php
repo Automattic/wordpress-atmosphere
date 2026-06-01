@@ -639,7 +639,7 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 
 		$comment = \get_comment( $comment_id );
 
-		$this->assertSame( '', $comment->comment_content );
+		$this->assertSame( '… liked this!', $comment->comment_content );
 		$this->assertSame( 'like', $comment->comment_type );
 		$this->assertSame( (string) $post_id, $comment->comment_post_ID );
 		$this->assertSame( '0', $comment->comment_parent );
@@ -739,7 +739,7 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 
 		$comment = \get_comment( $comment_id );
 
-		$this->assertSame( '', $comment->comment_content );
+		$this->assertSame( '… reposted this!', $comment->comment_content );
 		$this->assertSame( 'repost', $comment->comment_type );
 		$this->assertSame( (string) $post_id, $comment->comment_post_ID );
 
