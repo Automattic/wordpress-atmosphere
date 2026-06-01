@@ -190,13 +190,14 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 	}
 
 	/**
-	 * Test that process_reply survives get_comment() returning null
-	 * for the found parent comment ID (race: comment deleted between
-	 * the meta lookup and the get_comment call). Should fall through
-	 * to the root-post fallback instead of fataling on a property
-	 * access against null.
+	 * Test that process_reply drops a reply when get_comment() returns
+	 * null for the resolved parent comment ID (race: comment deleted
+	 * between the meta lookup and the get_comment call). The previous
+	 * "fall back to the root post" behavior caused unresolvable replies
+	 * to be re-attached as top-level orphans on every sync run,
+	 * looping the moderation queue indefinitely.
 	 */
-	public function test_process_reply_handles_get_comment_returning_null() {
+	public function test_process_reply_drops_when_parent_comment_row_is_missing() {
 		$post_id  = self::factory()->post->create();
 		$post_uri = 'at://did:plc:me/app.bsky.feed.post/rootpost';
 		\update_post_meta( $post_id, BskyPost::META_URI, $post_uri );
@@ -236,17 +237,53 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 			),
 		);
 
-		$comment_id = $method->invoke( null, $notification );
+		try {
+			$result = $method->invoke( null, $notification );
+		} finally {
+			\remove_all_filters( 'get_comment' );
+		}
 
-		\remove_all_filters( 'get_comment' );
+		$this->assertFalse( $result );
+		$find_method = new \ReflectionMethod( Reaction_Sync::class, 'find_comment_by_source_id' );
+		$this->assertFalse( $find_method->invoke( null, 'at://did:plc:replier/app.bsky.feed.post/nested' ) );
+	}
 
-		$this->assertIsInt( $comment_id );
-		$this->assertGreaterThan( 0, $comment_id );
+	/**
+	 * Test that process_reply drops a reply whose parent record is
+	 * neither a local WP post nor a previously-synced WP comment, even
+	 * when the thread root resolves to one of our posts. Reproduces the
+	 * "blocked user / deleted parent" loop: previously, the reply would
+	 * be re-attached as a top-level comment on the root post on every
+	 * sync run, reinjecting it into the moderation queue indefinitely.
+	 */
+	public function test_process_reply_drops_orphan_when_parent_is_unresolved() {
+		$post_id  = self::factory()->post->create();
+		$post_uri = 'at://did:plc:me/app.bsky.feed.post/threadroot';
+		\update_post_meta( $post_id, BskyPost::META_URI, $post_uri );
 
-		$comment = \get_comment( $comment_id );
-		$this->assertSame( (string) $post_id, $comment->comment_post_ID );
-		// Parent resolution failed, so the reply attaches at the root.
-		$this->assertSame( '0', $comment->comment_parent );
+		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_reply' );
+
+		// Parent is a Bluesky reply that was never synced (e.g. blocked
+		// user's reply was deleted). Root is our own WP post.
+		$notification = array(
+			'uri'    => 'at://did:plc:me/app.bsky.feed.post/myreplytoblocked',
+			'cid'    => 'bafyreioauth',
+			'record' => array(
+				'text'      => 'Replying to a now-deleted parent.',
+				'createdAt' => '2026-04-23T12:00:00.000Z',
+				'reply'     => array(
+					'parent' => array( 'uri' => 'at://did:plc:blocked/app.bsky.feed.post/gone' ),
+					'root'   => array( 'uri' => $post_uri ),
+				),
+			),
+			'author' => array(
+				'did'    => 'did:plc:me',
+				'handle' => 'me.bsky.social',
+			),
+		);
+
+		$this->assertFalse( $method->invoke( null, $notification ) );
+		$this->assertSame( array(), \get_comments( array( 'post_id' => $post_id ) ) );
 	}
 
 	/**
