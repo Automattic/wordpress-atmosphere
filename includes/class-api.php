@@ -130,30 +130,53 @@ class API {
 				true
 			)
 		) {
-			$refresh = Client::refresh();
-			if ( \is_wp_error( $refresh ) ) {
-				if ( 'atmosphere_refresh_locked' !== $refresh->get_error_code() ) {
-					return $refresh;
-				}
+			/*
+			 * Snapshot the access-token ciphertext now, BEFORE calling
+			 * `Client::refresh()`. The retry must run against a rotated
+			 * token, which means we need a positive signal that the
+			 * stored access token has actually changed. `expires_at`
+			 * alone is not that signal — a 401 `InvalidToken` from the
+			 * PDS means the auth server invalidated the jti
+			 * server-side while our local `expires_at` may still be
+			 * in the future. Comparing the access-token ciphertext
+			 * before vs after a refresh attempt catches both of the
+			 * possible "no actual rotation happened" cases:
+			 *
+			 *   - `Client::refresh()` short-circuits with `true` when
+			 *     another worker holds the lock AND the local
+			 *     `expires_at` is still in the future. Without the
+			 *     ciphertext check we would retry immediately with
+			 *     the same stale token.
+			 *   - `Client::refresh()` returns `atmosphere_refresh_locked`
+			 *     because another worker is mid-flight. The wait must
+			 *     block until that worker writes a fresh token, not
+			 *     just until the existing `expires_at` re-clears the
+			 *     5-minute window.
+			 */
+			$conn_snapshot         = \get_option( 'atmosphere_connection', array() );
+			$access_token_snapshot = (string) ( $conn_snapshot['access_token'] ?? '' );
 
-				/*
-				 * Another worker is mid-refresh. We cannot rely on the
-				 * recursive call's `Client::access_token()` lookup to
-				 * notice the new token landing — `access_token()` only
-				 * waits for an in-flight refresh when *it* decides to
-				 * refresh because of near-expiry, and at this point the
-				 * local `expires_at` may still be in the future (a 401
-				 * `InvalidToken` from the PDS means the auth server
-				 * invalidated the jti server-side, not that our local
-				 * clock thinks it expired). Block here until the
-				 * concurrent holder lands a fresh token, propagating
-				 * the wait's outcome — `needs_reauth` or a timeout —
-				 * unchanged.
-				 */
-				$waited = Client::wait_for_token_refresh();
-				if ( \is_wp_error( $waited ) ) {
-					return $waited;
-				}
+			$refresh = Client::refresh();
+			if ( \is_wp_error( $refresh ) && 'atmosphere_refresh_locked' !== $refresh->get_error_code() ) {
+				return $refresh;
+			}
+
+			/*
+			 * Whether `refresh()` returned `true` (we acquired the
+			 * lock and rotated, or another worker just finished
+			 * rotating), short-circuited to `true` on a locally-fresh
+			 * `expires_at`, or returned `atmosphere_refresh_locked`,
+			 * the same wait covers all three: it blocks until the
+			 * stored access-token ciphertext differs from the
+			 * snapshot above (or until `needs_reauth` flips, or
+			 * until the lock TTL elapses). On the
+			 * we-rotated-ourselves path this returns almost
+			 * immediately on the first poll; on the concurrent-worker
+			 * path it waits for their write to land.
+			 */
+			$waited = Client::wait_for_token_refresh( $access_token_snapshot );
+			if ( \is_wp_error( $waited ) ) {
+				return $waited;
 			}
 
 			return self::request( $method, $endpoint, $original_args, null, true );

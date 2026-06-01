@@ -579,26 +579,27 @@ class Client {
 	 *
 	 * `refresh_locked()` can issue up to two sequential HTTP POSTs on
 	 * the `use_dpop_nonce` retry path, each with a 15s
-	 * `wp_safe_remote_post` timeout. In practice the first call returns
+	 * `wp_safe_remote_post` timeout. The first call typically returns
 	 * the nonce error in well under a second (the auth server rejects
-	 * before any real work), so the realistic worst case is one full
-	 * 15s round-trip plus encryption + option I/O overhead — call it
-	 * ~20s. 30 seconds leaves ~10s of headroom over that ceiling while
-	 * keeping the dead-holder recovery window short: a crashed worker
-	 * blocks fresh refreshes for at most this TTL before the next
-	 * caller's CAS-steal unblocks the cycle. Going lower than the
-	 * actual worst case reintroduces the concurrent-refresh race the
-	 * lock exists to close.
+	 * before any real work) — but on a degraded auth server that
+	 * actually hangs on every call, both legs can run the full 15s
+	 * timeout, yielding a worst-case ~30s + encryption + option I/O
+	 * overhead. 45 seconds covers that pathological case plus a small
+	 * margin so a slow-but-legitimate refresh isn't stomped by a
+	 * second worker's CAS-steal. Going lower than the actual worst
+	 * case reintroduces the concurrent-refresh race the lock exists
+	 * to close; going much higher keeps a crashed worker's lock alive
+	 * for proportionally longer before any successor can take over.
 	 *
 	 * @var int
 	 */
-	private const REFRESH_LOCK_TTL = 30;
+	private const REFRESH_LOCK_TTL = 45;
 
 	/**
 	 * Refresh the access token.
 	 *
 	 * Gated by a cross-process coordination lock so a publish event
-	 * firing inline through `access_token()`, the twice-daily refresh
+	 * firing inline through `access_token()`, the hourly refresh
 	 * cron, an admin click, or any combination of those cannot both
 	 * POST the same refresh token to the auth server. The auth server
 	 * consumes the refresh token on first success and the loser would
@@ -1003,7 +1004,7 @@ class Client {
 	 * holder to write a fresh access token (or to flip
 	 * `needs_reauth` on a permanent failure).
 	 *
-	 * The deadline matches `REFRESH_LOCK_TTL` (90s) rather than a
+	 * The deadline matches `REFRESH_LOCK_TTL` (45s) rather than a
 	 * conservative few-seconds wait. The previous 5-second budget
 	 * was shorter than the realistic worst case — two sequential
 	 * `wp_safe_remote_post` calls at 15-second timeouts on the
@@ -1022,9 +1023,26 @@ class Client {
 	 * comment cron event does not get silently dropped when it
 	 * arrives mid-refresh.
 	 *
+	 * `$current_access_token_ciphertext` lets callers in the API
+	 * 401-recovery path require the access-token ciphertext to
+	 * *differ* from a known-stale snapshot before declaring the
+	 * wait done. The default behaviour (empty string) trusts the
+	 * `expires_at` window alone — fine for the `access_token()`
+	 * caller, which only waits when `expires_at` was within 5
+	 * minutes of now. For a 401 from the PDS, `expires_at` may
+	 * still be in the future (the auth server invalidated the jti
+	 * without the local clock catching up), so the ciphertext
+	 * snapshot is the only reliable "token has actually rotated"
+	 * signal.
+	 *
+	 * @param string $current_access_token_ciphertext Snapshot of
+	 *               `atmosphere_connection['access_token']` taken
+	 *               BEFORE the failed request whose retry is
+	 *               waiting on a fresh token. Empty string disables
+	 *               the ciphertext-change requirement.
 	 * @return true|\WP_Error
 	 */
-	public static function wait_for_token_refresh(): true|\WP_Error {
+	public static function wait_for_token_refresh( string $current_access_token_ciphertext = '' ): true|\WP_Error {
 		$deadline = \microtime( true ) + (float) self::REFRESH_LOCK_TTL;
 
 		while ( \microtime( true ) < $deadline ) {
@@ -1043,6 +1061,8 @@ class Client {
 			if ( ! empty( $conn['access_token'] )
 				&& ! empty( $conn['expires_at'] )
 				&& $conn['expires_at'] > \time() + 300
+				&& ( '' === $current_access_token_ciphertext
+					|| ( $conn['access_token'] ?? '' ) !== $current_access_token_ciphertext )
 			) {
 				return true;
 			}
