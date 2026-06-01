@@ -2030,4 +2030,687 @@ class Test_Post extends WP_UnitTestCase {
 
 		$this->assertNull( Post::get_attachment_aspect_ratio( $attachment_id ) );
 	}
+
+	/*
+	 * -----------------------------------------------------------------
+	 * Short-form image embed — auto-extract from post content / featured image.
+	 * -----------------------------------------------------------------
+	 */
+
+	/**
+	 * A short-form post with no in-body images but with a featured image
+	 * attaches an `app.bsky.embed.images` record with that single image.
+	 *
+	 * @covers ::transform
+	 */
+	public function test_short_form_with_featured_image_attaches_images_embed() {
+		$attachment_id = self::factory()->attachment->create_object(
+			array(
+				'file'           => 'featured.jpg',
+				'post_mime_type' => 'image/jpeg',
+			),
+			0,
+			array(
+				'post_title' => 'Featured attachment',
+			)
+		);
+		\update_post_meta(
+			$attachment_id,
+			'_atmosphere_blob_ref',
+			array(
+				'cid'      => 'bafyfeatured',
+				'mimeType' => 'image/jpeg',
+				'size'     => 123,
+			)
+		);
+		\update_post_meta( $attachment_id, '_wp_attachment_image_alt', 'A featured image' );
+		\wp_update_attachment_metadata(
+			$attachment_id,
+			array(
+				'width'  => 1600,
+				'height' => 1200,
+			)
+		);
+
+		$post_id = self::factory()->post->create(
+			array(
+				'post_title'   => 'Aside with featured image',
+				'post_content' => 'Just text in the body.',
+			)
+		);
+		\set_post_format( $post_id, 'aside' );
+		\set_post_thumbnail( $post_id, $attachment_id );
+		$post = \get_post( $post_id );
+
+		$record = ( new Post( $post ) )->transform();
+
+		$this->assertArrayHasKey( 'embed', $record );
+		$this->assertSame( 'app.bsky.embed.images', $record['embed']['$type'] );
+		$this->assertCount( 1, $record['embed']['images'] );
+		$this->assertSame( 'A featured image', $record['embed']['images'][0]['alt'] );
+		$this->assertSame(
+			array(
+				'cid'      => 'bafyfeatured',
+				'mimeType' => 'image/jpeg',
+				'size'     => 123,
+			),
+			$record['embed']['images'][0]['image']
+		);
+		$this->assertSame(
+			array(
+				'width'  => 1600,
+				'height' => 1200,
+			),
+			$record['embed']['images'][0]['aspectRatio']
+		);
+	}
+
+	/**
+	 * A short-form post with an in-body `core/image` block uses that
+	 * image — not the featured image — in the embed.
+	 *
+	 * @covers ::transform
+	 */
+	public function test_short_form_with_inbody_image_block_uses_inbody_image() {
+		// Featured image — should be ignored when an in-body image exists.
+		$featured_id = self::factory()->attachment->create_object(
+			array(
+				'file'           => 'featured.jpg',
+				'post_mime_type' => 'image/jpeg',
+			),
+			0,
+			array( 'post_title' => 'Featured attachment' )
+		);
+		\update_post_meta(
+			$featured_id,
+			'_atmosphere_blob_ref',
+			array(
+				'cid'      => 'bafyfeatured',
+				'mimeType' => 'image/jpeg',
+				'size'     => 1,
+			)
+		);
+
+		// In-body image.
+		$inbody_id = self::factory()->attachment->create_object(
+			array(
+				'file'           => 'inbody.jpg',
+				'post_mime_type' => 'image/jpeg',
+			),
+			0,
+			array( 'post_title' => 'In-body attachment' )
+		);
+		\update_post_meta(
+			$inbody_id,
+			'_atmosphere_blob_ref',
+			array(
+				'cid'      => 'bafyinbody',
+				'mimeType' => 'image/jpeg',
+				'size'     => 2,
+			)
+		);
+		\update_post_meta( $inbody_id, '_wp_attachment_image_alt', 'An in-body image' );
+
+		$content = '<!-- wp:paragraph --><p>Just an aside.</p><!-- /wp:paragraph -->'
+			. "\n\n"
+			. '<!-- wp:image {"id":' . $inbody_id . ',"sizeSlug":"large"} -->'
+			. '<figure class="wp-block-image size-large"><img src="" alt="" class="wp-image-' . $inbody_id . '"/></figure>'
+			. '<!-- /wp:image -->';
+
+		$post_id = self::factory()->post->create(
+			array(
+				'post_title'   => 'Aside with inline image',
+				'post_content' => $content,
+			)
+		);
+		\set_post_format( $post_id, 'aside' );
+		\set_post_thumbnail( $post_id, $featured_id );
+		$post = \get_post( $post_id );
+
+		$record = ( new Post( $post ) )->transform();
+
+		$this->assertArrayHasKey( 'embed', $record );
+		$this->assertSame( 'app.bsky.embed.images', $record['embed']['$type'] );
+		$this->assertCount( 1, $record['embed']['images'] );
+		$this->assertSame( 'An in-body image', $record['embed']['images'][0]['alt'] );
+		$this->assertSame( 'bafyinbody', $record['embed']['images'][0]['image']['cid'] );
+	}
+
+	/**
+	 * Up to 4 in-body images attach; duplicates are removed in document
+	 * order; the 5th and beyond are dropped.
+	 *
+	 * @covers ::transform
+	 */
+	public function test_short_form_with_many_inbody_images_caps_at_four() {
+		$ids = array();
+		for ( $i = 0; $i < 5; $i++ ) {
+			$id = self::factory()->attachment->create_object(
+				array(
+					'file'           => "img{$i}.jpg",
+					'post_mime_type' => 'image/jpeg',
+				),
+				0,
+				array( 'post_title' => "Image {$i}" )
+			);
+			\update_post_meta(
+				$id,
+				'_atmosphere_blob_ref',
+				array(
+					'cid'      => "bafy{$i}",
+					'mimeType' => 'image/jpeg',
+					'size'     => $i + 1,
+				)
+			);
+			$ids[] = $id;
+		}
+
+		// Sequence: id0, id1, id2, id0 (dup), id3, id4 — after dedup we
+		// expect [ id0, id1, id2, id3, id4 ], capped to first 4.
+		$sequence = array( $ids[0], $ids[1], $ids[2], $ids[0], $ids[3], $ids[4] );
+		$content  = '<!-- wp:paragraph --><p>Look at these images.</p><!-- /wp:paragraph -->' . "\n\n";
+		foreach ( $sequence as $id ) {
+			$content .= '<!-- wp:image {"id":' . $id . '} -->'
+				. '<figure class="wp-block-image"><img class="wp-image-' . $id . '"/></figure>'
+				. "<!-- /wp:image -->\n";
+		}
+
+		$post_id = self::factory()->post->create(
+			array(
+				'post_title'   => 'Many images aside',
+				'post_content' => $content,
+			)
+		);
+		\set_post_format( $post_id, 'aside' );
+		$post = \get_post( $post_id );
+
+		$record = ( new Post( $post ) )->transform();
+
+		$this->assertCount( 4, $record['embed']['images'] );
+		$cids = \array_map( static fn( $img ) => $img['image']['cid'], $record['embed']['images'] );
+		$this->assertSame( array( 'bafy0', 'bafy1', 'bafy2', 'bafy3' ), $cids );
+	}
+
+	/**
+	 * `core/image` blocks nested inside `core/group` (and other container
+	 * blocks via `innerBlocks`) are picked up by the recursive walk.
+	 *
+	 * @covers ::transform
+	 */
+	public function test_short_form_collects_nested_image_blocks() {
+		$inner_id = self::factory()->attachment->create_object(
+			array(
+				'file'           => 'nested.jpg',
+				'post_mime_type' => 'image/jpeg',
+			),
+			0,
+			array( 'post_title' => 'Nested attachment' )
+		);
+		\update_post_meta(
+			$inner_id,
+			'_atmosphere_blob_ref',
+			array(
+				'cid'      => 'bafynested',
+				'mimeType' => 'image/jpeg',
+				'size'     => 1,
+			)
+		);
+
+		$content = '<!-- wp:paragraph --><p>Nested image aside.</p><!-- /wp:paragraph -->'
+			. "\n\n"
+			. '<!-- wp:group -->'
+			. '<div class="wp-block-group">'
+			. '<!-- wp:image {"id":' . $inner_id . '} -->'
+			. '<figure class="wp-block-image"><img class="wp-image-' . $inner_id . '"/></figure>'
+			. '<!-- /wp:image -->'
+			. '</div>'
+			. '<!-- /wp:group -->';
+
+		$post_id = self::factory()->post->create(
+			array(
+				'post_title'   => 'Group with nested image',
+				'post_content' => $content,
+			)
+		);
+		\set_post_format( $post_id, 'aside' );
+		$post = \get_post( $post_id );
+
+		$record = ( new Post( $post ) )->transform();
+
+		$this->assertArrayHasKey( 'embed', $record );
+		$this->assertSame( 'bafynested', $record['embed']['images'][0]['image']['cid'] );
+	}
+
+	/**
+	 * `atmosphere_post_embed` returning null suppresses the new default
+	 * image embed on short-form posts — preserves the existing override
+	 * contract.
+	 *
+	 * @covers ::transform
+	 */
+	public function test_post_embed_filter_returning_null_suppresses_short_form_images_embed() {
+		$attachment_id = self::factory()->attachment->create_object(
+			array(
+				'file'           => 'img.jpg',
+				'post_mime_type' => 'image/jpeg',
+			),
+			0,
+			array( 'post_title' => 'Attachment' )
+		);
+		\update_post_meta(
+			$attachment_id,
+			'_atmosphere_blob_ref',
+			array(
+				'cid'      => 'bafy',
+				'mimeType' => 'image/jpeg',
+				'size'     => 1,
+			)
+		);
+
+		$post_id = self::factory()->post->create(
+			array(
+				'post_title'   => 'Aside with image',
+				'post_content' => 'Body text.',
+			)
+		);
+		\set_post_format( $post_id, 'aside' );
+		\set_post_thumbnail( $post_id, $attachment_id );
+		$post = \get_post( $post_id );
+
+		\add_filter( 'atmosphere_post_embed', '__return_null' );
+
+		$record = ( new Post( $post ) )->transform();
+
+		$this->assertArrayNotHasKey( 'embed', $record );
+	}
+
+	/**
+	 * The `atmosphere_post_embed` filter receives the new image embed as
+	 * the default value (not `null`) on a short-form post with an image,
+	 * so listeners that want to inspect / augment the default can.
+	 *
+	 * @covers ::transform
+	 */
+	public function test_post_embed_filter_receives_images_default_on_short_form() {
+		$attachment_id = self::factory()->attachment->create_object(
+			array(
+				'file'           => 'img.jpg',
+				'post_mime_type' => 'image/jpeg',
+			),
+			0,
+			array( 'post_title' => 'Attachment' )
+		);
+		\update_post_meta(
+			$attachment_id,
+			'_atmosphere_blob_ref',
+			array(
+				'cid'      => 'bafy',
+				'mimeType' => 'image/jpeg',
+				'size'     => 1,
+			)
+		);
+
+		$post_id = self::factory()->post->create(
+			array(
+				'post_title'   => 'Aside with image',
+				'post_content' => 'Body text.',
+			)
+		);
+		\set_post_format( $post_id, 'aside' );
+		\set_post_thumbnail( $post_id, $attachment_id );
+		$post = \get_post( $post_id );
+
+		$seen = null;
+		\add_filter(
+			'atmosphere_post_embed',
+			static function ( $embed ) use ( &$seen ) {
+				$seen = $embed;
+				return $embed;
+			}
+		);
+
+		( new Post( $post ) )->transform();
+
+		$this->assertIsArray( $seen );
+		$this->assertSame( 'app.bsky.embed.images', $seen['$type'] );
+	}
+
+	/**
+	 * A short-form post with neither an in-body image block nor a
+	 * featured image still ships without an embed — the default doesn't
+	 * synthesize one out of nothing.
+	 *
+	 * @covers ::transform
+	 */
+	public function test_short_form_without_any_image_has_no_embed() {
+		$post_id = self::factory()->post->create(
+			array(
+				'post_title'   => 'Aside no image',
+				'post_content' => 'Just words.',
+			)
+		);
+		\set_post_format( $post_id, 'aside' );
+		$post = \get_post( $post_id );
+
+		$record = ( new Post( $post ) )->transform();
+
+		$this->assertArrayNotHasKey( 'embed', $record );
+	}
+
+	/**
+	 * A redacted (password-protected) short-form post with a featured
+	 * image must not ship the image — mirrors the existing redaction
+	 * posture for text and tags. Protects against leaking protected
+	 * attachments to Bluesky.
+	 *
+	 * @covers ::transform
+	 */
+	public function test_short_form_with_password_does_not_attach_images_embed() {
+		$attachment_id = self::factory()->attachment->create_object(
+			array(
+				'file'           => 'protected.jpg',
+				'post_mime_type' => 'image/jpeg',
+			),
+			0,
+			array( 'post_title' => 'Protected attachment' )
+		);
+		\update_post_meta(
+			$attachment_id,
+			'_atmosphere_blob_ref',
+			array(
+				'cid'      => 'bafyprotected',
+				'mimeType' => 'image/jpeg',
+				'size'     => 1,
+			)
+		);
+
+		$post_id = self::factory()->post->create(
+			array(
+				'post_status'   => 'publish',
+				'post_title'    => 'Protected aside',
+				'post_content'  => 'Secret body.',
+				'post_password' => 'secret',
+			)
+		);
+		\set_post_format( $post_id, 'aside' );
+		\set_post_thumbnail( $post_id, $attachment_id );
+		$post = \get_post( $post_id );
+
+		$record = ( new Post( $post ) )->transform();
+
+		$this->assertArrayNotHasKey( 'embed', $record );
+	}
+
+	/**
+	 * `core/image` blocks with non-positive or missing IDs are skipped by
+	 * the collector. Locks the `> 0` and `isset` guards so a future
+	 * refactor that drops them surfaces in CI rather than shipping
+	 * placeholder/template blocks to Bluesky.
+	 *
+	 * @covers ::transform
+	 */
+	public function test_short_form_skips_image_blocks_with_invalid_ids() {
+		$featured_id = self::factory()->attachment->create_object(
+			array(
+				'file'           => 'fallback.jpg',
+				'post_mime_type' => 'image/jpeg',
+			),
+			0,
+			array( 'post_title' => 'Fallback attachment' )
+		);
+		\update_post_meta(
+			$featured_id,
+			'_atmosphere_blob_ref',
+			array(
+				'cid'      => 'bafyfallback',
+				'mimeType' => 'image/jpeg',
+				'size'     => 1,
+			)
+		);
+
+		/*
+		 * Paragraph keeps the post on the short-form path (otherwise
+		 * `build_short_form_text()` returns empty and we fall back to
+		 * long-form). Three image blocks that should all be skipped:
+		 * id=0 (non-positive), missing id, and id="foo" (cast to int
+		 * yields 0).
+		 */
+		$content = '<!-- wp:paragraph --><p>Aside body.</p><!-- /wp:paragraph -->'
+			. '<!-- wp:image {"id":0} --><figure></figure><!-- /wp:image -->'
+			. '<!-- wp:image {"sizeSlug":"large"} --><figure></figure><!-- /wp:image -->'
+			. '<!-- wp:image {"id":"foo"} --><figure></figure><!-- /wp:image -->';
+
+		$post_id = self::factory()->post->create(
+			array(
+				'post_title'   => 'Aside with invalid ids',
+				'post_content' => $content,
+			)
+		);
+		\set_post_format( $post_id, 'aside' );
+		\set_post_thumbnail( $post_id, $featured_id );
+		$post = \get_post( $post_id );
+
+		$record = ( new Post( $post ) )->transform();
+
+		// Featured-image fallback applies because no valid in-body IDs
+		// were collected. The single image is the featured image, not
+		// any of the placeholder blocks.
+		$this->assertArrayHasKey( 'embed', $record );
+		$this->assertSame( 'app.bsky.embed.images', $record['embed']['$type'] );
+		$this->assertCount( 1, $record['embed']['images'] );
+		$this->assertSame( 'bafyfallback', $record['embed']['images'][0]['image']['cid'] );
+	}
+
+	/**
+	 * When the attachment has no `_wp_attachment_image_alt` meta set at
+	 * all, the embed still includes an `alt` field with an empty string —
+	 * the Lexicon requires `alt` to be present on every image entry.
+	 *
+	 * @covers ::transform
+	 */
+	public function test_short_form_image_embed_alt_is_empty_string_when_meta_missing() {
+		$attachment_id = self::factory()->attachment->create_object(
+			array(
+				'file'           => 'no-alt.jpg',
+				'post_mime_type' => 'image/jpeg',
+			),
+			0,
+			array( 'post_title' => 'No-alt attachment' )
+		);
+		\update_post_meta(
+			$attachment_id,
+			'_atmosphere_blob_ref',
+			array(
+				'cid'      => 'bafynoalt',
+				'mimeType' => 'image/jpeg',
+				'size'     => 1,
+			)
+		);
+		// Intentionally do not set `_wp_attachment_image_alt`.
+
+		$post_id = self::factory()->post->create(
+			array(
+				'post_title'   => 'Aside no alt',
+				'post_content' => 'Words.',
+			)
+		);
+		\set_post_format( $post_id, 'aside' );
+		\set_post_thumbnail( $post_id, $attachment_id );
+		$post = \get_post( $post_id );
+
+		$record = ( new Post( $post ) )->transform();
+
+		$this->assertArrayHasKey( 'embed', $record );
+		$this->assertSame( 'app.bsky.embed.images', $record['embed']['$type'] );
+		$this->assertCount( 1, $record['embed']['images'] );
+		$this->assertArrayHasKey( 'alt', $record['embed']['images'][0] );
+		$this->assertSame( '', $record['embed']['images'][0]['alt'] );
+	}
+
+	/**
+	 * The walker stops collecting at 32 IDs even when the post contains
+	 * far more `core/image` blocks. Locks the breadth ceiling that
+	 * protects an attacker-controlled `post_content` from growing the
+	 * working array linearly. The downstream 4-image cap then trims
+	 * what ships in the embed, so this guards the intermediate working
+	 * set rather than the public Bluesky record.
+	 *
+	 * @covers ::transform
+	 */
+	public function test_short_form_image_collector_stops_at_breadth_cap() {
+		$valid_ids = array();
+		for ( $i = 0; $i < 4; $i++ ) {
+			$id = self::factory()->attachment->create_object(
+				array(
+					'file'           => "first{$i}.jpg",
+					'post_mime_type' => 'image/jpeg',
+				),
+				0,
+				array( 'post_title' => "First {$i}" )
+			);
+			\update_post_meta(
+				$id,
+				'_atmosphere_blob_ref',
+				array(
+					'cid'      => "bafyfirst{$i}",
+					'mimeType' => 'image/jpeg',
+					'size'     => $i + 1,
+				)
+			);
+			$valid_ids[] = $id;
+		}
+
+		// Tail attachment that sits at position 33+ in document order
+		// — past the breadth cap. Its blob ref is fully valid; what
+		// proves the cap held is its absence from the working set.
+		$tail_id = self::factory()->attachment->create_object(
+			array(
+				'file'           => 'tail.jpg',
+				'post_mime_type' => 'image/jpeg',
+			),
+			0,
+			array( 'post_title' => 'Tail attachment' )
+		);
+		\update_post_meta(
+			$tail_id,
+			'_atmosphere_blob_ref',
+			array(
+				'cid'      => 'bafytail',
+				'mimeType' => 'image/jpeg',
+				'size'     => 99,
+			)
+		);
+
+		$content = '<!-- wp:paragraph --><p>Lots of images aside.</p><!-- /wp:paragraph -->' . "\n\n";
+
+		// First four valid IDs at the head, then 30 placeholder blocks
+		// with synthetic IDs so the breadth cap fires before the tail
+		// attachment is seen. The tail then sits at position 35.
+		foreach ( $valid_ids as $id ) {
+			$content .= '<!-- wp:image {"id":' . $id . '} --><figure></figure><!-- /wp:image -->';
+		}
+		for ( $i = 0; $i < 30; $i++ ) {
+			$synthetic_id = 90000 + $i;
+			$content     .= '<!-- wp:image {"id":' . $synthetic_id . '} --><figure></figure><!-- /wp:image -->';
+		}
+		$content .= '<!-- wp:image {"id":' . $tail_id . '} --><figure></figure><!-- /wp:image -->';
+
+		$post_id = self::factory()->post->create(
+			array(
+				'post_title'   => 'Aside with many images',
+				'post_content' => $content,
+			)
+		);
+		\set_post_format( $post_id, 'aside' );
+		$post = \get_post( $post_id );
+
+		$record = ( new Post( $post ) )->transform();
+
+		// AT Protocol cap trims to 4. Order in the embed is the first
+		// four document-order IDs we wrote — proves the head wasn't
+		// displaced by anything past the cap.
+		$this->assertCount( 4, $record['embed']['images'] );
+		$cids = \array_map( static fn( $img ) => $img['image']['cid'], $record['embed']['images'] );
+		$this->assertSame(
+			array( 'bafyfirst0', 'bafyfirst1', 'bafyfirst2', 'bafyfirst3' ),
+			$cids
+		);
+
+		// The tail attachment was never collected — its blob ref would
+		// have surfaced as a fifth-position CID if the walker had
+		// continued past 32.
+		$this->assertNotContains( 'bafytail', $cids );
+	}
+
+	/**
+	 * The walker is depth-capped so a pathologically nested block tree
+	 * — many wrapper levels with no images — cannot blow PHP's stack
+	 * before the breadth guard ever fires. We construct a tree past the
+	 * 16-level cap with an image at the bottom; the image is dropped
+	 * because the walker bails before reaching it, and the call returns
+	 * cleanly without a fatal.
+	 *
+	 * Mirror test confirms an image at depth ≤ 16 IS still collected,
+	 * so the cap is a true upper bound rather than a regression of the
+	 * legitimate nested-image case already covered by
+	 * `test_short_form_collects_nested_image_blocks`.
+	 *
+	 * @covers ::transform
+	 */
+	public function test_short_form_image_collector_stops_at_depth_cap() {
+		$deep_id = self::factory()->attachment->create_object(
+			array(
+				'file'           => 'deep.jpg',
+				'post_mime_type' => 'image/jpeg',
+			),
+			0,
+			array( 'post_title' => 'Too-deep attachment' )
+		);
+		\update_post_meta(
+			$deep_id,
+			'_atmosphere_blob_ref',
+			array(
+				'cid'      => 'bafydeep',
+				'mimeType' => 'image/jpeg',
+				'size'     => 1,
+			)
+		);
+
+		// Build a 30-level deep nesting of `core/group` blocks wrapping
+		// a single `core/image` at the bottom. Anything beyond the
+		// walker's 16-level cap should be invisible to the collector.
+		$nesting = 30;
+		$open    = '';
+		$close   = '';
+		for ( $i = 0; $i < $nesting; $i++ ) {
+			$open  .= '<!-- wp:group --><div class="wp-block-group">';
+			$close .= '</div><!-- /wp:group -->';
+		}
+
+		$content = '<!-- wp:paragraph --><p>Deeply nested aside.</p><!-- /wp:paragraph -->'
+			. $open
+			. '<!-- wp:image {"id":' . $deep_id . '} -->'
+			. '<figure class="wp-block-image"><img class="wp-image-' . $deep_id . '"/></figure>'
+			. '<!-- /wp:image -->'
+			. $close;
+
+		$post_id = self::factory()->post->create(
+			array(
+				'post_title'   => 'Deeply nested image aside',
+				'post_content' => $content,
+			)
+		);
+		\set_post_format( $post_id, 'aside' );
+		$post = \get_post( $post_id );
+
+		// Past-cap image must be silently dropped and the call must
+		// return cleanly (no fatal, no PHP warning).
+		$record = ( new Post( $post ) )->transform();
+
+		$this->assertArrayNotHasKey(
+			'embed',
+			$record,
+			'Image past the 16-level depth cap must not surface in the embed.'
+		);
+	}
 }

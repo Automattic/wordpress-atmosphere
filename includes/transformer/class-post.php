@@ -156,9 +156,17 @@ class Post extends Base {
 		$text  = $redacted ? '' : ( $is_short ? $this->build_short_form_text() : '' );
 		$embed = null;
 
-		if ( ! $redacted && '' === $text ) {
-			$text  = $this->build_text();
-			$embed = $this->build_embed();
+		if ( ! $redacted ) {
+			if ( $is_short ) {
+				$embed = $this->build_images_embed();
+				if ( '' === $text && null === $embed ) {
+					$text  = $this->build_text();
+					$embed = $this->build_embed();
+				}
+			} else {
+				$text  = $this->build_text();
+				$embed = $this->build_embed();
+			}
 		}
 
 		if ( ! $redacted ) {
@@ -323,6 +331,167 @@ class Post extends Base {
 		$prose = truncate_text( $prose, $available );
 
 		return $prose . "\n\n" . $permalink;
+	}
+
+	/**
+	 * Build an `app.bsky.embed.images` record from the post's images.
+	 *
+	 * Source priority:
+	 *   1. `core/image` blocks parsed from `post_content` (deduped,
+	 *      document order, capped at 4).
+	 *   2. Featured image (`get_post_thumbnail_id`) when no in-body
+	 *      images are found.
+	 *
+	 * Returns null when neither source yields an image, when every
+	 * attempted blob upload fails, or for redacted posts. Partial upload
+	 * failures are silently skipped; the record ships with whatever
+	 * uploaded successfully. Used by the
+	 * short-form `transform()` path so aside/status/quote posts that
+	 * contain images actually ship them to Bluesky instead of silently
+	 * dropping them with the post content's HTML.
+	 *
+	 * @return array|null app.bsky.embed.images record or null.
+	 */
+	private function build_images_embed(): ?array {
+		if ( $this->is_redacted() ) {
+			return null;
+		}
+
+		$attachment_ids = $this->collect_image_attachment_ids();
+
+		if ( empty( $attachment_ids ) ) {
+			$thumb_id = \get_post_thumbnail_id( $this->object );
+			if ( $thumb_id ) {
+				$attachment_ids[] = (int) $thumb_id;
+			}
+		}
+
+		if ( empty( $attachment_ids ) ) {
+			return null;
+		}
+
+		// AT Protocol `app.bsky.embed.images` caps at 4 images.
+		$attachment_ids = \array_slice( $attachment_ids, 0, 4 );
+
+		$images = array();
+		foreach ( $attachment_ids as $attachment_id ) {
+			$blob = self::upload_image_blob( $attachment_id );
+			if ( ! $blob ) {
+				continue;
+			}
+
+			$image = array(
+				'image' => $blob,
+				'alt'   => $this->image_alt_text( $attachment_id ),
+			);
+
+			$aspect_ratio = self::get_attachment_aspect_ratio( $attachment_id );
+			if ( null !== $aspect_ratio ) {
+				$image['aspectRatio'] = $aspect_ratio;
+			}
+
+			$images[] = $image;
+		}
+
+		if ( empty( $images ) ) {
+			return null;
+		}
+
+		return array(
+			'$type'  => 'app.bsky.embed.images',
+			'images' => $images,
+		);
+	}
+
+	/**
+	 * Collect attachment IDs from `core/image` blocks in post_content.
+	 *
+	 * Walks the block tree recursively (into `innerBlocks`) so an image
+	 * nested in a group, column, or cover block is still picked up.
+	 * Order is document order; duplicates are removed; non-positive IDs
+	 * are skipped. Only `core/image` blocks are inspected — `core/cover`
+	 * background images and `core/media-text` images are intentionally
+	 * out of scope; consumers needing those can wire them in via the
+	 * `atmosphere_post_embed` filter.
+	 *
+	 * The walker stops collecting once 32 IDs have been gathered — well
+	 * above the 4-image AT Protocol cap, but enough headroom that dedupe
+	 * still preserves document order on realistic posts. Bounds the
+	 * memory profile so an attacker-controlled `post_content` packed with
+	 * thousands of `core/image` blocks can't grow the working array
+	 * past a constant ceiling.
+	 *
+	 * Recursion is also depth-capped at 16 levels. The 32-ID breadth cap
+	 * only protects against wide trees: a deeply-nested input with no
+	 * images (e.g. 500 nested `core/group` wrappers) would never
+	 * accumulate IDs and never trip the breadth guard, but each level
+	 * still costs a PHP frame on the C stack. 16 leaves ample headroom
+	 * over realistic theme/block nesting (cover → group → columns →
+	 * column → group → image is six) while keeping the worst-case stack
+	 * use bounded against an adversarial `post_content`.
+	 *
+	 * @return int[]
+	 */
+	private function collect_image_attachment_ids(): array {
+		$content = (string) $this->object->post_content;
+
+		if ( '' === $content || ! \has_blocks( $content ) ) {
+			return array();
+		}
+
+		$blocks = \parse_blocks( $content );
+		$ids    = array();
+
+		// Generous ceiling: well above the 4-image cap, enough that
+		// dedupe still preserves document order on realistic posts,
+		// small enough to bound attacker-controlled memory growth.
+		$max_ids   = 32;
+		$max_depth = 16;
+
+		$walker = static function ( array $blocks, int $depth ) use ( &$walker, &$ids, $max_ids, $max_depth ): void {
+			if ( $depth > $max_depth ) {
+				return;
+			}
+
+			foreach ( $blocks as $block ) {
+				if ( \count( $ids ) >= $max_ids ) {
+					return;
+				}
+
+				if ( ( $block['blockName'] ?? '' ) === 'core/image'
+					&& isset( $block['attrs']['id'] )
+					&& (int) $block['attrs']['id'] > 0
+				) {
+					$ids[] = (int) $block['attrs']['id'];
+				}
+
+				if ( ! empty( $block['innerBlocks'] ) && \is_array( $block['innerBlocks'] ) ) {
+					$walker( $block['innerBlocks'], $depth + 1 );
+				}
+			}
+		};
+
+		$walker( $blocks, 0 );
+
+		return \array_values( \array_unique( $ids ) );
+	}
+
+	/**
+	 * Resolve the alt text for an attachment.
+	 *
+	 * Uses the WordPress canonical attachment alt meta key
+	 * (`_wp_attachment_image_alt`). Returns an empty string when the meta
+	 * is missing or non-string — AT Protocol's `app.bsky.embed.images`
+	 * requires the `alt` field to be present, and an empty string is a
+	 * valid value.
+	 *
+	 * @param int $attachment_id Attachment ID.
+	 * @return string
+	 */
+	private function image_alt_text( int $attachment_id ): string {
+		$alt = \get_post_meta( $attachment_id, '_wp_attachment_image_alt', true );
+
+		return \is_string( $alt ) ? truncate_text( sanitize_text( $alt ), 1000 ) : '';
 	}
 
 	/**
@@ -500,7 +669,9 @@ class Post extends Base {
 	 * applyWrites batch from a malformed embed.
 	 *
 	 * @param array|null $embed    Default embed for this strategy
-	 *                             (null for short-form, an
+	 *                             (an `app.bsky.embed.images` record for
+	 *                             short-form posts with images, null for
+	 *                             short-form posts without images, an
 	 *                             `app.bsky.embed.external` card for the
 	 *                             link-card and teaser-thread strategies).
 	 * @param string     $strategy Composition strategy: 'short-form',
@@ -511,15 +682,16 @@ class Post extends Base {
 		/**
 		 * Filters the embed attached to a Bluesky post record.
 		 *
-		 * Fires for every composition strategy, including short-form
-		 * (where the default is `null` — short-form posts ship without
-		 * an embed unless something opts in). Consumers can:
+		 * Fires for every composition strategy. The default for short-form
+		 * posts is an `app.bsky.embed.images` record when the post has
+		 * images (in-body `core/image` blocks, or the featured image as a
+		 * fallback), and `null` otherwise. Consumers can:
 		 *
 		 *   - Replace the default external link card with a richer
 		 *     embed type (`app.bsky.embed.images`, `app.bsky.embed.video`,
 		 *     `app.bsky.embed.record`).
 		 *   - Attach an embed to a short-form post that would otherwise
-		 *     ship plain.
+		 *     ship plain (e.g. an image-free aside).
 		 *   - Suppress the default embed by returning null.
 		 *
 		 * Valid returns are `null` or an array with a non-empty string
@@ -540,9 +712,12 @@ class Post extends Base {
 		 * post object to embed filters would leak the protected payload.
 		 *
 		 * @param array|null $embed    Default embed for this strategy
-		 *                             (null for short-form, an
-		 *                             `app.bsky.embed.external` card
-		 *                             otherwise).
+		 *                             (an `app.bsky.embed.images` record
+		 *                             for short-form posts with images,
+		 *                             null for short-form posts without
+		 *                             images, an `app.bsky.embed.external`
+		 *                             card for the link-card and
+		 *                             teaser-thread strategies).
 		 * @param \WP_Post   $post     The post being transformed.
 		 * @param string     $strategy Composition strategy: 'short-form',
 		 *                             'link-card', or 'teaser-thread'.
