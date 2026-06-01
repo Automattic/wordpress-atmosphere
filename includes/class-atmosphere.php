@@ -444,8 +444,8 @@ class Atmosphere {
 		$rules = \get_option( 'rewrite_rules' );
 
 		if ( \is_array( $rules ) ) {
-			foreach ( \array_keys( self::WELLKNOWN_REWRITE_PATTERNS ) as $pattern ) {
-				if ( ! isset( $rules[ $pattern ] ) ) {
+			foreach ( self::WELLKNOWN_REWRITE_PATTERNS as $pattern => $target ) {
+				if ( ! isset( $rules[ $pattern ] ) || $rules[ $pattern ] !== $target ) {
 					\flush_rewrite_rules( false );
 					return;
 				}

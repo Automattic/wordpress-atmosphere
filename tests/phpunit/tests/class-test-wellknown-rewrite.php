@@ -98,6 +98,11 @@ class Test_Wellknown_Rewrite extends WP_UnitTestCase {
 		\delete_option( 'atmosphere_connection' );
 		\delete_option( 'atmosphere_identity' );
 
+		\update_option( 'permalink_structure', '' );
+
+		global $wp_rewrite;
+		$wp_rewrite->init();
+
 		parent::tear_down();
 	}
 
@@ -171,6 +176,24 @@ class Test_Wellknown_Rewrite extends WP_UnitTestCase {
 			array(
 				'^\.well-known/atproto-did$' => 'index.php?atmosphere_wellknown=atproto-did',
 				'some/other/rule'            => 'index.php?other=1',
+			)
+		);
+
+		Atmosphere::maybe_flush_wellknown_rewrites();
+
+		$this->assertWellknownPatternsResolved( \get_option( 'rewrite_rules' ) );
+	}
+
+	/**
+	 * Flushes when a well-known pattern resolves to the wrong target.
+	 */
+	public function test_flushes_when_target_is_wrong(): void {
+		$pattern = \array_key_first( self::WELLKNOWN_PATTERNS );
+
+		\update_option(
+			'rewrite_rules',
+			array(
+				$pattern => 'index.php?atmosphere_wellknown=wrong',
 			)
 		);
 
