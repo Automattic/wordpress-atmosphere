@@ -52,6 +52,19 @@ class Client {
 	public const REFRESH_LOCK_OPTION = '_atmosphere_refresh_lock';
 
 	/**
+	 * `wp_options` row name flagging an explicit operator-initiated disconnect.
+	 *
+	 * Set on {@see self::disconnect()} so the admin reauth notice can tell
+	 * "user clicked Disconnect" apart from "refresh token failed". Cleared
+	 * on the next successful authorization. Public so `uninstall.php` and
+	 * the test suite can refer to the same key without drifting from the
+	 * canonical value used here.
+	 *
+	 * @var string
+	 */
+	public const DISCONNECTED_OPTION = 'atmosphere_disconnected';
+
+	/**
 	 * Get the client_id URL (= client metadata endpoint).
 	 *
 	 * @return string
@@ -524,6 +537,30 @@ class Client {
 			'expires_at'          => \time() + ( $data['expires_in'] ?? 3600 ),
 			'needs_reauth'        => false,
 		);
+
+		/*
+		 * Clear any prior explicit-disconnect marker BEFORE persisting
+		 * the new connection. Doing so afterward exposes a cross-tab
+		 * race: a stale Disconnect link fired from another admin tab
+		 * during the OAuth callback would land between the
+		 * `update_option('atmosphere_connection', ...)` and the
+		 * `delete_option(DISCONNECTED_OPTION)`, stamping a fresh marker
+		 * (Client::disconnect() also runs `delete_option`) — the
+		 * callback would then clear the new marker on its way out.
+		 * Final state: identity preserved, connection gone, marker
+		 * gone — the reauth notice would fall through to "session
+		 * expired" copy when the user actually triggered a deliberate
+		 * disconnect from another tab.
+		 *
+		 * Clearing first means: any concurrent disconnect that lands
+		 * between this delete and the persist below leaves the marker
+		 * set AND the connection gone, which the notice gate correctly
+		 * renders as "disconnected." The disconnect's own marker write
+		 * is the authoritative signal of operator intent. Safe to call
+		 * when nothing was set — `delete_option` is a no-op for missing
+		 * rows.
+		 */
+		\delete_option( self::DISCONNECTED_OPTION );
 
 		/*
 		 * Encrypted token blobs do not need to ride along in every
@@ -1081,7 +1118,23 @@ class Client {
 	}
 
 	/**
-	 * Disconnect: remove all stored credentials and clear queued cron events.
+	 * Disconnect: remove stored credentials and clear queued cron events.
+	 *
+	 * Drops `atmosphere_connection` (the OAuth session) but deliberately
+	 * preserves `atmosphere_identity`. Identity holds the DID, handle, and
+	 * PDS endpoint that drive the bidirectional verification headers
+	 * (`/.well-known/atproto-did` and the publication link tag). Sites that
+	 * adopted a custom domain handle (e.g. `example.com` instead of
+	 * `alice.bsky.social`) depend on that route to resolve their handle
+	 * back to a DID during reconnect — wiping identity here breaks the
+	 * chain: `Resolver::handle_to_did()` then 404s on both DNS TXT and the
+	 * HTTPS well-known, and the user is locked out of reconnecting with
+	 * their domain handle. The split between identity and credentials was
+	 * introduced precisely so a failed token refresh would not break this
+	 * route (see `get_identity()`); explicit disconnect must honor the
+	 * same invariant. A reconnect overwrites identity in place; sites that
+	 * truly want to forget the DID should clear `atmosphere_identity`
+	 * separately.
 	 *
 	 * Queued events (`atmosphere_delete_records`,
 	 * `atmosphere_delete_comment_record`) issue applyWrites without a
@@ -1135,8 +1188,30 @@ class Client {
 			);
 		}
 
+		/*
+		 * Mark the disconnect as operator-initiated BEFORE wiping the
+		 * connection row so the admin reauth notice's copy swap is
+		 * race-free. With the marker set first, any concurrent admin
+		 * request that loads `Admin::maybe_render_reauth_notice()` while
+		 * this method is in-flight sees either: (a) a live connection
+		 * (needs_reauth false, notice silent), or (b) a missing
+		 * connection AND a set marker (the "disconnected" copy renders).
+		 * Reversing the order would expose a narrow window where the
+		 * connection is gone but the marker is not yet present — the
+		 * gate would fall through to the misleading "session has
+		 * expired" wording the marker exists to suppress. Set with
+		 * `autoload = false` because the value is only consulted by the
+		 * admin notice (single per-request read after a needs_reauth
+		 * gate), so paying for it on every page-load is wasteful.
+		 *
+		 * Stamped with `\time()` so a future caller could expire stale
+		 * markers (e.g. after N days); the notice gate itself only
+		 * reads truthiness. Cleared on the next successful
+		 * authorization (see `handle_callback()`).
+		 */
+		\update_option( self::DISCONNECTED_OPTION, \time(), false );
+
 		\delete_option( 'atmosphere_connection' );
-		\delete_option( 'atmosphere_identity' );
 		\delete_option( self::REFRESH_LOCK_OPTION );
 
 		/*

@@ -14,6 +14,7 @@ use function Atmosphere\sanitize_text;
 use function Atmosphere\truncate_text;
 use function Atmosphere\to_iso8601;
 use function Atmosphere\is_post_publishable;
+use function Atmosphere\get_connection;
 
 /**
  * Function tests.
@@ -56,6 +57,19 @@ class Test_Functions extends WP_UnitTestCase {
 	public function test_sanitize_text() {
 		$this->assertSame( 'Hello World', sanitize_text( '<p>Hello   World</p>' ) );
 		$this->assertSame( 'a & b', sanitize_text( 'a &amp; b' ) );
+	}
+
+	/**
+	 * Entity-encoded markup must not survive as live tags. WordPress stores
+	 * values like the site title HTML-entity encoded, so `<b>` arrives as
+	 * `&lt;b&gt;`. sanitize_text() decodes before stripping, so the decoded
+	 * tag is removed rather than re-materialising as live markup in the
+	 * record.
+	 */
+	public function test_sanitize_text_removes_entity_encoded_markup() {
+		$this->assertSame( 'Bad', sanitize_text( '&lt;b&gt;Bad&lt;/b&gt;' ) );
+		$this->assertSame( '', sanitize_text( '&lt;script&gt;alert(1)&lt;/script&gt;' ) );
+		$this->assertStringNotContainsString( '<', sanitize_text( '&lt;img src=x onerror=alert(1)&gt;' ) );
 	}
 
 	/**
@@ -156,5 +170,46 @@ class Test_Functions extends WP_UnitTestCase {
 		$this->assertFalse( is_post_publishable( $protected ) );
 		$this->assertFalse( is_post_publishable( $zero_string_password ) );
 		$this->assertFalse( is_post_publishable( $page ) );
+	}
+
+	/**
+	 * `get_connection()` returns the option array on a healthy install.
+	 */
+	public function test_get_connection_returns_array_for_healthy_option() {
+		\update_option(
+			'atmosphere_connection',
+			array(
+				'did'    => 'did:plc:test',
+				'handle' => 'example.com',
+			),
+			false
+		);
+
+		$conn = get_connection();
+
+		$this->assertIsArray( $conn );
+		$this->assertSame( 'did:plc:test', $conn['did'] );
+
+		\delete_option( 'atmosphere_connection' );
+	}
+
+	/**
+	 * `get_connection()` normalises a corrupted non-array option value
+	 * to an empty array. Without the coercion, the `: array` return-type
+	 * declaration would raise a TypeError mid-render of `admin_notices`
+	 * (Admin::maybe_render_reauth_notice composes get_connection() with
+	 * the disconnect-marker gate), whitescreening the admin until the
+	 * row is repaired. Repair paths (wp-cli, the Disconnect button)
+	 * live in that same admin, so a crash here would be self-trapping.
+	 */
+	public function test_get_connection_normalises_corrupted_non_array_option() {
+		\update_option( 'atmosphere_connection', 'corrupted-scalar-string', false );
+
+		$conn = get_connection();
+
+		$this->assertIsArray( $conn );
+		$this->assertSame( array(), $conn );
+
+		\delete_option( 'atmosphere_connection' );
 	}
 }

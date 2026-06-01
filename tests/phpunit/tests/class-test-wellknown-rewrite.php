@@ -97,7 +97,6 @@ class Test_Wellknown_Rewrite extends WP_UnitTestCase {
 		\delete_option( 'rewrite_rules' );
 		\delete_option( 'atmosphere_connection' );
 		\delete_option( 'atmosphere_identity' );
-		\delete_option( Handle::OPTION_PREVIOUS_HANDLE );
 
 		parent::tear_down();
 	}
