@@ -477,7 +477,7 @@ class Post extends Base {
 	private function image_alt_text( int $attachment_id ): string {
 		$alt = \get_post_meta( $attachment_id, '_wp_attachment_image_alt', true );
 
-		return \is_string( $alt ) ? $alt : '';
+		return \is_string( $alt ) ? truncate_text( sanitize_text( $alt ), 1000 ) : '';
 	}
 
 	/**
