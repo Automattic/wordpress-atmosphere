@@ -131,11 +131,31 @@ class API {
 			)
 		) {
 			$refresh = Client::refresh();
-			if ( \is_wp_error( $refresh )
-				&& 'atmosphere_refresh_locked' !== $refresh->get_error_code()
-			) {
-				return $refresh;
+			if ( \is_wp_error( $refresh ) ) {
+				if ( 'atmosphere_refresh_locked' !== $refresh->get_error_code() ) {
+					return $refresh;
+				}
+
+				/*
+				 * Another worker is mid-refresh. We cannot rely on the
+				 * recursive call's `Client::access_token()` lookup to
+				 * notice the new token landing — `access_token()` only
+				 * waits for an in-flight refresh when *it* decides to
+				 * refresh because of near-expiry, and at this point the
+				 * local `expires_at` may still be in the future (a 401
+				 * `InvalidToken` from the PDS means the auth server
+				 * invalidated the jti server-side, not that our local
+				 * clock thinks it expired). Block here until the
+				 * concurrent holder lands a fresh token, propagating
+				 * the wait's outcome — `needs_reauth` or a timeout —
+				 * unchanged.
+				 */
+				$waited = Client::wait_for_token_refresh();
+				if ( \is_wp_error( $waited ) ) {
+					return $waited;
+				}
 			}
+
 			return self::request( $method, $endpoint, $original_args, null, true );
 		}
 

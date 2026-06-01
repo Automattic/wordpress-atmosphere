@@ -987,7 +987,7 @@ class Client {
 	 *
 	 * @return true|\WP_Error
 	 */
-	private static function wait_for_token_refresh(): true|\WP_Error {
+	public static function wait_for_token_refresh(): true|\WP_Error {
 		$deadline = \microtime( true ) + (float) self::REFRESH_LOCK_TTL;
 
 		while ( \microtime( true ) < $deadline ) {
