@@ -43,6 +43,23 @@ class API {
 
 		$conn = \get_option( 'atmosphere_connection', array() );
 
+		/*
+		 * Snapshot the access-token ciphertext we are about to use,
+		 * BEFORE the HTTP round-trip. If the request comes back 401
+		 * and a concurrent worker rotated the token while our HTTP
+		 * call was in-flight, the rotated ciphertext will already be
+		 * in `atmosphere_connection` by the time we read it again
+		 * inside the 401 branch — and a snapshot taken there would
+		 * equal the rotated value, defeating
+		 * `Client::wait_for_token_refresh($snapshot)`'s "wait until
+		 * the ciphertext differs from snapshot" semantics. Capturing
+		 * here pins the comparison value to the token that ACTUALLY
+		 * went on the wire, so any rotation that happened during the
+		 * round-trip (or that lands during the wait) trips the
+		 * differs-from-snapshot check correctly.
+		 */
+		$access_token_snapshot = (string) ( $conn['access_token'] ?? '' );
+
 		$dpop_jwk_json = Encryption::decrypt( $conn['dpop_jwk'] ?? '' );
 		if ( false === $dpop_jwk_json ) {
 			return new \WP_Error( 'atmosphere_decrypt', \__( 'Failed to decrypt DPoP key.', 'atmosphere' ) );
@@ -131,16 +148,14 @@ class API {
 			)
 		) {
 			/*
-			 * Snapshot the access-token ciphertext now, BEFORE calling
-			 * `Client::refresh()`. The retry must run against a rotated
-			 * token, which means we need a positive signal that the
-			 * stored access token has actually changed. `expires_at`
-			 * alone is not that signal — a 401 `InvalidToken` from the
-			 * PDS means the auth server invalidated the jti
-			 * server-side while our local `expires_at` may still be
-			 * in the future. Comparing the access-token ciphertext
-			 * before vs after a refresh attempt catches both of the
-			 * possible "no actual rotation happened" cases:
+			 * `$access_token_snapshot` was captured at the top of this
+			 * function, BEFORE the HTTP request — see the comment
+			 * there for why post-request snapshotting would race
+			 * a concurrent rotation. The retry must run against a
+			 * rotated token, and the ciphertext-comparison is the
+			 * only signal that reliably distinguishes "we still hold
+			 * the version that just got rejected" from "someone
+			 * already rotated":
 			 *
 			 *   - `Client::refresh()` short-circuits with `true` when
 			 *     another worker holds the lock AND the local
@@ -153,9 +168,6 @@ class API {
 			 *     just until the existing `expires_at` re-clears the
 			 *     5-minute window.
 			 */
-			$conn_snapshot         = \get_option( 'atmosphere_connection', array() );
-			$access_token_snapshot = (string) ( $conn_snapshot['access_token'] ?? '' );
-
 			$refresh = Client::refresh();
 			if ( \is_wp_error( $refresh ) && 'atmosphere_refresh_locked' !== $refresh->get_error_code() ) {
 				return $refresh;
