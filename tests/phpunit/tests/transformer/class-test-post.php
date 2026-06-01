@@ -10,7 +10,9 @@
 namespace Atmosphere\Tests\Transformer;
 
 use WP_UnitTestCase;
+use Atmosphere\Transformer\Document;
 use Atmosphere\Transformer\Post;
+use Atmosphere\Transformer\Publication;
 
 /**
  * Post transformer tests.
@@ -2712,5 +2714,167 @@ class Test_Post extends WP_UnitTestCase {
 			$record,
 			'Image past the 16-level depth cap must not surface in the embed.'
 		);
+	}
+
+	/*
+	 * -----------------------------------------------------------------
+	 * Link-card embed — associatedRefs for the standard.site strongRefs.
+	 * -----------------------------------------------------------------
+	 */
+
+	/**
+	 * `set_document_strong_ref()` plus a captured publication strongRef
+	 * land both entries in `embed.external.associatedRefs` on a fresh
+	 * transform. Order: publication first, document second.
+	 *
+	 * This is the production-target shape — the initial atomic
+	 * applyWrites must carry both refs so Bluesky's AppView indexes
+	 * the post with `source` / `associatedProfiles` enrichment from
+	 * the start.
+	 *
+	 * @covers ::transform
+	 */
+	public function test_long_form_embed_carries_both_strong_refs_when_injected() {
+		\update_option( 'atmosphere_identity', array( 'did' => 'did:plc:test123' ), false );
+		\update_option( Publication::OPTION_TID, '3kpub00000000', false );
+		\update_option( Publication::OPTION_CID, 'bafyreipublication0000000000000000000000000000000000000000000', false );
+
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'A Titled Post',
+				'post_content' => 'Long-form blog body.',
+			)
+		);
+
+		$transformer = new Post( $post );
+		$transformer->set_document_strong_ref(
+			array(
+				'uri' => 'at://did:plc:test123/site.standard.document/3kdoc00000000',
+				'cid' => 'bafyreidoc000000000000000000000000000000000000000000000000000',
+			)
+		);
+
+		$record = $transformer->transform();
+
+		$refs = $record['embed']['external']['associatedRefs'];
+		$this->assertCount( 2, $refs );
+		$this->assertSame( 'com.atproto.repo.strongRef', $refs[0]['$type'] );
+		$this->assertSame( 'at://did:plc:test123/site.standard.publication/3kpub00000000', $refs[0]['uri'] );
+		$this->assertSame( 'com.atproto.repo.strongRef', $refs[1]['$type'] );
+		$this->assertSame( 'at://did:plc:test123/site.standard.document/3kdoc00000000', $refs[1]['uri'] );
+		$this->assertSame( 'bafyreidoc000000000000000000000000000000000000000000000000000', $refs[1]['cid'] );
+
+		\delete_option( 'atmosphere_identity' );
+		\delete_option( Publication::OPTION_TID );
+		\delete_option( Publication::OPTION_CID );
+	}
+
+	/**
+	 * When the document strongRef is NOT injected (e.g. on an update
+	 * publish where the Publisher trusts the meta layer instead),
+	 * `build_embed()` falls back to reading `Document::META_URI` /
+	 * `Document::META_CID` from post meta. This is the path taken by
+	 * `Publisher::update_post()` after the initial publish has
+	 * already populated the document meta.
+	 *
+	 * @covers ::transform
+	 */
+	public function test_long_form_embed_falls_back_to_document_meta_when_not_injected() {
+		\update_option( 'atmosphere_identity', array( 'did' => 'did:plc:test123' ), false );
+		\update_option( Publication::OPTION_TID, '3kpub00000000', false );
+		\update_option( Publication::OPTION_CID, 'bafyreipublication0000000000000000000000000000000000000000000', false );
+
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'A Titled Post',
+				'post_content' => 'Long-form blog body.',
+			)
+		);
+
+		\update_post_meta( $post->ID, Document::META_URI, 'at://did:plc:test123/site.standard.document/3kmeta00000000' );
+		\update_post_meta( $post->ID, Document::META_CID, 'bafyreidocmeta00000000000000000000000000000000000000000000000', false );
+
+		$record = ( new Post( $post ) )->transform();
+
+		$refs = $record['embed']['external']['associatedRefs'];
+		$this->assertCount( 2, $refs );
+		$this->assertSame( 'at://did:plc:test123/site.standard.document/3kmeta00000000', $refs[1]['uri'] );
+		$this->assertSame( 'bafyreidocmeta00000000000000000000000000000000000000000000000', $refs[1]['cid'] );
+
+		\delete_option( 'atmosphere_identity' );
+		\delete_option( Publication::OPTION_TID );
+		\delete_option( Publication::OPTION_CID );
+	}
+
+	/**
+	 * Injection wins over meta when both are present — reflects what
+	 * the Publisher is about to write (the injected value) rather than
+	 * what was written previously (the meta value).
+	 *
+	 * @covers ::transform
+	 */
+	public function test_long_form_embed_injection_wins_over_meta() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'A Titled Post',
+				'post_content' => 'Long-form blog body.',
+			)
+		);
+
+		\update_post_meta( $post->ID, Document::META_URI, 'at://did:plc:test123/site.standard.document/old' );
+		\update_post_meta( $post->ID, Document::META_CID, 'bafyreioldoldoldoldoldoldoldoldoldoldoldoldoldoldoldoldoldold' );
+
+		$transformer = new Post( $post );
+		$transformer->set_document_strong_ref(
+			array(
+				'uri' => 'at://did:plc:test123/site.standard.document/new',
+				'cid' => 'bafyreinewnewnewnewnewnewnewnewnewnewnewnewnewnewnewnewnewnew',
+			)
+		);
+
+		$record = $transformer->transform();
+
+		$refs    = $record['embed']['external']['associatedRefs'];
+		$doc_ref = end( $refs );
+		$this->assertSame( 'at://did:plc:test123/site.standard.document/new', $doc_ref['uri'] );
+		$this->assertSame( 'bafyreinewnewnewnewnewnewnewnewnewnewnewnewnewnewnewnewnewnew', $doc_ref['cid'] );
+	}
+
+	/**
+	 * Short-form posts (`app.bsky.embed.images`, or no embed) never
+	 * carry `associatedRefs` — that field is defined only on
+	 * `app.bsky.embed.external#external`. Even with both publication
+	 * state and an explicitly-injected document ref, the short-form
+	 * code path bypasses `build_embed()` entirely.
+	 *
+	 * @covers ::transform
+	 */
+	public function test_short_form_post_never_carries_associated_refs() {
+		\update_option( 'atmosphere_identity', array( 'did' => 'did:plc:test123' ), false );
+		\update_option( Publication::OPTION_TID, '3kpub00000000', false );
+		\update_option( Publication::OPTION_CID, 'bafyreipublication0000000000000000000000000000000000000000000', false );
+
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => '',
+				'post_content' => 'A quick untitled thought.',
+			)
+		);
+
+		$transformer = new Post( $post );
+		$transformer->set_document_strong_ref(
+			array(
+				'uri' => 'at://did:plc:test123/site.standard.document/3kdoc',
+				'cid' => 'bafyreidoc0000000000000000000000000000000000000000000000000000',
+			)
+		);
+
+		$record = $transformer->transform();
+
+		$this->assertArrayNotHasKey( 'embed', $record );
+
+		\delete_option( 'atmosphere_identity' );
+		\delete_option( Publication::OPTION_TID );
+		\delete_option( Publication::OPTION_CID );
 	}
 }

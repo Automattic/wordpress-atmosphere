@@ -121,6 +121,56 @@ class Post extends Base {
 	public const META_DOC_REF_PENDING = '_atmosphere_doc_ref_pending';
 
 	/**
+	 * Document strongRef the Publisher pre-computed for the initial
+	 * atomic `applyWrites#create`.
+	 *
+	 * AT Protocol's chicken-and-egg: a strongRef needs the target's
+	 * CID, and the document's CID only exists after a write. The
+	 * Publisher closes the gap by computing the document's CID
+	 * locally via the DAG-CBOR encoder ({@see \Atmosphere\CID}) and
+	 * pushing the resulting `{uri, cid}` here before any
+	 * `transform()` / `build_long_form_records()` call. The embed
+	 * builder picks the ref up and includes it in the post's
+	 * `embed.external.associatedRefs` array on the very first
+	 * applyWrites — which is what Bluesky's AppView indexes
+	 * (subsequent `applyWrites#update` follow-ups are ignored for
+	 * `source` / `associatedProfiles` enrichment).
+	 *
+	 * Null on a fresh transformer; reset whenever a fresh Post object
+	 * is constructed. Subsequent publishes of the same post
+	 * (`update_post()` flow) do not inject — by then
+	 * `Document::META_URI` / `Document::META_CID` are populated and
+	 * {@see self::build_embed()} reads the ref from meta instead.
+	 *
+	 * @var array{$type: string, uri: string, cid: string}|null
+	 */
+	private ?array $document_strong_ref = null;
+
+	/**
+	 * Inject the document strongRef the embed builder should advertise
+	 * in `associatedRefs` on the initial publish.
+	 *
+	 * See {@see self::$document_strong_ref} for the why. Passing an
+	 * empty array or a malformed shape (missing `uri` / `cid`) clears
+	 * the injection and the embed builder falls back to reading from
+	 * `Document::META_*`.
+	 *
+	 * @param array $ref StrongRef to advertise (keys: optional `$type`, required `uri` and `cid`).
+	 */
+	public function set_document_strong_ref( array $ref ): void {
+		if ( empty( $ref['uri'] ) || empty( $ref['cid'] ) ) {
+			$this->document_strong_ref = null;
+			return;
+		}
+
+		$this->document_strong_ref = array(
+			'$type' => 'com.atproto.repo.strongRef',
+			'uri'   => (string) $ref['uri'],
+			'cid'   => (string) $ref['cid'],
+		);
+	}
+
+	/**
 	 * Transform the post.
 	 *
 	 * @return array app.bsky.feed.post record.
@@ -520,6 +570,59 @@ class Post extends Base {
 			if ( $blob ) {
 				$external['thumb'] = $blob;
 			}
+		}
+
+		/*
+		 * Build the `associatedRefs` array. Order: publication first,
+		 * document second — matches what Bluesky's manual-share UI
+		 * emits and keeps the test fixtures stable. Lexicon does not
+		 * mandate ordering, but pinning a deterministic order avoids
+		 * spurious CID drift on no-op republishes.
+		 *
+		 * Publication ref comes from a stored site-wide option, set
+		 * by `Publisher::sync_publication()` once the publication
+		 * record has been written.
+		 *
+		 * Document ref has two sources:
+		 *   - On the *initial* publish, the Publisher precomputes the
+		 *     document's CID locally via DAG-CBOR and injects via
+		 *     `set_document_strong_ref()`. Without this, the document
+		 *     ref could only be added after the atomic write returned
+		 *     — and Bluesky's AppView ignores subsequent
+		 *     `applyWrites#update` for the purposes of indexing
+		 *     `source` / `associatedProfiles` enrichment.
+		 *   - On an *update* publish, the injection is absent but
+		 *     `Document::META_*` are already populated by the
+		 *     previous publish's `store_document_meta()`, so reading
+		 *     from meta produces an equivalent ref.
+		 *
+		 * The injection wins if both sources are present — it
+		 * reflects what the Publisher is *about* to write, the meta
+		 * reflects the previous write.
+		 */
+		$associated_refs = array();
+
+		$publication_ref = Publication::get_strong_ref();
+		if ( null !== $publication_ref ) {
+			$associated_refs[] = $publication_ref;
+		}
+
+		if ( null !== $this->document_strong_ref ) {
+			$associated_refs[] = $this->document_strong_ref;
+		} else {
+			$doc_uri = (string) \get_post_meta( $this->object->ID, Document::META_URI, true );
+			$doc_cid = (string) \get_post_meta( $this->object->ID, Document::META_CID, true );
+			if ( '' !== $doc_uri && '' !== $doc_cid ) {
+				$associated_refs[] = array(
+					'$type' => 'com.atproto.repo.strongRef',
+					'uri'   => $doc_uri,
+					'cid'   => $doc_cid,
+				);
+			}
+		}
+
+		if ( ! empty( $associated_refs ) ) {
+			$external['associatedRefs'] = $associated_refs;
 		}
 
 		return array(

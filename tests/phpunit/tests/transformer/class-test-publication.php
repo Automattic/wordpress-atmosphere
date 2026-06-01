@@ -183,4 +183,42 @@ class Test_Publication extends WP_UnitTestCase {
 		$this->assertSame( "Toni's blog & Co", $record['name'] );
 		$this->assertSame( "Books, coffee & friends'", $record['description'] );
 	}
+
+	/**
+	 * `get_strong_ref()` returns a well-formed `com.atproto.repo.strongRef`
+	 * when all three inputs are present: the connected DID, the
+	 * stored TID, and the captured CID.
+	 */
+	public function test_get_strong_ref_returns_strong_ref_when_all_inputs_present() {
+		\update_option( 'atmosphere_identity', array( 'did' => 'did:plc:test123' ), false );
+		\update_option( Publication::OPTION_TID, '3kpub00000000', false );
+		\update_option( Publication::OPTION_CID, 'bafyreipublication0000000000000000000000000000000000000000000', false );
+
+		$ref = Publication::get_strong_ref();
+
+		$this->assertIsArray( $ref );
+		$this->assertSame( 'com.atproto.repo.strongRef', $ref['$type'] );
+		$this->assertSame( 'at://did:plc:test123/site.standard.publication/3kpub00000000', $ref['uri'] );
+		$this->assertSame( 'bafyreipublication0000000000000000000000000000000000000000000', $ref['cid'] );
+
+		\delete_option( 'atmosphere_identity' );
+		\delete_option( Publication::OPTION_TID );
+		\delete_option( Publication::OPTION_CID );
+	}
+
+	/**
+	 * `get_strong_ref()` returns null when the publication has never
+	 * been successfully sync'd (CID missing). The caller skips the
+	 * strongRef rather than shipping a malformed entry without `cid`.
+	 */
+	public function test_get_strong_ref_returns_null_when_cid_is_missing() {
+		\update_option( 'atmosphere_identity', array( 'did' => 'did:plc:test123' ), false );
+		\update_option( Publication::OPTION_TID, '3kpub00000000', false );
+		\delete_option( Publication::OPTION_CID );
+
+		$this->assertNull( Publication::get_strong_ref() );
+
+		\delete_option( 'atmosphere_identity' );
+		\delete_option( Publication::OPTION_TID );
+	}
 }

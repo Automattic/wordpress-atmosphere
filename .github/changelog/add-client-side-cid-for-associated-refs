@@ -1,0 +1,4 @@
+Significance: patch
+Type: added
+
+Posts shared to Bluesky now link back to both the site's publication record and the per-post document record, so Bluesky shows your site source, profile, and richer document metadata alongside the link preview.
