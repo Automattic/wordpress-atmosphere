@@ -1,4 +1,0 @@
-Significance: patch
-Type: fixed
-
-Preserve your AT Protocol identity when disconnecting so a custom domain handle (`example.com` instead of `alice.bsky.social`) can be used to reconnect later. Disconnect no longer wipes the verification endpoint that the handle resolver depends on, no longer auto-reverts the Bluesky handle back to its pre-domain value, and shows a clearer "disconnected" notice instead of a "session expired" warning.

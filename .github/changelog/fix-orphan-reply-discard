@@ -1,4 +1,0 @@
-Significance: patch
-Type: fixed
-
-Stop reinjecting replies into the moderation queue when the parent Bluesky message has been deleted or blocked.

@@ -1,4 +1,0 @@
-Significance: patch
-Type: fixed
-
-Site names and descriptions containing characters like apostrophes or ampersands now publish correctly instead of showing raw HTML codes.
