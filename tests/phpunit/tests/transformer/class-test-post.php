@@ -10,6 +10,7 @@
 namespace Atmosphere\Tests\Transformer;
 
 use WP_UnitTestCase;
+use Atmosphere\Transformer\Document;
 use Atmosphere\Transformer\Post;
 use Atmosphere\Transformer\Publication;
 
@@ -2108,6 +2109,61 @@ class Test_Post extends WP_UnitTestCase {
 
 		\delete_option( 'atmosphere_identity' );
 		\delete_option( Publication::OPTION_TID );
+	}
+
+	/**
+	 * Short-form posts use `app.bsky.embed.images` (or no embed at all),
+	 * not `app.bsky.embed.external` — `associatedRefs` is a field on the
+	 * external embed type, so it must not leak onto the short-form
+	 * path even when the publication state is fully populated.
+	 *
+	 * @covers ::transform
+	 */
+	/**
+	 * Once the Publisher's initial atomic applyWrites has landed the
+	 * document's URI + CID into `Document::META_*`, a re-transform of
+	 * the post picks up the document strongRef and appends it to
+	 * `associatedRefs` alongside the publication ref. This is what the
+	 * `Publisher::update_post_associated_refs()` follow-up reads back
+	 * before pushing the augmented record via `applyWrites#update`.
+	 *
+	 * Bluesky's AppView anchors its rich rendering (`source`,
+	 * `associatedProfiles`, document `readingTime`) off the document
+	 * ref specifically — the publication-ref-only state is
+	 * syntactically valid but functionally invisible.
+	 *
+	 * @covers ::transform
+	 */
+	public function test_long_form_embed_includes_publication_and_document_refs_after_initial_publish() {
+		\update_option( 'atmosphere_identity', array( 'did' => 'did:plc:test123' ), false );
+		\update_option( Publication::OPTION_TID, '3kpub00000000', false );
+		\update_option( Publication::OPTION_CID, 'bafyreipublication000000000000000000000000000000000000000000', false );
+
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'A Titled Post',
+				'post_content' => 'Long-form blog body.',
+			)
+		);
+
+		\update_post_meta( $post->ID, Document::META_URI, 'at://did:plc:test123/site.standard.document/3kdoc00000000' );
+		\update_post_meta( $post->ID, Document::META_CID, 'bafyreidoc000000000000000000000000000000000000000000000000000' );
+
+		$record = ( new Post( $post ) )->transform();
+
+		$refs = $record['embed']['external']['associatedRefs'];
+		$this->assertCount( 2, $refs );
+		$this->assertSame( 'at://did:plc:test123/site.standard.publication/3kpub00000000', $refs[0]['uri'] );
+		$this->assertSame( 'at://did:plc:test123/site.standard.document/3kdoc00000000', $refs[1]['uri'] );
+		$this->assertSame(
+			'bafyreidoc000000000000000000000000000000000000000000000000000',
+			$refs[1]['cid']
+		);
+		$this->assertSame( 'com.atproto.repo.strongRef', $refs[1]['$type'] );
+
+		\delete_option( 'atmosphere_identity' );
+		\delete_option( Publication::OPTION_TID );
+		\delete_option( Publication::OPTION_CID );
 	}
 
 	/**

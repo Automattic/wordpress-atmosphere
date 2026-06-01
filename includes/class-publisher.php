@@ -267,6 +267,26 @@ class Publisher {
 			)
 		);
 
+		/*
+		 * The initial post record shipped with the publication strongRef
+		 * only (a fresh-publish has no Document::META_URI / META_CID yet,
+		 * so `Post::build_embed()` could not yet attach the document
+		 * ref). Now that store_document_meta has landed the document's
+		 * URI + CID into post meta, re-transform the post and push the
+		 * augmented record via `applyWrites#update`. Bluesky's AppView
+		 * anchors its rich rendering (`source`, `associatedProfiles`,
+		 * the document's `createdAt` / `readingTime`) off the document
+		 * strongRef — without this follow-up the post visibly looks
+		 * identical to a no-associatedRefs publish.
+		 *
+		 * Failure here is non-fatal: the post + document already exist
+		 * on the PDS with the publication ref only, which is the same
+		 * state we would have shipped on a partial-failure rollback in
+		 * the AppView-pre-#standardsite era. Log and continue so the
+		 * subsequent `update_document_bsky_ref` still runs.
+		 */
+		self::update_post_associated_refs( $post, $bsky_transformer );
+
 		$doc_ref_result = self::update_document_bsky_ref( $post, $doc_transformer );
 		if ( \is_wp_error( $doc_ref_result ) ) {
 			return $doc_ref_result;
@@ -1611,6 +1631,133 @@ class Publisher {
 		}
 
 		return true;
+	}
+
+	/**
+	 * Update the document record with the bsky root strong reference.
+	 *
+	 * After the initial applyWrites, the bsky root's CID is known, so
+	 * we re-transform the document (which picks up the ref via its
+	 * own read of `Post::META_URI` / `META_CID`) and persist via
+	 * `putRecord`. Called once per publish — the doc always references
+	 * the thread root, regardless of thread length.
+	 *
+	 * @param \WP_Post $post            WordPress post.
+	 * @param Document $doc_transformer Document transformer.
+	 * @return array|\WP_Error|null
+	 */
+	/**
+	 * Re-publish the post with its document strongRef appended to
+	 * `embed.external.associatedRefs`.
+	 *
+	 * Bluesky's AppView keys its rich treatment of standard.site
+	 * external embeds — the `source` / `associatedProfiles` / document
+	 * `readingTime` fields surfaced in `viewExternal` — off the
+	 * **document** strongRef inside `associatedRefs`. The publication
+	 * ref alone is syntactically valid but functionally invisible.
+	 * Filling the document ref needs its CID, which only exists after
+	 * the initial atomic applyWrites has returned and
+	 * `store_document_meta()` has copied the CID into post meta. This
+	 * helper closes that loop with a single `applyWrites#update` on the
+	 * post.
+	 *
+	 * The follow-up uses `applyWrites#update` rather than `putRecord`
+	 * because `bsky.social`'s PDS standardizes Publisher-side post
+	 * edits on `applyWrites#update` (see `update_post()`) — `putRecord`
+	 * works for our own custom collections (the document does it for
+	 * `bskyPostRef`) but is not the proven path for `app.bsky.feed.post`.
+	 *
+	 * Side-effects we have to handle:
+	 *
+	 *   - The post's CID changes. Update `Post::META_CID` and the
+	 *     mirror inside `META_THREAD_RECORDS[0]['cid']` so the
+	 *     subsequent `update_document_bsky_ref()` writes the document's
+	 *     `bskyPostRef` against the post's new CID, not the obsolete
+	 *     initial one.
+	 *
+	 *   - Failure is non-fatal. The post + document already exist on
+	 *     the PDS with the publication ref only, and the publish would
+	 *     have succeeded under that shape before this follow-up
+	 *     existed. Log the error breadcrumb so operators can spot
+	 *     repeated failures, then continue.
+	 *
+	 *   - Skip cleanly when the re-transformed embed has no
+	 *     `associatedRefs` at all (short-form posts, embed-filter
+	 *     suppressed). Nothing to update.
+	 *
+	 * @param \WP_Post $post             WordPress post.
+	 * @param Post     $bsky_transformer Bsky transformer instance (re-used so the
+	 *                                   freshly-populated meta is observed on the
+	 *                                   transform call).
+	 * @return array|\WP_Error|null `applyWrites` response on success, `WP_Error`
+	 *                              on a non-fatal failure, null when no update is
+	 *                              needed.
+	 */
+	private static function update_post_associated_refs(
+		\WP_Post $post,
+		Post $bsky_transformer
+	): array|\WP_Error|null {
+		$record = $bsky_transformer->transform();
+
+		// Short-form posts don't carry `app.bsky.embed.external`, so
+		// there is no `associatedRefs` to update. Same for the very
+		// rare case where the embed filter suppresses the embed
+		// entirely.
+		if ( ! isset( $record['embed']['external']['associatedRefs'] )
+			|| ! \is_array( $record['embed']['external']['associatedRefs'] )
+		) {
+			return null;
+		}
+
+		$writes = array(
+			array(
+				'$type'      => 'com.atproto.repo.applyWrites#update',
+				'collection' => 'app.bsky.feed.post',
+				'rkey'       => $bsky_transformer->get_rkey(),
+				'value'      => $record,
+			),
+		);
+
+		$result = API::apply_writes( $writes );
+
+		if ( \is_wp_error( $result ) ) {
+			// phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
+			\error_log(
+				\sprintf(
+					'[atmosphere] post %d: associatedRefs follow-up failed (%s); record stays at publication-ref-only',
+					$post->ID,
+					$result->get_error_code()
+				)
+			);
+			return $result;
+		}
+
+		$new_cid = (string) ( $result['results'][0]['cid'] ?? '' );
+		if ( '' === $new_cid ) {
+			return $result;
+		}
+
+		/*
+		 * Mirror the new CID back into the post meta the rest of the
+		 * Publisher reads. Without these writes:
+		 *
+		 *   - `update_document_bsky_ref()` (called next) would stamp
+		 *     the document's `bskyPostRef.cid` to the obsolete initial
+		 *     CID, defeating the point of the strongRef.
+		 *   - Future reply/threading code that follows
+		 *     `META_THREAD_RECORDS[0]['cid']` for parent refs would
+		 *     point at a record version Bluesky no longer treats as
+		 *     authoritative.
+		 */
+		\update_post_meta( $post->ID, Post::META_CID, $new_cid );
+
+		$thread_records = \get_post_meta( $post->ID, Post::META_THREAD_RECORDS, true );
+		if ( \is_array( $thread_records ) && isset( $thread_records[0] ) && \is_array( $thread_records[0] ) ) {
+			$thread_records[0]['cid'] = $new_cid;
+			\update_post_meta( $post->ID, Post::META_THREAD_RECORDS, $thread_records );
+		}
+
+		return $result;
 	}
 
 	/**

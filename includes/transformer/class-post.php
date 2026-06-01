@@ -354,23 +354,53 @@ class Post extends Base {
 		}
 
 		/*
-		 * Attach the site's `site.standard.publication` strongRef so
-		 * AT Protocol consumers can navigate from the bsky post back
-		 * to the standard.site source. The Lexicon (`#external`) lists
-		 * `associatedRefs` as an array of strongRefs of the records
-		 * that backed the embed; Bluesky's manual-share UI already
-		 * emits this for URLs whose HTML carries our
-		 * `<link rel="site.standard.publication">` and document tags.
-		 * Building the embed by hand bypasses that lookup, so a
-		 * post published through Atmosphere otherwise ships with an
-		 * empty `associatedRefs`. The document strongRef cannot be
-		 * filled in here yet — its CID only exists after the
-		 * Publisher's atomic applyWrites — so this batch lands the
-		 * publication ref only; the document ref is a follow-up.
+		 * Attach strongRefs to the standard.site records that source
+		 * this view: the publication (always, once captured), and the
+		 * per-post document (only after the Publisher's initial
+		 * applyWrites populates `Document::META_URI` / `META_CID` and a
+		 * follow-up `applyWrites#update` re-fires this transformer).
+		 *
+		 * Bluesky's AppView keys its rich rendering — `source`,
+		 * `associatedProfiles`, the document's `createdAt` /
+		 * `readingTime` — off the document strongRef, so a record with
+		 * only the publication ref ships syntactically valid but
+		 * functionally invisible. The publication ref is still emitted
+		 * unconditionally because future AppView versions (and any
+		 * non-Bluesky consumer) can resolve through it on its own.
+		 *
+		 * Order: publication first, document second. The Lexicon does
+		 * not specify ordering, but pinning a deterministic order keeps
+		 * the test fixtures stable and matches the most-stable-first
+		 * pattern Bluesky's own manual-share UI uses.
 		 */
+		$associated_refs = array();
+
 		$publication_ref = Publication::get_strong_ref();
 		if ( null !== $publication_ref ) {
-			$external['associatedRefs'] = array( $publication_ref );
+			$associated_refs[] = $publication_ref;
+		}
+
+		/*
+		 * Document URI / CID live on `Document::META_*`, populated by
+		 * `Publisher::store_document_meta()` immediately after the
+		 * initial atomic applyWrites. Read them straight from meta
+		 * rather than spinning up another Document transformer — this
+		 * matches how `Document::transform()` itself reaches across
+		 * the type boundary for `Post::META_URI` / `META_CID` to fill
+		 * its bskyPostRef.
+		 */
+		$doc_uri = (string) \get_post_meta( $this->object->ID, Document::META_URI, true );
+		$doc_cid = (string) \get_post_meta( $this->object->ID, Document::META_CID, true );
+		if ( '' !== $doc_uri && '' !== $doc_cid ) {
+			$associated_refs[] = array(
+				'$type' => 'com.atproto.repo.strongRef',
+				'uri'   => $doc_uri,
+				'cid'   => $doc_cid,
+			);
+		}
+
+		if ( ! empty( $associated_refs ) ) {
+			$external['associatedRefs'] = $associated_refs;
 		}
 
 		return array(

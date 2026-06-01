@@ -20,6 +20,7 @@ use Atmosphere\OAuth\Encryption;
 use Atmosphere\Transformer\Comment;
 use Atmosphere\Transformer\Document;
 use Atmosphere\Transformer\Post;
+use Atmosphere\Transformer\Publication;
 
 /**
  * Publisher tests.
@@ -2369,6 +2370,123 @@ class Test_Publisher extends WP_UnitTestCase {
 
 		$this->assertWPError( $result );
 		$this->assertSame( 'atmosphere_not_connected', $result->get_error_code() );
+	}
+
+	/**
+	 * After the initial atomic create, `publish_post()` fires a
+	 * follow-up `applyWrites#update` on the post to inject the document
+	 * strongRef into `embed.external.associatedRefs`. Without it the
+	 * post stays at the publication-ref-only state, which Bluesky's
+	 * AppView refuses to enrich (`source`, `associatedProfiles`, the
+	 * document's `readingTime` are all keyed off the document ref).
+	 *
+	 * Asserts the two-call shape:
+	 *   1. Initial create — post (with publication ref only) + document.
+	 *   2. Follow-up update — post only, now with both refs.
+	 *
+	 * Also asserts the follow-up's new CID is mirrored back into
+	 * `Post::META_CID` and `META_THREAD_RECORDS[0]['cid']` so the next
+	 * `update_document_bsky_ref()` stamps the document's `bskyPostRef`
+	 * with the post's actual current CID, not the obsolete initial one.
+	 */
+	public function test_publish_post_follow_up_attaches_document_associated_ref() {
+		\update_option( Publication::OPTION_TID, '3kpub00000000', false );
+		\update_option( Publication::OPTION_CID, 'bafyreipublication000000000000000000000000000000000000000000', false );
+
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_status'  => 'publish',
+				'post_title'   => 'Long form aside',
+				'post_content' => 'Long-form blog body.',
+			)
+		);
+
+		$this->register_capture( $post->ID );
+
+		Publisher::publish_post( $post );
+
+		$this->assertCount(
+			2,
+			$this->captured_calls,
+			'publish_post must fire two applyWrites: initial create + follow-up update.'
+		);
+
+		// Call 1: atomic create of post + document. The post record's
+		// embed carries the publication ref only because document meta
+		// is not populated yet at the initial transform.
+		$initial = $this->captured_calls[0]['writes'];
+		$this->assertCount( 2, $initial );
+		$this->assertSame( 'com.atproto.repo.applyWrites#create', $initial[0]['$type'] );
+		$this->assertSame( 'app.bsky.feed.post', $initial[0]['collection'] );
+
+		$initial_refs = $initial[0]['value']['embed']['external']['associatedRefs'] ?? array();
+		$this->assertCount( 1, $initial_refs, 'Initial post must carry only the publication ref.' );
+		$this->assertStringContainsString( '/site.standard.publication/', $initial_refs[0]['uri'] );
+
+		// Call 2: follow-up update of the post with both refs.
+		$followup = $this->captured_calls[1]['writes'];
+		$this->assertCount( 1, $followup );
+		$this->assertSame( 'com.atproto.repo.applyWrites#update', $followup[0]['$type'] );
+		$this->assertSame( 'app.bsky.feed.post', $followup[0]['collection'] );
+
+		$updated_refs = $followup[0]['value']['embed']['external']['associatedRefs'] ?? array();
+		$this->assertCount( 2, $updated_refs, 'Follow-up must add the document ref alongside the publication ref.' );
+		$this->assertStringContainsString( '/site.standard.publication/', $updated_refs[0]['uri'] );
+		$this->assertStringContainsString( '/site.standard.document/', $updated_refs[1]['uri'] );
+
+		// The new CID from the follow-up's response must be mirrored
+		// back into Post::META_CID so update_document_bsky_ref's
+		// bskyPostRef points at the post's current shape.
+		$expected_new_cid = $this->captured_calls[1]['response']['results'][0]['cid'];
+		$this->assertSame(
+			$expected_new_cid,
+			\get_post_meta( $post->ID, Post::META_CID, true ),
+			'Post::META_CID must update to the follow-up response CID.'
+		);
+
+		$thread_records = \get_post_meta( $post->ID, Post::META_THREAD_RECORDS, true );
+		$this->assertIsArray( $thread_records );
+		$this->assertSame(
+			$expected_new_cid,
+			$thread_records[0]['cid'],
+			'META_THREAD_RECORDS root CID must mirror the follow-up update.'
+		);
+
+		\delete_option( Publication::OPTION_TID );
+		\delete_option( Publication::OPTION_CID );
+	}
+
+	/**
+	 * Short-form posts use `app.bsky.embed.images` (or no embed at all),
+	 * neither of which carries `associatedRefs`. The Publisher's
+	 * follow-up `applyWrites#update` must skip cleanly rather than
+	 * shipping an empty / spurious update — the captured call count
+	 * stays at exactly one (the initial atomic create).
+	 */
+	public function test_publish_post_does_not_follow_up_for_short_form() {
+		\update_option( Publication::OPTION_TID, '3kpub00000000', false );
+		\update_option( Publication::OPTION_CID, 'bafyreipublication000000000000000000000000000000000000000000', false );
+
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_status'  => 'publish',
+				'post_title'   => '',
+				'post_content' => 'A quick untitled thought.',
+			)
+		);
+
+		$this->register_capture( $post->ID );
+
+		Publisher::publish_post( $post );
+
+		$this->assertCount(
+			1,
+			$this->captured_calls,
+			'Short-form publish: only the initial create, no follow-up associatedRefs update.'
+		);
+
+		\delete_option( Publication::OPTION_TID );
+		\delete_option( Publication::OPTION_CID );
 	}
 
 	/**
