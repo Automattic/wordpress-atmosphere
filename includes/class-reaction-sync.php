@@ -376,7 +376,6 @@ class Reaction_Sync {
 		}
 
 		$parent_uri = $record['reply']['parent']['uri'] ?? '';
-		$root_uri   = $record['reply']['root']['uri'] ?? '';
 
 		if ( empty( $parent_uri ) ) {
 			return false;
@@ -399,11 +398,27 @@ class Reaction_Sync {
 			}
 		}
 
-		if ( ! $post_id ) {
-			// Deep thread rooted at one of our posts.
-			$post_id = self::find_post_by_bsky_uri( $root_uri );
-		}
-
+		/*
+		 * Drop replies whose parent we can't resolve. A parent that
+		 * doesn't match a local WP post or a previously-synced WP
+		 * comment is either:
+		 *
+		 *   - Orphaned: the parent was deleted on Bluesky (e.g. blocked
+		 *     user, account deletion) or removed from our moderation
+		 *     queue. Falling back to the root post would re-attach
+		 *     every subsequent re-walk as a top-level orphan, looping
+		 *     the moderation queue indefinitely until the watermark
+		 *     advances past it.
+		 *
+		 *   - Out-of-order: a deep reply seen before its parent in the
+		 *     same `listNotifications`/`listRecords` page. Dropping
+		 *     here is recoverable: the parent gets synced in the same
+		 *     run, the child re-enters via the WATERMARK_GRACE window
+		 *     on the next run, and parent resolution succeeds.
+		 *
+		 * Direct replies (parent_uri is one of our WP posts) and
+		 * resolved nested replies are unaffected.
+		 */
 		if ( ! $post_id ) {
 			return false;
 		}
@@ -543,6 +558,10 @@ class Reaction_Sync {
 		$timestamp = \strtotime( $record['createdAt'] ?? '' );
 		$gm_date   = \gmdate( 'Y-m-d H:i:s', false === $timestamp ? 0 : $timestamp );
 
+		if ( '' === $content ) {
+			$content = self::default_reaction_excerpt( $comment_type );
+		}
+
 		$comment_data = array(
 			'comment_post_ID'      => $post_id,
 			'comment_parent'       => $comment_parent,
@@ -633,6 +652,30 @@ class Reaction_Sync {
 		\do_action( 'atmosphere_reaction_synced', $comment_id, $notification, $post_id, $comment_type );
 
 		return $comment_id;
+	}
+
+	/**
+	 * Default comment body for content-less reactions (likes and reposts).
+	 *
+	 * Mirrors the wording the wordpress-activitypub plugin uses for its
+	 * own like/repost rows, so themes that render activity feeds get a
+	 * consistent reading experience across protocols. The leading
+	 * ellipsis is intentional: most themes render the author name
+	 * immediately before the comment body, so the result reads as
+	 * "Jane Doe … liked this!".
+	 *
+	 * @param string $comment_type One of 'like', 'repost'.
+	 * @return string Translated excerpt, or empty string for unknown types.
+	 */
+	private static function default_reaction_excerpt( string $comment_type ): string {
+		switch ( $comment_type ) {
+			case 'like':
+				return \__( '… liked this!', 'atmosphere' );
+			case 'repost':
+				return \__( '… reposted this!', 'atmosphere' );
+			default:
+				return '';
+		}
 	}
 
 	/**

@@ -107,10 +107,19 @@ function to_iso8601( string $datetime ): string {
 /**
  * Get the stored connection (OAuth credentials + ephemeral state).
  *
+ * Normalizes non-array values to an empty array so a corrupted
+ * `atmosphere_connection` option (e.g. an admin overwrote it with a
+ * scalar via wp-cli or a misbehaving import plugin) cannot raise a
+ * TypeError at every caller's `: array` return-type check. The
+ * `admin_notices` hook in particular composes this with other
+ * checks during page render — a TypeError there whitescreens the
+ * admin until the row is repaired.
+ *
  * @return array
  */
 function get_connection(): array {
-	return \get_option( 'atmosphere_connection', array() );
+	$conn = \get_option( 'atmosphere_connection', array() );
+	return \is_array( $conn ) ? $conn : array();
 }
 
 /**
