@@ -506,4 +506,63 @@ class Test_Client_Refresh extends WP_UnitTestCase {
 		$this->assertNotFalse( \get_option( 'atmosphere_connection' ) );
 		$this->assertFalse( \get_option( Client::DISCONNECTED_OPTION ) );
 	}
+
+	/**
+	 * `wait_for_token_refresh()` with a ciphertext snapshot must not
+	 * return success until the stored `access_token` actually differs
+	 * from that snapshot — even when `expires_at` is already far in
+	 * the future.
+	 *
+	 * This is the bug the `API::request` 401-recovery path hits when
+	 * another worker holds the refresh lock: a 401 `InvalidToken`
+	 * means the auth server invalidated our jti server-side, but the
+	 * local `expires_at` is still future (we haven't expired
+	 * locally). The default-arg branch of the wait would return true
+	 * immediately because `expires_at > time() + 300` holds. With a
+	 * ciphertext snapshot the wait correctly blocks until rotation.
+	 *
+	 * Verified against the existing `test_access_token_waits_for_
+	 * concurrent_refresh_to_land` pattern: same `pre_option`-driven
+	 * mid-call rotation, same lock-held precondition.
+	 */
+	public function test_wait_for_token_refresh_requires_ciphertext_change_when_snapshot_passed() {
+		$this->hold_refresh_lock();
+
+		$conn = \get_option( 'atmosphere_connection' );
+		// `expires_at` deliberately far in the future. The default
+		// `wait_for_token_refresh()` would return true immediately on
+		// the first poll because the only signal it checks is
+		// `expires_at > time + 300`. The ciphertext-snapshot variant
+		// must NOT return on that signal alone.
+		$conn['expires_at'] = \time() + 3600;
+		\update_option( 'atmosphere_connection', $conn );
+
+		$snapshot = (string) $conn['access_token'];
+
+		$rotated                 = $conn;
+		$rotated['access_token'] = Encryption::encrypt( 'holder-rotated-token' );
+
+		$polls = 0;
+		\add_filter(
+			'pre_option_atmosphere_connection',
+			static function ( $value ) use ( &$polls, $rotated ) {
+				++$polls;
+				if ( $polls < 2 ) {
+					return $value;
+				}
+				return $rotated;
+			}
+		);
+
+		$result = Client::wait_for_token_refresh( $snapshot );
+
+		\remove_all_filters( 'pre_option_atmosphere_connection' );
+
+		$this->assertTrue( $result, 'Wait must return true once the ciphertext rotates.' );
+		$this->assertGreaterThanOrEqual(
+			2,
+			$polls,
+			'Wait must poll at least twice: first sees the stale snapshot, second sees the rotation.'
+		);
+	}
 }
