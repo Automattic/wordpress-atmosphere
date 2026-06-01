@@ -173,8 +173,21 @@ class Atmosphere {
 		// Token refresh cron.
 		\add_action( 'atmosphere_refresh_token', array( $this, 'cron_refresh_token' ) );
 
+		/*
+		 * Migrate sites that scheduled this event on a previous version
+		 * (twicedaily) to the hourly cadence. Bluesky access tokens live
+		 * 60 minutes and the auth server's DPoP nonces only 3 minutes,
+		 * so a 12-hour interval left the refresh worker far too sparse
+		 * to recover from a single failed run before the session aged
+		 * past the refresh-token replay window.
+		 */
+		$schedule = \wp_get_schedule( 'atmosphere_refresh_token' );
+		if ( false !== $schedule && 'hourly' !== $schedule ) {
+			\wp_clear_scheduled_hook( 'atmosphere_refresh_token' );
+		}
+
 		if ( ! \wp_next_scheduled( 'atmosphere_refresh_token' ) && is_connected() ) {
-			\wp_schedule_event( \time(), 'twicedaily', 'atmosphere_refresh_token' );
+			\wp_schedule_event( \time(), 'hourly', 'atmosphere_refresh_token' );
 		}
 
 		/*
@@ -1064,9 +1077,23 @@ class Atmosphere {
 
 	/**
 	 * Cron: proactively refresh the access token.
+	 *
+	 * Skips when the stored access token still has more than ten
+	 * minutes of life on it — the hourly cadence catches up before
+	 * any genuine expiry, and an unconditional refresh on every tick
+	 * burns a refresh-token rotation that does not need to happen.
+	 * Each rotation is also another chance for the dead-holder
+	 * scenario (worker dies mid-flight after the auth server has
+	 * already rotated) to bite, so refreshing less aggressively is
+	 * strictly more reliable on a healthy session.
 	 */
 	public function cron_refresh_token(): void {
 		if ( ! is_connected() ) {
+			return;
+		}
+
+		$conn = \get_option( 'atmosphere_connection', array() );
+		if ( ! empty( $conn['expires_at'] ) && $conn['expires_at'] > \time() + 600 ) {
 			return;
 		}
 
