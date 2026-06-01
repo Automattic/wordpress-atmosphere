@@ -540,18 +540,22 @@ class Client {
 	 * Maximum lifetime (seconds) of the refresh lock before it is
 	 * presumed stale and reclaimed.
 	 *
-	 * `refresh_locked()` can issue up to two HTTP POSTs sequentially when
-	 * the auth server requires a `use_dpop_nonce` retry — each with a
-	 * 15-second `wp_safe_remote_post` timeout, plus encryption /
-	 * option I/O overhead. A TTL shorter than that worst case would
-	 * let a second worker reclaim a lock the first worker is still
-	 * legitimately holding, which reintroduces the concurrent-refresh
-	 * race the lock exists to close. 90 seconds covers 2 × 15s
-	 * timeouts plus ample margin.
+	 * `refresh_locked()` can issue up to two sequential HTTP POSTs on
+	 * the `use_dpop_nonce` retry path, each with a 15s
+	 * `wp_safe_remote_post` timeout. In practice the first call returns
+	 * the nonce error in well under a second (the auth server rejects
+	 * before any real work), so the realistic worst case is one full
+	 * 15s round-trip plus encryption + option I/O overhead — call it
+	 * ~20s. 30 seconds leaves ~10s of headroom over that ceiling while
+	 * keeping the dead-holder recovery window short: a crashed worker
+	 * blocks fresh refreshes for at most this TTL before the next
+	 * caller's CAS-steal unblocks the cycle. Going lower than the
+	 * actual worst case reintroduces the concurrent-refresh race the
+	 * lock exists to close.
 	 *
 	 * @var int
 	 */
-	private const REFRESH_LOCK_TTL = 90;
+	private const REFRESH_LOCK_TTL = 30;
 
 	/**
 	 * Refresh the access token.
