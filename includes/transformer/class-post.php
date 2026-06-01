@@ -157,11 +157,15 @@ class Post extends Base {
 		$embed = null;
 
 		if ( ! $redacted ) {
-			if ( '' === $text ) {
+			if ( $is_short ) {
+				$embed = $this->build_images_embed();
+				if ( '' === $text && null === $embed ) {
+					$text  = $this->build_text();
+					$embed = $this->build_embed();
+				}
+			} else {
 				$text  = $this->build_text();
 				$embed = $this->build_embed();
-			} elseif ( $is_short ) {
-				$embed = $this->build_images_embed();
 			}
 		}
 
