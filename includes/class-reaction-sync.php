@@ -543,6 +543,10 @@ class Reaction_Sync {
 		$timestamp = \strtotime( $record['createdAt'] ?? '' );
 		$gm_date   = \gmdate( 'Y-m-d H:i:s', false === $timestamp ? 0 : $timestamp );
 
+		if ( '' === $content ) {
+			$content = self::default_reaction_excerpt( $comment_type );
+		}
+
 		$comment_data = array(
 			'comment_post_ID'      => $post_id,
 			'comment_parent'       => $comment_parent,
@@ -633,6 +637,30 @@ class Reaction_Sync {
 		\do_action( 'atmosphere_reaction_synced', $comment_id, $notification, $post_id, $comment_type );
 
 		return $comment_id;
+	}
+
+	/**
+	 * Default comment body for content-less reactions (likes and reposts).
+	 *
+	 * Mirrors the wording the wordpress-activitypub plugin uses for its
+	 * own like/repost rows, so themes that render activity feeds get a
+	 * consistent reading experience across protocols. The leading
+	 * ellipsis is intentional: most themes render the author name
+	 * immediately before the comment body, so the result reads as
+	 * "Jane Doe … liked this!".
+	 *
+	 * @param string $comment_type One of 'like', 'repost'.
+	 * @return string Translated excerpt, or empty string for unknown types.
+	 */
+	private static function default_reaction_excerpt( string $comment_type ): string {
+		switch ( $comment_type ) {
+			case 'like':
+				return \__( '… liked this!', 'atmosphere' );
+			case 'repost':
+				return \__( '… reposted this!', 'atmosphere' );
+			default:
+				return '';
+		}
 	}
 
 	/**
