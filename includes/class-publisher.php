@@ -121,19 +121,23 @@ class Publisher {
 		 * (subsequent `applyWrites#update` to add the ref doesn't
 		 * trigger re-indexing).
 		 *
-		 * Computed inside the same `publish_post()` invocation so the
-		 * document record we encode here is byte-identical to what
-		 * `publish_single()` / `publish_thread()` ultimately writes:
-		 * `Document::transform()` reads `Post::META_URI / META_CID`
-		 * to compose its `bskyPostRef`, and on a fresh publish both
-		 * are empty, so the bskyPostRef is omitted both here and at
-		 * write time. The CID matches.
+		 * The transform result is captured into `$doc_record` once
+		 * and threaded through to `publish_single()` /
+		 * `publish_thread()` so the document is transformed exactly
+		 * once per publish. Without that reuse, the CID computed here
+		 * and the record actually written by the publish call would
+		 * diverge whenever `atmosphere_transform_document` is
+		 * non-deterministic (timestamps, UUIDs, retried blob uploads),
+		 * and the document strongRef in `associatedRefs` would point
+		 * at a CID that no record at that URI matches.
 		 *
 		 * Short-form posts use `app.bsky.embed.images` rather than
 		 * `app.bsky.embed.external`, so the document strongRef has no
-		 * place to land. Skip the precompute on that path — it would
-		 * just be wasted work.
+		 * place to land. Skip the precompute on that path — the
+		 * downstream call falls back to a single transform itself
+		 * when `$doc_record` is null.
 		 */
+		$doc_record = null;
 		if ( ! $bsky_transformer->is_short_form_post() ) {
 			$doc_record = $doc_transformer->transform();
 			$doc_cid    = CID::from_record( $doc_record );
@@ -173,15 +177,16 @@ class Publisher {
 				$post,
 				$bsky_transformer->transform(),
 				$bsky_transformer,
-				$doc_transformer
+				$doc_transformer,
+				$doc_record
 			);
 		} else {
 			$records = $bsky_transformer->build_long_form_records();
 
 			if ( 1 === \count( $records ) ) {
-				$result = self::publish_single( $post, $records[0], $bsky_transformer, $doc_transformer );
+				$result = self::publish_single( $post, $records[0], $bsky_transformer, $doc_transformer, $doc_record );
 			} else {
-				$result = self::publish_thread( $post, $records, $bsky_transformer, $doc_transformer );
+				$result = self::publish_thread( $post, $records, $bsky_transformer, $doc_transformer, $doc_record );
 			}
 		}
 
@@ -276,20 +281,39 @@ class Publisher {
 	 * here when a record arrives without `createdAt` (for example, if a
 	 * filter stripped it).
 	 *
-	 * @param \WP_Post $post             WordPress post.
-	 * @param array    $bsky_record      Pre-composed bsky post record.
-	 * @param Post     $bsky_transformer Bsky transformer instance.
-	 * @param Document $doc_transformer  Document transformer instance.
+	 * @param \WP_Post   $post             WordPress post.
+	 * @param array      $bsky_record      Pre-composed bsky post record.
+	 * @param Post       $bsky_transformer Bsky transformer instance.
+	 * @param Document   $doc_transformer  Document transformer instance.
+	 * @param array|null $doc_record       Pre-computed document record from
+	 *                                     `publish_post()`. Reused as the write
+	 *                                     payload so the document is transformed
+	 *                                     exactly once per publish — same array
+	 *                                     the long-form CID precompute was
+	 *                                     derived from, guaranteeing the
+	 *                                     embedded document strongRef points at
+	 *                                     a CID that actually matches the
+	 *                                     record being written even when
+	 *                                     `atmosphere_transform_document` is
+	 *                                     non-deterministic. Null on the
+	 *                                     short-form path (no associatedRefs,
+	 *                                     no precompute) — falls back to a
+	 *                                     single transform here.
 	 * @return array|\WP_Error
 	 */
 	private static function publish_single(
 		\WP_Post $post,
 		array $bsky_record,
 		Post $bsky_transformer,
-		Document $doc_transformer
+		Document $doc_transformer,
+		?array $doc_record = null
 	): array|\WP_Error {
 		if ( empty( $bsky_record['createdAt'] ) ) {
 			$bsky_record['createdAt'] = to_iso8601( $post->post_date_gmt );
+		}
+
+		if ( null === $doc_record ) {
+			$doc_record = $doc_transformer->transform();
 		}
 
 		$writes = array(
@@ -303,7 +327,7 @@ class Publisher {
 				'$type'      => 'com.atproto.repo.applyWrites#create',
 				'collection' => 'site.standard.document',
 				'rkey'       => $doc_transformer->get_rkey(),
-				'value'      => $doc_transformer->transform(),
+				'value'      => $doc_record,
 			),
 		);
 
@@ -348,23 +372,34 @@ class Publisher {
 	 * WP_Error is returned. If rollback also fails, the return wraps
 	 * both errors and includes the partial thread state.
 	 *
-	 * @param \WP_Post $post             WordPress post.
-	 * @param array[]  $records          Records from build_long_form_records().
-	 * @param Post     $bsky_transformer Bsky transformer instance.
-	 * @param Document $doc_transformer  Document transformer instance.
+	 * @param \WP_Post   $post             WordPress post.
+	 * @param array[]    $records          Records from build_long_form_records().
+	 * @param Post       $bsky_transformer Bsky transformer instance.
+	 * @param Document   $doc_transformer  Document transformer instance.
+	 * @param array|null $doc_record       Pre-computed document record from
+	 *                                     `publish_post()`. See
+	 *                                     {@see self::publish_single()} for
+	 *                                     why the document must be
+	 *                                     transformed exactly once per
+	 *                                     publish.
 	 * @return array|\WP_Error
 	 */
 	private static function publish_thread(
 		\WP_Post $post,
 		array $records,
 		Post $bsky_transformer,
-		Document $doc_transformer
+		Document $doc_transformer,
+		?array $doc_record = null
 	): array|\WP_Error {
 		$root_record = $records[0];
 		if ( empty( $root_record['createdAt'] ) ) {
 			$root_record['createdAt'] = to_iso8601( $post->post_date_gmt );
 		}
 		$root_rkey = $bsky_transformer->get_rkey();
+
+		if ( null === $doc_record ) {
+			$doc_record = $doc_transformer->transform();
+		}
 
 		$root_result = API::apply_writes(
 			array(
@@ -378,7 +413,7 @@ class Publisher {
 					'$type'      => 'com.atproto.repo.applyWrites#create',
 					'collection' => 'site.standard.document',
 					'rkey'       => $doc_transformer->get_rkey(),
-					'value'      => $doc_transformer->transform(),
+					'value'      => $doc_record,
 				),
 			)
 		);
