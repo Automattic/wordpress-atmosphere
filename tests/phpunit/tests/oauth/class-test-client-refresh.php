@@ -72,6 +72,7 @@ class Test_Client_Refresh extends WP_UnitTestCase {
 		\delete_option( 'atmosphere_connection' );
 		\delete_option( 'atmosphere_identity' );
 		\delete_option( Client::REFRESH_LOCK_OPTION );
+		\delete_option( Client::DISCONNECTED_OPTION );
 		\remove_all_filters( 'pre_http_request' );
 
 		parent::tear_down();
@@ -161,6 +162,16 @@ class Test_Client_Refresh extends WP_UnitTestCase {
 		$this->assertNotFalse( $identity );
 		$this->assertSame( 'did:plc:test123', $identity['did'] );
 		$this->assertSame( 'test.example.com', $identity['handle'] );
+
+		// A permanent refresh failure is NOT an operator-initiated
+		// disconnect; the marker exists to distinguish those two states
+		// for the admin notice. If a refactor ever stamped the marker
+		// here, the notice would mislabel an expired session as a user
+		// disconnect.
+		$this->assertFalse(
+			\get_option( Client::DISCONNECTED_OPTION ),
+			'Refresh failures must not set the operator-initiated disconnect marker.'
+		);
 	}
 
 	/**
@@ -183,6 +194,10 @@ class Test_Client_Refresh extends WP_UnitTestCase {
 		$this->assertNotFalse( $conn );
 		$this->assertTrue( ! empty( $conn['needs_reauth'] ) );
 		$this->assertNotFalse( \get_option( 'atmosphere_identity' ) );
+		$this->assertFalse(
+			\get_option( Client::DISCONNECTED_OPTION ),
+			'Refresh failures must not set the operator-initiated disconnect marker.'
+		);
 	}
 
 	/**
@@ -205,6 +220,10 @@ class Test_Client_Refresh extends WP_UnitTestCase {
 		$this->assertNotFalse( $conn );
 		$this->assertTrue( ! empty( $conn['needs_reauth'] ) );
 		$this->assertNotFalse( \get_option( 'atmosphere_identity' ) );
+		$this->assertFalse(
+			\get_option( Client::DISCONNECTED_OPTION ),
+			'Refresh failures must not set the operator-initiated disconnect marker.'
+		);
 	}
 
 	/**
@@ -301,6 +320,7 @@ class Test_Client_Refresh extends WP_UnitTestCase {
 		$result = Client::refresh();
 
 		$this->assertTrue( $result );
+		$this->assertFalse( \get_option( Client::DISCONNECTED_OPTION ) );
 	}
 
 	/**
@@ -319,6 +339,7 @@ class Test_Client_Refresh extends WP_UnitTestCase {
 
 		$this->assertWPError( $result );
 		$this->assertSame( 'atmosphere_refresh_locked', $result->get_error_code() );
+		$this->assertFalse( \get_option( Client::DISCONNECTED_OPTION ) );
 
 		$this->assertTrue(
 			Client::locked(),
@@ -406,6 +427,7 @@ class Test_Client_Refresh extends WP_UnitTestCase {
 
 		$this->assertWPError( $result );
 		$this->assertNotFalse( \get_option( 'atmosphere_connection' ) );
+		$this->assertFalse( \get_option( Client::DISCONNECTED_OPTION ) );
 	}
 
 	/**
@@ -421,6 +443,7 @@ class Test_Client_Refresh extends WP_UnitTestCase {
 
 		$this->assertWPError( $result );
 		$this->assertNotFalse( \get_option( 'atmosphere_connection' ) );
+		$this->assertFalse( \get_option( Client::DISCONNECTED_OPTION ) );
 	}
 
 	/**
@@ -436,6 +459,7 @@ class Test_Client_Refresh extends WP_UnitTestCase {
 
 		$this->assertWPError( $result );
 		$this->assertNotFalse( \get_option( 'atmosphere_connection' ) );
+		$this->assertFalse( \get_option( Client::DISCONNECTED_OPTION ) );
 	}
 
 	/**
@@ -464,6 +488,7 @@ class Test_Client_Refresh extends WP_UnitTestCase {
 
 		$this->assertWPError( $result );
 		$this->assertNotFalse( \get_option( 'atmosphere_connection' ) );
+		$this->assertFalse( \get_option( Client::DISCONNECTED_OPTION ) );
 	}
 
 	/**
@@ -479,5 +504,6 @@ class Test_Client_Refresh extends WP_UnitTestCase {
 		$this->assertWPError( $result );
 		$this->assertSame( 'atmosphere_no_refresh', $result->get_error_code() );
 		$this->assertNotFalse( \get_option( 'atmosphere_connection' ) );
+		$this->assertFalse( \get_option( Client::DISCONNECTED_OPTION ) );
 	}
 }
