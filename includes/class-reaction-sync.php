@@ -10,6 +10,7 @@ namespace Atmosphere;
 
 \defined( 'ABSPATH' ) || exit;
 
+use Atmosphere\OAuth\Client;
 use Atmosphere\Transformer\Post as BskyPost;
 
 /**
@@ -155,6 +156,26 @@ class Reaction_Sync {
 	 */
 	public static function sync(): void {
 		if ( ! is_connected() ) {
+			return;
+		}
+
+		/*
+		 * Probe the access token once before walking the four streams.
+		 * Without this, a refresh that's locked or has just flipped
+		 * `needs_reauth` would be hit independently by each
+		 * {@see self::paginate()} call below — surfacing the same
+		 * incident four times in the error log and re-triggering the
+		 * refresh path on a session we already know is broken.
+		 */
+		$token = Client::access_token();
+		if ( \is_wp_error( $token ) ) {
+			\error_log( // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
+				\sprintf(
+					'[atmosphere] reaction sync aborted: %s — %s',
+					$token->get_error_code(),
+					$token->get_error_message()
+				)
+			);
 			return;
 		}
 

@@ -12,6 +12,8 @@ namespace Atmosphere\Transformer;
 
 \defined( 'ABSPATH' ) || exit;
 
+use function Atmosphere\build_at_uri;
+use function Atmosphere\get_did;
 use function Atmosphere\sanitize_text;
 
 /**
@@ -25,6 +27,22 @@ class Publication extends Base {
 	 * @var string
 	 */
 	public const OPTION_TID = 'atmosphere_publication_tid';
+
+	/**
+	 * Option key for the publication CID captured at the last successful
+	 * `sync_publication()` write.
+	 *
+	 * Stored so {@see self::get_strong_ref()} can build a strongRef
+	 * without a `getRecord` round-trip. The CID rotates whenever the
+	 * publication's content changes (site title, theme color, etc.)
+	 * and is re-captured on every successful putRecord. Both the TID
+	 * and CID survive disconnect for the same reason — they're the
+	 * stable site-level identifiers — and are only cleared on
+	 * uninstall.
+	 *
+	 * @var string
+	 */
+	public const OPTION_CID = 'atmosphere_publication_cid';
 
 	/**
 	 * Transform site settings into a publication record.
@@ -101,6 +119,42 @@ class Publication extends Base {
 		}
 
 		return $rkey;
+	}
+
+	/**
+	 * Build a {@link https://atproto.com/specs/lexicon com.atproto.repo.strongRef}
+	 * pointing at the connected site's publication record, or null
+	 * when the strongRef cannot be safely constructed.
+	 *
+	 * Both the TID and the CID are required: the URI half is derivable
+	 * from the connected DID + the stored TID, but the strongRef shape
+	 * also needs the content-hash from {@see self::OPTION_CID}, which
+	 * is only populated after a successful `sync_publication()` write.
+	 * A fresh-connect install that has not yet synced returns null
+	 * here and callers omit `associatedRefs` rather than ship a
+	 * malformed strongRef.
+	 *
+	 * @return array{$type: string, uri: string, cid: string}|null
+	 */
+	public static function get_strong_ref(): ?array {
+		$tid = (string) \get_option( self::OPTION_TID, '' );
+		$cid = (string) \get_option( self::OPTION_CID, '' );
+
+		if ( '' === $tid || '' === $cid ) {
+			return null;
+		}
+
+		$did = get_did();
+
+		if ( '' === $did ) {
+			return null;
+		}
+
+		return array(
+			'$type' => 'com.atproto.repo.strongRef',
+			'uri'   => build_at_uri( $did, 'site.standard.publication', $tid ),
+			'cid'   => $cid,
+		);
 	}
 
 	/**

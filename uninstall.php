@@ -26,6 +26,7 @@ $atmosphere_options = array(
 	'atmosphere_connection',
 	'atmosphere_identity',
 	'atmosphere_publication_tid',
+	'atmosphere_publication_cid',
 	'atmosphere_publication_uri',
 	'atmosphere_auto_publish',
 	// Legacy: written by set_handle() in 1.0.x and 1.1.0 as a revert
