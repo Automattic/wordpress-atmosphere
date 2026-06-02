@@ -12,7 +12,6 @@
 
 namespace Atmosphere\Tests;
 
-use WP_UnitTestCase;
 use Atmosphere\Backfill;
 use Atmosphere\Transformer\Document;
 use function Atmosphere\get_supported_post_types;
@@ -20,7 +19,7 @@ use function Atmosphere\get_supported_post_types;
 /**
  * Backfill helper tests.
  */
-class Test_Backfill extends WP_UnitTestCase {
+class Test_Backfill extends \WP_UnitTestCase {
 
 	/**
 	 * Reset any state that could leak between tests.
