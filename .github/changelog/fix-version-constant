@@ -1,4 +1,0 @@
-Significance: patch
-Type: fixed
-
-Refresh admin assets after updating, so the latest styles and scripts load correctly.

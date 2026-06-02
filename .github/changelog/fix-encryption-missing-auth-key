@@ -1,4 +1,0 @@
-Significance: patch
-Type: fixed
-
-Fix a fatal error when saving the Bluesky handle on sites without auth keys defined in wp-config.php.

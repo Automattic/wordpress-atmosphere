@@ -1,4 +1,0 @@
-Significance: patch
-Type: changed
-
-Likes and reposts synced from Bluesky now include a readable comment body ("… liked this!" / "… reposted this!") so they display sensibly in themes that render activity-feed comments.
