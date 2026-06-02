@@ -144,6 +144,17 @@ class Test_Functions extends WP_UnitTestCase {
 	}
 
 	/**
+	 * A negative limit clamps to an empty string. Without the guard,
+	 * `grapheme_substr( 'hello', 0, -1 )` returns `'hell'` — the
+	 * substring API interprets negative length as "drop N from the
+	 * end", which is the opposite of a clamp.
+	 */
+	public function test_truncate_graphemes_returns_empty_for_negative_limit() {
+		$this->assertSame( '', truncate_graphemes( 'hello', -1 ) );
+		$this->assertSame( '', truncate_graphemes( 'hello', -500 ) );
+	}
+
+	/**
 	 * Multi-codepoint grapheme clusters (a ZWJ emoji family) count as
 	 * one grapheme each under `intl`. A string of 5 family emoji
 	 * survives a 500-grapheme clamp intact even though it's many

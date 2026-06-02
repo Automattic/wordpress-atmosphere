@@ -77,9 +77,14 @@ function sanitize_text( string $text ): string {
  * Uses `grapheme_substr` when the `intl` extension is loaded — the
  * spec-exact form, matching the way Lexicon counts characters. Falls
  * back to `mb_substr` (code points) otherwise: every grapheme is at
- * least one code point, so a code-point clamp at `$max` is always
- * within the grapheme limit, just sometimes more conservative than
- * needed for emoji-heavy or combining-character text.
+ * least one code point, so a code-point clamp at `$max_graphemes` is
+ * always within the grapheme limit, just sometimes more conservative
+ * than needed for emoji-heavy or combining-character text.
+ *
+ * A non-positive `$max_graphemes` returns an empty string. Both
+ * `grapheme_substr()` and `mb_substr()` would otherwise interpret a
+ * negative length as "drop the last N characters" — not a clamp, and
+ * the opposite of what every caller wants.
  *
  * No marker is appended — used for canonical fields like the
  * `site.standard.publication` `name` / `description`, where adding
@@ -92,6 +97,10 @@ function sanitize_text( string $text ): string {
  * @return string
  */
 function truncate_graphemes( string $text, int $max_graphemes ): string {
+	if ( $max_graphemes <= 0 ) {
+		return '';
+	}
+
 	if ( \function_exists( 'grapheme_strlen' ) ) {
 		$length = \grapheme_strlen( $text );
 
