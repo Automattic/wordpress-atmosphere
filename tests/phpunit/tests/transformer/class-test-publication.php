@@ -185,6 +185,55 @@ class Test_Publication extends WP_UnitTestCase {
 	}
 
 	/**
+	 * A `blogname` longer than the standard.site lexicon limit (500
+	 * graphemes for `name`) is hard-clamped before it lands in the
+	 * record, so the PDS does not reject the putRecord with a Lexicon
+	 * validation error.
+	 */
+	public function test_name_is_clamped_to_lexicon_grapheme_limit() {
+		$long_name = \str_repeat( 'a', 600 );
+
+		\add_filter( 'pre_option_blogname', static fn() => $long_name );
+
+		try {
+			$record = ( new Publication( null ) )->transform();
+		} finally {
+			\remove_all_filters( 'pre_option_blogname' );
+		}
+
+		$count = \function_exists( 'grapheme_strlen' )
+			? \grapheme_strlen( $record['name'] )
+			: \mb_strlen( $record['name'] );
+
+		$this->assertLessThanOrEqual( 500, $count );
+		$this->assertSame( \str_repeat( 'a', 500 ), $record['name'] );
+	}
+
+	/**
+	 * The 3000-grapheme cap applies to `description` in the same way
+	 * `name` is clamped — long taglines do not reach the PDS in a
+	 * lexicon-violating shape.
+	 */
+	public function test_description_is_clamped_to_lexicon_grapheme_limit() {
+		$long_description = \str_repeat( 'b', 3500 );
+
+		\add_filter( 'pre_option_blogdescription', static fn() => $long_description );
+
+		try {
+			$record = ( new Publication( null ) )->transform();
+		} finally {
+			\remove_all_filters( 'pre_option_blogdescription' );
+		}
+
+		$count = \function_exists( 'grapheme_strlen' )
+			? \grapheme_strlen( $record['description'] )
+			: \mb_strlen( $record['description'] );
+
+		$this->assertLessThanOrEqual( 3000, $count );
+		$this->assertSame( \str_repeat( 'b', 3000 ), $record['description'] );
+	}
+
+	/**
 	 * `get_strong_ref()` returns a well-formed `com.atproto.repo.strongRef`
 	 * when all three inputs are present: the connected DID, the
 	 * stored TID, and the captured CID.
