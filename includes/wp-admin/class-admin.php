@@ -53,13 +53,27 @@ class Admin {
 	 * Register the settings page under Settings.
 	 */
 	public static function add_menu(): void {
-		\add_options_page(
+		$hook = \add_options_page(
 			\__( 'ATmosphere', 'atmosphere' ),
 			\__( 'ATmosphere', 'atmosphere' ),
 			'manage_options',
 			'atmosphere',
 			array( self::class, 'render_page' )
 		);
+
+		if ( ! $hook ) {
+			return;
+		}
+
+		/*
+		 * Self-heal the well-known rewrite rules whenever an
+		 * administrator loads our settings page — the surface where this
+		 * bug surfaces, and so the right place to silently fix it.
+		 * Hooked on `load-{suffix}` so it runs before the page renders
+		 * and only on our page, not on every admin request. See
+		 * {@see Atmosphere::maybe_flush_wellknown_rewrites()} for detail.
+		 */
+		\add_action( "load-{$hook}", array( Atmosphere::class, 'maybe_flush_wellknown_rewrites' ) );
 	}
 
 	/**

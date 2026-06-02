@@ -344,20 +344,28 @@ class Atmosphere {
 	}
 
 	/**
+	 * Regex patterns of the well-known rewrite rules this plugin owns.
+	 *
+	 * Maps each pattern to its `index.php` query target. Kept as a single
+	 * source of truth so {@see register_wellknown_rewrite()} and
+	 * {@see maybe_flush_wellknown_rewrites()} stay in lockstep — if a
+	 * future rule is added or renamed, both surfaces pick it up without
+	 * a separate edit, and the persisted-rules check still detects drift.
+	 *
+	 * @var array<string, string>
+	 */
+	private const WELLKNOWN_REWRITE_PATTERNS = array(
+		'^\.well-known/atproto-did$'                 => 'index.php?atmosphere_wellknown=atproto-did',
+		'^\.well-known/site\.standard\.publication$' => 'index.php?atmosphere_wellknown=publication',
+	);
+
+	/**
 	 * Register rewrite rules for well-known endpoints.
 	 */
 	public function register_wellknown_rewrite(): void {
-		\add_rewrite_rule(
-			'^\.well-known/atproto-did$',
-			'index.php?atmosphere_wellknown=atproto-did',
-			'top'
-		);
-
-		\add_rewrite_rule(
-			'^\.well-known/site\.standard\.publication$',
-			'index.php?atmosphere_wellknown=publication',
-			'top'
-		);
+		foreach ( self::WELLKNOWN_REWRITE_PATTERNS as $pattern => $target ) {
+			\add_rewrite_rule( $pattern, $target, 'top' );
+		}
 
 		\add_filter(
 			'query_vars',
@@ -366,6 +374,87 @@ class Atmosphere {
 				return $vars;
 			}
 		);
+	}
+
+	/**
+	 * Ensure the well-known rewrite rules are present in the persisted
+	 * `rewrite_rules` option, and flush them in if not.
+	 *
+	 * The activation hook flushes once, but the rule set can drift away
+	 * from the persisted array later for several real install paths:
+	 *
+	 * - Programmatic loads (FOSSE bundle, `require_once`, mu-plugin,
+	 *   etc.) never fire `register_activation_hook`, so the initial
+	 *   flush never runs.
+	 * - Some plugins or hosts wipe `wp_options.rewrite_rules` outside
+	 *   of activation. WP then rebuilds the array from whatever rules
+	 *   happen to be registered at that moment, which may or may not
+	 *   include ours.
+	 * - Another plugin that flushes earlier on `init` than our rule
+	 *   registration produces a persisted array missing our patterns.
+	 *
+	 * In all three cases the runtime registration in
+	 * {@see register_wellknown_rewrite()} keeps happening on every
+	 * request but is functionally inert, because WP routes from the
+	 * persisted array, not the in-memory one. The user-facing symptom
+	 * is "External handle did not resolve to DID" when the PDS fetches
+	 * `/.well-known/atproto-did` and WP serves the normal 404 template
+	 * instead of our handler.
+	 *
+	 * Called surgically from the moments that matter so this is not
+	 * paid on every request:
+	 *
+	 * - After a successful OAuth handshake persists an identity —
+	 *   {@see \Atmosphere\OAuth\Client::handle_callback()}.
+	 * - When an administrator loads the Atmosphere settings page —
+	 *   {@see \Atmosphere\WP_Admin\Admin::add_menu()}.
+	 * - Before the `updateHandle` XRPC call, which triggers the PDS to
+	 *   fetch the well-known endpoint immediately —
+	 *   {@see \Atmosphere\Handle::set_handle()}.
+	 *
+	 * Uses a soft flush (no `.htaccess` rewrite): WordPress's default
+	 * rewrite fallback already routes unmatched URLs to `index.php`, so
+	 * refreshing the persisted `rewrite_rules` option is enough to make
+	 * our rules take effect without touching the webserver config.
+	 */
+	public static function maybe_flush_wellknown_rewrites(): void {
+		global $wp_rewrite;
+
+		/*
+		 * Plain permalinks (the WordPress default `?p=N` scheme) keep
+		 * `rewrite_rules` empty and route every request through the query
+		 * string. Our `^\.well-known/...$` patterns can never appear in
+		 * the persisted array on such a site, and the endpoints cannot
+		 * resolve via rewrite there regardless. Bail before the
+		 * missing-pattern check so we do not read an always-empty array
+		 * as "patterns missing" and burn an `update_option` write on
+		 * every call.
+		 *
+		 * Read the state from `$wp_rewrite` rather than the
+		 * `permalink_structure` option: `flush_rewrite_rules()` rebuilds
+		 * from `$wp_rewrite`'s in-memory structure, so gating on the same
+		 * source keeps the guard and the flush in agreement even if
+		 * something wrote the option directly after `WP_Rewrite::init()`
+		 * ran this request.
+		 */
+		if ( ! $wp_rewrite instanceof \WP_Rewrite || ! $wp_rewrite->using_permalinks() ) {
+			return;
+		}
+
+		$rules = \get_option( 'rewrite_rules' );
+
+		if ( \is_array( $rules ) ) {
+			foreach ( self::WELLKNOWN_REWRITE_PATTERNS as $pattern => $target ) {
+				if ( ! isset( $rules[ $pattern ] ) || $rules[ $pattern ] !== $target ) {
+					\flush_rewrite_rules( false );
+					return;
+				}
+			}
+
+			return;
+		}
+
+		\flush_rewrite_rules( false );
 	}
 
 	/**

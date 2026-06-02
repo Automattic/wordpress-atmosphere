@@ -172,6 +172,16 @@ class Handle {
 			return null;
 		}
 
+		/*
+		 * Self-heal the well-known rewrite before the XRPC call: the PDS
+		 * fetches `/.well-known/atproto-did` within milliseconds of
+		 * `updateHandle`, so the persisted rule must be in place by then.
+		 * This is the exact failure surface from issue 90. See
+		 * {@see Atmosphere::maybe_flush_wellknown_rewrites()} for why the
+		 * activation-time flush alone is not enough.
+		 */
+		Atmosphere::maybe_flush_wellknown_rewrites();
+
 		$result = self::call_update_handle( $target );
 
 		if ( \is_wp_error( $result ) ) {

@@ -12,6 +12,7 @@ namespace Atmosphere\OAuth;
 
 \defined( 'ABSPATH' ) || exit;
 
+use Atmosphere\Atmosphere;
 use function Atmosphere\clear_scheduled_hooks;
 use function Atmosphere\get_connection;
 
@@ -569,6 +570,17 @@ class Client {
 		 * existing autoloaded rows flip on the next reconnect.
 		 */
 		\update_option( 'atmosphere_connection', $connection, false );
+
+		/*
+		 * Connecting is the moment our well-known endpoints become
+		 * meaningful — the PDS starts fetching `/.well-known/atproto-did`
+		 * to verify a domain handle, and resolvers hit
+		 * `/.well-known/site.standard.publication`. Make sure the
+		 * persisted rewrite rules serve them on the very next request.
+		 * See {@see Atmosphere::maybe_flush_wellknown_rewrites()} for the
+		 * install paths that need this beyond activation.
+		 */
+		Atmosphere::maybe_flush_wellknown_rewrites();
 
 		return true;
 	}
