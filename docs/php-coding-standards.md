@@ -220,7 +220,6 @@ use function Atmosphere\is_connected;
 \apply_filters( 'atmosphere_syncable_post_types',     array( 'post' ) );
 \apply_filters( 'atmosphere_should_publish_comment',  $bool, $comment );
 \apply_filters( 'atmosphere_should_sync_reply',       $bool, $notification, $post_id );
-\apply_filters( 'atmosphere_backfill_limit',          50 );
 \apply_filters( 'atmosphere_oauth_redirect_uri',      $uri );
 \apply_filters( 'atmosphere_client_metadata',         $metadata );
 ```

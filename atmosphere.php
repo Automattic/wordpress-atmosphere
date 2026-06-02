@@ -47,10 +47,10 @@ function init() {
 
 /*
  * Register WP-CLI commands when running under WP-CLI. Gated so the
- * regular web-request path never autoloads the CLI class.
+ * regular web-request path never autoloads the CLI classes.
  */
 if ( \defined( 'WP_CLI' ) && \WP_CLI ) {
-	\WP_CLI::add_command( 'atmosphere backfill', array( CLI::class, 'backfill' ) );
+	Cli::register();
 }
 
 /**

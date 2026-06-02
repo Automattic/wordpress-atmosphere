@@ -92,13 +92,12 @@ class Atmosphere {
 	 */
 	public function init(): void {
 		/*
-		 * Admin and Backfill self-register on init. This runs before
-		 * admin_init, rest_api_init, and wp_ajax_* so sub-hooks those
-		 * callbacks add are wired up in time, and it also ensures
-		 * REST/AJAX endpoints are available on non-admin requests.
+		 * Admin self-registers on init. This runs before admin_init,
+		 * rest_api_init, and wp_ajax_* so sub-hooks those callbacks add
+		 * are wired up in time, and it also ensures REST endpoints are
+		 * available on non-admin requests.
 		 */
 		\add_action( 'init', array( Admin::class, 'register' ), 5 );
-		\add_action( 'init', array( Backfill::class, 'register' ), 5 );
 
 		/*
 		 * Settings API option registration (`Options::init()`) and

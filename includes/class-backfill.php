@@ -1,11 +1,11 @@
 <?php
 /**
- * AJAX-driven backfill for existing posts.
+ * Backfill query helper.
  *
- * The admin UI requests a count of unsynced posts, then sends
- * batches of post IDs for synchronisation. The CLI command in
- * {@see CLI::backfill()} reuses {@see Backfill::get_unsynced_post_ids()}
- * so the two paths cannot drift on which posts qualify for sync.
+ * Exposes the unsynced-posts walk used by the
+ * `wp atmosphere backfill` CLI command. The admin UI no longer
+ * offers a backfill button; large bulk syncs go through WP-CLI
+ * where progress, batching, and exit codes are first-class.
  *
  * @package Atmosphere
  */
@@ -17,7 +17,7 @@ namespace Atmosphere;
 use Atmosphere\Transformer\Document;
 
 /**
- * Backfill handler.
+ * Backfill query helper.
  */
 class Backfill {
 
@@ -39,66 +39,7 @@ class Backfill {
 	private const DEFAULT_QUERY_CHUNK_SIZE = 500;
 
 	/**
-	 * Register AJAX hooks.
-	 */
-	public static function register(): void {
-		\add_action( 'wp_ajax_atmosphere_backfill_count', array( self::class, 'handle_count' ) );
-		\add_action( 'wp_ajax_atmosphere_backfill_batch', array( self::class, 'handle_batch' ) );
-	}
-
-	/**
-	 * AJAX: count unsynced published posts.
-	 */
-	public static function handle_count(): void {
-		if ( ! \current_user_can( 'manage_options' ) ) {
-			\wp_send_json_error( 'Unauthorized.', 403 );
-		}
-
-		\check_ajax_referer( 'atmosphere_backfill', 'nonce' );
-
-		$post_types = get_supported_post_types();
-
-		/*
-		 * Short-circuit when no post types are enabled. Passing an empty
-		 * array to get_posts() falls back to the default `post` query,
-		 * which would surface posts that nothing is configured to sync.
-		 */
-		if ( empty( $post_types ) ) {
-			\wp_send_json_success(
-				array(
-					'total'    => 0,
-					'post_ids' => array(),
-				)
-			);
-		}
-
-		/**
-		 * Filters the maximum number of posts to backfill.
-		 *
-		 * Only the most recent unsynced posts (up to this limit) will
-		 * be included in each backfill run. Use 0 or -1 to backfill all.
-		 *
-		 * @param int $limit Maximum number of posts. Default 10.
-		 */
-		$limit = (int) \apply_filters( 'atmosphere_backfill_limit', 10 );
-
-		$unsynced = self::get_unsynced_post_ids( $limit, $post_types );
-
-		\wp_send_json_success(
-			array(
-				'total'    => \count( $unsynced ),
-				'post_ids' => $unsynced,
-			)
-		);
-	}
-
-	/**
 	 * Get post IDs for published posts that have not been synced yet.
-	 *
-	 * Shared between {@see Backfill::handle_count()} (the admin AJAX
-	 * path) and {@see CLI::backfill()} (the WP-CLI path) so the two
-	 * surfaces cannot drift on eligibility rules — anything that
-	 * tightens the unsynced query in one place tightens it in both.
 	 *
 	 * Returns the most-recent posts first. The result is capped at
 	 * `$limit` when `$limit > 0`; pass `0` (or any non-positive value)
@@ -205,58 +146,5 @@ class Backfill {
 		} while ( $chunk_count === $chunk_size );
 
 		return $unsynced;
-	}
-
-	/**
-	 * AJAX: sync a batch of post IDs.
-	 */
-	public static function handle_batch(): void {
-		if ( ! \current_user_can( 'manage_options' ) ) {
-			\wp_send_json_error( 'Unauthorized.', 403 );
-		}
-
-		\check_ajax_referer( 'atmosphere_backfill', 'nonce' );
-
-		$post_ids = isset( $_POST['post_ids'] )
-			? \array_map( 'absint', (array) $_POST['post_ids'] ) // phpcs:ignore WordPress.Security.ValidatedSanitizedInput
-			: array();
-
-		if ( empty( $post_ids ) ) {
-			\wp_send_json_error( 'No post IDs provided.' );
-		}
-
-		$results = array();
-
-		foreach ( $post_ids as $post_id ) {
-			$post = \get_post( $post_id );
-
-			if ( ! $post || ! is_post_publishable( $post ) ) {
-				$results[] = array(
-					'id'      => $post_id,
-					'success' => false,
-					'error'   => \__( 'Post not eligible for sync.', 'atmosphere' ),
-				);
-				continue;
-			}
-
-			$response = Publisher::publish_post( $post );
-
-			if ( \is_wp_error( $response ) ) {
-				$results[] = array(
-					'id'      => $post_id,
-					'title'   => \get_the_title( $post ),
-					'success' => false,
-					'error'   => $response->get_error_message(),
-				);
-			} else {
-				$results[] = array(
-					'id'      => $post_id,
-					'title'   => \get_the_title( $post ),
-					'success' => true,
-				);
-			}
-		}
-
-		\wp_send_json_success( array( 'results' => $results ) );
 	}
 }
