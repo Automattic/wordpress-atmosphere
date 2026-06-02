@@ -9,13 +9,12 @@
 
 namespace Atmosphere\Tests\Transformer;
 
-use WP_UnitTestCase;
 use Atmosphere\Transformer\Publication;
 
 /**
  * Publication transformer tests.
  */
-class Test_Publication extends WP_UnitTestCase {
+class Test_Publication extends \WP_UnitTestCase {
 
 	/**
 	 * Test hex_to_rgb with a full hex color.
