@@ -204,10 +204,17 @@ class Test_Publication extends WP_UnitTestCase {
 		$record = Publication::build_basic_theme( $styles, array() );
 
 		$this->assertIsArray( $record );
-		$this->assertSame(
+
+		/*
+		 * Lexicon JSON objects are unordered — only the set of keys is
+		 * part of the contract. Canonicalizing the comparison guards
+		 * against false positives if a future refactor emits the same
+		 * required fields in a different `transform()` insertion order.
+		 */
+		$this->assertEqualsCanonicalizing(
 			array( 'background', 'foreground', 'accent', 'accentForeground' ),
 			\array_keys( $record ),
-			'basicTheme must carry all four required colours in the spec field order.'
+			'basicTheme must carry all four required colours.'
 		);
 
 		foreach ( $record as $key => $color ) {
@@ -309,6 +316,93 @@ class Test_Publication extends WP_UnitTestCase {
 		$this->assertSame( 250, $record['background']['r'] );
 		$this->assertSame( 34, $record['foreground']['r'] );
 		$this->assertSame( 170, $record['accent']['r'] );
+	}
+
+	/**
+	 * A `var(...)` reference embedded in a larger expression — typically
+	 * a gradient — does NOT resolve to a single RGB triple. The
+	 * resulting publication record would advertise a flat colour where
+	 * the rendered page draws a gradient, so the safer behaviour is to
+	 * treat the value as unresolvable and omit `basicTheme` entirely
+	 * (per the all-or-nothing required-fields contract).
+	 */
+	public function test_build_basic_theme_rejects_var_inside_gradient() {
+		$styles  = array(
+			'color'    => array(
+				'background' => 'linear-gradient(var(--wp--preset--color--primary), #ffffff)',
+				'text'       => '#000000',
+			),
+			'elements' => array(
+				'link' => array( 'color' => array( 'text' => '#0066cc' ) ),
+			),
+		);
+		$palette = array( 'primary' => '#ff0000' );
+
+		$this->assertNull(
+			Publication::build_basic_theme( $styles, $palette ),
+			'A var() inside a gradient must not be silently resolved to a single colour.'
+		);
+	}
+
+	/**
+	 * `get_palette_lookup()` accepts the origin-grouped shape returned
+	 * by some context-passing variants of `wp_get_global_settings()`,
+	 * not just the flat default form. Slugs from later origin groups
+	 * (typically `theme` after `default`) overwrite same-named slugs
+	 * from earlier groups — matching CSS-variable precedence.
+	 */
+	public function test_get_palette_lookup_flattens_origin_grouped_shape() {
+		$nested = array(
+			'default' => array(
+				array(
+					'slug'  => 'primary',
+					'color' => '#000000',
+				),
+				array(
+					'slug'  => 'base',
+					'color' => '#ffffff',
+				),
+			),
+			'theme'   => array(
+				array(
+					'slug'  => 'primary',
+					'color' => '#ff0000',
+				),
+				array(
+					'slug'  => 'accent',
+					'color' => '#00ff00',
+				),
+			),
+		);
+
+		$lookup = Publication::get_palette_lookup( $nested );
+
+		$this->assertSame( '#ff0000', $lookup['primary'], 'Theme-origin slug should override default-origin slug.' );
+		$this->assertSame( '#ffffff', $lookup['base'] );
+		$this->assertSame( '#00ff00', $lookup['accent'] );
+	}
+
+	/**
+	 * `get_palette_lookup()` still flattens a plain `{ slug, color }`
+	 * list — the default shape `wp_get_global_settings()` returns when
+	 * no context is supplied.
+	 */
+	public function test_get_palette_lookup_flattens_flat_shape() {
+		$flat = array(
+			array(
+				'slug'  => 'primary',
+				'color' => '#112233',
+			),
+			array(
+				'slug'  => 'accent',
+				'color' => '#445566',
+			),
+		);
+
+		$lookup = Publication::get_palette_lookup( $flat );
+
+		$this->assertSame( '#112233', $lookup['primary'] );
+		$this->assertSame( '#445566', $lookup['accent'] );
 	}
 
 	/**

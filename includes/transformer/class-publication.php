@@ -249,7 +249,16 @@ class Publication extends Base {
 			return $rgb;
 		}
 
-		if ( \preg_match( '/var\(\s*--wp--preset--color--([a-z0-9_-]+)/i', $value, $matches ) ) {
+		/*
+		 * Anchored on both ends so a `var(...)` reference embedded in a
+		 * larger expression (e.g. `linear-gradient(var(--wp--preset--
+		 * color--primary), #fff)`) does NOT resolve to a single RGB
+		 * triple — the surrounding gradient changes the rendered colour
+		 * meaningfully, and there's no honest single-colour answer for
+		 * the publication record. An optional `, fallback` between the
+		 * slug and the closing `)` is consumed but ignored.
+		 */
+		if ( \preg_match( '/^var\(\s*--wp--preset--color--([a-z0-9_-]+)\s*(?:,[^)]*)?\)$/i', $value, $matches ) ) {
 			$slug = \strtolower( $matches[1] );
 			if ( isset( $palette_lookup[ $slug ] ) ) {
 				return self::hex_to_rgb( $palette_lookup[ $slug ] );
@@ -260,25 +269,55 @@ class Publication extends Base {
 	}
 
 	/**
-	 * Read the theme palette into a `slug => hex` lookup.
+	 * Flatten the active theme palette into a `slug => hex` lookup.
 	 *
+	 * Accepts either of the two shapes `wp_get_global_settings()` is
+	 * known to return: a flat list of `{ slug, name, color }` entries
+	 * (the default, when no `context` is supplied), or an origin-grouped
+	 * map `{ default: [...], theme: [...], custom: [...] }` (some
+	 * context-passing variants of the API). Theme-defined slugs land
+	 * last in iteration order and overwrite default-palette slugs of
+	 * the same name — same precedence consumers see when the browser
+	 * resolves the CSS variable.
+	 *
+	 * The `$raw_palette` parameter exists to make the flattening
+	 * testable without standing up a real `wp_theme_json` merge. The
+	 * default `null` resolves to whatever `wp_get_global_settings()`
+	 * returns at call time.
+	 *
+	 * @param mixed $raw_palette Raw palette data, or null to read from
+	 *                           `wp_get_global_settings()`.
 	 * @return array<string,string>
 	 */
-	private static function get_palette_lookup(): array {
-		if ( ! \function_exists( 'wp_get_global_settings' ) ) {
-			return array();
+	public static function get_palette_lookup( $raw_palette = null ): array {
+		if ( null === $raw_palette ) {
+			if ( ! \function_exists( 'wp_get_global_settings' ) ) {
+				return array();
+			}
+			$raw_palette = \wp_get_global_settings( array( 'color', 'palette' ) );
 		}
 
-		$palette = \wp_get_global_settings( array( 'color', 'palette' ) );
-
-		if ( ! \is_array( $palette ) ) {
+		if ( ! \is_array( $raw_palette ) ) {
 			return array();
 		}
 
 		$lookup = array();
-		foreach ( $palette as $entry ) {
-			if ( \is_array( $entry ) && isset( $entry['slug'], $entry['color'] ) ) {
+		foreach ( $raw_palette as $entry ) {
+			if ( ! \is_array( $entry ) ) {
+				continue;
+			}
+
+			// Flat shape: `{ slug, color }`.
+			if ( isset( $entry['slug'], $entry['color'] ) ) {
 				$lookup[ \strtolower( (string) $entry['slug'] ) ] = (string) $entry['color'];
+				continue;
+			}
+
+			// Origin-grouped shape: each nested entry is itself a `{ slug, color }` array.
+			foreach ( $entry as $sub_entry ) {
+				if ( \is_array( $sub_entry ) && isset( $sub_entry['slug'], $sub_entry['color'] ) ) {
+					$lookup[ \strtolower( (string) $sub_entry['slug'] ) ] = (string) $sub_entry['color'];
+				}
 			}
 		}
 
