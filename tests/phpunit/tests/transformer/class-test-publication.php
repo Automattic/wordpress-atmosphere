@@ -185,6 +185,213 @@ class Test_Publication extends WP_UnitTestCase {
 	}
 
 	/**
+	 * `build_basic_theme()` produces the spec-shaped record with all
+	 * four required colours when background/foreground/accent are
+	 * resolvable from the supplied styles. Each colour carries the
+	 * `site.standard.theme.color#rgb` union discriminator.
+	 */
+	public function test_build_basic_theme_returns_spec_shape_with_all_four_colors() {
+		$styles = array(
+			'color'    => array(
+				'background' => '#ffffff',
+				'text'       => '#111111',
+			),
+			'elements' => array(
+				'link' => array( 'color' => array( 'text' => '#0066cc' ) ),
+			),
+		);
+
+		$record = Publication::build_basic_theme( $styles, array() );
+
+		$this->assertIsArray( $record );
+		$this->assertSame(
+			array( 'background', 'foreground', 'accent', 'accentForeground' ),
+			\array_keys( $record ),
+			'basicTheme must carry all four required colours in the spec field order.'
+		);
+
+		foreach ( $record as $key => $color ) {
+			$this->assertSame(
+				'site.standard.theme.color#rgb',
+				$color['$type'],
+				"Color object `{$key}` must carry the rgb union discriminator."
+			);
+			$this->assertIsInt( $color['r'] );
+			$this->assertIsInt( $color['g'] );
+			$this->assertIsInt( $color['b'] );
+		}
+
+		$this->assertSame(
+			array(
+				'$type' => 'site.standard.theme.color#rgb',
+				'r'     => 255,
+				'g'     => 255,
+				'b'     => 255,
+			),
+			$record['background']
+		);
+		$this->assertSame(
+			array(
+				'$type' => 'site.standard.theme.color#rgb',
+				'r'     => 17,
+				'g'     => 17,
+				'b'     => 17,
+			),
+			$record['foreground']
+		);
+		$this->assertSame(
+			array(
+				'$type' => 'site.standard.theme.color#rgb',
+				'r'     => 0,
+				'g'     => 102,
+				'b'     => 204,
+			),
+			$record['accent']
+		);
+	}
+
+	/**
+	 * Each required colour gates the entire record: if any one of
+	 * background / foreground / accent cannot be resolved, `null` is
+	 * returned and the caller omits `basicTheme` entirely. A partial
+	 * record would be rejected by the PDS — the spec demands all four.
+	 */
+	public function test_build_basic_theme_returns_null_when_any_required_color_missing() {
+		$base = array(
+			'color'    => array(
+				'background' => '#ffffff',
+				'text'       => '#000000',
+			),
+			'elements' => array( 'link' => array( 'color' => array( 'text' => '#0066cc' ) ) ),
+		);
+
+		// No background.
+		$without_bg                        = $base;
+		$without_bg['color']['background'] = '';
+		$this->assertNull( Publication::build_basic_theme( $without_bg, array() ) );
+
+		// No foreground.
+		$without_fg                  = $base;
+		$without_fg['color']['text'] = '';
+		$this->assertNull( Publication::build_basic_theme( $without_fg, array() ) );
+
+		// No accent and no `accent` slug in palette.
+		$without_accent                                      = $base;
+		$without_accent['elements']['link']['color']['text'] = '';
+		$this->assertNull( Publication::build_basic_theme( $without_accent, array() ) );
+	}
+
+	/**
+	 * A `var(--wp--preset--color--{slug})` reference in any colour
+	 * field resolves against the supplied palette lookup. This is the
+	 * common modern shape — WP themes emit CSS variables that the
+	 * browser later resolves against `:root` custom properties.
+	 */
+	public function test_build_basic_theme_resolves_css_var_references_against_palette() {
+		$styles  = array(
+			'color'    => array(
+				'background' => 'var(--wp--preset--color--base)',
+				'text'       => 'var(--wp--preset--color--contrast)',
+			),
+			'elements' => array(
+				'link' => array( 'color' => array( 'text' => 'var(--wp--preset--color--primary)' ) ),
+			),
+		);
+		$palette = array(
+			'base'     => '#fafafa',
+			'contrast' => '#222222',
+			'primary'  => '#aa2233',
+		);
+
+		$record = Publication::build_basic_theme( $styles, $palette );
+
+		$this->assertIsArray( $record );
+		$this->assertSame( 250, $record['background']['r'] );
+		$this->assertSame( 34, $record['foreground']['r'] );
+		$this->assertSame( 170, $record['accent']['r'] );
+	}
+
+	/**
+	 * Themes that don't style links explicitly fall back to a palette
+	 * slug literally named `accent` for the accent colour source.
+	 */
+	public function test_build_basic_theme_falls_back_to_palette_accent_slug() {
+		$styles  = array(
+			'color' => array(
+				'background' => '#ffffff',
+				'text'       => '#000000',
+			),
+		);
+		$palette = array( 'accent' => '#ff5500' );
+
+		$record = Publication::build_basic_theme( $styles, $palette );
+
+		$this->assertIsArray( $record );
+		$this->assertSame( 255, $record['accent']['r'] );
+		$this->assertSame( 85, $record['accent']['g'] );
+		$this->assertSame( 0, $record['accent']['b'] );
+	}
+
+	/**
+	 * `accentForeground` is derived from the accent's WCAG relative
+	 * luminance — pure black for a light accent (yellow), pure white
+	 * for a dark accent (deep blue). The 0.5 threshold places yellow
+	 * (~0.93) firmly on the light side and deep blue (~0.05) firmly
+	 * on the dark side.
+	 */
+	public function test_build_basic_theme_derives_accent_foreground_from_luminance() {
+		$light_accent = array(
+			'color'    => array(
+				'background' => '#ffffff',
+				'text'       => '#000000',
+			),
+			'elements' => array( 'link' => array( 'color' => array( 'text' => '#ffeb3b' ) ) ),
+		);
+		$dark_accent  = array(
+			'color'    => array(
+				'background' => '#ffffff',
+				'text'       => '#000000',
+			),
+			'elements' => array( 'link' => array( 'color' => array( 'text' => '#0d47a1' ) ) ),
+		);
+
+		$light = Publication::build_basic_theme( $light_accent, array() );
+		$dark  = Publication::build_basic_theme( $dark_accent, array() );
+
+		$this->assertSame(
+			array(
+				'$type' => 'site.standard.theme.color#rgb',
+				'r'     => 0,
+				'g'     => 0,
+				'b'     => 0,
+			),
+			$light['accentForeground'],
+			'Light accent should yield black foreground.'
+		);
+		$this->assertSame(
+			array(
+				'$type' => 'site.standard.theme.color#rgb',
+				'r'     => 255,
+				'g'     => 255,
+				'b'     => 255,
+			),
+			$dark['accentForeground'],
+			'Dark accent should yield white foreground.'
+		);
+	}
+
+	/**
+	 * The record uses the spec field `basicTheme` (not the legacy
+	 * `theme` field, which was modelled on the bsky profile shape and
+	 * gets ignored by standard.site consumers).
+	 */
+	public function test_record_omits_non_spec_theme_field() {
+		$record = ( new Publication( null ) )->transform();
+
+		$this->assertArrayNotHasKey( 'theme', $record, 'Non-spec `theme` field must not be present.' );
+	}
+
+	/**
 	 * `get_strong_ref()` returns a well-formed `com.atproto.repo.strongRef`
 	 * when all three inputs are present: the connected DID, the
 	 * stored TID, and the captured CID.
