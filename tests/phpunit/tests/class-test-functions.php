@@ -7,7 +7,6 @@
 
 namespace Atmosphere\Tests;
 
-use WP_UnitTestCase;
 use function Atmosphere\parse_at_uri;
 use function Atmosphere\build_at_uri;
 use function Atmosphere\sanitize_text;
@@ -20,7 +19,7 @@ use function Atmosphere\get_connection;
 /**
  * Function tests.
  */
-class Test_Functions extends WP_UnitTestCase {
+class Test_Functions extends \WP_UnitTestCase {
 
 	/**
 	 * Test parsing a valid AT-URI.
