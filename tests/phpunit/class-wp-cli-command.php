@@ -13,7 +13,13 @@
  * @package Atmosphere
  */
 
-\defined( 'ABSPATH' ) || exit;
+/*
+ * No ABSPATH guard: this file is required from `tests/phpunit/bootstrap.php`
+ * *before* WordPress core's test bootstrap defines ABSPATH. An `|| exit`
+ * at the top would terminate PHPUnit before any test ran. The
+ * `class_exists` guard below is the actual safety: it prevents a real
+ * WP-CLI runtime (which would already define this class) from re-declaring.
+ */
 
 if ( ! \class_exists( 'WP_CLI_Command' ) ) {
 	/**

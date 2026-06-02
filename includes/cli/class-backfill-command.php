@@ -411,6 +411,25 @@ class Backfill_Command extends \WP_CLI_Command {
 			$progress->finish();
 		}
 
+		if ( $dry_run ) {
+			/*
+			 * Dry-run never calls the publisher, so there are no errors to
+			 * surface and "Synced X" would be misleading. Report what the
+			 * actual run *would* do and exit 0 — operators chain dry-run
+			 * into normal runs without an error-handling branch.
+			 */
+			\WP_CLI::success(
+				\sprintf(
+					/* translators: 1: number of posts that would be published, 2: number of posts skipped. */
+					\__( 'Would publish %1$d of %2$d posts (%3$d skipped). Dry run, nothing was sent to AT Protocol.', 'atmosphere' ),
+					$synced,
+					$total,
+					$skipped
+				)
+			);
+			return;
+		}
+
 		$summary = \sprintf(
 			/* translators: 1: synced count, 2: total count, 3: skipped count, 4: error count. */
 			\__( 'Synced %1$d of %2$d posts (%3$d skipped, %4$d errors).', 'atmosphere' ),

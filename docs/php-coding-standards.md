@@ -217,11 +217,12 @@ use function Atmosphere\is_connected;
 
 **Behaviour / gating filters:**
 ```php
-\apply_filters( 'atmosphere_syncable_post_types',     array( 'post' ) );
-\apply_filters( 'atmosphere_should_publish_comment',  $bool, $comment );
-\apply_filters( 'atmosphere_should_sync_reply',       $bool, $notification, $post_id );
-\apply_filters( 'atmosphere_oauth_redirect_uri',      $uri );
-\apply_filters( 'atmosphere_client_metadata',         $metadata );
+\apply_filters( 'atmosphere_syncable_post_types',         array( 'post' ) );
+\apply_filters( 'atmosphere_should_publish_comment',      $bool, $comment );
+\apply_filters( 'atmosphere_should_sync_reply',           $bool, $notification, $post_id );
+\apply_filters( 'atmosphere_backfill_query_chunk_size',   500 );
+\apply_filters( 'atmosphere_oauth_redirect_uri',          $uri );
+\apply_filters( 'atmosphere_client_metadata',             $metadata );
 ```
 
 **Actions:**

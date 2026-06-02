@@ -1,6 +1,9 @@
 <?php
 /**
- * Tests for the Backfill helper and the WP-CLI command's input parser.
+ * Tests for the `Backfill::get_unsynced_post_ids()` helper.
+ *
+ * Input-parser tests for the `wp atmosphere backfill` command live in
+ * {@see \Atmosphere\Tests\Cli\Test_Backfill_Command}.
  *
  * @package Atmosphere
  * @group atmosphere
