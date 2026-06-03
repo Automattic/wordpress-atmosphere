@@ -1,4 +1,0 @@
-Significance: patch
-Type: fixed
-
-Clear every plugin-owned scheduled event on deactivate and uninstall so leftover jobs don't linger after the plugin is removed.

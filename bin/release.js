@@ -74,7 +74,7 @@ const updateReadmeWithChangelog = ( version ) => {
 
 	// Extract the changelog entries for the given version
 	// as well as any other entries from other releases under the same major version
-	// e.g. if the latest release is 1.2.1, then we want to include all entries from 1.0.0 to 1.2.1.
+	// e.g. if the latest release is 5.4.1, then we want to include all entries from 5.0.0 to 5.4.1.
 	const majorVersion = version.split( '.' )[ 0 ];
 
 	// Find all releases with the same major version
@@ -217,26 +217,23 @@ async function createRelease() {
 	// Update version numbers in files
 	updateVersionInFile( 'atmosphere.php', version, [
 		{
-			search: /Version: unreleased/i,
+			search: /Version: \d+\.\d+\.\d+/,
 			replace: `Version: ${ version }`,
 		},
 		{
-			search: /ATMOSPHERE_VERSION', 'unreleased/i,
+			search: /ATMOSPHERE_VERSION', '\d+\.\d+\.\d+/,
 			replace: `ATMOSPHERE_VERSION', '${ version }`,
 		},
 	] );
 
 	updateVersionInFile( 'readme.txt', version, [
 		{
-			search: /Stable tag: unreleased/i,
+			search: /Stable tag: \d+\.\d+\.\d+/,
 			replace: `Stable tag: ${ version }`,
 		},
-	] );
-
-	updateVersionInFile( 'package.json', version, [
 		{
-			search: /"version": "0\.0\.0-unreleased"/,
-			replace: `"version": "${ version }"`,
+			search: /= Unreleased =/,
+			replace: `= ${ version } =`,
 		},
 	] );
 
@@ -246,14 +243,9 @@ async function createRelease() {
 	// Prompt for and update the upgrade notice section in readme.txt
 	await updateReadmeWithUpgradeNotice( version );
 
-	// Replace "unreleased" version placeholders across all PHP files
-	const phpFiles = execWithOutput( 'find . -name "*.php" -not -path "./vendor/*"' ).split( '\n' );
+	const phpFiles = execWithOutput( 'find . -name "*.php"' ).split( '\n' );
 
 	phpFiles.forEach( ( filePath ) => {
-		if ( ! filePath ) {
-			return;
-		}
-
 		updateVersionInFile( filePath, version, [
 			{
 				search: /@since unreleased/gi,
@@ -273,10 +265,6 @@ async function createRelease() {
 			},
 			{
 				search: /(?<=\b(?:apply_filters_deprecated|do_action_deprecated)\s*\(\s*'.*?'\s*,\s*array\s*\(.*?\)\s*,\s*')unreleased(?=['"],\s*['"])/gi,
-				replace: ( match ) => match.replace( /unreleased/i, version ),
-			},
-			{
-				search: /(?<=version_compare\s*\(\s*\$\w+,\s*')unreleased(?=',\s*['<=>])/gi,
 				replace: ( match ) => match.replace( /unreleased/i, version ),
 			},
 		] );

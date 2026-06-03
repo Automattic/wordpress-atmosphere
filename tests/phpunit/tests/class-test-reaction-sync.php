@@ -28,9 +28,42 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 		\update_post_meta( $post_id, BskyPost::META_URI, $uri );
 
 		$method = new \ReflectionMethod( Reaction_Sync::class, 'find_post_by_bsky_uri' );
-		$method->setAccessible( true );
 
 		$this->assertSame( $post_id, $method->invoke( null, $uri ) );
+	}
+
+	/**
+	 * Test that find_post_by_bsky_uri falls back to the thread URI index.
+	 */
+	public function test_find_post_by_bsky_uri_uses_thread_uri_index() {
+		$post_id   = self::factory()->post->create();
+		$reply_uri = 'at://did:plc:test123/app.bsky.feed.post/reply123';
+
+		\add_post_meta( $post_id, BskyPost::META_URI_INDEX, $reply_uri );
+
+		$method = new \ReflectionMethod( Reaction_Sync::class, 'find_post_by_bsky_uri' );
+
+		$this->assertSame( $post_id, $method->invoke( null, $reply_uri ) );
+	}
+
+	/**
+	 * Password-protected posts should not receive public reaction/reply
+	 * write-backs even if stale AT-URI meta remains.
+	 */
+	public function test_find_post_by_bsky_uri_skips_password_protected_posts() {
+		$post_id = self::factory()->post->create(
+			array(
+				'post_status'   => 'publish',
+				'post_password' => 'secret',
+			)
+		);
+		$uri     = 'at://did:plc:test123/app.bsky.feed.post/protected';
+
+		\update_post_meta( $post_id, BskyPost::META_URI, $uri );
+
+		$method = new \ReflectionMethod( Reaction_Sync::class, 'find_post_by_bsky_uri' );
+
+		$this->assertFalse( $method->invoke( null, $uri ) );
 	}
 
 	/**
@@ -38,7 +71,6 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 	 */
 	public function test_find_post_by_bsky_uri_not_found() {
 		$method = new \ReflectionMethod( Reaction_Sync::class, 'find_post_by_bsky_uri' );
-		$method->setAccessible( true );
 
 		$this->assertFalse( $method->invoke( null, 'at://did:plc:unknown/app.bsky.feed.post/xyz' ) );
 	}
@@ -54,7 +86,6 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 		\update_comment_meta( $comment_id, 'source_id', $uri );
 
 		$method = new \ReflectionMethod( Reaction_Sync::class, 'find_comment_by_source_id' );
-		$method->setAccessible( true );
 
 		$this->assertSame( $comment_id, $method->invoke( null, $uri ) );
 	}
@@ -64,7 +95,6 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 	 */
 	public function test_find_comment_by_source_id_not_found() {
 		$method = new \ReflectionMethod( Reaction_Sync::class, 'find_comment_by_source_id' );
-		$method->setAccessible( true );
 
 		$this->assertFalse( $method->invoke( null, 'at://did:plc:unknown/app.bsky.feed.post/xyz' ) );
 	}
@@ -80,7 +110,6 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 		\update_comment_meta( $comment_id, 'source_id', $uri );
 
 		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_reply' );
-		$method->setAccessible( true );
 
 		$notification = array(
 			'uri'    => $uri,
@@ -111,7 +140,6 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 		\update_post_meta( $post_id, BskyPost::META_URI, $post_uri );
 
 		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_reply' );
-		$method->setAccessible( true );
 
 		$notification = array(
 			'uri'    => 'at://did:plc:replier/app.bsky.feed.post/reply789',
@@ -162,13 +190,14 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 	}
 
 	/**
-	 * Test that process_reply survives get_comment() returning null
-	 * for the found parent comment ID (race: comment deleted between
-	 * the meta lookup and the get_comment call). Should fall through
-	 * to the root-post fallback instead of fataling on a property
-	 * access against null.
+	 * Test that process_reply drops a reply when get_comment() returns
+	 * null for the resolved parent comment ID (race: comment deleted
+	 * between the meta lookup and the get_comment call). The previous
+	 * "fall back to the root post" behavior caused unresolvable replies
+	 * to be re-attached as top-level orphans on every sync run,
+	 * looping the moderation queue indefinitely.
 	 */
-	public function test_process_reply_handles_get_comment_returning_null() {
+	public function test_process_reply_drops_when_parent_comment_row_is_missing() {
 		$post_id  = self::factory()->post->create();
 		$post_uri = 'at://did:plc:me/app.bsky.feed.post/rootpost';
 		\update_post_meta( $post_id, BskyPost::META_URI, $post_uri );
@@ -190,7 +219,6 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 		);
 
 		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_reply' );
-		$method->setAccessible( true );
 
 		$notification = array(
 			'uri'    => 'at://did:plc:replier/app.bsky.feed.post/nested',
@@ -209,17 +237,53 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 			),
 		);
 
-		$comment_id = $method->invoke( null, $notification );
+		try {
+			$result = $method->invoke( null, $notification );
+		} finally {
+			\remove_all_filters( 'get_comment' );
+		}
 
-		\remove_all_filters( 'get_comment' );
+		$this->assertFalse( $result );
+		$find_method = new \ReflectionMethod( Reaction_Sync::class, 'find_comment_by_source_id' );
+		$this->assertFalse( $find_method->invoke( null, 'at://did:plc:replier/app.bsky.feed.post/nested' ) );
+	}
 
-		$this->assertIsInt( $comment_id );
-		$this->assertGreaterThan( 0, $comment_id );
+	/**
+	 * Test that process_reply drops a reply whose parent record is
+	 * neither a local WP post nor a previously-synced WP comment, even
+	 * when the thread root resolves to one of our posts. Reproduces the
+	 * "blocked user / deleted parent" loop: previously, the reply would
+	 * be re-attached as a top-level comment on the root post on every
+	 * sync run, reinjecting it into the moderation queue indefinitely.
+	 */
+	public function test_process_reply_drops_orphan_when_parent_is_unresolved() {
+		$post_id  = self::factory()->post->create();
+		$post_uri = 'at://did:plc:me/app.bsky.feed.post/threadroot';
+		\update_post_meta( $post_id, BskyPost::META_URI, $post_uri );
 
-		$comment = \get_comment( $comment_id );
-		$this->assertSame( (string) $post_id, $comment->comment_post_ID );
-		// Parent resolution failed, so the reply attaches at the root.
-		$this->assertSame( '0', $comment->comment_parent );
+		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_reply' );
+
+		// Parent is a Bluesky reply that was never synced (e.g. blocked
+		// user's reply was deleted). Root is our own WP post.
+		$notification = array(
+			'uri'    => 'at://did:plc:me/app.bsky.feed.post/myreplytoblocked',
+			'cid'    => 'bafyreioauth',
+			'record' => array(
+				'text'      => 'Replying to a now-deleted parent.',
+				'createdAt' => '2026-04-23T12:00:00.000Z',
+				'reply'     => array(
+					'parent' => array( 'uri' => 'at://did:plc:blocked/app.bsky.feed.post/gone' ),
+					'root'   => array( 'uri' => $post_uri ),
+				),
+			),
+			'author' => array(
+				'did'    => 'did:plc:me',
+				'handle' => 'me.bsky.social',
+			),
+		);
+
+		$this->assertFalse( $method->invoke( null, $notification ) );
+		$this->assertSame( array(), \get_comments( array( 'post_id' => $post_id ) ) );
 	}
 
 	/**
@@ -240,7 +304,6 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 		\update_comment_meta( $parent_comment_id, 'source_id', $parent_reply_uri );
 
 		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_reply' );
-		$method->setAccessible( true );
 
 		$notification = array(
 			'uri'    => 'at://did:plc:second/app.bsky.feed.post/nestedreply',
@@ -274,7 +337,6 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 	 */
 	public function test_process_reply_skips_unmatched() {
 		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_reply' );
-		$method->setAccessible( true );
 
 		$notification = array(
 			'uri'    => 'at://did:plc:someone/app.bsky.feed.post/orphan',
@@ -305,7 +367,6 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 		\update_post_meta( $post_id, BskyPost::META_URI, $post_uri );
 
 		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_reply' );
-		$method->setAccessible( true );
 
 		$notification = array(
 			'uri'    => 'at://did:plc:empty/app.bsky.feed.post/emptyreply',
@@ -327,6 +388,224 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 	}
 
 	/**
+	 * Test that a registered `atmosphere_should_sync_reply` callback can
+	 * suppress the comment insert. The filter receives the notification,
+	 * resolved post ID, and resolved parent-comment ID.
+	 */
+	public function test_process_reply_respects_should_sync_filter() {
+		$post_id  = self::factory()->post->create();
+		$post_uri = 'at://did:plc:me/app.bsky.feed.post/filterable';
+		\update_post_meta( $post_id, BskyPost::META_URI, $post_uri );
+
+		$captured = array();
+		$filter   = function ( $should, $notification, $resolved_post_id, $comment_parent ) use ( &$captured ) {
+			$captured = array(
+				'should'         => $should,
+				'notification'   => $notification,
+				'post_id'        => $resolved_post_id,
+				'comment_parent' => $comment_parent,
+			);
+			return false;
+		};
+		\add_filter( 'atmosphere_should_sync_reply', $filter, 10, 4 );
+
+		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_reply' );
+
+		$reply_uri    = 'at://did:plc:me/app.bsky.feed.post/chunk2';
+		$notification = array(
+			'uri'    => $reply_uri,
+			'cid'    => 'bafyreichunk',
+			'record' => array(
+				'text'      => 'Continued thought…',
+				'createdAt' => '2026-03-21T12:00:00.000Z',
+				'reply'     => array(
+					'parent' => array( 'uri' => $post_uri ),
+					'root'   => array( 'uri' => $post_uri ),
+				),
+			),
+			'author' => array(
+				'did'    => 'did:plc:me',
+				'handle' => 'me.example.com',
+			),
+		);
+
+		try {
+			$result = $method->invoke( null, $notification );
+		} finally {
+			\remove_filter( 'atmosphere_should_sync_reply', $filter, 10 );
+		}
+
+		$this->assertFalse( $result );
+		$this->assertTrue( $captured['should'] );
+		$this->assertSame( $reply_uri, $captured['notification']['uri'] );
+		$this->assertSame( $post_id, $captured['post_id'] );
+		$this->assertSame( 0, $captured['comment_parent'] );
+
+		// No comment was written.
+		$comments = \get_comments( array( 'post_id' => $post_id ) );
+		$this->assertSame( array(), $comments );
+	}
+
+	/**
+	 * Test that the default filter value is true — no callback registered
+	 * means existing behavior (comment is inserted as before). Mirrors
+	 * the contract assertions of test_process_reply_creates_comment so a
+	 * future regression that changes what insert_reaction writes is
+	 * caught here too.
+	 */
+	public function test_process_reply_defaults_to_syncing() {
+		$post_id   = self::factory()->post->create();
+		$post_uri  = 'at://did:plc:me/app.bsky.feed.post/defaultsync';
+		$reply_uri = 'at://did:plc:friend/app.bsky.feed.post/friendreply';
+		\update_post_meta( $post_id, BskyPost::META_URI, $post_uri );
+
+		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_reply' );
+
+		$notification = array(
+			'uri'    => $reply_uri,
+			'cid'    => 'bafyreifriend',
+			'record' => array(
+				'text'      => 'Nice one.',
+				'createdAt' => '2026-03-21T12:00:00.000Z',
+				'reply'     => array(
+					'parent' => array( 'uri' => $post_uri ),
+					'root'   => array( 'uri' => $post_uri ),
+				),
+			),
+			'author' => array(
+				'did'    => 'did:plc:friend',
+				'handle' => 'friend.bsky.social',
+			),
+		);
+
+		$comment_id = $method->invoke( null, $notification );
+
+		$this->assertIsInt( $comment_id );
+		$this->assertGreaterThan( 0, $comment_id );
+
+		$comment = \get_comment( $comment_id );
+
+		$this->assertSame( 'Nice one.', $comment->comment_content );
+		$this->assertSame( 'comment', $comment->comment_type );
+		$this->assertSame( (string) $post_id, $comment->comment_post_ID );
+		$this->assertSame( '0', $comment->comment_parent );
+		$this->assertSame( 'atproto', \get_comment_meta( $comment_id, 'protocol', true ) );
+		$this->assertSame( $reply_uri, \get_comment_meta( $comment_id, 'source_id', true ) );
+		$this->assertSame( 'did:plc:friend', \get_comment_meta( $comment_id, '_atmosphere_author_did', true ) );
+	}
+
+	/**
+	 * Test that the filter receives the resolved nested-parent comment ID
+	 * (not 0) when the reply targets an existing synced comment instead
+	 * of the post itself. Locks in the contract that $comment_parent is
+	 * the resolved local ID, not the AT-URI of the parent record.
+	 */
+	public function test_process_reply_filter_receives_nested_parent_id() {
+		$post_id  = self::factory()->post->create();
+		$post_uri = 'at://did:plc:me/app.bsky.feed.post/parentpost';
+		\update_post_meta( $post_id, BskyPost::META_URI, $post_uri );
+
+		$parent_comment_id = self::factory()->comment->create( array( 'comment_post_ID' => $post_id ) );
+		$parent_reply_uri  = 'at://did:plc:first/app.bsky.feed.post/firstreply';
+		\update_comment_meta( $parent_comment_id, 'source_id', $parent_reply_uri );
+
+		$captured = array();
+		$filter   = function ( $should, $notification, $resolved_post_id, $comment_parent ) use ( &$captured ) {
+			$captured = array(
+				'post_id'        => $resolved_post_id,
+				'comment_parent' => $comment_parent,
+			);
+			return $should;
+		};
+		\add_filter( 'atmosphere_should_sync_reply', $filter, 10, 4 );
+
+		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_reply' );
+
+		$notification = array(
+			'uri'    => 'at://did:plc:second/app.bsky.feed.post/nestedreply',
+			'cid'    => 'bafyreinested',
+			'record' => array(
+				'text'      => 'Replying to the reply.',
+				'createdAt' => '2026-03-21T12:00:00.000Z',
+				'reply'     => array(
+					'parent' => array( 'uri' => $parent_reply_uri ),
+					'root'   => array( 'uri' => $post_uri ),
+				),
+			),
+			'author' => array(
+				'did'    => 'did:plc:second',
+				'handle' => 'second.bsky.social',
+			),
+		);
+
+		try {
+			$method->invoke( null, $notification );
+		} finally {
+			\remove_filter( 'atmosphere_should_sync_reply', $filter, 10 );
+		}
+
+		$this->assertSame( $post_id, $captured['post_id'] );
+		$this->assertSame( $parent_comment_id, $captured['comment_parent'] );
+	}
+
+	/**
+	 * Filter return values are cast via `(bool)` before deciding whether
+	 * to insert. Lock in that null, 0, and '' suppress; truthy non-bool
+	 * values allow the sync. Protects the cast against accidental removal.
+	 *
+	 * @dataProvider data_filter_falsy_returns
+	 * @param mixed $falsy_return Value the callback returns.
+	 */
+	public function test_process_reply_treats_falsy_filter_returns_as_suppression( $falsy_return ) {
+		$post_id  = self::factory()->post->create();
+		$post_uri = 'at://did:plc:me/app.bsky.feed.post/cast-' . \uniqid();
+		\update_post_meta( $post_id, BskyPost::META_URI, $post_uri );
+
+		$filter = static fn() => $falsy_return;
+		\add_filter( 'atmosphere_should_sync_reply', $filter );
+
+		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_reply' );
+
+		$notification = array(
+			'uri'    => 'at://did:plc:friend/app.bsky.feed.post/falsy-' . \uniqid(),
+			'cid'    => 'bafyreicast',
+			'record' => array(
+				'text'  => 'Should be suppressed.',
+				'reply' => array(
+					'parent' => array( 'uri' => $post_uri ),
+					'root'   => array( 'uri' => $post_uri ),
+				),
+			),
+			'author' => array(
+				'did'    => 'did:plc:friend',
+				'handle' => 'friend.bsky.social',
+			),
+		);
+
+		try {
+			$result = $method->invoke( null, $notification );
+		} finally {
+			\remove_filter( 'atmosphere_should_sync_reply', $filter );
+		}
+
+		$this->assertFalse( $result );
+		$this->assertSame( array(), \get_comments( array( 'post_id' => $post_id ) ) );
+	}
+
+	/**
+	 * Data provider for falsy `atmosphere_should_sync_reply` returns.
+	 *
+	 * @return array<string, array{0: mixed}>
+	 */
+	public function data_filter_falsy_returns(): array {
+		return array(
+			'null'         => array( null ),
+			'zero'         => array( 0 ),
+			'empty string' => array( '' ),
+		);
+	}
+
+	/**
 	 * Test that process_like creates a like comment.
 	 */
 	public function test_process_like_creates_comment() {
@@ -336,7 +615,6 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 		\update_post_meta( $post_id, BskyPost::META_URI, $post_uri );
 
 		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_subject_reaction' );
-		$method->setAccessible( true );
 
 		$notification = array(
 			'uri'    => 'at://did:plc:liker/app.bsky.feed.like/like1',
@@ -361,7 +639,7 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 
 		$comment = \get_comment( $comment_id );
 
-		$this->assertSame( '', $comment->comment_content );
+		$this->assertSame( '… liked this!', $comment->comment_content );
 		$this->assertSame( 'like', $comment->comment_type );
 		$this->assertSame( (string) $post_id, $comment->comment_post_ID );
 		$this->assertSame( '0', $comment->comment_parent );
@@ -385,7 +663,6 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 	 */
 	public function test_process_like_skips_unknown_subject() {
 		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_subject_reaction' );
-		$method->setAccessible( true );
 
 		$notification = array(
 			'uri'    => 'at://did:plc:liker/app.bsky.feed.like/like2',
@@ -415,7 +692,6 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 		\update_comment_meta( $existing_id, 'source_id', $like_uri );
 
 		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_subject_reaction' );
-		$method->setAccessible( true );
 
 		$notification = array(
 			'uri'    => $like_uri,
@@ -439,7 +715,6 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 		\update_post_meta( $post_id, BskyPost::META_URI, $post_uri );
 
 		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_subject_reaction' );
-		$method->setAccessible( true );
 
 		$notification = array(
 			'uri'    => 'at://did:plc:reposter/app.bsky.feed.repost/rep1',
@@ -464,7 +739,7 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 
 		$comment = \get_comment( $comment_id );
 
-		$this->assertSame( '', $comment->comment_content );
+		$this->assertSame( '… reposted this!', $comment->comment_content );
 		$this->assertSame( 'repost', $comment->comment_type );
 		$this->assertSame( (string) $post_id, $comment->comment_post_ID );
 
@@ -487,7 +762,6 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 	 */
 	public function test_process_repost_skips_unknown_subject() {
 		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_subject_reaction' );
-		$method->setAccessible( true );
 
 		$notification = array(
 			'uri'    => 'at://did:plc:reposter/app.bsky.feed.repost/rep2',
@@ -539,7 +813,6 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 		\update_post_meta( $post_id, BskyPost::META_URI, $post_uri );
 
 		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_own_record' );
-		$method->setAccessible( true );
 
 		$record = array(
 			'uri'   => 'at://did:plc:me/app.bsky.feed.like/selflike1',
@@ -573,7 +846,6 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 		$this->seed_self_identity();
 
 		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_own_record' );
-		$method->setAccessible( true );
 
 		$record = array(
 			'uri'   => 'at://did:plc:me/app.bsky.feed.like/selflike2',
@@ -596,7 +868,6 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 		\update_post_meta( $post_id, BskyPost::META_URI, $post_uri );
 
 		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_own_record' );
-		$method->setAccessible( true );
 
 		$record = array(
 			'uri'   => 'at://did:plc:me/app.bsky.feed.post/selfreply1',
@@ -628,7 +899,6 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 		$this->seed_self_identity();
 
 		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_own_record' );
-		$method->setAccessible( true );
 
 		$record = array(
 			'uri'   => 'at://did:plc:me/app.bsky.feed.post/originalpost',
@@ -654,7 +924,6 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 		\update_post_meta( $post_id, BskyPost::META_URI, $post_uri );
 
 		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_reply' );
-		$method->setAccessible( true );
 
 		$notification = array(
 			'uri'    => 'at://did:plc:replier/app.bsky.feed.post/tzreply',
@@ -692,7 +961,6 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 	 */
 	private function invoke_paginate( callable $fetch, string $items_key, string $option_key, callable $process ): void {
 		$method = new \ReflectionMethod( Reaction_Sync::class, 'paginate' );
-		$method->setAccessible( true );
 		$method->invoke( null, $fetch, $items_key, $option_key, $process );
 	}
 
@@ -857,5 +1125,53 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 
 		$this->assertSame( array( 'at://a/1', 'at://a/2', 'at://a/3', 'at://a/4' ), $seen );
 		$this->assertSame( 'at://a/1', \get_option( $option_key ) );
+	}
+
+	/**
+	 * A reply whose URI matches an existing comment's source_id meta
+	 * is skipped, even when that comment has no protocol='atproto'
+	 * marker — the outbound publish path deliberately omits it.
+	 */
+	public function test_process_reply_skips_our_own_outbound_comment() {
+		$post_id  = self::factory()->post->create();
+		$post_uri = 'at://did:plc:me/app.bsky.feed.post/rootpost';
+		\update_post_meta( $post_id, BskyPost::META_URI, $post_uri );
+
+		// Simulate a locally-published outbound comment: source_id set
+		// by Publisher::publish_comment, protocol intentionally absent.
+		$local_comment = self::factory()->comment->create(
+			array(
+				'comment_post_ID' => $post_id,
+				'user_id'         => 1,
+			)
+		);
+		$reply_uri     = 'at://did:plc:me/app.bsky.feed.post/ourreply';
+		\update_comment_meta( $local_comment, Reaction_Sync::META_SOURCE_ID, $reply_uri );
+
+		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_reply' );
+
+		$notification = array(
+			'uri'    => $reply_uri,
+			'cid'    => 'bafyownreply',
+			'record' => array(
+				'text'      => 'Our own outbound comment.',
+				'createdAt' => '2026-04-23T10:00:00.000Z',
+				'reply'     => array(
+					'parent' => array( 'uri' => $post_uri ),
+					'root'   => array( 'uri' => $post_uri ),
+				),
+			),
+			'author' => array(
+				'did'    => 'did:plc:me',
+				'handle' => 'me.bsky.social',
+			),
+		);
+
+		$this->assertFalse( $method->invoke( null, $notification ) );
+
+		// No second comment was inserted — only the local one exists.
+		$comments = \get_comments( array( 'post_id' => $post_id ) );
+		$this->assertCount( 1, $comments );
+		$this->assertSame( (string) $local_comment, (string) $comments[0]->comment_ID );
 	}
 }

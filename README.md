@@ -1,124 +1,53 @@
 # ATmosphere
 
-> [!IMPORTANT]
-> **Proof of Concept** — This plugin is under active development and not yet ready for production use. APIs, data formats, and behavior may change without notice.
+This is the **ATmosphere** plugin repo.
 
-Publish WordPress posts to [AT Protocol](https://atproto.com/) ([Bluesky](https://bsky.social/) + [standard.site](https://standard.site/)) via native OAuth.
+Publish your WordPress posts to the [AT Protocol](https://atproto.com/) network — cross-post to [Bluesky](https://bsky.social/), register your articles as [standard.site](https://standard.site/) documents on your PDS, use your domain as your Bluesky handle, and mirror replies and reposts back into WordPress as native comments.
 
-## Description
+## Documentation
 
-ATmosphere connects your WordPress site to the AT Protocol network. When you publish a post, it is automatically cross-posted to Bluesky and registered as a standard.site document on your Personal Data Server (PDS).
+- [Developer Documentation](docs/developer-docs.md) — entry point for developers extending or integrating with ATmosphere.
+- [Development Environment](docs/development-environment.md) — wp-env setup, prerequisites, troubleshooting, coverage.
+- [PHP Coding Standards](docs/php-coding-standards.md) — naming, escaping, error handling, performance, cron rules.
+- [Class Structure](docs/php-class-structure.md) — directory layout, namespaces, architectural patterns.
+- [Code Linting](docs/code-linting.md) — PHPCS rules and common fixes.
+- [Pull Request Guide](docs/pull-request.md) — branching, pre-PR checklist, commit format.
+- [Release Process](docs/release-process.md) — `npm run release`, patch releases, GitHub Release UI.
+- [Translations](docs/translations.md) — text domain, GlotPress, translator-friendly strings.
+- [Content Formats](docs/content-formats.md) — AT Protocol `content` types for `site.standard.document`.
+- [`org.wordpress.html` Lexicon](docs/org.wordpress.html.md) — the rendered-HTML content type schema.
+- [Integrations](integrations/README.md) — registering custom `Content_Parser` implementations.
+- [Contributor instructions](AGENTS.md) — directory structure, commands, conventions, and skills/agents.
 
-The plugin uses native AT Protocol OAuth with PKCE and DPoP — no third-party proxy or intermediary service required. Your credentials never leave your site.
+## Protocol Support
 
-## Features
+ATmosphere implements the AT Protocol natively — no third-party proxy or intermediary service. Authentication uses OAuth 2.1 with PKCE and DPoP. Records are written to your PDS via `com.atproto.repo.applyWrites`.
 
-- **Native OAuth** — Authenticate directly with your PDS using OAuth 2.1 with PKCE and DPoP.
-- **Bluesky cross-posting** — Publish `app.bsky.feed.post` records that appear in your followers' timelines.
-- **standard.site records** — Create `site.standard.publication` and `site.standard.document` records on your PDS.
-- **Facet detection** — Automatically detects links, mentions, and hashtags in post content.
-- **Per-post control** — Enable or disable publishing for individual posts via a meta box.
-- **Domain handle verification** — Use your WordPress domain as your Bluesky handle via `/.well-known/atproto-did`.
-- **Backfill** — Sync existing published posts to AT Protocol in bulk.
+Currently supported record types:
 
-## How It Works
+- `app.bsky.feed.post` — Bluesky posts and reply threads.
+- `site.standard.publication` — your site as a publication record.
+- `site.standard.document` — one document record per WordPress post.
 
-1. Connect your Bluesky / AT Protocol account via OAuth on the settings page.
-2. Configure your publication metadata (name, description, icon).
-3. Publish a post — ATmosphere creates both a Bluesky post and a standard.site document record on your PDS.
+See [`docs/content-formats.md`](docs/content-formats.md) for more on the content union used by `site.standard.document`.
 
-## Requirements
+## Support
 
-- PHP 8.2+
-- WordPress 6.2+
+If you need help, [check the issue tracker on GitHub](https://github.com/Automattic/wordpress-atmosphere/issues) or open a new bug report.
 
-## Installation
+## Contribute
 
-1. Clone this repository into your `wp-content/plugins/` directory:
-   ```bash
-   git clone https://github.com/pfefferle/atmosphere.git wp-content/plugins/atmosphere
-   ```
-2. Activate the plugin through the "Plugins" menu in WordPress.
-3. Go to **Settings → ATmosphere** and connect your AT Protocol account.
+Contributions are welcome — bug fixes, new features, integrations, translations.
 
-## Development
+* **Keep issues focused.** Use the issue tracker for specific bugs or concrete proposals. Tangential ideas are best as GitHub Discussions.
+* **Stay within scope.** Open issues should relate directly to the plugin.
+* **Be concise.** Short, actionable descriptions are easier to respond to.
 
-### Setup
+Before opening a pull request, please read [`AGENTS.md`](AGENTS.md) for directory layout, coding conventions, and the release workflow.
 
-```bash
-composer install
-npm install
-```
+## Security
 
-### Local Environment (wp-env)
-
-```bash
-npm run env-start    # Start WordPress environment
-npm run env-stop     # Stop environment
-```
-
-### Linting
-
-```bash
-composer lint        # Check PHP coding standards
-composer lint:fix    # Auto-fix PHP issues
-```
-
-### Testing
-
-```bash
-composer test                            # Full PHPUnit test suite
-npm run env-test                         # Run tests via wp-env
-npm run env-test -- --filter test_name   # Run a single test
-```
-
-## Architecture
-
-```
-includes/
-├── oauth/            # Full PKCE + DPoP + PAR native OAuth flow
-│   ├── class-client.php
-│   ├── class-dpop.php
-│   ├── class-encryption.php
-│   ├── class-nonce-storage.php
-│   └── class-resolver.php
-├── transformer/      # WP → AT Protocol record conversion
-│   ├── class-base.php
-│   ├── class-document.php
-│   ├── class-facet.php
-│   ├── class-post.php
-│   ├── class-publication.php
-│   └── class-tid.php
-├── wp-admin/         # Settings page, meta box, REST endpoint
-├── class-api.php     # DPoP-authenticated PDS requests with nonce retry
-├── class-atmosphere.php
-├── class-backfill.php
-├── class-publisher.php  # Atomic batch applyWrites for both record types
-└── functions.php
-```
-
-## FAQ
-
-### Can I use my domain as my Bluesky handle?
-
-Yes. Once you connect your account, the plugin serves your DID at `/.well-known/atproto-did`. Go to the Bluesky app settings, choose "Change Handle", select "I have my own domain", and enter your WordPress site's domain. Bluesky will verify it automatically.
-
-### Do I need a Bluesky account?
-
-You need an AT Protocol account. Bluesky (`bsky.social`) is the most common provider, but any AT Protocol PDS will work.
-
-### Does this require a third-party service?
-
-No. The plugin authenticates directly with your PDS using native AT Protocol OAuth. No tokens are sent to or stored by any intermediary.
-
-### What records are created?
-
-Each published post creates:
-
-- An `app.bsky.feed.post` record (visible on Bluesky).
-- A `site.standard.document` record (structured metadata for the ATmosphere).
-
-Your site itself is represented by a `site.standard.publication` record.
+Found a security issue? Report it via [Automattic's security page](https://automattic.com/security/) or our HackerOne bug-bounty program at https://hackerone.com/automattic.
 
 ## License
 

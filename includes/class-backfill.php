@@ -37,7 +37,21 @@ class Backfill {
 
 		\check_ajax_referer( 'atmosphere_backfill', 'nonce' );
 
-		$post_types = self::syncable_post_types();
+		$post_types = get_supported_post_types();
+
+		/*
+		 * Short-circuit when no post types are enabled. Passing an empty
+		 * array to get_posts() falls back to the default `post` query,
+		 * which would surface posts that nothing is configured to sync.
+		 */
+		if ( empty( $post_types ) ) {
+			\wp_send_json_success(
+				array(
+					'total'    => 0,
+					'post_ids' => array(),
+				)
+			);
+		}
 
 		/**
 		 * Filters the maximum number of posts to backfill.
@@ -53,6 +67,7 @@ class Backfill {
 			array(
 				'post_type'      => $post_types,
 				'post_status'    => 'publish',
+				'has_password'   => false,
 				'posts_per_page' => -1,
 				'orderby'        => 'date',
 				'order'          => 'DESC',
@@ -104,7 +119,7 @@ class Backfill {
 		foreach ( $post_ids as $post_id ) {
 			$post = \get_post( $post_id );
 
-			if ( ! $post || 'publish' !== $post->post_status ) {
+			if ( ! $post || ! is_post_publishable( $post ) ) {
 				$results[] = array(
 					'id'      => $post_id,
 					'success' => false,
@@ -113,7 +128,7 @@ class Backfill {
 				continue;
 			}
 
-			$response = Publisher::publish( $post );
+			$response = Publisher::publish_post( $post );
 
 			if ( \is_wp_error( $response ) ) {
 				$results[] = array(
@@ -132,19 +147,5 @@ class Backfill {
 		}
 
 		\wp_send_json_success( array( 'results' => $results ) );
-	}
-
-	/**
-	 * Get the post types eligible for syncing.
-	 *
-	 * @return string[]
-	 */
-	public static function syncable_post_types(): array {
-		/**
-		 * Filters the post types that can be synced to AT Protocol.
-		 *
-		 * @param string[] $post_types Post type slugs.
-		 */
-		return \apply_filters( 'atmosphere_syncable_post_types', array( 'post' ) );
 	}
 }

@@ -5,91 +5,88 @@ description: Version management and release processes using Jetpack Changelogger
 
 # ATmosphere Release Process
 
-Quick reference for managing releases and changelogs for the WordPress ATmosphere plugin.
+Quick-reference for cutting a release. Full reference: [`docs/release-process.md`](../../../docs/release-process.md).
 
-## Quick Reference
-
-### Release Commands
-```bash
-bin/release.sh [version]    # Build release ZIP with production deps only.
-composer changelog:add      # Add a changelog entry.
-composer changelog:write    # Write changelog entries to CHANGELOG.md.
-```
-
-### Version File Locations
-When updating versions manually, change these files:
-- `atmosphere.php` - Plugin header (`Version: X.Y.Z`) and `ATMOSPHERE_VERSION` constant.
-- `readme.txt` - WordPress.org readme (`Stable tag: X.Y.Z`).
-- `package.json` - npm version (`"version": "X.Y.Z"`).
-- `CHANGELOG.md` - Changelog file (auto-updated by changelogger).
-
-## Changelog Management
-
-### How It Works
-
-Changelogs are managed through the Jetpack Changelogger:
-
-1. **Adding entries:**
-   ```bash
-   composer changelog:add
-   ```
-   - Select significance: Patch/Minor/Major.
-   - Select type: Added/Fixed/Changed/Deprecated/Removed/Security.
-   - Write message **ending with punctuation!**
-   - Saves to `.github/changelog/` directory.
-
-2. **Writing changelog:**
-   ```bash
-   composer changelog:write
-   ```
-   - Aggregates all entries from `.github/changelog/`.
-   - Updates `CHANGELOG.md` automatically.
-
-### Critical Requirements
-
-**Always end changelog messages with punctuation:**
-```
-Good: Add support for custom post types.
-Good: Fix OAuth token refresh failing silently.
-Bad:  Add support for custom post types
-Bad:  Fix OAuth token refresh failing silently
-```
-
-**Write end-user friendly messages:**
-- Focus on user benefit, not implementation details.
-- Avoid technical jargon where possible.
-- Describe what users can now do, not how it works internally.
-```
-Good: Fix posts not appearing on Bluesky when published via Quick Edit.
-Good: Add option to disable standard.site document records.
-Bad:  Refactor Publisher class to handle edge case in applyWrites batch.
-Bad:  Fix TID collision in transformer output.
-```
-
-**Never mention AI tools or coding assistants in changelog messages.**
-
-## Version Numbering
-
-**Semantic versioning:**
-- **Major (X.0.0)** - Breaking changes.
-- **Minor (0.X.0)** - New features, backward compatible.
-- **Patch (0.0.X)** - Bug fixes only.
-
-## Release Workflow
+## Major / Minor Release
 
 ```bash
-# 1. Write changelog.
+npm run release
+```
+
+The script (`bin/release.js`) handles everything: changelog roll-up, version bump in `atmosphere.php` / `readme.txt` / `package.json`, `readme.txt` changelog mirror, `unreleased` marker replacement across `*.php`, optional Upgrade Notice prompt, then commits / pushes / opens a `Release X.Y.Z` PR.
+
+**Prerequisites:** clean working tree, on `trunk` (or it'll switch you), `gh` CLI authenticated, at least one entry in `.github/changelog/`.
+
+After the PR merges: draft the GitHub Release against `trunk` with the new tag.
+
+## Patch Release
+
+The script doesn't handle these — patches are cherry-picked manually onto the previous release branch:
+
+```bash
+git fetch origin release/X.Y.0
+git checkout release/X.Y.0
+git cherry-pick -m 1 <merge-commit-hash>
 composer changelog:write
-
-# 2. Update version numbers in all version file locations.
-
-# 3. Commit version bump.
-git add -A
-git commit -m "Release version X.Y.Z"
-
-# 4. Build release ZIP.
-bin/release.sh X.Y.Z
-
-# 5. Create GitHub release with the ZIP.
-gh release create X.Y.Z atmosphere-X.Y.Z.zip --title "X.Y.Z" --generate-notes
+# Update readme.txt changelog block, bump versions in atmosphere.php / readme.txt / package.json,
+# replace any remaining `unreleased` markers.
+git push origin release/X.Y.0
+# Open PR against release/X.Y.0; draft GitHub Release with the new tag targeting that branch.
 ```
+
+Full step-by-step: [`docs/release-process.md → Patch Releases`](../../../docs/release-process.md#patch-releases).
+
+## Changelog Entries
+
+```bash
+composer changelog:add       # Add one entry to .github/changelog/.
+composer changelog:write     # Roll up entries into CHANGELOG.md (script does this for you).
+```
+
+**Required:** end the message with punctuation, write for end users (no class names, no AI/assistant references).
+
+```
+✅ Fix posts not appearing on Bluesky when published via Quick Edit.
+✅ Add option to disable standard.site document records.
+❌ Refactor Publisher class to handle edge case in applyWrites batch.
+❌ Fix TID collision in transformer output.
+```
+
+## Marking Unreleased Code
+
+When adding a new public hook, deprecation, or `_doing_it_wrong` call, use the literal `unreleased`. The release script rewrites it:
+
+```php
+/**
+ * @since unreleased
+ */
+
+\_deprecated_function( __FUNCTION__, 'unreleased', 'new_function' );
+\apply_filters_deprecated( 'atmosphere_old_filter', array( $value ), 'unreleased', 'atmosphere_new_filter' );
+\_doing_it_wrong( __METHOD__, \__( 'Use new_method().', 'atmosphere' ), 'unreleased' );
+```
+
+## Semver Bumps
+
+| Bump | When |
+|------|------|
+| **Major (X.0.0)** | Breaking public-hook signature changes, removed features, schema requires migration. |
+| **Minor (0.X.0)** | New features, new public hooks, backward-compatible behaviour changes. |
+| **Patch (0.0.X)** | Bug fixes only — no public hook changes. |
+
+If any pending entry is marked `Significance: major`, the changelogger bumps to a new major version. Otherwise minor if any is `minor`, else patch.
+
+## When to Read the Full Docs
+
+Read [`docs/release-process.md`](../../../docs/release-process.md) when you need:
+
+- The **full step-by-step** for major / minor releases.
+- The **patch-release cherry-pick workflow** with conflict-resolution tips.
+- **Version file locations** for manual bumps (patch path).
+- **Manual steps** the script doesn't handle (distributable ZIP, wp.org SVN asset upload, GitHub Release tagging).
+- **Troubleshooting** (branch-already-exists, empty changelog section, mirrored readme.txt looks wrong).
+
+## Related Skills
+
+- **pr** — branching, pre-PR checklist, changelog entry format.
+- **dev** — wp-env, testing the release branch locally.

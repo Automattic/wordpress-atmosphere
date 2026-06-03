@@ -10,6 +10,7 @@ namespace Atmosphere;
 
 \defined( 'ABSPATH' ) || exit;
 
+use Atmosphere\OAuth\Client;
 use Atmosphere\Transformer\Post as BskyPost;
 
 /**
@@ -155,6 +156,26 @@ class Reaction_Sync {
 	 */
 	public static function sync(): void {
 		if ( ! is_connected() ) {
+			return;
+		}
+
+		/*
+		 * Probe the access token once before walking the four streams.
+		 * Without this, a refresh that's locked or has just flipped
+		 * `needs_reauth` would be hit independently by each
+		 * {@see self::paginate()} call below — surfacing the same
+		 * incident four times in the error log and re-triggering the
+		 * refresh path on a session we already know is broken.
+		 */
+		$token = Client::access_token();
+		if ( \is_wp_error( $token ) ) {
+			\error_log( // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
+				\sprintf(
+					'[atmosphere] reaction sync aborted: %s — %s',
+					$token->get_error_code(),
+					$token->get_error_message()
+				)
+			);
 			return;
 		}
 
@@ -376,7 +397,6 @@ class Reaction_Sync {
 		}
 
 		$parent_uri = $record['reply']['parent']['uri'] ?? '';
-		$root_uri   = $record['reply']['root']['uri'] ?? '';
 
 		if ( empty( $parent_uri ) ) {
 			return false;
@@ -399,11 +419,27 @@ class Reaction_Sync {
 			}
 		}
 
-		if ( ! $post_id ) {
-			// Deep thread rooted at one of our posts.
-			$post_id = self::find_post_by_bsky_uri( $root_uri );
-		}
-
+		/*
+		 * Drop replies whose parent we can't resolve. A parent that
+		 * doesn't match a local WP post or a previously-synced WP
+		 * comment is either:
+		 *
+		 *   - Orphaned: the parent was deleted on Bluesky (e.g. blocked
+		 *     user, account deletion) or removed from our moderation
+		 *     queue. Falling back to the root post would re-attach
+		 *     every subsequent re-walk as a top-level orphan, looping
+		 *     the moderation queue indefinitely until the watermark
+		 *     advances past it.
+		 *
+		 *   - Out-of-order: a deep reply seen before its parent in the
+		 *     same `listNotifications`/`listRecords` page. Dropping
+		 *     here is recoverable: the parent gets synced in the same
+		 *     run, the child re-enters via the WATERMARK_GRACE window
+		 *     on the next run, and parent resolution succeeds.
+		 *
+		 * Direct replies (parent_uri is one of our WP posts) and
+		 * resolved nested replies are unaffected.
+		 */
 		if ( ! $post_id ) {
 			return false;
 		}
@@ -411,6 +447,37 @@ class Reaction_Sync {
 		$text = $record['text'] ?? '';
 
 		if ( '' === $text ) {
+			return false;
+		}
+
+		/**
+		 * Filters whether a reply should be synced as a WordPress comment.
+		 *
+		 * Fires after the reply's target post and parent comment have been
+		 * resolved, immediately before any work that depends on the reply
+		 * being kept (author profile resolution, comment row insert,
+		 * comment-meta writes). Return false to skip the insert.
+		 *
+		 * Use case: consumers publishing multi-record threads from their
+		 * own DID may want to skip the round-tripped self-replies that
+		 * `Reaction_Sync` would otherwise ingest as comments. The filter
+		 * is intentionally policy-free upstream so consumers can express
+		 * whatever discriminator fits their publishing strategy.
+		 *
+		 * @param bool  $should         Whether to sync this reply. Default true.
+		 * @param array $notification   Notification or synthesized own-record.
+		 * @param int   $post_id        Resolved local WP post the reply targets.
+		 * @param int   $comment_parent Resolved local parent comment ID, 0 if top-level.
+		 */
+		$should_sync = (bool) \apply_filters(
+			'atmosphere_should_sync_reply',
+			true,
+			$notification,
+			$post_id,
+			$comment_parent
+		);
+
+		if ( ! $should_sync ) {
 			return false;
 		}
 
@@ -473,6 +540,34 @@ class Reaction_Sync {
 		array $notification,
 		array $profile
 	): int|false {
+		/*
+		 * Deliberately NOT gating on `comments_open( $post_id )` here.
+		 * `paginate()` advances the per-collection watermark to the
+		 * newest URI on each page regardless of whether the per-item
+		 * callback accepted the item; if we dropped reactions on
+		 * closed-comments posts at this gate, the watermark would
+		 * still move past them and a subsequent reopen of comments
+		 * could not recover the missed imports — the WATERMARK_GRACE
+		 * window is only ten items.
+		 *
+		 * Federated reactions are an audit record of activity that
+		 * happened on Bluesky, not a comment-form submission. Insert
+		 * the row, let the moderation pipeline below decide the
+		 * approval state, and accept that imported reactions remain
+		 * in `wp_comments` even on closed-comments posts.
+		 *
+		 * Caveat: WordPress's stock `comments_template()` hides
+		 * comments when `comments_open()` is false, but themes that
+		 * render comments without going through `comments_template()`,
+		 * and the REST `/wp/v2/comments` endpoint, will still surface
+		 * these rows on closed-comments posts. Sites that need
+		 * stricter rendering control should filter `the_comments` /
+		 * `rest_prepare_comment` themselves; we don't register
+		 * display-side filters here because the existence of the
+		 * comment row is the federation history record this method
+		 * is responsible for preserving.
+		 */
+
 		$uri    = $notification['uri'] ?? '';
 		$cid    = $notification['cid'] ?? '';
 		$author = $notification['author'] ?? array();
@@ -484,19 +579,68 @@ class Reaction_Sync {
 		$timestamp = \strtotime( $record['createdAt'] ?? '' );
 		$gm_date   = \gmdate( 'Y-m-d H:i:s', false === $timestamp ? 0 : $timestamp );
 
+		if ( '' === $content ) {
+			$content = self::default_reaction_excerpt( $comment_type );
+		}
+
 		$comment_data = array(
 			'comment_post_ID'      => $post_id,
 			'comment_parent'       => $comment_parent,
 			'comment_author'       => $author_name,
 			'comment_author_url'   => \esc_url_raw( 'https://bsky.app/profile/' . \rawurlencode( $author_handle ) ),
 			'comment_author_email' => '',
+			'comment_author_IP'    => '',
 			'comment_content'      => \wp_kses_post( $content ),
 			'comment_date'         => \get_date_from_gmt( $gm_date ),
 			'comment_date_gmt'     => $gm_date,
 			'comment_type'         => $comment_type,
-			'comment_approved'     => 1,
 			'comment_agent'        => 'ATmosphere/' . ATMOSPHERE_VERSION,
+			'user_id'              => 0,
 		);
+
+		/*
+		 * Run the full WordPress moderation pipeline rather than just
+		 * gating on `comment_moderation`. `wp_allow_comment()` evaluates
+		 * the same chain WordPress applies to native comment submissions:
+		 *
+		 *   - `comment_moderation` ("hold all comments")
+		 *   - `comment_whitelist` (previously-approved-author bypass)
+		 *   - `comment_max_links` threshold
+		 *   - `disallowed_keys` blacklist (returns WP_Error)
+		 *   - `moderation_keys` (returns approved=0)
+		 *   - the `pre_comment_approved` filter chain, which is where
+		 *     Akismet stamps spam verdicts and where any third-party
+		 *     anti-spam plugin hooks in.
+		 *
+		 * Without this call, importing Bluesky reactions silently
+		 * bypassed every one of those checks; only `comment_moderation`
+		 * was honoured. A `WP_Error` return means the comment was
+		 * hard-rejected (e.g. disallowed-keys hit) — drop the import.
+		 *
+		 * `wp_is_comment_flood` is short-circuited to false for this
+		 * one call: federated reactions are server-to-server traffic
+		 * without an IP, so WordPress's IP/email-based 15-second flood
+		 * heuristic doesn't model them correctly — rate-limiting for
+		 * inbound reactions happens upstream at Bluesky's relay. The
+		 * filter is removed immediately after the call so it cannot
+		 * affect any subsequent user-submitted comment in the same
+		 * request.
+		 *
+		 * The `ATmosphere/` `comment_agent` stamp keeps the outbound
+		 * comment-publish cron (`atmosphere_publish_comment`) from
+		 * picking the row back up regardless of approval state, so a
+		 * held reaction can be approved in wp-admin later without
+		 * being written back to the Bluesky PDS.
+		 */
+		\add_filter( 'wp_is_comment_flood', '__return_false', 99 );
+		$approved = \wp_allow_comment( $comment_data, true );
+		\remove_filter( 'wp_is_comment_flood', '__return_false', 99 );
+
+		if ( \is_wp_error( $approved ) ) {
+			return false;
+		}
+
+		$comment_data['comment_approved'] = $approved;
 
 		$comment_id = \wp_insert_comment( $comment_data );
 
@@ -529,6 +673,30 @@ class Reaction_Sync {
 		\do_action( 'atmosphere_reaction_synced', $comment_id, $notification, $post_id, $comment_type );
 
 		return $comment_id;
+	}
+
+	/**
+	 * Default comment body for content-less reactions (likes and reposts).
+	 *
+	 * Mirrors the wording the wordpress-activitypub plugin uses for its
+	 * own like/repost rows, so themes that render activity feeds get a
+	 * consistent reading experience across protocols. The leading
+	 * ellipsis is intentional: most themes render the author name
+	 * immediately before the comment body, so the result reads as
+	 * "Jane Doe … liked this!".
+	 *
+	 * @param string $comment_type One of 'like', 'repost'.
+	 * @return string Translated excerpt, or empty string for unknown types.
+	 */
+	private static function default_reaction_excerpt( string $comment_type ): string {
+		switch ( $comment_type ) {
+			case 'like':
+				return \__( '… liked this!', 'atmosphere' );
+			case 'repost':
+				return \__( '… reposted this!', 'atmosphere' );
+			default:
+				return '';
+		}
 	}
 
 	/**
@@ -594,6 +762,13 @@ class Reaction_Sync {
 	/**
 	 * Find a WordPress post by its Bluesky AT-URI.
 	 *
+	 * Checks the single-record meta key first (fast, unique per post,
+	 * covers every non-thread post) and falls back to the thread-URI
+	 * index that Publisher populates for every record — root and
+	 * every reply — under the `teaser-thread` strategy. Without the
+	 * fallback, a like/repost targeting a reply post would silently
+	 * fail to resolve back to the originating WordPress post.
+	 *
 	 * @param string $uri AT-URI.
 	 * @return int|false
 	 */
@@ -608,6 +783,22 @@ class Reaction_Sync {
 				'meta_value'     => $uri, // phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_value
 				'posts_per_page' => 1,
 				'post_status'    => 'publish',
+				'has_password'   => false,
+				'fields'         => 'ids',
+			)
+		);
+
+		if ( ! empty( $posts ) ) {
+			return (int) $posts[0];
+		}
+
+		$posts = \get_posts(
+			array(
+				'meta_key'       => BskyPost::META_URI_INDEX, // phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_key
+				'meta_value'     => $uri, // phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_value
+				'posts_per_page' => 1,
+				'post_status'    => 'publish',
+				'has_password'   => false,
 				'fields'         => 'ids',
 			)
 		);

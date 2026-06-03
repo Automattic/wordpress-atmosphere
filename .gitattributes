@@ -2,6 +2,7 @@
 /.agents         export-ignore
 /.claude         export-ignore
 /.github         export-ignore
+/.wordpress-org  export-ignore
 /bin             export-ignore
 /vendor          export-ignore
 /docs            export-ignore
@@ -18,6 +19,10 @@
 /package-lock.json export-ignore
 /phpcs.xml        export-ignore
 /phpunit.xml.dist export-ignore
+/CHANGELOG.md     export-ignore
 /CLAUDE.md        export-ignore
 /AGENTS.md        export-ignore
 /README.md        export-ignore
+
+# GitHub linguist attributes
+/docs/**           linguist-documentation

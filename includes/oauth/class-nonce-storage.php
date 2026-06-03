@@ -13,6 +13,8 @@ namespace Atmosphere\OAuth;
 
 \defined( 'ABSPATH' ) || exit;
 
+use function Atmosphere\get_did;
+
 /**
  * Simple key-value nonce storage via transients.
  */
@@ -28,9 +30,14 @@ class Nonce_Storage {
 	/**
 	 * Time-to-live in seconds.
 	 *
+	 * Must stay shorter than the auth server's own DPoP nonce lifetime
+	 * (atproto-oauth-provider uses 180s) so we expire stored nonces
+	 * before the server starts rejecting them as stale and forcing an
+	 * extra `use_dpop_nonce` round-trip on every DPoP-bound request.
+	 *
 	 * @var int
 	 */
-	private const TTL = 300;
+	private const TTL = 150;
 
 	/**
 	 * Retrieve a stored nonce for a URL.
@@ -55,12 +62,20 @@ class Nonce_Storage {
 	}
 
 	/**
-	 * Hash a URL to a safe transient suffix.
+	 * Hash a URL + current account DID to a safe transient suffix.
+	 *
+	 * The connected DID participates in the key so a future
+	 * multi-account variant of the plugin (or a third-party fork) can't
+	 * silently share a nonce that was issued to account A with a
+	 * request signed by account B. When no DID is connected the URL
+	 * alone is sufficient — the only paths that hit this code without
+	 * a connection are pre-callback resolution requests, which the
+	 * auth server happily issues a fresh nonce for.
 	 *
 	 * @param string $url URL.
 	 * @return string 32-char hex string.
 	 */
 	private static function hash( string $url ): string {
-		return \md5( $url );
+		return \md5( get_did() . '|' . $url );
 	}
 }

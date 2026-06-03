@@ -5,113 +5,79 @@ description: INVOKE THIS SKILL before creating any PR to ensure compliance with 
 
 # ATmosphere PR Workflow
 
+Quick-reference for opening a PR. Full reference: [`docs/pull-request.md`](../../../docs/pull-request.md).
+
 ## Branch Naming
 
 | Prefix | Use |
 |--------|-----|
-| `add/{feature}` | New features |
-| `update/{feature}` | Iterating on existing features |
-| `fix/{bug}` | Bug fixes |
-| `try/{idea}` | Experimental ideas |
+| `add/{feature}` | New feature. |
+| `update/{feature}` | Iterating on an existing feature. |
+| `fix/{bug}` | Bug fix. |
+| `try/{idea}` | Experimental — open as draft. |
 
-**Reserved:** `release/{X.Y.Z}` (releases only), `trunk` (main branch).
+**Reserved:** `release/{X.Y.Z}` (owned by the release script), `trunk`.
 
-## Pre-PR Checks
-
-Before creating a PR, you **MUST** complete these steps in order:
-
-### 1. Run PHPCS and PHPUnit
 ```bash
-composer lint         # MUST pass with zero errors
-npm run env-test      # MUST pass all tests
+git checkout trunk && git pull origin trunk
+git checkout -b fix/something
 ```
-Fix any failures before proceeding. Do not create a PR with failing checks.
 
-### 2. Changelog entry
-Every PR **MUST** either:
-- Include a changelog file in `.github/changelog/` (see [Changelog](#changelog) below), **OR**
-- Add the `Skip Changelog` label to the PR
+## Required Before Opening
 
-**Add the changelog entry as part of your initial commit, not after the PR is created.** If neither changelog nor label is present, **stop and ask** the user which they prefer before creating the PR.
+1. **Lint + tests must pass.**
+   ```bash
+   composer lint
+   npm run env-test
+   ```
 
-### 3. Code review
-Delegate to the **code-review** agent to review all changes on the branch. Address any critical issues before proceeding.
+2. **Changelog entry or `Skip Changelog` label.**
+   ```bash
+   composer changelog:add
+   ```
+   Commit the entry on the same branch as the code change. End the message with punctuation. Write for end users — no class names, no internal jargon.
 
-## PR Creation
+   If neither a changelog entry nor a `Skip Changelog` label applies, **stop and ask the user** which they prefer. Don't open the PR with neither.
 
-**Every PR must:**
-- Assign `@me`
-- Include changelog entry OR "Skip Changelog" label
-- Pass PHPCS and PHPUnit (verified above)
-- Merge cleanly with trunk
+3. **Code review.** Delegate the diff to the **code-review** agent. Address every critical finding before opening the PR.
+
+## Opening the PR
 
 ```bash
-# Create PR (includes required assignment)
 gh pr create --assignee @me
 ```
 
-**Use the exact template from `.github/PULL_REQUEST_TEMPLATE.md`** — do not create custom formatting.
+Use `.github/PULL_REQUEST_TEMPLATE.md` as-is — don't invent custom formatting. The body must include:
 
-## Changelog
+- Summary explaining *why* (not just *what* — the diff covers that).
+- Testing instructions a reviewer can reproduce locally.
+- Screenshots for any visual change (before / after).
 
-**Write changelog messages for end users, not developers.** Users read these in the WordPress plugin update screen. Avoid internal jargon (OOM, batching, N+1), class names, or method names. Describe what the user experiences or what changed from their perspective.
+## Changelog Messages
+
+Write for end users; they appear in the WordPress update screen.
 
 ```
-✅ Fix automatic cleanup of old activities failing silently on sites with many items.
-✅ Add a Site Health check that warns when plugins are causing too many federation updates.
-❌ Fix collection purge methods to batch deletions and enforce a hard item cap.
-❌ Add Site Health test to detect excessive outbox activity rates.
+✅ Fix posts not appearing on Bluesky when published via Quick Edit.
+✅ Add option to disable standard.site document records.
+❌ Refactor Publisher class to handle edge case in applyWrites batch.
+❌ Fix TID collision in transformer output.
 ```
 
-End all changelog messages with punctuation.
+End with punctuation. Never mention AI tools or coding assistants.
 
-Add manually if forgotten:
-```bash
-composer changelog:add
-git add . && git commit -m "Add changelog entry" && git push
-```
+## When to Read the Full Docs
 
-See [release](../release/SKILL.md) for complete changelog details.
+Read [`docs/pull-request.md`](../../../docs/pull-request.md) when you need:
 
-## Workflow
+- The **full pre-PR checklist** (code preparation, testing, documentation, review).
+- **Commit message format** (the `Type: ` prefix table).
+- **Special situations** — Hotfix, Breaking Change, New Feature, Bug Fix, Experimental, Multi-PR Feature checklists.
+- **Common review feedback patterns** — what reviewers typically ask for and how to respond.
+- **Label reference**.
 
-### Create Branch
-```bash
-git checkout trunk && git pull origin trunk
-git checkout -b fix/notification-issue
-```
+## Related Skills
 
-### Pre-Push Checks
-```bash
-composer lint         # PHP standards (composer lint:fix to auto-fix)
-npm run env-test      # Run tests
-```
-
-### Keep Branch Updated
-```bash
-git fetch origin
-git rebase origin/trunk
-# Resolve conflicts if any
-git push --force-with-lease
-```
-
-## Special Cases
-
-**Hotfixes:** Branch `fix/critical-issue`, minimal changes, add "Hotfix" label, request expedited review.
-
-**Experimental:** Use `try/` prefix, mark as draft, get early feedback, convert to proper branch type once confirmed.
-
-**Multi-PR features:** Create tracking issue, link all PRs, use consistent naming (`add/feature-part-1`, etc.), merge in order.
-
-## Labels
-
-| Label | Use |
-|-------|-----|
-| `Bug` | Bug fixes |
-| `Enhancement` | New features |
-| `Documentation` | Doc updates |
-| `Code Quality` | Refactoring, cleanup, etc. |
-| `Skip Changelog` | No changelog needed |
-| `Needs Review` | Ready for review |
-| `In Progress` | Still working |
-| `Hotfix` | Urgent fix |
+- **release** — release script, patch releases, GitHub Release UI.
+- **dev** — running tests, linting, troubleshooting wp-env.
+- **code-style** — PHP conventions the reviewer will be checking against.

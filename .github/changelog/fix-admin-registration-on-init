@@ -1,4 +1,0 @@
-Significance: patch
-Type: fixed
-
-Fix the settings page, meta box, and backfill actions not loading after the previous admin hook change.

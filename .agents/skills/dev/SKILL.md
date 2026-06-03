@@ -5,90 +5,72 @@ description: Development workflows for WordPress ATmosphere plugin including wp-
 
 # ATmosphere Development Cycle
 
-Quick reference for common development workflows.
+Quick reference for everyday workflows. Full reference: [`docs/development-environment.md`](../../../docs/development-environment.md).
 
-## Quick Reference
+## Core Commands
 
-### Environment Management
 ```bash
-npm run env-start    # Start WordPress at http://localhost:8884.
-npm run env-stop     # Stop WordPress environment.
+# Environment.
+npm run env-start            # WordPress at http://localhost:8884.
+npm run env-stop
+
+# Tests.
+npm run env-test                            # All PHP tests.
+npm run env-test -- --filter=pattern        # Subset by name.
+npm run env-test -- --group=name            # Subset by @group.
+composer test                               # Local (needs MySQL).
+
+# Code quality.
+composer lint                # PHPCS check.
+composer lint:fix            # PHPCS auto-fix.
+composer dump-autoload       # Regenerate classmap after adding/renaming classes.
+
+# Release.
+npm run release              # Interactive release script. See the release skill.
 ```
 
-### Testing Commands
+## Default URLs
+
+- Frontend: http://localhost:8884
+- Admin: http://localhost:8884/wp-admin — user `admin`, password `password`.
+- Tests instance: http://localhost:8885
+
+## Typical Loop
+
 ```bash
-npm run env-test                      # Run all PHP tests.
-npm run env-test -- --filter=pattern  # Run tests matching pattern.
-composer test                         # Run tests locally (needs MySQL).
-vendor/bin/phpunit --filter=pattern   # Run matching tests locally.
-```
-
-### Code Quality
-```bash
-composer lint         # Check PHP coding standards.
-composer lint:fix     # Auto-fix PHP issues.
-```
-
-### Autoloader
-```bash
-composer dump-autoload    # Regenerate classmap after adding/renaming classes.
-```
-
-### Release
-```bash
-bin/release.sh [version]  # Build release ZIP with production deps only.
-```
-
-## Common Development Workflows
-
-### Initial Setup
-```bash
-npm install           # Installs @wordpress/env.
-composer install      # Installs PHP dependencies.
-npm run env-start     # WordPress at http://localhost:8884.
-```
-
-### Making Changes Workflow
-```bash
-# 1. Make code changes.
-
-# 2. If you added/renamed a class file:
+# 1. Make changes.
+# 2. If a class file was added/renamed:
 composer dump-autoload
 
-# 3. Run relevant tests.
+# 3. Run relevant tests + lint.
 npm run env-test -- --filter=FeatureName
-
-# 4. Check code quality.
 composer lint
 
-# 5. Commit.
-git add .
-git commit -m "Description"
+# 4. Commit.
 ```
 
-### Before Creating PR
+## WP-CLI Inside wp-env
+
 ```bash
-# Run full test suite.
-npm run env-test
-
-# Final lint check.
-composer lint
+npm run env -- run cli wp plugin list
+npm run env -- run cli wp option get atmosphere_settings
+npm run env -- run cli wp transient delete --all
+npm run env -- run cli wp db cli
 ```
 
-### Debugging Failing Tests
-```bash
-# Run with verbose output.
-npm run env-test -- --verbose --filter=test_name
+## When to Read the Full Docs
 
-# Stop on first failure.
-npm run env-test -- --stop-on-failure
-```
+Read [`docs/development-environment.md`](../../../docs/development-environment.md) when you need:
 
-## Key Files
+- **Prerequisites** (Node version, Docker setup, Composer, `gh` CLI).
+- **Troubleshooting** (Docker not running, port conflicts, DB connection errors, slow performance on macOS).
+- **Code coverage** (Xdebug coverage mode, HTML coverage reports).
+- **PHPUnit argument reference** (every flag we use).
+- **wp-env configuration** (overriding PHP / WP versions, mounts, custom ports).
 
-- `package.json` - Node dependencies (wp-env) and environment scripts.
-- `composer.json` - PHP dependencies, autoloading, lint/test scripts.
-- `.wp-env.json` - wp-env configuration.
-- `phpcs.xml` - PHP coding standards.
-- `phpunit.xml.dist` - PHPUnit configuration.
-- `.gitattributes` - Release archive exclusions.
+## Related Skills
+
+- **code-style** — PHP conventions, hooks, security, error handling.
+- **test** — PHPUnit patterns, the Publisher capture fixture, simulating in-flight races.
+- **pr** — pre-PR checklist, commit format, special situations.
+- **release** — `npm run release`, patch releases.
