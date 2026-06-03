@@ -12,6 +12,8 @@ namespace Atmosphere\Tests\Transformer;
 require_once __DIR__ . '/class-stub-parser.php';
 
 use WP_UnitTestCase;
+use Atmosphere\Atmosphere;
+use Atmosphere\Content_Parser\Registry;
 use Atmosphere\Transformer\Document;
 use Atmosphere\Transformer\Post;
 
@@ -21,12 +23,28 @@ use Atmosphere\Transformer\Post;
 class Test_Document extends WP_UnitTestCase {
 
 	/**
-	 * Test that content field is absent when parser filter returns null.
+	 * Start each test from an empty registry so selection is
+	 * deterministic, regardless of the bootstrap defaults.
+	 */
+	public function set_up(): void {
+		parent::set_up();
+		Registry::reset();
+	}
+
+	/**
+	 * Restore the bootstrap default parsers so later test files see the
+	 * registry in its normal state.
+	 */
+	public function tear_down(): void {
+		Registry::reset();
+		Atmosphere::register_default_content_parsers();
+		parent::tear_down();
+	}
+
+	/**
+	 * Test that content field is absent when no parser is registered.
 	 */
 	public function test_content_absent_without_parser() {
-		\remove_all_filters( 'atmosphere_content_parser' );
-		\add_filter( 'atmosphere_content_parser', '__return_null' );
-
 		$post = self::factory()->post->create_and_get(
 			array( 'post_content' => 'Some content here.' )
 		);
@@ -35,18 +53,13 @@ class Test_Document extends WP_UnitTestCase {
 		$record      = $transformer->transform();
 
 		$this->assertArrayNotHasKey( 'content', $record );
-
-		\remove_all_filters( 'atmosphere_content_parser' );
 	}
 
 	/**
-	 * Test that content field is present when a parser is registered via filter.
+	 * Test that content field is present when a parser is registered.
 	 */
-	public function test_content_present_with_parser_filter() {
-		\add_filter(
-			'atmosphere_content_parser',
-			static fn() => new Stub_Parser()
-		);
+	public function test_content_present_with_registered_parser() {
+		Registry::register( new Stub_Parser() );
 
 		$post = self::factory()->post->create_and_get(
 			array( 'post_content' => 'Hello world.' )
@@ -58,6 +71,26 @@ class Test_Document extends WP_UnitTestCase {
 		$this->assertArrayHasKey( 'content', $record );
 		$this->assertSame( 'test.stub.parser', $record['content']['$type'] );
 		$this->assertSame( 'Hello world.', $record['content']['text'] );
+	}
+
+	/**
+	 * The deprecated atmosphere_content_parser filter still selects a
+	 * parser, emitting a deprecation notice.
+	 */
+	public function test_legacy_filter_still_selects_parser() {
+		$this->setExpectedDeprecated( 'atmosphere_content_parser' );
+
+		\add_filter( 'atmosphere_content_parser', static fn() => new Stub_Parser() );
+
+		$post = self::factory()->post->create_and_get(
+			array( 'post_content' => 'Legacy hello.' )
+		);
+
+		$record = ( new Document( $post ) )->transform();
+
+		$this->assertArrayHasKey( 'content', $record );
+		$this->assertSame( 'test.stub.parser', $record['content']['$type'] );
+		$this->assertSame( 'Legacy hello.', $record['content']['text'] );
 
 		\remove_all_filters( 'atmosphere_content_parser' );
 	}
@@ -67,10 +100,7 @@ class Test_Document extends WP_UnitTestCase {
 	 * document records, even when the transformer is called directly.
 	 */
 	public function test_password_protected_document_is_redacted() {
-		\add_filter(
-			'atmosphere_content_parser',
-			static fn() => new Stub_Parser()
-		);
+		Registry::register( new Stub_Parser() );
 
 		$post = self::factory()->post->create_and_get(
 			array(
@@ -97,8 +127,6 @@ class Test_Document extends WP_UnitTestCase {
 		$this->assertArrayNotHasKey( 'tags', $record );
 		$this->assertArrayNotHasKey( 'bskyPostRef', $record );
 		$this->assertStringNotContainsString( 'CONFIDENTIAL', $json );
-
-		\remove_all_filters( 'atmosphere_content_parser' );
 	}
 
 	/**
@@ -175,38 +203,18 @@ class Test_Document extends WP_UnitTestCase {
 	}
 
 	/**
-	 * Test that returning null from the parser filter disables content.
+	 * A non-Content_Parser return from the legacy filter is ignored, and
+	 * the registry is consulted instead.
 	 */
-	public function test_content_disabled_with_null_filter() {
-		\add_filter( 'atmosphere_content_parser', '__return_null' );
+	public function test_invalid_legacy_filter_falls_through_to_registry() {
+		\add_filter( 'atmosphere_content_parser', static fn() => 'not a parser' );
 
 		$post = self::factory()->post->create_and_get(
 			array( 'post_content' => 'Some content.' )
 		);
 
-		$transformer = new Document( $post );
-		$record      = $transformer->transform();
-
-		$this->assertArrayNotHasKey( 'content', $record );
-
-		\remove_all_filters( 'atmosphere_content_parser' );
-	}
-
-	/**
-	 * Test that a non-Content_Parser return from the filter is ignored.
-	 */
-	public function test_content_ignored_with_invalid_parser() {
-		\add_filter(
-			'atmosphere_content_parser',
-			static fn() => 'not a parser'
-		);
-
-		$post = self::factory()->post->create_and_get(
-			array( 'post_content' => 'Some content.' )
-		);
-
-		$transformer = new Document( $post );
-		$record      = $transformer->transform();
+		// Registry is empty in set_up, so nothing applies.
+		$record = ( new Document( $post ) )->transform();
 
 		$this->assertArrayNotHasKey( 'content', $record );
 
@@ -222,7 +230,7 @@ class Test_Document extends WP_UnitTestCase {
 		$parser              = new Stub_Parser();
 		$parser->return_null = true;
 
-		\add_filter( 'atmosphere_content_parser', static fn() => $parser );
+		Registry::register( $parser );
 
 		$filter_called = false;
 		\add_filter(
@@ -243,7 +251,6 @@ class Test_Document extends WP_UnitTestCase {
 		$this->assertArrayNotHasKey( 'content', $record );
 		$this->assertFalse( $filter_called );
 
-		\remove_all_filters( 'atmosphere_content_parser' );
 		\remove_all_filters( 'atmosphere_document_content' );
 	}
 
@@ -251,10 +258,7 @@ class Test_Document extends WP_UnitTestCase {
 	 * Test that content field is absent for empty post content.
 	 */
 	public function test_content_absent_for_empty_content() {
-		\add_filter(
-			'atmosphere_content_parser',
-			static fn() => new Stub_Parser()
-		);
+		Registry::register( new Stub_Parser() );
 
 		$post = self::factory()->post->create_and_get(
 			array( 'post_content' => '' )
@@ -264,18 +268,13 @@ class Test_Document extends WP_UnitTestCase {
 		$record      = $transformer->transform();
 
 		$this->assertArrayNotHasKey( 'content', $record );
-
-		\remove_all_filters( 'atmosphere_content_parser' );
 	}
 
 	/**
 	 * Test the atmosphere_document_content filter can modify parsed content.
 	 */
 	public function test_document_content_filter() {
-		\add_filter(
-			'atmosphere_content_parser',
-			static fn() => new Stub_Parser()
-		);
+		Registry::register( new Stub_Parser() );
 
 		\add_filter(
 			'atmosphere_document_content',
@@ -295,7 +294,6 @@ class Test_Document extends WP_UnitTestCase {
 		$this->assertArrayHasKey( 'content', $record );
 		$this->assertTrue( $record['content']['modified'] );
 
-		\remove_all_filters( 'atmosphere_content_parser' );
 		\remove_all_filters( 'atmosphere_document_content' );
 	}
 

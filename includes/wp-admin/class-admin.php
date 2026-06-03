@@ -10,6 +10,8 @@ namespace Atmosphere\WP_Admin;
 \defined( 'ABSPATH' ) || exit;
 
 use Atmosphere\Atmosphere;
+use Atmosphere\Content_Parser\Registry;
+use Atmosphere\Content_Parser\WordPress_Html;
 use Atmosphere\Handle;
 use Atmosphere\OAuth\Client;
 use Atmosphere\Post_Types;
@@ -108,6 +110,18 @@ class Admin {
 
 		\register_setting(
 			'atmosphere',
+			Registry::OPTION_FORMAT,
+			array(
+				'type'              => 'string',
+				'description'       => 'Preferred standard.site content format (NSID), or empty for automatic.',
+				'default'           => '',
+				'sanitize_callback' => array( self::class, 'sanitize_content_format' ),
+				'show_in_rest'      => false,
+			)
+		);
+
+		\register_setting(
+			'atmosphere',
 			'atmosphere_support_post_types',
 			array(
 				'type'              => 'array',
@@ -185,6 +199,14 @@ class Admin {
 			'atmosphere_long_form_composition',
 			\__( 'Long-form posts', 'atmosphere' ),
 			array( self::class, 'render_long_form_composition_field' ),
+			'atmosphere',
+			'atmosphere_publishing'
+		);
+
+		\add_settings_field(
+			Registry::OPTION_FORMAT,
+			\__( 'Content format', 'atmosphere' ),
+			array( self::class, 'render_content_format_field' ),
 			'atmosphere',
 			'atmosphere_publishing'
 		);
@@ -537,6 +559,71 @@ class Admin {
 		$value = \is_string( $value ) ? \sanitize_text_field( $value ) : '';
 
 		return \in_array( $value, Atmosphere::LONG_FORM_STRATEGIES, true ) ? $value : 'link-card';
+	}
+
+	/**
+	 * Render the content-format select.
+	 */
+	public static function render_content_format_field(): void {
+		$current = (string) \get_option( Registry::OPTION_FORMAT, '' );
+		?>
+		<select name="<?php echo \esc_attr( Registry::OPTION_FORMAT ); ?>" id="<?php echo \esc_attr( Registry::OPTION_FORMAT ); ?>">
+			<option value="" <?php \selected( $current, '' ); ?>>
+				<?php \esc_html_e( 'Automatic (recommended)', 'atmosphere' ); ?>
+			</option>
+			<?php foreach ( Registry::all() as $type => $parser ) : ?>
+				<option value="<?php echo \esc_attr( $type ); ?>" <?php \selected( $current, $type ); ?>>
+					<?php echo \esc_html( self::content_format_label( $type ) ); ?>
+				</option>
+			<?php endforeach; ?>
+		</select>
+		<p class="description">
+			<?php \esc_html_e( 'The rich content format saved alongside each post for standard.site readers. "Automatic" picks the best available format. Some formats only apply to posts written in the block editor.', 'atmosphere' ); ?>
+		</p>
+		<?php
+	}
+
+	/**
+	 * Friendly label for a content-format NSID.
+	 *
+	 * Falls back to the raw NSID so third-party parsers still show a
+	 * meaningful (if technical) option.
+	 *
+	 * @param string $type Parser NSID.
+	 * @return string
+	 */
+	private static function content_format_label( string $type ): string {
+		switch ( $type ) {
+			case WordPress_Html::TYPE:
+				return \__( 'HTML', 'atmosphere' );
+			case 'at.markpub.markdown':
+				return \__( 'Markdown (Markpub)', 'atmosphere' );
+			case 'pub.leaflet.content':
+				return \__( 'Leaflet', 'atmosphere' );
+			case 'blog.pckt.content':
+				return \__( 'pckt', 'atmosphere' );
+			default:
+				return $type;
+		}
+	}
+
+	/**
+	 * Sanitize the content-format setting.
+	 *
+	 * Accepts an empty string (automatic) or a registered parser NSID;
+	 * anything else falls back to automatic.
+	 *
+	 * @param mixed $value Submitted value.
+	 * @return string
+	 */
+	public static function sanitize_content_format( $value ): string {
+		$value = \is_string( $value ) ? \sanitize_text_field( $value ) : '';
+
+		if ( '' === $value ) {
+			return '';
+		}
+
+		return Registry::has( $value ) ? $value : '';
 	}
 
 	/**

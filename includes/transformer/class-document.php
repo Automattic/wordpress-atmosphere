@@ -14,6 +14,7 @@ namespace Atmosphere\Transformer;
 \defined( 'ABSPATH' ) || exit;
 
 use Atmosphere\Content_Parser\Content_Parser;
+use Atmosphere\Content_Parser\Registry;
 use function Atmosphere\build_at_uri;
 use function Atmosphere\get_did;
 use function Atmosphere\sanitize_text;
@@ -216,16 +217,7 @@ class Document extends Base {
 			return null;
 		}
 
-		/**
-		 * Filters the content parser used for site.standard.document records.
-		 *
-		 * Return a Content_Parser instance to provide a parser.
-		 * Return null to disable the content field entirely.
-		 *
-		 * @param Content_Parser|null $parser The content parser. Default: null.
-		 * @param \WP_Post            $post   The WordPress post.
-		 */
-		$parser = \apply_filters( 'atmosphere_content_parser', null, $this->object );
+		$parser = $this->select_parser();
 
 		if ( ! $parser instanceof Content_Parser ) {
 			return null;
@@ -245,6 +237,40 @@ class Document extends Base {
 		 * @param Content_Parser $parser  The parser that produced the content.
 		 */
 		return \apply_filters( 'atmosphere_document_content', $content, $this->object, $parser );
+	}
+
+	/**
+	 * Select the content parser for this document.
+	 *
+	 * The registry chooses one parser based on the Content format
+	 * setting and parser priority. The deprecated `atmosphere_content_parser`
+	 * filter is still honored: if a callback returns a Content_Parser it
+	 * wins, preserving older integrations until the filter is removed.
+	 *
+	 * @return Content_Parser|null
+	 */
+	private function select_parser(): ?Content_Parser {
+		/**
+		 * Filters the content parser used for site.standard.document records.
+		 *
+		 * @deprecated unreleased Register parsers with {@see \Atmosphere\Content_Parser\Registry::register()} instead.
+		 *
+		 * @param Content_Parser|null $parser The content parser. Default: null.
+		 * @param \WP_Post            $post   The WordPress post.
+		 */
+		$legacy = \apply_filters( 'atmosphere_content_parser', null, $this->object );
+
+		if ( $legacy instanceof Content_Parser ) {
+			\_deprecated_hook(
+				'atmosphere_content_parser',
+				'unreleased',
+				'\Atmosphere\Content_Parser\Registry::register()'
+			);
+
+			return $legacy;
+		}
+
+		return Registry::select( $this->object );
 	}
 
 	/**

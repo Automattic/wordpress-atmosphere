@@ -18,7 +18,7 @@ namespace Atmosphere\Content_Parser;
 /**
  * Markpub (at.markpub.markdown) content parser.
  */
-class Markpub implements Content_Parser {
+class Markpub extends Parser_Base {
 
 	/**
 	 * {@inheritDoc}

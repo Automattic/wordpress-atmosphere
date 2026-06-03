@@ -4,15 +4,15 @@ Plugin-specific integrations that teach ATmosphere how to format the `content` f
 
 ## How it works
 
-`site.standard.document` records have an [open content union](../docs/content-formats.md) — any object with a valid `$type` is accepted. ATmosphere doesn't ship a default content parser; integrations register one by hooking the `atmosphere_content_parser` filter and returning an implementation of the `Content_Parser` interface (`includes/content-parser/interface-content-parser.php`).
+`site.standard.document` records have an [open content union](../docs/content-formats.md) — any object with a valid `$type` is accepted, but the field is **singular**: exactly one parser produces the `content` object per document.
 
-When the parser returns a content object, it is added to the document record under `content`. If no integration is loaded — or every integration returns `null` — the document is published without a `content` field, which is valid.
+ATmosphere ships several built-in parsers (`org.wordpress.html`, `at.markpub.markdown`, `pub.leaflet.content`, `blog.pckt.content`) and registers them on a central **registry**. Integrations add their own by calling `Registry::register()`. For each post, the registry selects one parser: the format chosen in the **Content format** setting if it applies, otherwise the lowest-priority-number parser whose `applies_to()` returns true. The selected parser's output is added to the record under `content`; if nothing applies, the document is published without a `content` field, which is valid.
 
 ## Adding an integration
 
 1. Create `class-{plugin-name}.php` in this directory.
 2. Register it from `class-load.php` behind a check that the target plugin is active.
-3. Hook `atmosphere_content_parser` to return a `Content_Parser` instance for posts your integration can handle.
+3. Register a `Content_Parser` on the registry. Extend `Parser_Base` to inherit the block-tree, rendered-HTML, image-blob, and grapheme helpers.
 
 ### Content_Parser interface
 
@@ -20,55 +20,48 @@ When the parser returns a content object, it is added to the document record und
 namespace Atmosphere\Content_Parser;
 
 interface Content_Parser {
-    /**
-     * Parse a post's content into an AT Protocol content object.
-     *
-     * The returned array must include a '$type' key identifying the
-     * lexicon NSID (e.g. 'org.wordpress.html', 'at.markpub.markdown').
-     */
-    public function parse( string $content, \WP_Post $post ): array;
+    /** The lexicon NSID this parser produces (e.g. 'org.wordpress.html'). */
+    public function get_type(): string;
+
+    /** Whether this parser can produce a record for the given post. */
+    public function applies_to( \WP_Post $post ): bool;
 
     /**
-     * The lexicon NSID this parser produces.
+     * Parse a post's content into an AT Protocol content object, or null
+     * to omit the content field. The returned array must include a
+     * '$type' key identifying the lexicon NSID.
      */
-    public function get_type(): string;
+    public function parse( string $content, \WP_Post $post ): ?array;
 }
 ```
 
-### Example: `org.wordpress.html`
+### Example
 
-**`class-wordpress-html.php`**
+**`class-acme-format.php`**
 
 ```php
 <?php
 namespace Atmosphere\Integrations;
 
-use Atmosphere\Content_Parser\Content_Parser;
+use Atmosphere\Content_Parser\Parser_Base;
 
 \defined( 'ABSPATH' ) || exit;
 
-class WordPress_HTML implements Content_Parser {
-
-    public static function init(): void {
-        \add_filter(
-            'atmosphere_content_parser',
-            static function ( $parser, \WP_Post $post ): ?Content_Parser {
-                return $parser ?? new self();
-            },
-            10,
-            2
-        );
-    }
-
-    public function parse( string $content, \WP_Post $post ): array {
-        return array(
-            '$type' => $this->get_type(),
-            'html'  => (string) \apply_filters( 'the_content', $content ),
-        );
-    }
+class Acme_Format extends Parser_Base {
 
     public function get_type(): string {
-        return 'org.wordpress.html';
+        return 'com.acme.content';
+    }
+
+    public function applies_to( \WP_Post $post ): bool {
+        return $this->has_blocks( $post );
+    }
+
+    public function parse( string $content, \WP_Post $post ): ?array {
+        return array(
+            '$type' => $this->get_type(),
+            'html'  => $this->get_rendered_html( $post ),
+        );
     }
 }
 ```
@@ -77,24 +70,25 @@ class WordPress_HTML implements Content_Parser {
 
 ```php
 public static function register(): void {
-    WordPress_HTML::init();
+    \Atmosphere\Content_Parser\Registry::register( new Acme_Format(), 30 );
 }
 ```
+
+`register()` takes an optional priority (default `20`; lower wins). The built-in `org.wordpress.html` parser registers at `10` so it stays the automatic default; register above `10` to defer to it, or below to take precedence.
 
 ## Available filters
 
 | Filter | Arguments | Description |
 |---|---|---|
-| `atmosphere_content_parser` | `Content_Parser\|null $parser`, `WP_Post $post` | Return a `Content_Parser` instance to provide one, or `null` to skip the content field. |
 | `atmosphere_document_content` | `array $content`, `WP_Post $post`, `Content_Parser $parser` | Last-chance modification of the parsed content object before it is added to the document record. |
+| `atmosphere_content_parser` *(deprecated)* | `Content_Parser\|null $parser`, `WP_Post $post` | **Deprecated.** Returning a `Content_Parser` still works (it wins over the registry) but emits a deprecation notice. Use `Registry::register()` instead. |
 
 ## Conventions
 
-- One class per plugin, methods static unless the parser holds state.
+- One class per plugin; extend `Parser_Base` so the WordPress-coupling lives in one place.
 - File naming: `class-{plugin-name}.php`.
-- Namespace: `Atmosphere\Integrations` for the loader class; parsers can implement `Atmosphere\Content_Parser\Content_Parser`.
+- Namespace: `Atmosphere\Integrations` for the loader class; parsers live in (or implement) `Atmosphere\Content_Parser`.
 - Always guard with a plugin check (`\defined()`, `\class_exists()`, etc.) in `class-load.php`.
-- Return the existing `$parser` unchanged from `atmosphere_content_parser` when the post isn't yours, so multiple integrations can coexist.
 
 ## Further reading
 

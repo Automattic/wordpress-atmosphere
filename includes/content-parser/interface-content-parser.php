@@ -42,4 +42,18 @@ interface Content_Parser {
 	 * @return string e.g. 'at.markpub.markdown'.
 	 */
 	public function get_type(): string;
+
+	/**
+	 * Whether this parser can produce a record for the given post.
+	 *
+	 * The registry skips parsers that report false, so a format that
+	 * needs a specific input shape (e.g. a block-tree parser on a
+	 * classic-editor post) can opt out rather than emit a degraded or
+	 * invalid record. Tier-1 parsers that work from rendered content
+	 * typically return true unconditionally.
+	 *
+	 * @param \WP_Post $post The WordPress post object.
+	 * @return bool
+	 */
+	public function applies_to( \WP_Post $post ): bool;
 }

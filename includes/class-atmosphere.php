@@ -9,7 +9,11 @@ namespace Atmosphere;
 
 \defined( 'ABSPATH' ) || exit;
 
+use Atmosphere\Content_Parser\Leaflet;
 use Atmosphere\Content_Parser\Markpub;
+use Atmosphere\Content_Parser\Pckt;
+use Atmosphere\Content_Parser\Registry;
+use Atmosphere\Content_Parser\WordPress_Html;
 use Atmosphere\OAuth\Client;
 use Atmosphere\Transformer\Comment;
 use Atmosphere\Transformer\Document;
@@ -119,11 +123,11 @@ class Atmosphere {
 		\add_action( 'template_redirect', array( $this, 'serve_wellknown_atproto_did' ) );
 		\add_action( 'template_redirect', array( $this, 'serve_wellknown_publication' ) );
 
-		// Plugin integrations.
-		Load::init();
+		// Register the built-in content parsers.
+		self::register_default_content_parsers();
 
-		// Default content parser (Markpub).
-		\add_filter( 'atmosphere_content_parser', static fn() => new Markpub() );
+		// Plugin integrations (may register additional parsers).
+		Load::init();
 
 		// JSON preview for AT Protocol records.
 		\add_action( 'template_redirect', array( $this, 'preview' ) );
@@ -345,6 +349,24 @@ class Atmosphere {
 		$post = \get_queried_object();
 
 		return $post instanceof \WP_Post && is_post_publishable( $post );
+	}
+
+	/**
+	 * Register the built-in content parsers on the registry.
+	 *
+	 * The WordPress HTML parser is the automatic winner (lowest priority
+	 * number); it applies to any post and carries no blob dependency.
+	 * The block-tree formats register at the same, higher number and
+	 * only apply to block-editor posts, so a site can opt into them via
+	 * the Content format setting.
+	 *
+	 * @return void
+	 */
+	public static function register_default_content_parsers(): void {
+		Registry::register( new WordPress_Html(), 10 );
+		Registry::register( new Markpub(), 20 );
+		Registry::register( new Leaflet(), 20 );
+		Registry::register( new Pckt(), 20 );
 	}
 
 	/**
