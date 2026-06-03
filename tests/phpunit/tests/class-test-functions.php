@@ -7,11 +7,11 @@
 
 namespace Atmosphere\Tests;
 
-use WP_UnitTestCase;
 use function Atmosphere\parse_at_uri;
 use function Atmosphere\build_at_uri;
 use function Atmosphere\sanitize_text;
 use function Atmosphere\truncate_text;
+use function Atmosphere\truncate_graphemes;
 use function Atmosphere\to_iso8601;
 use function Atmosphere\is_post_publishable;
 use function Atmosphere\get_connection;
@@ -19,7 +19,7 @@ use function Atmosphere\get_connection;
 /**
  * Function tests.
  */
-class Test_Functions extends WP_UnitTestCase {
+class Test_Functions extends \WP_UnitTestCase {
 
 	/**
 	 * Test parsing a valid AT-URI.
@@ -102,6 +102,99 @@ class Test_Functions extends WP_UnitTestCase {
 	 */
 	public function test_truncate_text_short() {
 		$this->assertSame( 'Hello', truncate_text( 'Hello', 300 ) );
+	}
+
+	/**
+	 * Returns text unchanged when it already fits the grapheme budget.
+	 */
+	public function test_truncate_graphemes_returns_short_text_unchanged() {
+		$this->assertSame( 'Hello', truncate_graphemes( 'Hello', 500 ) );
+	}
+
+	/**
+	 * Hard-clamps plain ASCII text at the grapheme limit and does NOT
+	 * append an ellipsis — canonical fields like publication `name`
+	 * must not have their grapheme budget burned by a marker.
+	 */
+	public function test_truncate_graphemes_hard_clamps_without_marker() {
+		$text   = \str_repeat( 'a', 600 );
+		$result = truncate_graphemes( $text, 500 );
+
+		$this->assertSame( 500, \mb_strlen( $result ) );
+		$this->assertStringEndsNotWith( '…', $result );
+		$this->assertStringEndsNotWith( '...', $result );
+	}
+
+	/**
+	 * Empty input is returned unchanged regardless of the limit.
+	 */
+	public function test_truncate_graphemes_returns_empty_string_unchanged() {
+		$this->assertSame( '', truncate_graphemes( '', 500 ) );
+		$this->assertSame( '', truncate_graphemes( '', 0 ) );
+	}
+
+	/**
+	 * Text exactly at the limit (`length === max_graphemes`) is returned
+	 * unchanged — the comparison is inclusive.
+	 */
+	public function test_truncate_graphemes_returns_text_at_exact_limit_unchanged() {
+		$text = \str_repeat( 'x', 500 );
+		$this->assertSame( $text, truncate_graphemes( $text, 500 ) );
+	}
+
+	/**
+	 * A negative limit clamps to an empty string. Without the guard,
+	 * `grapheme_substr( 'hello', 0, -1 )` returns `'hell'` — the
+	 * substring API interprets negative length as "drop N from the
+	 * end", which is the opposite of a clamp.
+	 */
+	public function test_truncate_graphemes_returns_empty_for_negative_limit() {
+		$this->assertSame( '', truncate_graphemes( 'hello', -1 ) );
+		$this->assertSame( '', truncate_graphemes( 'hello', -500 ) );
+	}
+
+	/**
+	 * Multi-codepoint grapheme clusters (a ZWJ emoji family) count as
+	 * one grapheme each under `intl`. A string of 5 family emoji
+	 * survives a 500-grapheme clamp intact even though it's many
+	 * code points.
+	 *
+	 * Requires the `intl` extension.
+	 */
+	public function test_truncate_graphemes_counts_zwj_emoji_as_single_graphemes() {
+		if ( ! \function_exists( 'grapheme_strlen' ) ) {
+			$this->markTestSkipped( 'intl extension required for grapheme counting.' );
+		}
+
+		// "Family: man, woman, girl" — one grapheme, five code points.
+		$family = "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}";
+		$text   = \str_repeat( $family, 5 );
+
+		$result = truncate_graphemes( $text, 500 );
+
+		$this->assertSame( $text, $result );
+		$this->assertSame( 5, \grapheme_strlen( $result ) );
+	}
+
+	/**
+	 * Clamping in the middle of a grapheme cluster must keep the
+	 * cluster intact — never produce a broken final emoji. The clamp
+	 * lands at the boundary, dropping the partial cluster entirely.
+	 */
+	public function test_truncate_graphemes_preserves_cluster_boundaries() {
+		if ( ! \function_exists( 'grapheme_strlen' ) ) {
+			$this->markTestSkipped( 'intl extension required for grapheme counting.' );
+		}
+
+		$family = "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}";
+		// 10 families, ~50 code points, but exactly 10 graphemes.
+		$text = \str_repeat( $family, 10 );
+
+		// Clamp to 3 graphemes: result must be exactly 3 family glyphs.
+		$result = truncate_graphemes( $text, 3 );
+
+		$this->assertSame( 3, \grapheme_strlen( $result ) );
+		$this->assertSame( \str_repeat( $family, 3 ), $result );
 	}
 
 	/**

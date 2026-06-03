@@ -15,6 +15,7 @@ namespace Atmosphere\Transformer;
 use function Atmosphere\build_at_uri;
 use function Atmosphere\get_did;
 use function Atmosphere\sanitize_text;
+use function Atmosphere\truncate_graphemes;
 
 /**
  * Standard.site publication transformer.
@@ -50,15 +51,23 @@ class Publication extends Base {
 	 * @return array site.standard.publication record.
 	 */
 	public function transform(): array {
-		// WordPress stores the site name and tagline HTML-entity encoded
-		// (esc_html at save time). sanitize_text() strips tags, decodes
-		// those entities, and collapses whitespace, so the record carries
-		// clean plain text rather than codes like `&#039;`.
+		/*
+		 * WordPress stores the site name and tagline HTML-entity encoded
+		 * (esc_html at save time). sanitize_text() strips tags, decodes
+		 * those entities, and collapses whitespace, so the record carries
+		 * clean plain text rather than codes like `&#039;`.
+		 *
+		 * The site.standard.publication lexicon caps `name` at 500
+		 * graphemes and `description` at 3000 graphemes. WordPress puts
+		 * no such limit on `blogname` / `blogdescription`, so a long
+		 * tagline would otherwise produce a non-spec record and get
+		 * rejected by the PDS at sync time.
+		 */
 		$record = array(
 			'$type'       => 'site.standard.publication',
 			'url'         => \home_url( '/' ),
-			'name'        => sanitize_text( \get_bloginfo( 'name' ) ),
-			'description' => sanitize_text( \get_bloginfo( 'description' ) ),
+			'name'        => truncate_graphemes( sanitize_text( \get_bloginfo( 'name' ) ), 500 ),
+			'description' => truncate_graphemes( sanitize_text( \get_bloginfo( 'description' ) ), 3000 ),
 		);
 
 		// Site icon. The site.standard.publication lexicon expects a square

@@ -72,6 +72,64 @@ function sanitize_text( string $text ): string {
 }
 
 /**
+ * Hard-clamp a string to an AT Protocol `maxGraphemes` limit.
+ *
+ * Uses `grapheme_substr` when the `intl` extension is loaded — the
+ * spec-exact form, matching the way Lexicon counts characters. Falls
+ * back to `mb_substr` (code points) otherwise: every grapheme is at
+ * least one code point, so a code-point clamp at `$max_graphemes` is
+ * always within the grapheme limit, just sometimes more conservative
+ * than needed for emoji-heavy or combining-character text.
+ *
+ * A non-positive `$max_graphemes` returns an empty string. Both
+ * `grapheme_substr()` and `mb_substr()` would otherwise interpret a
+ * negative length as "drop the last N characters" — not a clamp, and
+ * the opposite of what every caller wants.
+ *
+ * No marker is appended — used for canonical fields like the
+ * `site.standard.publication` `name` / `description`, where adding
+ * `…` would mislead consumers about the original length and burn
+ * grapheme budget. Callers that want an ellipsis on excerpts should
+ * use {@see truncate_text()} instead.
+ *
+ * @param string $text          Text to clamp.
+ * @param int    $max_graphemes Maximum graphemes.
+ * @return string
+ */
+function truncate_graphemes( string $text, int $max_graphemes ): string {
+	if ( $max_graphemes <= 0 ) {
+		return '';
+	}
+
+	if ( \function_exists( 'grapheme_strlen' ) ) {
+		$length = \grapheme_strlen( $text );
+
+		/*
+		 * `grapheme_strlen()` returns null for invalid UTF-8. Falling
+		 * through to the `mb_*` branch instead of returning unchanged
+		 * keeps the clamp load-bearing — a malformed-and-oversized
+		 * blogname must still leave with a bounded length even if the
+		 * grapheme count is indeterminate.
+		 */
+		if ( null !== $length ) {
+			if ( $length <= $max_graphemes ) {
+				return $text;
+			}
+			$clamped = \grapheme_substr( $text, 0, $max_graphemes );
+			if ( \is_string( $clamped ) ) {
+				return $clamped;
+			}
+		}
+	}
+
+	if ( \mb_strlen( $text ) <= $max_graphemes ) {
+		return $text;
+	}
+
+	return \mb_substr( $text, 0, $max_graphemes );
+}
+
+/**
  * Truncate text to a character limit, breaking at word boundaries.
  *
  * @param string $text   Text to truncate.
