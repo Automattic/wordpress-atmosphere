@@ -52,6 +52,8 @@ interface Content_Parser {
 	 * invalid record. Tier-1 parsers that work from rendered content
 	 * typically return true unconditionally.
 	 *
+	 * @since unreleased
+	 *
 	 * @param \WP_Post $post The WordPress post object.
 	 * @return bool
 	 */

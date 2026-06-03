@@ -6,7 +6,8 @@
  * list. Covers the common 1:1 blocks (paragraph, heading, image, list,
  * quote, code); container blocks (group/columns) are flattened;
  * everything else is skipped. Only the inline mode is emitted — the
- * >20KB blob/extended mode and richtext facets are follow-ups.
+ * >20KB blob/extended mode, richtext facets, and per-field grapheme
+ * caps are follow-ups.
  *
  * @see did:plc:revjuqmkvrw6fnkxppqtszpv (com.atproto.lexicon.schema)
  *

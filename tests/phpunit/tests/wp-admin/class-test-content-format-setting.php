@@ -11,7 +11,6 @@ namespace Atmosphere\Tests\WP_Admin;
 
 require_once __DIR__ . '/../content-parser/class-fake-parser.php';
 
-use WP_UnitTestCase;
 use Atmosphere\Atmosphere;
 use Atmosphere\Content_Parser\Registry;
 use Atmosphere\Tests\Content_Parser\Fake_Parser;
@@ -20,7 +19,7 @@ use Atmosphere\WP_Admin\Admin;
 /**
  * Content format setting tests.
  */
-class Test_Content_Format_Setting extends WP_UnitTestCase {
+class Test_Content_Format_Setting extends \WP_UnitTestCase {
 
 	/**
 	 * Register a single known parser so sanitization is deterministic.

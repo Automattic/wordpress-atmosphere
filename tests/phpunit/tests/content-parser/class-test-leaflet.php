@@ -11,13 +11,13 @@ namespace Atmosphere\Tests\Content_Parser;
 
 require_once __DIR__ . '/trait-block-fixtures.php';
 
-use WP_UnitTestCase;
 use Atmosphere\Content_Parser\Leaflet;
+use Atmosphere\Content_Parser\Parser_Base;
 
 /**
  * Leaflet parser tests.
  */
-class Test_Leaflet extends WP_UnitTestCase {
+class Test_Leaflet extends \WP_UnitTestCase {
 
 	use Block_Fixtures;
 
@@ -33,6 +33,7 @@ class Test_Leaflet extends WP_UnitTestCase {
 	 */
 	public function set_up(): void {
 		parent::set_up();
+		Parser_Base::flush_block_cache();
 		$this->parser = new Leaflet();
 	}
 
@@ -125,6 +126,51 @@ class Test_Leaflet extends WP_UnitTestCase {
 			$image['aspectRatio']
 		);
 		$this->assertSame( 'A photo', $image['alt'] );
+	}
+
+	/**
+	 * An ordered list maps to the orderedList block.
+	 */
+	public function test_maps_ordered_list() {
+		$post   = self::factory()->post->create_and_get(
+			array( 'post_content' => $this->ordered_list_block() )
+		);
+		$blocks = $this->parser->parse( $post->post_content, $post )['pages'][0]['blocks'];
+
+		$this->assertNotNull( $this->find_block( $blocks, 'pub.leaflet.blocks.orderedList' ) );
+	}
+
+	/**
+	 * Container blocks (group/columns) are flattened to their children.
+	 */
+	public function test_flattens_container_blocks() {
+		$post   = self::factory()->post->create_and_get(
+			array( 'post_content' => $this->grouped_paragraph_block() )
+		);
+		$blocks = $this->parser->parse( $post->post_content, $post )['pages'][0]['blocks'];
+
+		$text = $this->find_block( $blocks, 'pub.leaflet.blocks.text' );
+		$this->assertNotNull( $text, 'Paragraph inside a group should surface as a top-level text block.' );
+		$this->assertSame( 'Grouped paragraph.', $text['plaintext'] );
+	}
+
+	/**
+	 * An image whose blob can't be resolved is skipped (the lexicon
+	 * requires both the blob and an aspect ratio), while other blocks
+	 * still map.
+	 */
+	public function test_image_skipped_when_blob_unresolvable() {
+		$attachment_id = $this->make_unresolvable_image_attachment();
+		$post          = self::factory()->post->create_and_get(
+			array(
+				'post_content' => '<!-- wp:paragraph --><p>Body.</p><!-- /wp:paragraph -->' . $this->image_block( $attachment_id ),
+			)
+		);
+
+		$blocks = $this->parser->parse( $post->post_content, $post )['pages'][0]['blocks'];
+
+		$this->assertNull( $this->find_block( $blocks, 'pub.leaflet.blocks.image' ) );
+		$this->assertNotNull( $this->find_block( $blocks, 'pub.leaflet.blocks.text' ) );
 	}
 
 	/**

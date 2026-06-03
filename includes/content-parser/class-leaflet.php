@@ -6,7 +6,8 @@
  * `linearDocument` page. Covers the common 1:1 blocks (paragraph,
  * heading, image, list, quote, code); container blocks (group/columns)
  * are flattened; everything else is skipped. Rich-text facets are not
- * emitted yet, so text-bearing blocks carry plain text only.
+ * emitted yet, so text-bearing blocks carry plain text only, and
+ * per-field grapheme caps are deferred to that same follow-up.
  *
  * @see https://github.com/hyperlink-academy/leaflet/tree/main/lexicons/pub/leaflet
  *

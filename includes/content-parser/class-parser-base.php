@@ -37,6 +37,20 @@ abstract class Parser_Base implements Content_Parser {
 	private static array $block_cache = array();
 
 	/**
+	 * Clear the parsed-block cache.
+	 *
+	 * The cache assumes a post's content is stable for the life of a
+	 * request. Tests that mutate post content and re-parse, or that
+	 * reuse recycled post IDs, should call this between parses.
+	 *
+	 * @internal
+	 * @return void
+	 */
+	public static function flush_block_cache(): void {
+		self::$block_cache = array();
+	}
+
+	/**
 	 * {@inheritDoc}
 	 *
 	 * Defaults to true: most parsers can render something for any post.
@@ -95,16 +109,28 @@ abstract class Parser_Base implements Content_Parser {
 	final protected function get_rendered_html( \WP_Post $post ): string {
 		global $wp_query;
 
-		$previous = $wp_query->post ?? null;
+		/*
+		 * setup_postdata() works through the global $wp_query, which can
+		 * be absent in cron / WP-CLI publish paths. Only set up and
+		 * restore the loop context when a real query exists; otherwise
+		 * run the filter directly so those paths don't fatal.
+		 */
+		$has_query = $wp_query instanceof \WP_Query;
+		$previous  = $has_query ? $wp_query->post : null;
 
-		\setup_postdata( $post );
+		if ( $has_query ) {
+			\setup_postdata( $post );
+		}
+
 		// phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Core WordPress filter.
 		$html = \apply_filters( 'the_content', $post->post_content );
 
-		if ( $previous instanceof \WP_Post ) {
-			\setup_postdata( $previous );
-		} else {
-			\wp_reset_postdata();
+		if ( $has_query ) {
+			if ( $previous instanceof \WP_Post ) {
+				\setup_postdata( $previous );
+			} else {
+				\wp_reset_postdata();
+			}
 		}
 
 		return \trim( $html );

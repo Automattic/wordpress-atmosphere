@@ -64,6 +64,7 @@ class Registry {
 	/**
 	 * Reset the registry. Test helper.
 	 *
+	 * @internal
 	 * @return void
 	 */
 	public static function reset(): void {

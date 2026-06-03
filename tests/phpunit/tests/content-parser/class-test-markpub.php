@@ -40,6 +40,17 @@ class Test_Markpub extends WP_UnitTestCase {
 	}
 
 	/**
+	 * Markpub renders any post, so it applies unconditionally.
+	 */
+	public function test_applies_to_any_post() {
+		$post = self::factory()->post->create_and_get(
+			array( 'post_content' => 'Plain classic content.' )
+		);
+
+		$this->assertTrue( $this->parser->applies_to( $post ) );
+	}
+
+	/**
 	 * Test parse returns correct top-level structure.
 	 */
 	public function test_parse_returns_correct_structure() {

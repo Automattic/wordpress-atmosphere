@@ -11,13 +11,13 @@ namespace Atmosphere\Tests\Content_Parser;
 
 require_once __DIR__ . '/trait-block-fixtures.php';
 
-use WP_UnitTestCase;
 use Atmosphere\Content_Parser\Pckt;
+use Atmosphere\Content_Parser\Parser_Base;
 
 /**
  * Pckt parser tests.
  */
-class Test_Pckt extends WP_UnitTestCase {
+class Test_Pckt extends \WP_UnitTestCase {
 
 	use Block_Fixtures;
 
@@ -33,6 +33,7 @@ class Test_Pckt extends WP_UnitTestCase {
 	 */
 	public function set_up(): void {
 		parent::set_up();
+		Parser_Base::flush_block_cache();
 		$this->parser = new Pckt();
 	}
 
@@ -129,6 +130,50 @@ class Test_Pckt extends WP_UnitTestCase {
 			),
 			$image['attrs']['aspectRatio']
 		);
+	}
+
+	/**
+	 * An ordered list maps to the orderedList block.
+	 */
+	public function test_maps_ordered_list() {
+		$post  = self::factory()->post->create_and_get(
+			array( 'post_content' => $this->ordered_list_block() )
+		);
+		$items = $this->parser->parse( $post->post_content, $post )['items'];
+
+		$this->assertNotNull( $this->find_item( $items, 'blog.pckt.block.orderedList' ) );
+	}
+
+	/**
+	 * Container blocks (group/columns) are flattened to their children.
+	 */
+	public function test_flattens_container_blocks() {
+		$post  = self::factory()->post->create_and_get(
+			array( 'post_content' => $this->grouped_paragraph_block() )
+		);
+		$items = $this->parser->parse( $post->post_content, $post )['items'];
+
+		$text = $this->find_item( $items, 'blog.pckt.block.text' );
+		$this->assertNotNull( $text, 'Paragraph inside a group should surface as a top-level text block.' );
+		$this->assertSame( 'Grouped paragraph.', $text['plaintext'] );
+	}
+
+	/**
+	 * When the blob upload fails, the image degrades to a plain URL src
+	 * (pckt only requires attrs.src) rather than being dropped.
+	 */
+	public function test_image_degrades_to_url_without_blob() {
+		$attachment_id = $this->make_unresolvable_image_attachment();
+		$post          = self::factory()->post->create_and_get(
+			array( 'post_content' => $this->image_block( $attachment_id ) )
+		);
+
+		$image = $this->find_item( $this->parser->parse( $post->post_content, $post )['items'], 'blog.pckt.block.image' );
+
+		$this->assertNotNull( $image );
+		$this->assertArrayNotHasKey( 'blob', $image['attrs'] );
+		$this->assertStringStartsNotWith( 'blob:', $image['attrs']['src'] );
+		$this->assertNotSame( '', $image['attrs']['src'] );
 	}
 
 	/**

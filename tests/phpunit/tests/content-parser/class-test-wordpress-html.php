@@ -9,13 +9,12 @@
 
 namespace Atmosphere\Tests\Content_Parser;
 
-use WP_UnitTestCase;
 use Atmosphere\Content_Parser\WordPress_Html;
 
 /**
  * WordPress HTML parser tests.
  */
-class Test_WordPress_Html extends WP_UnitTestCase {
+class Test_WordPress_Html extends \WP_UnitTestCase {
 
 	/**
 	 * Parser instance.

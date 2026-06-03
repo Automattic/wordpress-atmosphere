@@ -11,14 +11,13 @@ namespace Atmosphere\Tests\Content_Parser;
 
 require_once __DIR__ . '/class-fake-parser.php';
 
-use WP_UnitTestCase;
 use Atmosphere\Atmosphere;
 use Atmosphere\Content_Parser\Registry;
 
 /**
  * Registry tests.
  */
-class Test_Registry extends WP_UnitTestCase {
+class Test_Registry extends \WP_UnitTestCase {
 
 	/**
 	 * Start from an empty registry.

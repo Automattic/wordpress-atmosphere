@@ -10,17 +10,18 @@
 namespace Atmosphere\Tests\Transformer;
 
 require_once __DIR__ . '/class-stub-parser.php';
+require_once __DIR__ . '/../content-parser/class-fake-parser.php';
 
-use WP_UnitTestCase;
 use Atmosphere\Atmosphere;
 use Atmosphere\Content_Parser\Registry;
+use Atmosphere\Tests\Content_Parser\Fake_Parser;
 use Atmosphere\Transformer\Document;
 use Atmosphere\Transformer\Post;
 
 /**
  * Document transformer tests.
  */
-class Test_Document extends WP_UnitTestCase {
+class Test_Document extends \WP_UnitTestCase {
 
 	/**
 	 * Start each test from an empty registry so selection is
@@ -93,6 +94,66 @@ class Test_Document extends WP_UnitTestCase {
 		$this->assertSame( 'Legacy hello.', $record['content']['text'] );
 
 		\remove_all_filters( 'atmosphere_content_parser' );
+	}
+
+	/**
+	 * The legacy filter wins over a registered parser.
+	 */
+	public function test_legacy_filter_beats_registry() {
+		$this->setExpectedDeprecated( 'atmosphere_content_parser' );
+
+		Registry::register( new Fake_Parser( 'test.registry' ) );
+		\add_filter( 'atmosphere_content_parser', static fn() => new Stub_Parser() );
+
+		$post = self::factory()->post->create_and_get(
+			array( 'post_content' => 'Hi.' )
+		);
+
+		$record = ( new Document( $post ) )->transform();
+
+		$this->assertSame( 'test.stub.parser', $record['content']['$type'] );
+
+		\remove_all_filters( 'atmosphere_content_parser' );
+	}
+
+	/**
+	 * A null return from the legacy filter does not emit a deprecation;
+	 * the registry is used instead. (No setExpectedDeprecated here — an
+	 * unexpected deprecation would fail the test.)
+	 */
+	public function test_null_legacy_filter_does_not_deprecate() {
+		Registry::register( new Stub_Parser() );
+		\add_filter( 'atmosphere_content_parser', '__return_null' );
+
+		$post = self::factory()->post->create_and_get(
+			array( 'post_content' => 'Hi.' )
+		);
+
+		$record = ( new Document( $post ) )->transform();
+
+		$this->assertSame( 'test.stub.parser', $record['content']['$type'] );
+
+		\remove_all_filters( 'atmosphere_content_parser' );
+	}
+
+	/**
+	 * The atmosphere_content_format option selects the active parser end
+	 * to end through Document::transform().
+	 */
+	public function test_content_format_option_selects_parser() {
+		Registry::register( new Fake_Parser( 'test.default' ), 10 );
+		Registry::register( new Fake_Parser( 'test.chosen' ), 20 );
+		\update_option( Registry::OPTION_FORMAT, 'test.chosen' );
+
+		$post = self::factory()->post->create_and_get(
+			array( 'post_content' => 'Hi.' )
+		);
+
+		$record = ( new Document( $post ) )->transform();
+
+		$this->assertSame( 'test.chosen', $record['content']['$type'] );
+
+		\delete_option( Registry::OPTION_FORMAT );
 	}
 
 	/**
