@@ -9,33 +9,33 @@
 
 namespace Atmosphere\Tests\Content_Parser;
 
-use Atmosphere\Content_Parser\WordPress_Html;
+use Atmosphere\Content_Parser\Html;
 
 /**
  * WordPress HTML parser tests.
  */
-class Test_WordPress_Html extends \WP_UnitTestCase {
+class Test_Html extends \WP_UnitTestCase {
 
 	/**
 	 * Parser instance.
 	 *
-	 * @var WordPress_Html
+	 * @var Html
 	 */
-	private WordPress_Html $parser;
+	private Html $parser;
 
 	/**
 	 * Set up fixtures.
 	 */
 	public function set_up(): void {
 		parent::set_up();
-		$this->parser = new WordPress_Html();
+		$this->parser = new Html();
 	}
 
 	/**
 	 * Reports the lexicon NSID.
 	 */
 	public function test_get_type() {
-		$this->assertSame( WordPress_Html::TYPE, $this->parser->get_type() );
+		$this->assertSame( Html::TYPE, $this->parser->get_type() );
 	}
 
 	/**
@@ -59,7 +59,7 @@ class Test_WordPress_Html extends \WP_UnitTestCase {
 
 		$record = $this->parser->parse( $post->post_content, $post );
 
-		$this->assertSame( WordPress_Html::TYPE, $record['$type'] );
+		$this->assertSame( Html::TYPE, $record['$type'] );
 		$this->assertArrayHasKey( 'html', $record );
 		$this->assertStringContainsString( '<strong>world</strong>', $record['html'] );
 	}
@@ -77,7 +77,7 @@ class Test_WordPress_Html extends \WP_UnitTestCase {
 	 * The html field is clamped to the lexicon grapheme limit.
 	 */
 	public function test_html_clamped_to_grapheme_limit() {
-		$long = \str_repeat( 'a', WordPress_Html::MAX_GRAPHEMES + 500 );
+		$long = \str_repeat( 'a', Html::MAX_GRAPHEMES + 500 );
 		$post = self::factory()->post->create_and_get(
 			array( 'post_content' => $long )
 		);
@@ -88,6 +88,6 @@ class Test_WordPress_Html extends \WP_UnitTestCase {
 			? \grapheme_strlen( $record['html'] )
 			: \mb_strlen( $record['html'] );
 
-		$this->assertLessThanOrEqual( WordPress_Html::MAX_GRAPHEMES, $count );
+		$this->assertLessThanOrEqual( Html::MAX_GRAPHEMES, $count );
 	}
 }

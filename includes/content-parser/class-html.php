@@ -19,7 +19,7 @@ namespace Atmosphere\Content_Parser;
 /**
  * WordPress HTML content parser.
  */
-class WordPress_Html extends Parser_Base {
+class Html extends Parser_Base {
 
 	/**
 	 * The lexicon NSID this parser produces.

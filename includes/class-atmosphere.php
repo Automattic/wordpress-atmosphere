@@ -9,11 +9,11 @@ namespace Atmosphere;
 
 \defined( 'ABSPATH' ) || exit;
 
+use Atmosphere\Content_Parser\Html;
 use Atmosphere\Content_Parser\Leaflet;
 use Atmosphere\Content_Parser\Markpub;
 use Atmosphere\Content_Parser\Pckt;
 use Atmosphere\Content_Parser\Registry;
-use Atmosphere\Content_Parser\WordPress_Html;
 use Atmosphere\OAuth\Client;
 use Atmosphere\Transformer\Comment;
 use Atmosphere\Transformer\Document;
@@ -363,7 +363,7 @@ class Atmosphere {
 	 * @return void
 	 */
 	public static function register_default_content_parsers(): void {
-		Registry::register( new WordPress_Html(), 10 );
+		Registry::register( new Html(), 10 );
 		Registry::register( new Markpub(), 20 );
 		Registry::register( new Leaflet(), 20 );
 		Registry::register( new Pckt(), 20 );

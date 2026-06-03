@@ -10,8 +10,8 @@ namespace Atmosphere\WP_Admin;
 \defined( 'ABSPATH' ) || exit;
 
 use Atmosphere\Atmosphere;
+use Atmosphere\Content_Parser\Html;
 use Atmosphere\Content_Parser\Registry;
-use Atmosphere\Content_Parser\WordPress_Html;
 use Atmosphere\Handle;
 use Atmosphere\OAuth\Client;
 use Atmosphere\Post_Types;
@@ -594,7 +594,7 @@ class Admin {
 	 */
 	private static function content_format_label( string $type ): string {
 		switch ( $type ) {
-			case WordPress_Html::TYPE:
+			case Html::TYPE:
 				return \__( 'HTML', 'atmosphere' );
 			case 'at.markpub.markdown':
 				return \__( 'Markdown (Markpub)', 'atmosphere' );
