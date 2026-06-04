@@ -74,6 +74,20 @@ class Test_Registry extends \WP_UnitTestCase {
 	}
 
 	/**
+	 * Equal-priority parsers are sorted by NSID for deterministic selection.
+	 */
+	public function test_all_sorts_equal_priority_by_nsid() {
+		Registry::register( new Fake_Parser( 'test.z' ), 20 );
+		Registry::register( new Fake_Parser( 'test.a' ), 20 );
+		Registry::register( new Fake_Parser( 'test.m' ), 20 );
+
+		$this->assertSame(
+			array( 'test.a', 'test.m', 'test.z' ),
+			\array_keys( Registry::all() )
+		);
+	}
+
+	/**
 	 * Removing a parser drops it from the registry.
 	 */
 	public function test_unregister() {

@@ -81,7 +81,11 @@ class Registry {
 
 		\uasort(
 			$entries,
-			static fn( $a, $b ) => $a['priority'] <=> $b['priority']
+			static function ( array $a, array $b ): int {
+				$priority = $a['priority'] <=> $b['priority'];
+
+				return 0 !== $priority ? $priority : \strcmp( $a['parser']->get_type(), $b['parser']->get_type() );
+			}
 		);
 
 		return \array_map( static fn( $entry ) => $entry['parser'], $entries );

@@ -130,6 +130,19 @@ class Test_Markpub extends WP_UnitTestCase {
 	}
 
 	/**
+	 * Heading levels are clamped to Markdown's supported 1-6 range.
+	 */
+	public function test_heading_level_is_clamped() {
+		$post = self::factory()->post->create_and_get();
+
+		$too_low  = '<!-- wp:heading {"level":-1} --><h2>Low</h2><!-- /wp:heading -->';
+		$too_high = '<!-- wp:heading {"level":99} --><h2>High</h2><!-- /wp:heading -->';
+
+		$this->assertSame( '# Low', $this->parser->parse( $too_low, $post )['text']['markdown'] );
+		$this->assertSame( '###### High', $this->parser->parse( $too_high, $post )['text']['markdown'] );
+	}
+
+	/**
 	 * Test link conversion in a paragraph.
 	 */
 	public function test_converts_links() {

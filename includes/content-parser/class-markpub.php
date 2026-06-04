@@ -134,7 +134,8 @@ class Markpub extends Parser_Base {
 	 * @return string|null
 	 */
 	private static function heading( array $block ): ?string {
-		$level = $block['attrs']['level'] ?? 2;
+		$level = (int) ( $block['attrs']['level'] ?? 2 );
+		$level = \max( 1, \min( 6, $level ) );
 		$text  = self::inline_html_to_markdown( $block['innerHTML'] ?? '' );
 
 		if ( empty( \trim( $text ) ) ) {

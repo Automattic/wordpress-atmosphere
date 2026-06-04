@@ -216,7 +216,10 @@ class Pckt extends Parser_Base {
 		$attrs = array( 'src' => $src );
 
 		$blob = $this->build_image_ref( $attachment_id );
-		$link = $blob['ref']['$link'] ?? '';
+		$link = '';
+		if ( null !== $blob ) {
+			$link = $blob['ref']['$link'] ?? '';
+		}
 		if ( null !== $blob && '' !== $link ) {
 			$attrs['blob'] = $blob;
 			$attrs['src']  = 'blob:' . $link;
