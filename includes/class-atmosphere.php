@@ -471,6 +471,14 @@ class Atmosphere {
 		}
 
 		/*
+		 * Bidirectional verification re-fetches this endpoint on every
+		 * profile load, so a fronting page/CDN cache must never retain a
+		 * pre-connect 404 or a post-disconnect 200 with a stale DID. Send
+		 * no-cache headers on every response branch below.
+		 */
+		\nocache_headers();
+
+		/*
 		 * Identity gate (not connection gate): an expired OAuth session
 		 * must not break domain handle verification. Bluesky's resolver
 		 * re-fetches this endpoint to confirm the bidirectional link
@@ -499,6 +507,14 @@ class Atmosphere {
 		if ( \get_query_var( 'atmosphere_wellknown' ) !== 'publication' ) {
 			return;
 		}
+
+		/*
+		 * Bidirectional verification re-fetches this endpoint on every
+		 * profile load, so a fronting page/CDN cache must never retain a
+		 * pre-connect 404 or a post-disconnect 200 with a stale AT-URI.
+		 * Send no-cache headers on every response branch below.
+		 */
+		\nocache_headers();
 
 		/*
 		 * Identity gate (not connection gate): the publication AT-URI is
