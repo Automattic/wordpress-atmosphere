@@ -714,9 +714,9 @@ class Post extends Base {
 	 * @return array{0:?string,1:bool,2:?string} `[ $path, $is_temp, $mime ]`; `[ null, false, null ]` on failure.
 	 */
 	private static function resolve_uploadable_image( int $attachment_id, string $mime ): array {
-		$local = self::resolve_local_image( $attachment_id );
+		$local = self::resolve_local_image( $attachment_id, $mime );
 		if ( null !== $local ) {
-			return array( $local, false, $mime );
+			return array( $local['path'], false, $local['mime'] );
 		}
 
 		$remote = self::fetch_remote_image_to_temp( $attachment_id );
@@ -733,34 +733,46 @@ class Post extends Base {
 	 * Checks readability *before* `filesize()` so an unreadable path
 	 * (a virtual/offloaded intermediate) can't trip a stat warning.
 	 * Tries the original path first, then every generated size in
-	 * attachment metadata from largest to smallest.
+	 * attachment metadata from largest to smallest. Each candidate
+	 * carries its own MIME so a sub-size a plugin transcoded to another
+	 * format (e.g. WebP) isn't uploaded under the original's MIME.
 	 *
-	 * @param int $attachment_id WordPress attachment ID.
-	 * @return string|null Readable local path under the cap, or null.
+	 * @param int    $attachment_id WordPress attachment ID.
+	 * @param string $mime          Attachment MIME type, used for the original file.
+	 * @return array{path:string,mime:string}|null Readable local file under the cap, or null.
 	 */
-	private static function resolve_local_image( int $attachment_id ): ?string {
+	private static function resolve_local_image( int $attachment_id, string $mime ): ?array {
 		$file       = \get_attached_file( $attachment_id );
 		$upload_dir = \wp_upload_dir();
+
+		// Keyed by path so duplicate paths collapse while iteration order
+		// (original first, then sizes largest-to-smallest) is preserved.
 		$candidates = array();
 
 		if ( $file ) {
-			$candidates[] = $file;
+			$candidates[ $file ] = $mime;
 		}
 
 		foreach ( self::get_image_size_candidates( $attachment_id ) as $size ) {
 			$resized = \image_get_intermediate_size( $attachment_id, $size );
 			if ( $resized && ! empty( $resized['path'] ) ) {
-				$candidates[] = $upload_dir['basedir'] . '/' . $resized['path'];
+				$path = $upload_dir['basedir'] . '/' . $resized['path'];
+				// Prefer the size's own recorded MIME; fall back to the
+				// attachment MIME when metadata doesn't carry one.
+				$candidates[ $path ] = empty( $resized['mime-type'] ) ? $mime : $resized['mime-type'];
 			}
 		}
 
-		foreach ( \array_unique( $candidates ) as $candidate ) {
+		foreach ( $candidates as $candidate => $candidate_mime ) {
 			if ( ! \is_readable( $candidate ) ) {
 				continue;
 			}
 
 			if ( \filesize( $candidate ) <= self::MAX_BLOB_BYTES ) {
-				return $candidate;
+				return array(
+					'path' => $candidate,
+					'mime' => $candidate_mime,
+				);
 			}
 		}
 

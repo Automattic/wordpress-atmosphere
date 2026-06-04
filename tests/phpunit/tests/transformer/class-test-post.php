@@ -2144,6 +2144,68 @@ class Test_Post extends WP_UnitTestCase {
 	}
 
 	/**
+	 * When a plugin transcodes a generated sub-size to another format
+	 * (e.g. the Modern Image Formats / WebP Uploads plugin emits an
+	 * `image/webp` `large` from a JPEG original), the blob upload must use
+	 * the sub-size's recorded MIME — not the attachment's original MIME —
+	 * so the PDS doesn't store WebP bytes behind a misleading `image/jpeg`
+	 * blob. Mirrors the remote-transcode case for the local fast path.
+	 *
+	 * @covers ::upload_image_blob
+	 */
+	public function test_upload_image_blob_uses_local_size_mime_type() {
+		$upload_dir = \wp_upload_dir();
+		$original   = $upload_dir['basedir'] . '/atmosphere-original-jpeg-over-cap.jpg';
+		$webp       = $upload_dir['basedir'] . '/atmosphere-large-under-cap.webp';
+
+		// Original is over the cap so resolution falls through to the
+		// transcoded sub-size below.
+		\file_put_contents( $original, \str_repeat( 'o', 1_000_001 ) ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents
+		\file_put_contents( $webp, 'WEBP-SUBSIZE-BYTES' ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents
+
+		$attachment_id = self::factory()->attachment->create_object(
+			$original,
+			0,
+			array(
+				'post_mime_type' => 'image/jpeg',
+				'post_title'     => 'Transcoded local sub-size attachment',
+			)
+		);
+		\wp_update_attachment_metadata(
+			$attachment_id,
+			array(
+				'file'   => \basename( $original ),
+				'width'  => 3000,
+				'height' => 2200,
+				'sizes'  => array(
+					'large' => array(
+						'file'      => \basename( $webp ),
+						'width'     => 1024,
+						'height'    => 751,
+						'mime-type' => 'image/webp',
+					),
+				),
+			)
+		);
+
+		$uploaded_mime = null;
+		$capture_blob  = static function ( $short_circuit, $file_path, $mime ) use ( &$uploaded_mime ) {
+			$uploaded_mime = $mime;
+			return array( 'blob' => array( 'cid' => 'bafylocalwebp' ) );
+		};
+		\add_filter( 'atmosphere_pre_upload_blob', $capture_blob, 10, 3 );
+
+		$blob = Post::upload_image_blob( $attachment_id );
+
+		\remove_filter( 'atmosphere_pre_upload_blob', $capture_blob, 10 );
+		\wp_delete_file( $original );
+		\wp_delete_file( $webp );
+
+		$this->assertSame( 'bafylocalwebp', $blob['cid'] );
+		$this->assertSame( 'image/webp', $uploaded_mime );
+	}
+
+	/**
 	 * A readable local file under the 1 MB cap is uploaded directly,
 	 * without any HTTP fetch — the offloaded-media fallback must not
 	 * regress the common self-hosted fast path.
