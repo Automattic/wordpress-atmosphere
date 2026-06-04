@@ -10,7 +10,7 @@
 namespace Atmosphere\Tests\Content_Parser;
 
 require_once __DIR__ . '/class-fake-parser.php';
-require_once __DIR__ . '/class-legacy-parser.php';
+require_once __DIR__ . '/class-minimal-parser.php';
 
 use Atmosphere\Atmosphere;
 use Atmosphere\Content_Parser\Registry;
@@ -108,15 +108,14 @@ class Test_Registry extends \WP_UnitTestCase {
 	}
 
 	/**
-	 * Parsers from the old public contract, without applies_to(), remain
-	 * applicable so the registry does not fatal on third-party code.
+	 * Parsers without optional applies_to() remain applicable.
 	 */
-	public function test_select_accepts_legacy_parser_without_applies_to() {
-		Registry::register( new Legacy_Parser() );
+	public function test_select_accepts_minimal_parser_without_applies_to() {
+		Registry::register( new Minimal_Parser() );
 
 		$post = self::factory()->post->create_and_get();
 
-		$this->assertSame( 'test.legacy', Registry::select( $post )->get_type() );
+		$this->assertSame( 'test.minimal', Registry::select( $post )->get_type() );
 	}
 
 	/**

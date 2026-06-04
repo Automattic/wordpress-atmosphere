@@ -1,6 +1,6 @@
 <?php
 /**
- * Legacy parser fixture without applies_to().
+ * Minimal parser fixture without optional registry hooks.
  *
  * @package Atmosphere
  */
@@ -10,15 +10,15 @@ namespace Atmosphere\Tests\Content_Parser;
 use Atmosphere\Content_Parser\Content_Parser;
 
 /**
- * A parser matching the pre-registry public contract.
+ * A parser implementing only the required Content_Parser methods.
  */
-class Legacy_Parser implements Content_Parser {
+class Minimal_Parser implements Content_Parser {
 
 	/**
 	 * {@inheritDoc}
 	 */
 	public function get_type(): string {
-		return 'test.legacy';
+		return 'test.minimal';
 	}
 
 	/**
