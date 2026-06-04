@@ -578,7 +578,7 @@ class Admin {
 			<?php endforeach; ?>
 		</select>
 		<p class="description">
-			<?php \esc_html_e( 'The rich content format saved alongside each post for standard.site readers. "Automatic" picks the best available format. Some formats only apply to posts written in the block editor.', 'atmosphere' ); ?>
+			<?php \esc_html_e( 'The rich content format saved alongside each post for standard.site readers. "Automatic" picks the best available format. If a selected format cannot safely represent a post, ATmosphere falls back to rendered HTML.', 'atmosphere' ); ?>
 		</p>
 		<?php
 	}

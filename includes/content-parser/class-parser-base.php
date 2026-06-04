@@ -37,7 +37,14 @@ abstract class Parser_Base implements Content_Parser {
 	private static array $block_cache = array();
 
 	/**
-	 * Clear the parsed-block cache.
+	 * Per-request cache of rendered HTML, keyed by post ID.
+	 *
+	 * @var array<int,string>
+	 */
+	private static array $rendered_html_cache = array();
+
+	/**
+	 * Clear parser caches.
 	 *
 	 * The cache assumes a post's content is stable for the life of a
 	 * request. Tests that mutate post content and re-parse, or that
@@ -47,11 +54,12 @@ abstract class Parser_Base implements Content_Parser {
 	 * @return void
 	 */
 	public static function flush_block_cache(): void {
-		self::$block_cache = array();
+		self::$block_cache         = array();
+		self::$rendered_html_cache = array();
 	}
 
 	/**
-	 * {@inheritDoc}
+	 * Whether this parser can produce content for the given post.
 	 *
 	 * Defaults to true: most parsers can render something for any post.
 	 * Block-tree formats should override this to require blocks.
@@ -109,31 +117,51 @@ abstract class Parser_Base implements Content_Parser {
 	final protected function get_rendered_html( \WP_Post $post ): string {
 		global $wp_query;
 
+		if ( isset( self::$rendered_html_cache[ $post->ID ] ) ) {
+			return self::$rendered_html_cache[ $post->ID ];
+		}
+
 		/*
 		 * setup_postdata() works through the global $wp_query, which can
 		 * be absent in cron / WP-CLI publish paths. Only set up and
 		 * restore the loop context when a real query exists; otherwise
 		 * run the filter directly so those paths don't fatal.
 		 */
-		$has_query = $wp_query instanceof \WP_Query;
-		$previous  = $has_query ? $wp_query->post : null;
+		$has_query            = $wp_query instanceof \WP_Query;
+		$previous_query_post  = $has_query ? $wp_query->post : null;
+		$previous_global_post = $GLOBALS['post'] ?? null;
+
+		$GLOBALS['post'] = $post; // phpcs:ignore WordPress.WP.GlobalVariablesOverride.Prohibited -- setup_postdata() does not update the global post.
 
 		if ( $has_query ) {
+			$wp_query->post = $post;
 			\setup_postdata( $post );
 		}
 
-		// phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Core WordPress filter.
-		$html = \apply_filters( 'the_content', $post->post_content );
+		try {
+			// phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Core WordPress filter.
+			$html = \apply_filters( 'the_content', $post->post_content );
+		} finally {
+			if ( $has_query ) {
+				if ( $previous_query_post instanceof \WP_Post ) {
+					$GLOBALS['post'] = $previous_query_post; // phpcs:ignore WordPress.WP.GlobalVariablesOverride.Prohibited -- Restores the previous loop context.
+					$wp_query->post  = $previous_query_post;
+					\setup_postdata( $previous_query_post );
+				} else {
+					\wp_reset_postdata();
+				}
+			}
 
-		if ( $has_query ) {
-			if ( $previous instanceof \WP_Post ) {
-				\setup_postdata( $previous );
+			if ( $previous_global_post instanceof \WP_Post ) {
+				$GLOBALS['post'] = $previous_global_post; // phpcs:ignore WordPress.WP.GlobalVariablesOverride.Prohibited -- Restores the previous global post.
 			} else {
-				\wp_reset_postdata();
+				unset( $GLOBALS['post'] );
 			}
 		}
 
-		return \trim( $html );
+		self::$rendered_html_cache[ $post->ID ] = \trim( $html );
+
+		return self::$rendered_html_cache[ $post->ID ];
 	}
 
 	/**
@@ -345,5 +373,109 @@ abstract class Parser_Base implements Content_Parser {
 	 */
 	final protected function image_aspect_ratio( int $attachment_id ): ?array {
 		return Post::get_attachment_aspect_ratio( $attachment_id );
+	}
+
+	/**
+	 * Whether saved block/classic content is still present after rendering.
+	 *
+	 * Structured parsers read the saved block tree directly. That is useful
+	 * for preserving block semantics, but it can bypass membership,
+	 * visibility, shortcode, or render-time filters that remove content
+	 * from the public page. Parsers that consume saved markup should use
+	 * this as an applies_to() guard and fall back to rendered HTML when it
+	 * returns false.
+	 *
+	 * @param \WP_Post $post The WordPress post object.
+	 * @return bool
+	 */
+	final protected function saved_content_survives_rendering( \WP_Post $post ): bool {
+		$rendered_html = $this->get_rendered_html( $post );
+
+		if ( '' === \trim( $rendered_html ) ) {
+			return false;
+		}
+
+		$rendered_text = self::normalize_visibility_text( \wp_strip_all_tags( $rendered_html ) );
+
+		if ( ! $this->has_blocks( $post ) ) {
+			$saved_text = self::normalize_visibility_text( \wp_strip_all_tags( $post->post_content ) );
+
+			return '' === $saved_text || \str_contains( $rendered_text, $saved_text );
+		}
+
+		$visible = true;
+
+		$this->walk_blocks(
+			$this->get_blocks( $post ),
+			function ( array $block ) use ( &$visible, $rendered_html, $rendered_text ): void {
+				if ( ! $visible ) {
+					return;
+				}
+
+				$name = (string) ( $block['blockName'] ?? '' );
+
+				if ( 'core/image' === $name ) {
+					$attachment_id = $this->image_attachment_id( $block );
+					if ( null !== $attachment_id && ! $this->rendered_html_contains_image( $rendered_html, $attachment_id ) ) {
+						$visible = false;
+					}
+					return;
+				}
+
+				if ( ! \in_array(
+					$name,
+					array(
+						'',
+						'core/paragraph',
+						'core/heading',
+						'core/list-item',
+						'core/quote',
+						'core/pullquote',
+						'core/code',
+						'core/preformatted',
+					),
+					true
+				) ) {
+					return;
+				}
+
+				$text = self::normalize_visibility_text( $this->block_plaintext( $block ) );
+				if ( '' !== $text && ! \str_contains( $rendered_text, $text ) ) {
+					$visible = false;
+				}
+			}
+		);
+
+		return $visible;
+	}
+
+	/**
+	 * Whether rendered HTML still contains an attachment image block.
+	 *
+	 * @param string $html          Rendered HTML.
+	 * @param int    $attachment_id Attachment ID.
+	 * @return bool
+	 */
+	private function rendered_html_contains_image( string $html, int $attachment_id ): bool {
+		if ( \str_contains( $html, 'wp-image-' . $attachment_id ) ) {
+			return true;
+		}
+
+		$url = (string) \wp_get_attachment_url( $attachment_id );
+
+		return '' !== $url && \str_contains( $html, $url );
+	}
+
+	/**
+	 * Normalize text before comparing saved content with rendered output.
+	 *
+	 * @param string $text Text to normalize.
+	 * @return string
+	 */
+	private static function normalize_visibility_text( string $text ): string {
+		$text = \html_entity_decode( $text, ENT_QUOTES, 'UTF-8' );
+		$text = \preg_replace( '/\s+/u', ' ', $text );
+
+		return \trim( (string) $text );
 	}
 }

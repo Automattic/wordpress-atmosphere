@@ -229,6 +229,11 @@ class Document extends Base {
 			return null;
 		}
 
+		$content = $this->validate_content( $content, $parser, false );
+		if ( null === $content ) {
+			return null;
+		}
+
 		/**
 		 * Filters the parsed content object before adding to the document record.
 		 *
@@ -236,20 +241,72 @@ class Document extends Base {
 		 * @param \WP_Post       $post    The WordPress post.
 		 * @param Content_Parser $parser  The parser that produced the content.
 		 */
-		return \apply_filters( 'atmosphere_document_content', $content, $this->object, $parser );
+		$filtered = \apply_filters( 'atmosphere_document_content', $content, $this->object, $parser );
+
+		if ( ! \is_array( $filtered ) ) {
+			\_doing_it_wrong(
+				__METHOD__,
+				\esc_html__( 'atmosphere_document_content must return an array; falling back to the parser output.', 'atmosphere' ),
+				'unreleased'
+			);
+			return $content;
+		}
+
+		return $this->validate_content( $filtered, $parser, true ) ?? $content;
+	}
+
+	/**
+	 * Validate a parser-produced content object.
+	 *
+	 * @param array          $content            The parsed content object.
+	 * @param Content_Parser $parser             Parser that produced the content.
+	 * @param bool           $fallback_to_parser Whether invalid content falls back to parser output.
+	 * @return array|null Valid content object, or null when invalid.
+	 */
+	private function validate_content( array $content, Content_Parser $parser, bool $fallback_to_parser ): ?array {
+		$type = $content['$type'] ?? null;
+
+		if ( ! \is_string( $type ) || '' === $type ) {
+			\_doing_it_wrong(
+				__METHOD__,
+				$fallback_to_parser
+					? \esc_html__( 'Content parsers must return a non-empty $type field; falling back to the parser output.', 'atmosphere' )
+					: \esc_html__( 'Content parsers must return a non-empty $type field; omitting the content field.', 'atmosphere' ),
+				'unreleased'
+			);
+			return null;
+		}
+
+		if ( $type !== $parser->get_type() ) {
+			\_doing_it_wrong(
+				__METHOD__,
+				$fallback_to_parser
+					? \esc_html__( 'Content parsers must return a $type field matching get_type(); falling back to the parser output.', 'atmosphere' )
+					: \esc_html__( 'Content parsers must return a $type field matching get_type(); omitting the content field.', 'atmosphere' ),
+				'unreleased'
+			);
+			return null;
+		}
+
+		return $content;
 	}
 
 	/**
 	 * Select the content parser for this document.
 	 *
-	 * The registry chooses one parser based on the Content format
-	 * setting and parser priority. The deprecated `atmosphere_content_parser`
-	 * filter is still honored: if a callback returns a Content_Parser it
-	 * wins, preserving older integrations until the filter is removed.
+	 * The registry chooses one parser based on the Content format setting
+	 * and parser priority. The deprecated `atmosphere_content_parser`
+	 * filter is still honored when callbacks are registered: a returned
+	 * Content_Parser wins, while null preserves the old "omit content"
+	 * behavior for integrations that intentionally suppress the field.
 	 *
 	 * @return Content_Parser|null
 	 */
 	private function select_parser(): ?Content_Parser {
+		if ( false === \has_filter( 'atmosphere_content_parser' ) ) {
+			return Registry::select( $this->object );
+		}
+
 		/**
 		 * Filters the content parser used for site.standard.document records.
 		 *
@@ -260,17 +317,17 @@ class Document extends Base {
 		 */
 		$legacy = \apply_filters( 'atmosphere_content_parser', null, $this->object );
 
-		if ( $legacy instanceof Content_Parser ) {
-			\_deprecated_hook(
-				'atmosphere_content_parser',
-				'unreleased',
-				'\Atmosphere\Content_Parser\Registry::register()'
-			);
+		\_deprecated_hook(
+			'atmosphere_content_parser',
+			'unreleased',
+			'\Atmosphere\Content_Parser\Registry::register()'
+		);
 
+		if ( $legacy instanceof Content_Parser ) {
 			return $legacy;
 		}
 
-		return Registry::select( $this->object );
+		return null;
 	}
 
 	/**

@@ -6,7 +6,7 @@ Plugin-specific integrations that teach ATmosphere how to format the `content` f
 
 `site.standard.document` records have an [open content union](../docs/content-formats.md) — any object with a valid `$type` is accepted, but the field is **singular**: exactly one parser produces the `content` object per document.
 
-ATmosphere ships several built-in parsers (`org.wordpress.html`, `at.markpub.markdown`, `pub.leaflet.content`, `blog.pckt.content`) and registers them on a central **registry**. Integrations add their own by calling `Registry::register()`. For each post, the registry selects one parser: the format chosen in the **Content format** setting if it applies, otherwise the lowest-priority-number parser whose `applies_to()` returns true. The selected parser's output is added to the record under `content`; if nothing applies, the document is published without a `content` field, which is valid.
+ATmosphere ships several built-in parsers (`org.wordpress.html`, `at.markpub.markdown`, `pub.leaflet.content`, `blog.pckt.content`) and registers them on a central **registry**. Integrations add their own by calling `Registry::register()`. For each post, the registry selects one parser: the format chosen in the **Content format** setting if it applies, otherwise the lowest-priority-number applicable parser. Parsers can expose `applies_to( \WP_Post $post ): bool` to opt out for a post; parsers without that method are treated as applicable. If a selected parser does not apply, ATmosphere falls back to the next applicable parser, normally rendered HTML. The selected parser's output is added to the record under `content`; if nothing applies, the document is published without a `content` field, which is valid.
 
 ## Adding an integration
 
@@ -23,9 +23,6 @@ interface Content_Parser {
     /** The lexicon NSID this parser produces (e.g. 'org.wordpress.html'). */
     public function get_type(): string;
 
-    /** Whether this parser can produce a record for the given post. */
-    public function applies_to( \WP_Post $post ): bool;
-
     /**
      * Parse a post's content into an AT Protocol content object, or null
      * to omit the content field. The returned array must include a
@@ -34,6 +31,8 @@ interface Content_Parser {
     public function parse( string $content, \WP_Post $post ): ?array;
 }
 ```
+
+`applies_to( \WP_Post $post ): bool` is optional. `Parser_Base` provides it with a default `true` result; override it when a format only works for certain posts, such as block-editor-only formats. If your parser reads saved block markup directly, use `saved_content_survives_rendering( $post )` in the guard so render-time visibility filters can force a fallback to rendered HTML.
 
 ### Example
 
@@ -81,7 +80,7 @@ public static function register(): void {
 | Filter | Arguments | Description |
 |---|---|---|
 | `atmosphere_document_content` | `array $content`, `WP_Post $post`, `Content_Parser $parser` | Last-chance modification of the parsed content object before it is added to the document record. |
-| `atmosphere_content_parser` *(deprecated)* | `Content_Parser\|null $parser`, `WP_Post $post` | **Deprecated.** Returning a `Content_Parser` still works (it wins over the registry) but emits a deprecation notice. Use `Registry::register()` instead. |
+| `atmosphere_content_parser` *(deprecated)* | `Content_Parser\|null $parser`, `WP_Post $post` | **Deprecated.** Returning a `Content_Parser` still works (it wins over the registry) and returning `null` still suppresses `content`, but either path emits a deprecation notice. Use `Registry::register()` instead. |
 
 ## Conventions
 

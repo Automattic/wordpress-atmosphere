@@ -13,6 +13,8 @@ require_once __DIR__ . '/class-stub-parser.php';
 require_once __DIR__ . '/../content-parser/class-fake-parser.php';
 
 use Atmosphere\Atmosphere;
+use Atmosphere\Content_Parser\Html;
+use Atmosphere\Content_Parser\Parser_Base;
 use Atmosphere\Content_Parser\Registry;
 use Atmosphere\Tests\Content_Parser\Fake_Parser;
 use Atmosphere\Transformer\Document;
@@ -29,6 +31,7 @@ class Test_Document extends \WP_UnitTestCase {
 	 */
 	public function set_up(): void {
 		parent::set_up();
+		Parser_Base::flush_block_cache();
 		Registry::reset();
 	}
 
@@ -38,6 +41,8 @@ class Test_Document extends \WP_UnitTestCase {
 	 */
 	public function tear_down(): void {
 		Registry::reset();
+		Parser_Base::flush_block_cache();
+		\delete_option( Registry::OPTION_FORMAT );
 		Atmosphere::register_default_content_parsers();
 		parent::tear_down();
 	}
@@ -117,11 +122,12 @@ class Test_Document extends \WP_UnitTestCase {
 	}
 
 	/**
-	 * A null return from the legacy filter does not emit a deprecation;
-	 * the registry is used instead. (No setExpectedDeprecated here — an
-	 * unexpected deprecation would fail the test.)
+	 * A null return from the legacy filter keeps the old "omit content"
+	 * behavior instead of falling through to the registry.
 	 */
-	public function test_null_legacy_filter_does_not_deprecate() {
+	public function test_null_legacy_filter_suppresses_content() {
+		$this->setExpectedDeprecated( 'atmosphere_content_parser' );
+
 		Registry::register( new Stub_Parser() );
 		\add_filter( 'atmosphere_content_parser', '__return_null' );
 
@@ -131,7 +137,7 @@ class Test_Document extends \WP_UnitTestCase {
 
 		$record = ( new Document( $post ) )->transform();
 
-		$this->assertSame( 'test.stub.parser', $record['content']['$type'] );
+		$this->assertArrayNotHasKey( 'content', $record );
 
 		\remove_all_filters( 'atmosphere_content_parser' );
 	}
@@ -154,6 +160,37 @@ class Test_Document extends \WP_UnitTestCase {
 		$this->assertSame( 'test.chosen', $record['content']['$type'] );
 
 		\delete_option( Registry::OPTION_FORMAT );
+	}
+
+	/**
+	 * A pinned block parser falls back to rendered HTML when render-time
+	 * filters hide the saved block content.
+	 */
+	public function test_hidden_saved_block_content_falls_back_to_html() {
+		Atmosphere::register_default_content_parsers();
+		\update_option( Registry::OPTION_FORMAT, 'pub.leaflet.content' );
+
+		$filter = static function (): string {
+			return '<p>Public replacement.</p>';
+		};
+		\add_filter( 'the_content', $filter, \PHP_INT_MAX );
+
+		try {
+			$post = self::factory()->post->create_and_get(
+				array(
+					'post_content' => '<!-- wp:paragraph --><p>Private original body.</p><!-- /wp:paragraph -->',
+				)
+			);
+
+			$record = ( new Document( $post ) )->transform();
+			$json   = (string) \wp_json_encode( $record );
+
+			$this->assertSame( Html::TYPE, $record['content']['$type'] );
+			$this->assertStringContainsString( 'Public replacement.', $record['content']['html'] );
+			$this->assertStringNotContainsString( 'Private original body.', $json );
+		} finally {
+			\remove_filter( 'the_content', $filter, \PHP_INT_MAX );
+		}
 	}
 
 	/**
@@ -264,17 +301,19 @@ class Test_Document extends \WP_UnitTestCase {
 	}
 
 	/**
-	 * A non-Content_Parser return from the legacy filter is ignored, and
-	 * the registry is consulted instead.
+	 * A non-Content_Parser return from the legacy filter preserves the
+	 * old behavior by omitting content.
 	 */
-	public function test_invalid_legacy_filter_falls_through_to_registry() {
+	public function test_invalid_legacy_filter_suppresses_content() {
+		$this->setExpectedDeprecated( 'atmosphere_content_parser' );
+
+		Registry::register( new Stub_Parser() );
 		\add_filter( 'atmosphere_content_parser', static fn() => 'not a parser' );
 
 		$post = self::factory()->post->create_and_get(
 			array( 'post_content' => 'Some content.' )
 		);
 
-		// Registry is empty in set_up, so nothing applies.
 		$record = ( new Document( $post ) )->transform();
 
 		$this->assertArrayNotHasKey( 'content', $record );
@@ -316,6 +355,46 @@ class Test_Document extends \WP_UnitTestCase {
 	}
 
 	/**
+	 * Parser output without a $type is rejected before publishing.
+	 */
+	public function test_content_absent_when_parser_omits_type() {
+		$this->setExpectedIncorrectUsage( 'Atmosphere\\Transformer\\Document::validate_content' );
+
+		$parser            = new Stub_Parser();
+		$parser->omit_type = true;
+
+		Registry::register( $parser );
+
+		$post = self::factory()->post->create_and_get(
+			array( 'post_content' => 'Some content.' )
+		);
+
+		$record = ( new Document( $post ) )->transform();
+
+		$this->assertArrayNotHasKey( 'content', $record );
+	}
+
+	/**
+	 * Parser output whose $type does not match get_type() is rejected.
+	 */
+	public function test_content_absent_when_parser_type_mismatches_get_type() {
+		$this->setExpectedIncorrectUsage( 'Atmosphere\\Transformer\\Document::validate_content' );
+
+		$parser              = new Stub_Parser();
+		$parser->output_type = 'test.other.parser';
+
+		Registry::register( $parser );
+
+		$post = self::factory()->post->create_and_get(
+			array( 'post_content' => 'Some content.' )
+		);
+
+		$record = ( new Document( $post ) )->transform();
+
+		$this->assertArrayNotHasKey( 'content', $record );
+	}
+
+	/**
 	 * Test that content field is absent for empty post content.
 	 */
 	public function test_content_absent_for_empty_content() {
@@ -354,6 +433,34 @@ class Test_Document extends \WP_UnitTestCase {
 
 		$this->assertArrayHasKey( 'content', $record );
 		$this->assertTrue( $record['content']['modified'] );
+
+		\remove_all_filters( 'atmosphere_document_content' );
+	}
+
+	/**
+	 * Invalid content-filter output falls back to the parser's valid object.
+	 */
+	public function test_invalid_document_content_filter_falls_back_to_parser_output() {
+		$this->setExpectedIncorrectUsage( 'Atmosphere\\Transformer\\Document::validate_content' );
+
+		Registry::register( new Stub_Parser() );
+
+		\add_filter(
+			'atmosphere_document_content',
+			static function ( array $content ): array {
+				unset( $content['$type'] );
+				return $content;
+			}
+		);
+
+		$post = self::factory()->post->create_and_get(
+			array( 'post_content' => 'Hello.' )
+		);
+
+		$record = ( new Document( $post ) )->transform();
+
+		$this->assertSame( 'test.stub.parser', $record['content']['$type'] );
+		$this->assertSame( 'Hello.', $record['content']['text'] );
 
 		\remove_all_filters( 'atmosphere_document_content' );
 	}

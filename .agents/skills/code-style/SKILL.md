@@ -22,14 +22,14 @@ Quick-reference for everyday work. Full reference: [`docs/php-coding-standards.m
 includes/
 ├── class-*.php              # Atmosphere, API, Publisher, Backfill, Handle, Post_Types, Reaction_Sync, Autoloader.
 ├── functions.php
-├── content-parser/          # Content_Parser interface for site.standard.document.
+├── content-parser/          # Registry, base, and parsers for site.standard.document content.
 ├── oauth/                   # Client, DPoP, Encryption, Nonce_Storage, Resolver.
 ├── transformer/             # Post, Document, Publication, Comment, Facet, TID (extend Base).
 └── wp-admin/                # Admin UI.
 integrations/                # Plugin-specific content-parser integrations.
 ```
 
-After adding or renaming a class file: `composer dump-autoload`.
+After adding or renaming a class file under the `Atmosphere` namespace, no Composer autoload step is needed; runtime loading uses `includes/class-autoloader.php`.
 
 ## Transformer Pattern
 
@@ -57,7 +57,7 @@ Always reserve the rkey via meta in `get_rkey()` — that meta key is the marker
 
 **Transform filters:** `atmosphere_transform_bsky_post`, `atmosphere_transform_comment`, `atmosphere_transform_document`, `atmosphere_transform_publication`.
 
-**Content / composition:** `atmosphere_content_parser`, `atmosphere_document_content`, `atmosphere_long_form_composition`, `atmosphere_teaser_thread_posts`.
+**Content / composition:** `atmosphere_content_parser` (deprecated; use `Content_Parser\Registry::register()`), `atmosphere_document_content`, `atmosphere_long_form_composition`, `atmosphere_teaser_thread_posts`.
 
 **Gating:** `atmosphere_syncable_post_types`, `atmosphere_should_publish_comment`, `atmosphere_should_sync_reply`, `atmosphere_backfill_limit`, `atmosphere_oauth_redirect_uri`, `atmosphere_client_metadata`.
 

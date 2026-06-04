@@ -37,7 +37,7 @@ class Leaflet extends Parser_Base {
 	 * @return bool
 	 */
 	public function applies_to( \WP_Post $post ): bool {
-		return $this->has_blocks( $post );
+		return $this->has_blocks( $post ) && $this->saved_content_survives_rendering( $post );
 	}
 
 	/**

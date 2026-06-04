@@ -22,6 +22,20 @@ class Stub_Parser implements Content_Parser {
 	public bool $return_null = false;
 
 	/**
+	 * Whether parse() should omit the $type field.
+	 *
+	 * @var bool
+	 */
+	public bool $omit_type = false;
+
+	/**
+	 * The $type value parse() returns.
+	 *
+	 * @var string
+	 */
+	public string $output_type = 'test.stub.parser';
+
+	/**
 	 * Whether applies_to() should return true.
 	 *
 	 * @var bool
@@ -36,9 +50,10 @@ class Stub_Parser implements Content_Parser {
 	}
 
 	/**
-	 * {@inheritDoc}
+	 * Whether this parser applies to the post.
 	 *
 	 * @param \WP_Post $post The WordPress post object.
+	 * @return bool
 	 */
 	public function applies_to( \WP_Post $post ): bool { // phpcs:ignore Generic.CodeAnalysis.UnusedFunctionParameter.Found, VariableAnalysis.CodeAnalysis.VariableAnalysis.UnusedVariable
 		return $this->applies;
@@ -55,9 +70,14 @@ class Stub_Parser implements Content_Parser {
 			return null;
 		}
 
-		return array(
-			'$type' => 'test.stub.parser',
-			'text'  => $content,
+		$record = array(
+			'text' => $content,
 		);
+
+		if ( ! $this->omit_type ) {
+			$record['$type'] = $this->output_type;
+		}
+
+		return $record;
 	}
 }

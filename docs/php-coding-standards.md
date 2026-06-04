@@ -209,7 +209,7 @@ use function Atmosphere\is_connected;
 
 **Content / composition filters:**
 ```php
-\apply_filters( 'atmosphere_content_parser',        $parser, $post );        // Return a Content_Parser instance.
+\apply_filters( 'atmosphere_content_parser',        $parser, $post );        // Deprecated; use Registry::register().
 \apply_filters( 'atmosphere_document_content',      $content, $post, $parser );
 \apply_filters( 'atmosphere_long_form_composition', $composition, $post );
 \apply_filters( 'atmosphere_teaser_thread_posts',   $max_posts, $post );

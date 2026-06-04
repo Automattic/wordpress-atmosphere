@@ -1,6 +1,6 @@
 # AT Protocol Content Formats
 
-The `site.standard.document` record defines a `content` field as an **open union** — any object with a valid `$type` is accepted. This allows different content formats to coexist across the AT Protocol ecosystem.
+The `site.standard.document` record defines `content` as a **singular open union** — each document carries at most one content object, but that object may use any valid `$type`. This allows different content formats to coexist across the AT Protocol ecosystem while each producer selects one format per document.
 
 This document surveys the known content format types and their design approaches.
 

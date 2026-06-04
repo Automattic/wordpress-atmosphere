@@ -4,6 +4,8 @@
  *
  * Plugins can implement this interface to provide custom content
  * parsers for the site.standard.document content union field.
+ * Extend Parser_Base when possible: it adds shared WordPress helpers
+ * and an optional applies_to() hook the registry understands.
  *
  * @package Atmosphere
  */
@@ -14,6 +16,11 @@ namespace Atmosphere\Content_Parser;
 
 /**
  * Content parser contract.
+ *
+ * This interface intentionally stays small for third-party
+ * compatibility. Parsers that need post-specific applicability can
+ * extend Parser_Base or define an applies_to( \WP_Post $post ): bool
+ * method; Registry treats parsers without that method as applicable.
  */
 interface Content_Parser {
 
@@ -42,20 +49,4 @@ interface Content_Parser {
 	 * @return string e.g. 'at.markpub.markdown'.
 	 */
 	public function get_type(): string;
-
-	/**
-	 * Whether this parser can produce a record for the given post.
-	 *
-	 * The registry skips parsers that report false, so a format that
-	 * needs a specific input shape (e.g. a block-tree parser on a
-	 * classic-editor post) can opt out rather than emit a degraded or
-	 * invalid record. Tier-1 parsers that work from rendered content
-	 * typically return true unconditionally.
-	 *
-	 * @since unreleased
-	 *
-	 * @param \WP_Post $post The WordPress post object.
-	 * @return bool
-	 */
-	public function applies_to( \WP_Post $post ): bool;
 }

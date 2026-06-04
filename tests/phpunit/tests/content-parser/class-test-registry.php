@@ -10,6 +10,7 @@
 namespace Atmosphere\Tests\Content_Parser;
 
 require_once __DIR__ . '/class-fake-parser.php';
+require_once __DIR__ . '/class-legacy-parser.php';
 
 use Atmosphere\Atmosphere;
 use Atmosphere\Content_Parser\Registry;
@@ -104,6 +105,18 @@ class Test_Registry extends \WP_UnitTestCase {
 		$post = self::factory()->post->create_and_get();
 
 		$this->assertSame( 'test.ok', Registry::select( $post )->get_type() );
+	}
+
+	/**
+	 * Parsers from the old public contract, without applies_to(), remain
+	 * applicable so the registry does not fatal on third-party code.
+	 */
+	public function test_select_accepts_legacy_parser_without_applies_to() {
+		Registry::register( new Legacy_Parser() );
+
+		$post = self::factory()->post->create_and_get();
+
+		$this->assertSame( 'test.legacy', Registry::select( $post )->get_type() );
 	}
 
 	/**

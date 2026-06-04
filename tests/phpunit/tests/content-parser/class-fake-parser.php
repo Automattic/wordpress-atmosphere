@@ -47,9 +47,10 @@ class Fake_Parser implements Content_Parser {
 	}
 
 	/**
-	 * {@inheritDoc}
+	 * Whether this parser applies to the post.
 	 *
 	 * @param \WP_Post $post The WordPress post object.
+	 * @return bool
 	 */
 	public function applies_to( \WP_Post $post ): bool { // phpcs:ignore Generic.CodeAnalysis.UnusedFunctionParameter.Found, VariableAnalysis.CodeAnalysis.VariableAnalysis.UnusedVariable
 		return $this->applies;

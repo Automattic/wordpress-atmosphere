@@ -11,6 +11,7 @@ namespace Atmosphere\Tests\Content_Parser;
 
 use WP_UnitTestCase;
 use Atmosphere\Content_Parser\Markpub;
+use Atmosphere\Content_Parser\Parser_Base;
 
 /**
  * Markpub parser tests.
@@ -29,6 +30,7 @@ class Test_Markpub extends WP_UnitTestCase {
 	 */
 	public function set_up(): void {
 		parent::set_up();
+		Parser_Base::flush_block_cache();
 		$this->parser = new Markpub();
 	}
 
@@ -40,14 +42,34 @@ class Test_Markpub extends WP_UnitTestCase {
 	}
 
 	/**
-	 * Markpub renders any post, so it applies unconditionally.
+	 * Markpub applies when saved content survives rendering.
 	 */
-	public function test_applies_to_any_post() {
+	public function test_applies_to_public_post() {
 		$post = self::factory()->post->create_and_get(
 			array( 'post_content' => 'Plain classic content.' )
 		);
 
 		$this->assertTrue( $this->parser->applies_to( $post ) );
+	}
+
+	/**
+	 * Markpub opts out when render-time filters hide saved content.
+	 */
+	public function test_applies_to_false_when_rendering_hides_saved_content() {
+		$filter = static function (): string {
+			return '<p>Public replacement.</p>';
+		};
+		\add_filter( 'the_content', $filter, \PHP_INT_MAX );
+
+		try {
+			$post = self::factory()->post->create_and_get(
+				array( 'post_content' => 'Private original body.' )
+			);
+
+			$this->assertFalse( $this->parser->applies_to( $post ) );
+		} finally {
+			\remove_filter( 'the_content', $filter, \PHP_INT_MAX );
+		}
 	}
 
 	/**

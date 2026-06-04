@@ -100,10 +100,12 @@ class Registry {
 	/**
 	 * Select the parser for a post.
 	 *
-	 * Considers only parsers that apply to the post. If the configured
-	 * `atmosphere_content_format` names an applicable registered parser,
-	 * it wins; otherwise the lowest-priority-number applicable parser
-	 * wins. Returns null when nothing applies.
+	 * Considers only parsers that apply to the post. A parser may expose
+	 * an optional applies_to( \WP_Post $post ): bool method; parsers
+	 * without that method are treated as applicable for compatibility. If
+	 * the configured `atmosphere_content_format` names an applicable
+	 * registered parser, it wins; otherwise the lowest-priority-number
+	 * applicable parser wins. Returns null when nothing applies.
 	 *
 	 * @param \WP_Post $post The WordPress post object.
 	 * @return Content_Parser|null
@@ -111,7 +113,7 @@ class Registry {
 	public static function select( \WP_Post $post ): ?Content_Parser {
 		$applicable = array();
 		foreach ( self::all() as $type => $parser ) {
-			if ( $parser->applies_to( $post ) ) {
+			if ( self::parser_applies_to( $parser, $post ) ) {
 				$applicable[ $type ] = $parser;
 			}
 		}
@@ -127,5 +129,24 @@ class Registry {
 
 		// all() is already priority-sorted, so the first applicable wins.
 		return \reset( $applicable );
+	}
+
+	/**
+	 * Whether a parser can produce content for a post.
+	 *
+	 * `applies_to()` is intentionally optional so older third-party
+	 * implementations of Content_Parser keep working after the registry
+	 * ships. Parser_Base provides the method with a default true result.
+	 *
+	 * @param Content_Parser $parser The parser instance.
+	 * @param \WP_Post       $post   The WordPress post object.
+	 * @return bool
+	 */
+	private static function parser_applies_to( Content_Parser $parser, \WP_Post $post ): bool {
+		if ( ! \method_exists( $parser, 'applies_to' ) ) {
+			return true;
+		}
+
+		return (bool) $parser->applies_to( $post );
 	}
 }

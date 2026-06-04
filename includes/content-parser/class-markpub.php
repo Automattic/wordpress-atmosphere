@@ -28,6 +28,17 @@ class Markpub extends Parser_Base {
 	}
 
 	/**
+	 * Markpub reads saved markup, so only use it when render-time filters
+	 * did not hide that content from the public page.
+	 *
+	 * @param \WP_Post $post The WordPress post object.
+	 * @return bool
+	 */
+	public function applies_to( \WP_Post $post ): bool {
+		return $this->saved_content_survives_rendering( $post );
+	}
+
+	/**
 	 * {@inheritDoc}
 	 *
 	 * $post is required by the Content_Parser contract so parsers can

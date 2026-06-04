@@ -676,6 +676,7 @@ class Post extends Base {
 
 		$result = API::upload_blob( $file, $mime );
 		if ( \is_wp_error( $result ) ) {
+			self::log_image_blob_upload_error( $attachment_id, $result );
 			return null;
 		}
 
@@ -701,6 +702,30 @@ class Post extends Base {
 	 */
 	public static function upload_thumbnail( int $attachment_id ): ?array {
 		return self::upload_image_blob( $attachment_id );
+	}
+
+	/**
+	 * Log an image blob upload failure before returning null to callers.
+	 *
+	 * Callers intentionally degrade differently (skip image, hotlink the
+	 * origin URL, or omit a cover image), so this is the common point
+	 * where transient PDS/auth/network failures stay visible.
+	 *
+	 * @param int       $attachment_id Attachment ID.
+	 * @param \WP_Error $error         Upload error.
+	 * @return void
+	 */
+	private static function log_image_blob_upload_error( int $attachment_id, \WP_Error $error ): void {
+		$message = \str_replace( array( "\r", "\n" ), ' ', $error->get_error_message() );
+
+		\error_log( // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
+			\sprintf(
+				'[atmosphere] image blob upload failed for attachment %d: %s — %s',
+				$attachment_id,
+				$error->get_error_code(),
+				$message
+			)
+		);
 	}
 
 	/**
