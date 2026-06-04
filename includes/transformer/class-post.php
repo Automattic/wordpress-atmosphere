@@ -649,7 +649,7 @@ class Post extends Base {
 	 *
 	 * If the original file exceeds AT Protocol's 1 MB blob cap, falls
 	 * back to a smaller intermediate size. When no readable local file
-	 * is available — e.g. offloaded media on WordPress.com / Atomic,
+	 * is available — e.g. offloaded media on WordPress.com,
 	 * where intermediate sizes are virtual and never hit local disk —
 	 * the image is fetched over HTTP from its attachment URL instead.
 	 * Returns null only when no candidate under the cap can be obtained.
@@ -762,7 +762,7 @@ class Post extends Base {
 	/**
 	 * Fetch an image from its attachment URL into a temp file.
 	 *
-	 * For offloaded-media hosts (WordPress.com / Atomic, WP Offload
+	 * For offloaded-media hosts (WordPress.com, WP Offload
 	 * Media, etc.) the resized files don't exist on local disk, so we
 	 * fetch them over HTTP. Candidate sizes are tried largest-first,
 	 * and the first response that is an image under the cap wins. The

@@ -1,4 +1,4 @@
 Significance: patch
 Type: fixed
 
-Restore the cover image and Bluesky link preview thumbnail for posts whose featured image is served from a CDN, such as on WordPress.com and Atomic sites.
+Restore the cover image and Bluesky link preview thumbnail for posts whose featured image is served from a CDN, such as on WordPress.com sites.
