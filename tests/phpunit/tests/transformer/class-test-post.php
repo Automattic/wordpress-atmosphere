@@ -2028,6 +2028,122 @@ class Test_Post extends WP_UnitTestCase {
 	}
 
 	/**
+	 * When the CDN transcodes an attachment to another image format, the
+	 * blob upload must use the response MIME type rather than the
+	 * attachment's original MIME. Otherwise the PDS stores WebP/AVIF bytes
+	 * behind a misleading `image/jpeg` blob.
+	 *
+	 * @covers ::upload_image_blob
+	 */
+	public function test_upload_image_blob_uses_remote_response_mime_type() {
+		$attachment_id = self::factory()->attachment->create_object(
+			array(
+				'file'           => '2026/06/transcoded.jpg',
+				'post_mime_type' => 'image/jpeg',
+			),
+			0,
+			array( 'post_title' => 'Transcoded attachment' )
+		);
+		\update_post_meta( $attachment_id, '_wp_attached_file', '2026/06/transcoded.jpg' );
+
+		$serve_image = static function ( $preempt, $args, $url ) {
+			if ( false !== \strpos( $url, 'transcoded' ) ) {
+				return array(
+					'response' => array( 'code' => 200 ),
+					'headers'  => new \WpOrg\Requests\Utility\CaseInsensitiveDictionary(
+						array( 'content-type' => 'Image/WebP; charset=binary' )
+					),
+					'body'     => 'WEBP-IMAGE-BYTES',
+				);
+			}
+			return $preempt;
+		};
+		\add_filter( 'pre_http_request', $serve_image, 5, 3 );
+
+		$uploaded_mime = null;
+		$capture_blob  = static function ( $short_circuit, $file_path, $mime ) use ( &$uploaded_mime ) {
+			$uploaded_mime = $mime;
+			return array( 'blob' => array( 'cid' => 'bafywebp' ) );
+		};
+		\add_filter( 'atmosphere_pre_upload_blob', $capture_blob, 10, 3 );
+
+		$blob = Post::upload_image_blob( $attachment_id );
+
+		\remove_filter( 'pre_http_request', $serve_image, 5 );
+		\remove_filter( 'atmosphere_pre_upload_blob', $capture_blob, 10 );
+
+		$this->assertSame( 'bafywebp', $blob['cid'] );
+		$this->assertSame( 'image/webp', $uploaded_mime );
+	}
+
+	/**
+	 * Attachment metadata can contain generated image sizes beyond
+	 * WordPress core's fixed names. If the larger candidates are over the
+	 * blob cap, `upload_image_blob()` should still find a custom generated
+	 * size under the cap instead of giving up.
+	 *
+	 * @covers ::upload_image_blob
+	 */
+	public function test_upload_image_blob_uses_custom_local_size_under_cap() {
+		$upload_dir = \wp_upload_dir();
+		$original   = $upload_dir['basedir'] . '/atmosphere-original-over-cap.jpg';
+		$large      = $upload_dir['basedir'] . '/atmosphere-large-over-cap.jpg';
+		$custom     = $upload_dir['basedir'] . '/atmosphere-custom-under-cap.jpg';
+
+		\file_put_contents( $original, \str_repeat( 'o', 1_000_001 ) ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents
+		\file_put_contents( $large, \str_repeat( 'l', 1_000_001 ) ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents
+		\file_put_contents( $custom, 'CUSTOM-IMAGE-BYTES' ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents
+
+		$attachment_id = self::factory()->attachment->create_object(
+			$original,
+			0,
+			array(
+				'post_mime_type' => 'image/jpeg',
+				'post_title'     => 'Custom size attachment',
+			)
+		);
+		\wp_update_attachment_metadata(
+			$attachment_id,
+			array(
+				'file'   => \basename( $original ),
+				'width'  => 3000,
+				'height' => 2200,
+				'sizes'  => array(
+					'large'       => array(
+						'file'      => \basename( $large ),
+						'width'     => 1600,
+						'height'    => 1200,
+						'mime-type' => 'image/jpeg',
+					),
+					'custom-card' => array(
+						'file'      => \basename( $custom ),
+						'width'     => 1200,
+						'height'    => 800,
+						'mime-type' => 'image/jpeg',
+					),
+				),
+			)
+		);
+
+		$uploaded     = null;
+		$capture_blob = static function ( $short_circuit, $file_path ) use ( &$uploaded ) {
+			$uploaded = \file_get_contents( $file_path ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_get_contents_file_get_contents
+			return array( 'blob' => array( 'cid' => 'bafycustom' ) );
+		};
+		\add_filter( 'atmosphere_pre_upload_blob', $capture_blob, 10, 2 );
+
+		$blob = Post::upload_image_blob( $attachment_id );
+
+		\remove_filter( 'atmosphere_pre_upload_blob', $capture_blob, 10 );
+		\wp_delete_file( $original );
+		\wp_delete_file( $large );
+		\wp_delete_file( $custom );
+
+		$this->assertSame( 'bafycustom', $blob['cid'] );
+		$this->assertSame( 'CUSTOM-IMAGE-BYTES', $uploaded );
+	}
+
+	/**
 	 * A readable local file under the 1 MB cap is uploaded directly,
 	 * without any HTTP fetch — the offloaded-media fallback must not
 	 * regress the common self-hosted fast path.

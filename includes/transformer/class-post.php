@@ -671,7 +671,7 @@ class Post extends Base {
 
 		// Resolve a file under the 1 MB cap: a readable local file when
 		// one exists, otherwise a temp file fetched from the CDN.
-		list( $file, $is_temp ) = self::resolve_uploadable_image( $attachment_id );
+		list( $file, $is_temp, $upload_mime ) = self::resolve_uploadable_image( $attachment_id, $mime );
 
 		if ( null === $file ) {
 			// phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
@@ -684,7 +684,7 @@ class Post extends Base {
 			return null;
 		}
 
-		$result = API::upload_blob( $file, $mime );
+		$result = API::upload_blob( $file, $upload_mime );
 
 		if ( $is_temp ) {
 			\wp_delete_file( $file );
@@ -709,21 +709,22 @@ class Post extends Base {
 	 * fetching the image over HTTP. The second element of the return
 	 * tuple flags a temp file the caller must delete after uploading.
 	 *
-	 * @param int $attachment_id WordPress attachment ID.
-	 * @return array{0:?string,1:bool} `[ $path, $is_temp ]`; `[ null, false ]` on failure.
+	 * @param int    $attachment_id WordPress attachment ID.
+	 * @param string $mime          Attachment MIME type.
+	 * @return array{0:?string,1:bool,2:?string} `[ $path, $is_temp, $mime ]`; `[ null, false, null ]` on failure.
 	 */
-	private static function resolve_uploadable_image( int $attachment_id ): array {
+	private static function resolve_uploadable_image( int $attachment_id, string $mime ): array {
 		$local = self::resolve_local_image( $attachment_id );
 		if ( null !== $local ) {
-			return array( $local, false );
+			return array( $local, false, $mime );
 		}
 
 		$remote = self::fetch_remote_image_to_temp( $attachment_id );
 		if ( null !== $remote ) {
-			return array( $remote, true );
+			return array( $remote['path'], true, $remote['mime'] );
 		}
 
-		return array( null, false );
+		return array( null, false, null );
 	}
 
 	/**
@@ -731,32 +732,77 @@ class Post extends Base {
 	 *
 	 * Checks readability *before* `filesize()` so an unreadable path
 	 * (a virtual/offloaded intermediate) can't trip a stat warning.
-	 * Falls back from the original to the `large` intermediate when the
-	 * original is over the cap.
+	 * Tries the original path first, then every generated size in
+	 * attachment metadata from largest to smallest.
 	 *
 	 * @param int $attachment_id WordPress attachment ID.
 	 * @return string|null Readable local path under the cap, or null.
 	 */
 	private static function resolve_local_image( int $attachment_id ): ?string {
-		$file = \get_attached_file( $attachment_id );
+		$file       = \get_attached_file( $attachment_id );
+		$upload_dir = \wp_upload_dir();
+		$candidates = array();
 
-		if ( $file && \is_readable( $file ) ) {
-			if ( \filesize( $file ) <= self::MAX_BLOB_BYTES ) {
-				return $file;
+		if ( $file ) {
+			$candidates[] = $file;
+		}
+
+		foreach ( self::get_image_size_candidates( $attachment_id ) as $size ) {
+			$resized = \image_get_intermediate_size( $attachment_id, $size );
+			if ( $resized && ! empty( $resized['path'] ) ) {
+				$candidates[] = $upload_dir['basedir'] . '/' . $resized['path'];
+			}
+		}
+
+		foreach ( \array_unique( $candidates ) as $candidate ) {
+			if ( ! \is_readable( $candidate ) ) {
+				continue;
 			}
 
-			// Original is over the cap; try the local `large` intermediate.
-			$resized = \image_get_intermediate_size( $attachment_id, 'large' );
-			if ( $resized && ! empty( $resized['path'] ) ) {
-				$upload_dir = \wp_upload_dir();
-				$large      = $upload_dir['basedir'] . '/' . $resized['path'];
-				if ( \is_readable( $large ) && \filesize( $large ) <= self::MAX_BLOB_BYTES ) {
-					return $large;
-				}
+			if ( \filesize( $candidate ) <= self::MAX_BLOB_BYTES ) {
+				return $candidate;
 			}
 		}
 
 		return null;
+	}
+
+	/**
+	 * Return generated image size names ordered from largest to smallest.
+	 *
+	 * Uses attachment metadata so custom/intermediate sizes registered by
+	 * WordPress or third-party code are considered alongside core sizes.
+	 * Known core names are appended as a fallback for sparse metadata.
+	 *
+	 * @param int $attachment_id WordPress attachment ID.
+	 * @return string[] Image size names.
+	 */
+	private static function get_image_size_candidates( int $attachment_id ): array {
+		$metadata = \wp_get_attachment_metadata( $attachment_id );
+		$sizes    = array();
+
+		if ( \is_array( $metadata ) && ! empty( $metadata['sizes'] ) && \is_array( $metadata['sizes'] ) ) {
+			foreach ( $metadata['sizes'] as $name => $details ) {
+				if ( ! \is_string( $name ) || '' === $name || ! \is_array( $details ) ) {
+					continue;
+				}
+
+				$width          = isset( $details['width'] ) && \is_numeric( $details['width'] ) ? (int) $details['width'] : 0;
+				$height         = isset( $details['height'] ) && \is_numeric( $details['height'] ) ? (int) $details['height'] : 0;
+				$sizes[ $name ] = $width * $height;
+			}
+		}
+
+		\arsort( $sizes, \SORT_NUMERIC );
+
+		$candidates = \array_keys( $sizes );
+		foreach ( array( '2048x2048', '1536x1536', 'large', 'medium_large', 'medium', 'thumbnail' ) as $size ) {
+			if ( ! \in_array( $size, $candidates, true ) ) {
+				$candidates[] = $size;
+			}
+		}
+
+		return $candidates;
 	}
 
 	/**
@@ -771,13 +817,9 @@ class Post extends Base {
 	 * SSRF surface is minimal.
 	 *
 	 * @param int $attachment_id WordPress attachment ID.
-	 * @return string|null Temp file path the caller must delete, or null.
+	 * @return array{path:string,mime:string}|null Temp file path and MIME type, or null.
 	 */
-	private static function fetch_remote_image_to_temp( int $attachment_id ): ?string {
-		// Largest-first: pick the highest-resolution candidate that
-		// still lands under the cap once fetched.
-		$sizes = array( '2048x2048', '1536x1536', 'large', 'medium_large', 'medium' );
-
+	private static function fetch_remote_image_to_temp( int $attachment_id ): ?array {
 		// Resolve the full-size URL up front so we can keep it out of the
 		// intermediate candidates: when a requested size hasn't been
 		// generated, `wp_get_attachment_image_url()` falls back to the
@@ -787,7 +829,7 @@ class Post extends Base {
 		$full = \wp_get_attachment_url( $attachment_id );
 
 		$urls = array();
-		foreach ( $sizes as $size ) {
+		foreach ( self::get_image_size_candidates( $attachment_id ) as $size ) {
 			$url = \wp_get_attachment_image_url( $attachment_id, $size );
 			if ( $url && $url !== $full ) {
 				$urls[ $url ] = true;
@@ -815,7 +857,7 @@ class Post extends Base {
 			}
 
 			// Header value isn't case-normalised by WP; a CDN may send `Image/JPEG`.
-			$content_type = \strtolower( (string) \wp_remote_retrieve_header( $response, 'content-type' ) );
+			$content_type = self::normalize_image_content_type( \wp_remote_retrieve_header( $response, 'content-type' ) );
 			if ( 0 !== \strpos( $content_type, 'image/' ) ) {
 				continue;
 			}
@@ -837,10 +879,29 @@ class Post extends Base {
 				continue;
 			}
 
-			return $temp;
+			return array(
+				'path' => $temp,
+				'mime' => $content_type,
+			);
 		}
 
 		return null;
+	}
+
+	/**
+	 * Normalize an HTTP Content-Type header for blob upload.
+	 *
+	 * @param mixed $content_type Raw response header value.
+	 * @return string Lowercase MIME type without parameters.
+	 */
+	private static function normalize_image_content_type( mixed $content_type ): string {
+		if ( \is_array( $content_type ) ) {
+			$content_type = \reset( $content_type );
+		}
+
+		$parts = \explode( ';', (string) $content_type );
+
+		return \strtolower( \trim( $parts[0] ) );
 	}
 
 	/**
