@@ -121,6 +121,13 @@ class Post extends Base {
 	public const META_DOC_REF_PENDING = '_atmosphere_doc_ref_pending';
 
 	/**
+	 * AT Protocol maximum blob size, in bytes.
+	 *
+	 * @var int
+	 */
+	private const MAX_BLOB_BYTES = 1_000_000;
+
+	/**
 	 * Document strongRef the Publisher pre-computed for the initial
 	 * atomic `applyWrites#create`.
 	 *
@@ -641,8 +648,11 @@ class Post extends Base {
 	 * attachment skips the upload.
 	 *
 	 * If the original file exceeds AT Protocol's 1 MB blob cap, falls
-	 * back to the `large` intermediate size; returns null if even the
-	 * fallback is too large or unreadable.
+	 * back to a smaller intermediate size. When no readable local file
+	 * is available — e.g. offloaded media on WordPress.com / Atomic,
+	 * where intermediate sizes are virtual and never hit local disk —
+	 * the image is fetched over HTTP from its attachment URL instead.
+	 * Returns null only when no candidate under the cap can be obtained.
 	 *
 	 * @param int $attachment_id WordPress attachment ID.
 	 * @return array|null Blob reference or null.
@@ -654,27 +664,32 @@ class Post extends Base {
 			return $cached;
 		}
 
-		$file = \get_attached_file( $attachment_id );
 		$mime = \get_post_mime_type( $attachment_id );
-
-		if ( ! $file || ! $mime ) {
+		if ( ! $mime ) {
 			return null;
 		}
 
-		// AT Protocol max blob size: 1 MB.
-		if ( \filesize( $file ) > 1_000_000 ) {
-			$resized = \image_get_intermediate_size( $attachment_id, 'large' );
-			if ( $resized ) {
-				$upload_dir = \wp_upload_dir();
-				$file       = $upload_dir['basedir'] . '/' . $resized['path'];
-			}
-		}
+		// Resolve a file under the 1 MB cap: a readable local file when
+		// one exists, otherwise a temp file fetched from the CDN.
+		list( $file, $is_temp ) = self::resolve_uploadable_image( $attachment_id );
 
-		if ( ! \is_readable( $file ) || \filesize( $file ) > 1_000_000 ) {
+		if ( null === $file ) {
+			// phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
+			\error_log(
+				\sprintf(
+					'[atmosphere] could not resolve an uploadable image for attachment %d (no readable local file and no fetchable size URL under the 1 MB cap); cover image / thumbnail will be omitted',
+					$attachment_id
+				)
+			);
 			return null;
 		}
 
 		$result = API::upload_blob( $file, $mime );
+
+		if ( $is_temp ) {
+			\wp_delete_file( $file );
+		}
+
 		if ( \is_wp_error( $result ) ) {
 			return null;
 		}
@@ -685,6 +700,147 @@ class Post extends Base {
 		}
 
 		return $blob_ref;
+	}
+
+	/**
+	 * Resolve a file path under the blob-size cap, ready to upload.
+	 *
+	 * Tries the local filesystem first (fast path), then falls back to
+	 * fetching the image over HTTP. The second element of the return
+	 * tuple flags a temp file the caller must delete after uploading.
+	 *
+	 * @param int $attachment_id WordPress attachment ID.
+	 * @return array{0:?string,1:bool} `[ $path, $is_temp ]`; `[ null, false ]` on failure.
+	 */
+	private static function resolve_uploadable_image( int $attachment_id ): array {
+		$local = self::resolve_local_image( $attachment_id );
+		if ( null !== $local ) {
+			return array( $local, false );
+		}
+
+		$remote = self::fetch_remote_image_to_temp( $attachment_id );
+		if ( null !== $remote ) {
+			return array( $remote, true );
+		}
+
+		return array( null, false );
+	}
+
+	/**
+	 * Find a readable local image file under the blob-size cap.
+	 *
+	 * Checks readability *before* `filesize()` so an unreadable path
+	 * (a virtual/offloaded intermediate) can't trip a stat warning.
+	 * Falls back from the original to the `large` intermediate when the
+	 * original is over the cap.
+	 *
+	 * @param int $attachment_id WordPress attachment ID.
+	 * @return string|null Readable local path under the cap, or null.
+	 */
+	private static function resolve_local_image( int $attachment_id ): ?string {
+		$file = \get_attached_file( $attachment_id );
+
+		if ( $file && \is_readable( $file ) ) {
+			if ( \filesize( $file ) <= self::MAX_BLOB_BYTES ) {
+				return $file;
+			}
+
+			// Original is over the cap; try the local `large` intermediate.
+			$resized = \image_get_intermediate_size( $attachment_id, 'large' );
+			if ( $resized && ! empty( $resized['path'] ) ) {
+				$upload_dir = \wp_upload_dir();
+				$large      = $upload_dir['basedir'] . '/' . $resized['path'];
+				if ( \is_readable( $large ) && \filesize( $large ) <= self::MAX_BLOB_BYTES ) {
+					return $large;
+				}
+			}
+		}
+
+		return null;
+	}
+
+	/**
+	 * Fetch an image from its attachment URL into a temp file.
+	 *
+	 * For offloaded-media hosts (WordPress.com / Atomic, WP Offload
+	 * Media, etc.) the resized files don't exist on local disk, so we
+	 * fetch them over HTTP. Candidate sizes are tried largest-first,
+	 * and the first response that is an image under the cap wins. The
+	 * URLs come from the site's own attachment metadata — not user
+	 * input — and `wp_safe_remote_get()` blocks internal hosts, so the
+	 * SSRF surface is minimal.
+	 *
+	 * @param int $attachment_id WordPress attachment ID.
+	 * @return string|null Temp file path the caller must delete, or null.
+	 */
+	private static function fetch_remote_image_to_temp( int $attachment_id ): ?string {
+		// Largest-first: pick the highest-resolution candidate that
+		// still lands under the cap once fetched.
+		$sizes = array( '2048x2048', '1536x1536', 'large', 'medium_large', 'medium' );
+
+		// Resolve the full-size URL up front so we can keep it out of the
+		// intermediate candidates: when a requested size hasn't been
+		// generated, `wp_get_attachment_image_url()` falls back to the
+		// full-size URL, which would otherwise jump the queue and force a
+		// wasted download of the (likely oversized) original before the
+		// smaller sizes are tried.
+		$full = \wp_get_attachment_url( $attachment_id );
+
+		$urls = array();
+		foreach ( $sizes as $size ) {
+			$url = \wp_get_attachment_image_url( $attachment_id, $size );
+			if ( $url && $url !== $full ) {
+				$urls[ $url ] = true;
+			}
+		}
+		// Full-size original last, in case it's already under the cap.
+		if ( $full ) {
+			$urls[ $full ] = true;
+		}
+
+		foreach ( \array_keys( $urls ) as $url ) {
+			$response = \wp_safe_remote_get(
+				$url,
+				array(
+					'timeout'             => 15,
+					// Cap the in-memory buffer at the blob limit so an
+					// oversized original (the last candidate) can't be
+					// pulled fully into memory only to be rejected below.
+					'limit_response_size' => self::MAX_BLOB_BYTES + 1,
+				)
+			);
+
+			if ( \is_wp_error( $response ) || 200 !== \wp_remote_retrieve_response_code( $response ) ) {
+				continue;
+			}
+
+			// Header value isn't case-normalised by WP; a CDN may send `Image/JPEG`.
+			$content_type = \strtolower( (string) \wp_remote_retrieve_header( $response, 'content-type' ) );
+			if ( 0 !== \strpos( $content_type, 'image/' ) ) {
+				continue;
+			}
+
+			$body = \wp_remote_retrieve_body( $response );
+			$size = \strlen( $body );
+			if ( 0 === $size || $size > self::MAX_BLOB_BYTES ) {
+				continue;
+			}
+
+			$temp = \wp_tempnam( \basename( $url ) );
+			if ( ! $temp ) {
+				continue;
+			}
+
+			// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents
+			if ( false === \file_put_contents( $temp, $body ) ) {
+				\wp_delete_file( $temp );
+				continue;
+			}
+
+			return $temp;
+		}
+
+		return null;
 	}
 
 	/**

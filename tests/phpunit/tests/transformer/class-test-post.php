@@ -1942,6 +1942,283 @@ class Test_Post extends WP_UnitTestCase {
 		$this->assertSame( $cached_ref, Post::upload_thumbnail( $attachment_id ) );
 	}
 
+	/**
+	 * On offloaded-media hosts (WordPress.com / Atomic), intermediate
+	 * image sizes are virtual — their files never land on local disk —
+	 * so the local path is unreadable. `upload_image_blob()` must fall
+	 * back to fetching the image over HTTP from its attachment URL and
+	 * upload those bytes, rather than silently returning null. Regression
+	 * test for the dropped document `coverImage` / Bluesky card thumbnail.
+	 *
+	 * @covers ::upload_image_blob
+	 */
+	public function test_upload_image_blob_fetches_remote_when_local_file_unreadable() {
+		$attachment_id = self::factory()->attachment->create_object(
+			array(
+				'file'           => '2026/06/offloaded.jpg',
+				'post_mime_type' => 'image/jpeg',
+			),
+			0,
+			array( 'post_title' => 'Offloaded attachment' )
+		);
+		\update_post_meta( $attachment_id, '_wp_attached_file', '2026/06/offloaded.jpg' );
+		\wp_update_attachment_metadata(
+			$attachment_id,
+			array(
+				'file'   => '2026/06/offloaded.jpg',
+				'width'  => 3000,
+				'height' => 4000,
+				'sizes'  => array(
+					'large' => array(
+						'file'      => 'offloaded-769x1024.jpg',
+						'width'     => 769,
+						'height'    => 1024,
+						'mime-type' => 'image/jpeg',
+					),
+				),
+			)
+		);
+
+		$image_bytes = 'REMOTE-IMAGE-BYTES';
+
+		// Serve image bytes for the attachment URL fetch. No local file
+		// exists, so this is the only way a blob can be produced.
+		$serve_image = static function ( $preempt, $args, $url ) use ( $image_bytes ) {
+			if ( false !== \strpos( $url, 'offloaded' ) ) {
+				return array(
+					'response' => array( 'code' => 200 ),
+					'headers'  => new \WpOrg\Requests\Utility\CaseInsensitiveDictionary(
+						array( 'content-type' => 'image/jpeg' )
+					),
+					'body'     => $image_bytes,
+				);
+			}
+			return $preempt;
+		};
+		\add_filter( 'pre_http_request', $serve_image, 5, 3 );
+
+		// Capture the bytes handed to the PDS and short-circuit the
+		// DPoP-authenticated upload that can't run in the test harness.
+		$uploaded     = null;
+		$capture_blob = static function ( $short_circuit, $file_path, $mime ) use ( &$uploaded ) {
+			$uploaded = array(
+				'contents' => \file_get_contents( $file_path ), // phpcs:ignore WordPress.WP.AlternativeFunctions.file_get_contents_file_get_contents
+				'mime'     => $mime,
+			);
+			return array(
+				'blob' => array(
+					'cid'      => 'bafyremote',
+					'mimeType' => 'image/jpeg',
+					'size'     => \strlen( $uploaded['contents'] ),
+				),
+			);
+		};
+		\add_filter( 'atmosphere_pre_upload_blob', $capture_blob, 10, 3 );
+
+		$blob = Post::upload_image_blob( $attachment_id );
+
+		\remove_filter( 'pre_http_request', $serve_image, 5 );
+		\remove_filter( 'atmosphere_pre_upload_blob', $capture_blob, 10 );
+
+		$this->assertIsArray( $blob, 'A blob ref should be produced from the fetched image.' );
+		$this->assertSame( 'bafyremote', $blob['cid'] );
+		$this->assertNotNull( $uploaded, 'The fetched bytes should have been uploaded.' );
+		$this->assertSame( $image_bytes, $uploaded['contents'] );
+		$this->assertSame( 'image/jpeg', $uploaded['mime'] );
+	}
+
+	/**
+	 * A readable local file under the 1 MB cap is uploaded directly,
+	 * without any HTTP fetch — the offloaded-media fallback must not
+	 * regress the common self-hosted fast path.
+	 *
+	 * @covers ::upload_image_blob
+	 */
+	public function test_upload_image_blob_uses_local_file_without_fetching() {
+		$upload_dir = \wp_upload_dir();
+		$path       = $upload_dir['basedir'] . '/atmosphere-local-test.jpg';
+		\file_put_contents( $path, 'LOCAL-IMAGE-BYTES' ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents
+
+		$attachment_id = self::factory()->attachment->create_object(
+			$path,
+			0,
+			array(
+				'post_mime_type' => 'image/jpeg',
+				'post_title'     => 'Local attachment',
+			)
+		);
+
+		// Any HTTP request would be a regression — fail loudly if one fires.
+		$fetched  = false;
+		$tripwire = static function ( $preempt ) use ( &$fetched ) {
+			$fetched = true;
+			return $preempt;
+		};
+		\add_filter( 'pre_http_request', $tripwire, 1, 1 );
+
+		$uploaded     = null;
+		$capture_blob = static function ( $short_circuit, $file_path ) use ( &$uploaded ) {
+			$uploaded = \file_get_contents( $file_path ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_get_contents_file_get_contents
+			return array( 'blob' => array( 'cid' => 'bafylocal' ) );
+		};
+		\add_filter( 'atmosphere_pre_upload_blob', $capture_blob, 10, 2 );
+
+		$blob = Post::upload_image_blob( $attachment_id );
+
+		\remove_filter( 'pre_http_request', $tripwire, 1 );
+		\remove_filter( 'atmosphere_pre_upload_blob', $capture_blob, 10 );
+		\wp_delete_file( $path );
+
+		$this->assertSame( 'bafylocal', $blob['cid'] );
+		$this->assertSame( 'LOCAL-IMAGE-BYTES', $uploaded );
+		$this->assertFalse( $fetched, 'No HTTP request should be made when a local file is available.' );
+	}
+
+	/**
+	 * When no readable local file exists and every fetched candidate is
+	 * still over the 1 MB cap, `upload_image_blob()` gives up and returns
+	 * null rather than uploading an oversized blob. (Per design: no local
+	 * downscaling as a last resort.)
+	 *
+	 * @covers ::upload_image_blob
+	 */
+	public function test_upload_image_blob_returns_null_when_all_candidates_over_cap() {
+		$attachment_id = self::factory()->attachment->create_object(
+			array(
+				'file'           => '2026/06/huge.jpg',
+				'post_mime_type' => 'image/jpeg',
+			),
+			0,
+			array( 'post_title' => 'Huge attachment' )
+		);
+		\update_post_meta( $attachment_id, '_wp_attached_file', '2026/06/huge.jpg' );
+
+		// Every fetched candidate comes back over the 1 MB cap.
+		$oversized  = \str_repeat( 'x', 1_000_001 );
+		$serve_huge = static function ( $preempt, $args, $url ) use ( $oversized ) {
+			if ( false !== \strpos( $url, 'huge' ) ) {
+				return array(
+					'response' => array( 'code' => 200 ),
+					'headers'  => new \WpOrg\Requests\Utility\CaseInsensitiveDictionary(
+						array( 'content-type' => 'image/jpeg' )
+					),
+					'body'     => $oversized,
+				);
+			}
+			return $preempt;
+		};
+		\add_filter( 'pre_http_request', $serve_huge, 5, 3 );
+
+		$uploaded     = false;
+		$capture_blob = static function () use ( &$uploaded ) {
+			$uploaded = true;
+			return array( 'blob' => array( 'cid' => 'bafyshouldnothappen' ) );
+		};
+		\add_filter( 'atmosphere_pre_upload_blob', $capture_blob, 10, 0 );
+
+		$blob = Post::upload_image_blob( $attachment_id );
+
+		\remove_filter( 'pre_http_request', $serve_huge, 5 );
+		\remove_filter( 'atmosphere_pre_upload_blob', $capture_blob, 10 );
+
+		$this->assertNull( $blob );
+		$this->assertFalse( $uploaded, 'No oversized blob should ever be uploaded.' );
+	}
+
+	/**
+	 * A CDN that returns a capitalised content-type (`Image/JPEG`) is
+	 * still recognised as an image — the header value is not case-
+	 * normalised by WordPress, so the fetch must compare case-insensitively.
+	 *
+	 * @covers ::upload_image_blob
+	 */
+	public function test_upload_image_blob_accepts_uppercase_content_type() {
+		$attachment_id = self::factory()->attachment->create_object(
+			array(
+				'file'           => '2026/06/caps.jpg',
+				'post_mime_type' => 'image/jpeg',
+			),
+			0,
+			array( 'post_title' => 'Caps attachment' )
+		);
+		\update_post_meta( $attachment_id, '_wp_attached_file', '2026/06/caps.jpg' );
+
+		$serve_image = static function ( $preempt, $args, $url ) {
+			if ( false !== \strpos( $url, 'caps' ) ) {
+				return array(
+					'response' => array( 'code' => 200 ),
+					'headers'  => new \WpOrg\Requests\Utility\CaseInsensitiveDictionary(
+						array( 'content-type' => 'Image/JPEG' )
+					),
+					'body'     => 'CAPS-IMAGE-BYTES',
+				);
+			}
+			return $preempt;
+		};
+		\add_filter( 'pre_http_request', $serve_image, 5, 3 );
+
+		$capture_blob = static function () {
+			return array( 'blob' => array( 'cid' => 'bafycaps' ) );
+		};
+		\add_filter( 'atmosphere_pre_upload_blob', $capture_blob, 10, 0 );
+
+		$blob = Post::upload_image_blob( $attachment_id );
+
+		\remove_filter( 'pre_http_request', $serve_image, 5 );
+		\remove_filter( 'atmosphere_pre_upload_blob', $capture_blob, 10 );
+
+		$this->assertSame( 'bafycaps', $blob['cid'] );
+	}
+
+	/**
+	 * When the fetched image uploads to a temp file but the PDS upload
+	 * fails, the temp file is still deleted — no leak on the error path.
+	 *
+	 * @covers ::upload_image_blob
+	 */
+	public function test_upload_image_blob_cleans_up_temp_file_on_upload_error() {
+		$attachment_id = self::factory()->attachment->create_object(
+			array(
+				'file'           => '2026/06/leak.jpg',
+				'post_mime_type' => 'image/jpeg',
+			),
+			0,
+			array( 'post_title' => 'Leak attachment' )
+		);
+		\update_post_meta( $attachment_id, '_wp_attached_file', '2026/06/leak.jpg' );
+
+		$serve_image = static function ( $preempt, $args, $url ) {
+			if ( false !== \strpos( $url, 'leak' ) ) {
+				return array(
+					'response' => array( 'code' => 200 ),
+					'headers'  => new \WpOrg\Requests\Utility\CaseInsensitiveDictionary(
+						array( 'content-type' => 'image/jpeg' )
+					),
+					'body'     => 'LEAK-IMAGE-BYTES',
+				);
+			}
+			return $preempt;
+		};
+		\add_filter( 'pre_http_request', $serve_image, 5, 3 );
+
+		// Capture the temp path, then fail the upload.
+		$temp_path   = null;
+		$fail_upload = static function ( $short_circuit, $file_path ) use ( &$temp_path ) {
+			$temp_path = $file_path;
+			return new \WP_Error( 'atmosphere_test_upload_failed', 'forced failure' );
+		};
+		\add_filter( 'atmosphere_pre_upload_blob', $fail_upload, 10, 2 );
+
+		$blob = Post::upload_image_blob( $attachment_id );
+
+		\remove_filter( 'pre_http_request', $serve_image, 5 );
+		\remove_filter( 'atmosphere_pre_upload_blob', $fail_upload, 10 );
+
+		$this->assertNull( $blob );
+		$this->assertNotNull( $temp_path, 'A temp file should have been created and passed to upload.' );
+		$this->assertFileDoesNotExist( $temp_path, 'The temp file must be deleted even when the upload fails.' );
+	}
+
 	/*
 	 * -----------------------------------------------------------------
 	 * get_attachment_aspect_ratio() — pixel dimensions for embed.images.
