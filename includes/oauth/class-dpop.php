@@ -42,18 +42,12 @@ class DPoP {
 		 * false to openssl_pkey_get_details(), which fatals on PHP 8.
 		 */
 		if ( false === $key ) {
-			return new \WP_Error(
-				'atmosphere_dpop_keygen_failed',
-				\__( 'Could not create the secure key needed to connect to Bluesky. Your site\'s server is missing OpenSSL elliptic-curve (EC) support — please ask your host to enable it.', 'atmosphere' )
-			);
+			return self::keygen_error();
 		}
 
 		$details = \openssl_pkey_get_details( $key );
 		if ( false === $details || ! isset( $details['ec'] ) ) {
-			return new \WP_Error(
-				'atmosphere_dpop_keygen_failed',
-				\__( 'Could not create the secure key needed to connect to Bluesky. Your site\'s server is missing OpenSSL elliptic-curve (EC) support — please ask your host to enable it.', 'atmosphere' )
-			);
+			return self::keygen_error();
 		}
 		$ec = $details['ec'];
 
@@ -63,6 +57,21 @@ class DPoP {
 			'x'   => self::base64url( $ec['x'] ),
 			'y'   => self::base64url( $ec['y'] ),
 			'd'   => self::base64url( $ec['d'] ),
+		);
+	}
+
+	/**
+	 * Build the error returned when EC key generation is unavailable.
+	 *
+	 * Shared by both failure branches in generate_key() so the code and
+	 * message stay in sync.
+	 *
+	 * @return \WP_Error
+	 */
+	private static function keygen_error(): \WP_Error {
+		return new \WP_Error(
+			'atmosphere_dpop_keygen_failed',
+			\__( 'Could not create the secure key needed to connect to Bluesky. Your site\'s server is missing OpenSSL elliptic-curve (EC) support — please ask your host to enable it.', 'atmosphere' )
 		);
 	}
 
