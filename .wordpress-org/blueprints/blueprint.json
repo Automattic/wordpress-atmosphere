@@ -15,7 +15,7 @@
 			"options": {
 				"permalink_structure": "/%postname%/",
 				"blogname": "ATmosphere Demo",
-				"blogdescription": "Publishing to the AT Protocol network"
+				"blogdescription": "Share your posts on Bluesky"
 			}
 		},
 		{
@@ -35,7 +35,7 @@
 		{
 			"step": "writeFile",
 			"path": "wordpress/wp-content/mu-plugins/show-admin-notice.php",
-			"data": "<?php\nadd_action(\n'admin_notices',\nfunction() {\n$dismissed = get_user_option( 'dismissed_atmosphere_blueprint_notice', get_current_user_id() );\nif ( $dismissed ) {\nreturn;\n}\necho '<div class=\"notice notice-info is-dismissible\" id=\"atmosphere-admin-notice\"><p>' . esc_html( 'Welcome to ATmosphere! Connect a Bluesky account to start publishing to the AT Protocol network. 👋' ) . '</p></div>';\n}\n);\nadd_action('wp_ajax_dismiss_atmosphere-admin-notice', function() {\ncheck_ajax_referer('atmosphere-admin-notice', 'nonce');\n$user_id = get_current_user_id();\nif ( $user_id ) {\nupdate_user_option($user_id, 'dismissed_atmosphere_blueprint_notice', 1, false);\nwp_send_json_success();\n} else {\nwp_send_json_error('User not found');\n}\n} );\nadd_action('admin_footer', function() {\n?>\n<script type=\"text/javascript\">\njQuery(document).ready( function($) {\nvar ajaxurl = '<?php echo esc_url( admin_url( 'admin-ajax.php' ) ); ?>';\nvar nonce = '<?php echo esc_js( wp_create_nonce( 'atmosphere-admin-notice' ) ); ?>';\n$( '#atmosphere-admin-notice' ).on( 'click', '.notice-dismiss', function() {\n$.ajax({\nurl: ajaxurl,\ntype: 'POST',\ndata: {\naction: 'dismiss_atmosphere-admin-notice',\nnonce: nonce\n}\n});\n});\n});\n</script>\n<?php\n} );"
+			"data": "<?php\nadd_action(\n'admin_notices',\nfunction() {\n$dismissed = get_user_option( 'dismissed_atmosphere_blueprint_notice', get_current_user_id() );\nif ( $dismissed ) {\nreturn;\n}\necho '<div class=\"notice notice-info is-dismissible\" id=\"atmosphere-admin-notice\"><p>' . esc_html( 'Welcome to ATmosphere! Connect your Bluesky account below, then publish a post to see it appear on Bluesky automatically. 👋' ) . '</p></div>';\n}\n);\nadd_action('wp_ajax_dismiss_atmosphere-admin-notice', function() {\ncheck_ajax_referer('atmosphere-admin-notice', 'nonce');\n$user_id = get_current_user_id();\nif ( $user_id ) {\nupdate_user_option($user_id, 'dismissed_atmosphere_blueprint_notice', 1, false);\nwp_send_json_success();\n} else {\nwp_send_json_error('User not found');\n}\n} );\nadd_action('admin_footer', function() {\n?>\n<script type=\"text/javascript\">\njQuery(document).ready( function($) {\nvar ajaxurl = '<?php echo esc_url( admin_url( 'admin-ajax.php' ) ); ?>';\nvar nonce = '<?php echo esc_js( wp_create_nonce( 'atmosphere-admin-notice' ) ); ?>';\n$( '#atmosphere-admin-notice' ).on( 'click', '.notice-dismiss', function() {\n$.ajax({\nurl: ajaxurl,\ntype: 'POST',\ndata: {\naction: 'dismiss_atmosphere-admin-notice',\nnonce: nonce\n}\n});\n});\n});\n</script>\n<?php\n} );"
 		}
 	]
 }
