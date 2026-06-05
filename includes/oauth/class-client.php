@@ -167,6 +167,9 @@ class Client {
 
 		// DPoP key pair.
 		$dpop_jwk = DPoP::generate_key();
+		if ( \is_wp_error( $dpop_jwk ) ) {
+			return $dpop_jwk;
+		}
 
 		// State for CSRF.
 		$state = \wp_generate_password( 40, false );
