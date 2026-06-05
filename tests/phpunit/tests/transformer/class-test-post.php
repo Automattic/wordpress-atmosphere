@@ -35,6 +35,39 @@ class Test_Post extends WP_UnitTestCase {
 	}
 
 	/**
+	 * Encode a tiny but genuinely valid image for HTTP-fetch test bodies.
+	 *
+	 * The remote-fetch path validates fetched bytes with `wp_getimagesize()`,
+	 * so test responses must carry real image data, not placeholder strings.
+	 *
+	 * @param string $format One of `jpeg`, `png`, `gif`, `webp`.
+	 * @return string Encoded image bytes.
+	 */
+	private function image_bytes( string $format = 'jpeg' ): string {
+		$image = \imagecreatetruecolor( 4, 4 );
+
+		\ob_start();
+		switch ( $format ) {
+			case 'png':
+				\imagepng( $image );
+				break;
+			case 'gif':
+				\imagegif( $image );
+				break;
+			case 'webp':
+				\imagewebp( $image );
+				break;
+			default:
+				\imagejpeg( $image );
+		}
+		$bytes = (string) \ob_get_clean();
+
+		\imagedestroy( $image );
+
+		return $bytes;
+	}
+
+	/**
 	 * Invoke `Post::truncate_to_budget()` via reflection.
 	 *
 	 * The helper is private because it's an implementation detail of
@@ -1979,7 +2012,7 @@ class Test_Post extends WP_UnitTestCase {
 			)
 		);
 
-		$image_bytes = 'REMOTE-IMAGE-BYTES';
+		$image_bytes = $this->image_bytes( 'jpeg' );
 
 		// Serve image bytes for the attachment URL fetch. No local file
 		// exists, so this is the only way a blob can be produced.
@@ -2002,6 +2035,7 @@ class Test_Post extends WP_UnitTestCase {
 		$uploaded     = null;
 		$capture_blob = static function ( $short_circuit, $file_path, $mime ) use ( &$uploaded ) {
 			$uploaded = array(
+				'path'     => $file_path,
 				'contents' => \file_get_contents( $file_path ), // phpcs:ignore WordPress.WP.AlternativeFunctions.file_get_contents_file_get_contents
 				'mime'     => $mime,
 			);
@@ -2025,11 +2059,12 @@ class Test_Post extends WP_UnitTestCase {
 		$this->assertNotNull( $uploaded, 'The fetched bytes should have been uploaded.' );
 		$this->assertSame( $image_bytes, $uploaded['contents'] );
 		$this->assertSame( 'image/jpeg', $uploaded['mime'] );
+		$this->assertFileDoesNotExist( $uploaded['path'], 'The fetched temp file must be deleted after a successful upload.' );
 	}
 
 	/**
 	 * When the CDN transcodes an attachment to another image format, the
-	 * blob upload must use the response MIME type rather than the
+	 * blob upload must use the actual fetched format rather than the
 	 * attachment's original MIME. Otherwise the PDS stores WebP/AVIF bytes
 	 * behind a misleading `image/jpeg` blob.
 	 *
@@ -2046,14 +2081,15 @@ class Test_Post extends WP_UnitTestCase {
 		);
 		\update_post_meta( $attachment_id, '_wp_attached_file', '2026/06/transcoded.jpg' );
 
-		$serve_image = static function ( $preempt, $args, $url ) {
+		$webp        = $this->image_bytes( 'webp' );
+		$serve_image = static function ( $preempt, $args, $url ) use ( $webp ) {
 			if ( false !== \strpos( $url, 'transcoded' ) ) {
 				return array(
 					'response' => array( 'code' => 200 ),
 					'headers'  => new \WpOrg\Requests\Utility\CaseInsensitiveDictionary(
 						array( 'content-type' => 'Image/WebP; charset=binary' )
 					),
-					'body'     => 'WEBP-IMAGE-BYTES',
+					'body'     => $webp,
 				);
 			}
 			return $preempt;
@@ -2304,6 +2340,56 @@ class Test_Post extends WP_UnitTestCase {
 	}
 
 	/**
+	 * A response that claims `image/*` in its Content-Type but carries
+	 * non-image bytes is rejected — the bytes are validated, not just the
+	 * header — so a misconfigured/compromised CDN can't get arbitrary
+	 * bytes stored as a blob and rendered by downstream clients.
+	 *
+	 * @covers ::upload_image_blob
+	 */
+	public function test_upload_image_blob_rejects_non_image_response_bytes() {
+		$attachment_id = self::factory()->attachment->create_object(
+			array(
+				'file'           => '2026/06/spoofed.jpg',
+				'post_mime_type' => 'image/jpeg',
+			),
+			0,
+			array( 'post_title' => 'Spoofed attachment' )
+		);
+		\update_post_meta( $attachment_id, '_wp_attached_file', '2026/06/spoofed.jpg' );
+
+		// 200 OK, image/jpeg header — but the body is not an image.
+		$serve_junk = static function ( $preempt, $args, $url ) {
+			if ( false !== \strpos( $url, 'spoofed' ) ) {
+				return array(
+					'response' => array( 'code' => 200 ),
+					'headers'  => new \WpOrg\Requests\Utility\CaseInsensitiveDictionary(
+						array( 'content-type' => 'image/jpeg' )
+					),
+					'body'     => 'this-is-definitely-not-an-image',
+				);
+			}
+			return $preempt;
+		};
+		\add_filter( 'pre_http_request', $serve_junk, 5, 3 );
+
+		$uploaded     = false;
+		$capture_blob = static function () use ( &$uploaded ) {
+			$uploaded = true;
+			return array( 'blob' => array( 'cid' => 'bafyshouldnothappen' ) );
+		};
+		\add_filter( 'atmosphere_pre_upload_blob', $capture_blob, 10, 0 );
+
+		$blob = Post::upload_image_blob( $attachment_id );
+
+		\remove_filter( 'pre_http_request', $serve_junk, 5 );
+		\remove_filter( 'atmosphere_pre_upload_blob', $capture_blob, 10 );
+
+		$this->assertNull( $blob );
+		$this->assertFalse( $uploaded, 'Non-image bytes must never be uploaded as a blob.' );
+	}
+
+	/**
 	 * A CDN that returns a capitalised content-type (`Image/JPEG`) is
 	 * still recognised as an image — the header value is not case-
 	 * normalised by WordPress, so the fetch must compare case-insensitively.
@@ -2321,14 +2407,15 @@ class Test_Post extends WP_UnitTestCase {
 		);
 		\update_post_meta( $attachment_id, '_wp_attached_file', '2026/06/caps.jpg' );
 
-		$serve_image = static function ( $preempt, $args, $url ) {
+		$jpeg        = $this->image_bytes( 'jpeg' );
+		$serve_image = static function ( $preempt, $args, $url ) use ( $jpeg ) {
 			if ( false !== \strpos( $url, 'caps' ) ) {
 				return array(
 					'response' => array( 'code' => 200 ),
 					'headers'  => new \WpOrg\Requests\Utility\CaseInsensitiveDictionary(
 						array( 'content-type' => 'Image/JPEG' )
 					),
-					'body'     => 'CAPS-IMAGE-BYTES',
+					'body'     => $jpeg,
 				);
 			}
 			return $preempt;
@@ -2365,14 +2452,15 @@ class Test_Post extends WP_UnitTestCase {
 		);
 		\update_post_meta( $attachment_id, '_wp_attached_file', '2026/06/leak.jpg' );
 
-		$serve_image = static function ( $preempt, $args, $url ) {
+		$jpeg        = $this->image_bytes( 'jpeg' );
+		$serve_image = static function ( $preempt, $args, $url ) use ( $jpeg ) {
 			if ( false !== \strpos( $url, 'leak' ) ) {
 				return array(
 					'response' => array( 'code' => 200 ),
 					'headers'  => new \WpOrg\Requests\Utility\CaseInsensitiveDictionary(
 						array( 'content-type' => 'image/jpeg' )
 					),
-					'body'     => 'LEAK-IMAGE-BYTES',
+					'body'     => $jpeg,
 				);
 			}
 			return $preempt;
