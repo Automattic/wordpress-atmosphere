@@ -1,0 +1,4 @@
+Significance: patch
+Type: fixed
+
+Show a clear error instead of crashing when connecting on a server whose OpenSSL build cannot create the secure key Bluesky requires.
