@@ -23,9 +23,11 @@ class DPoP {
 	/**
 	 * Generate an ES256 key pair suitable for DPoP.
 	 *
-	 * @return array JWK array with private key material.
+	 * @return array|\WP_Error JWK array with private key material, or a
+	 *                         WP_Error when the host's OpenSSL build cannot
+	 *                         produce the P-256 (EC) key DPoP requires.
 	 */
-	public static function generate_key(): array {
+	public static function generate_key(): array|\WP_Error {
 		$key = \openssl_pkey_new(
 			array(
 				'curve_name'       => 'prime256v1',
@@ -33,9 +35,27 @@ class DPoP {
 			)
 		);
 
-		\openssl_pkey_export( $key, $pem );
+		/*
+		 * Some OpenSSL builds (FIPS-restricted, stripped, or WebAssembly
+		 * runtimes like WordPress Playground) cannot generate EC keys and
+		 * return false here. Bail with a clear error instead of passing
+		 * false to openssl_pkey_get_details(), which fatals on PHP 8.
+		 */
+		if ( false === $key ) {
+			return new \WP_Error(
+				'atmosphere_dpop_keygen_failed',
+				\__( 'Could not create the secure key needed to connect to Bluesky. Your site\'s server is missing OpenSSL elliptic-curve (EC) support — please ask your host to enable it.', 'atmosphere' )
+			);
+		}
+
 		$details = \openssl_pkey_get_details( $key );
-		$ec      = $details['ec'];
+		if ( false === $details || ! isset( $details['ec'] ) ) {
+			return new \WP_Error(
+				'atmosphere_dpop_keygen_failed',
+				\__( 'Could not create the secure key needed to connect to Bluesky. Your site\'s server is missing OpenSSL elliptic-curve (EC) support — please ask your host to enable it.', 'atmosphere' )
+			);
+		}
+		$ec = $details['ec'];
 
 		return array(
 			'kty' => 'EC',
