@@ -390,12 +390,8 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 	/**
 	 * Test that a registered `atmosphere_should_sync_reply` callback can
 	 * suppress the comment insert. The filter receives the notification,
-	 * resolved post ID, and resolved parent-comment ID.
-	 *
-	 * With no `atmosphere_should_sync_reaction` umbrella callback hooked,
-	 * the incoming `$should` is the umbrella's default of true — the
-	 * dedicated umbrella/layering tests below cover the interaction
-	 * between the two filters.
+	 * resolved post ID, and resolved parent-comment ID. With no umbrella
+	 * callback hooked, the incoming `$should` is the umbrella default true.
 	 */
 	public function test_process_reply_respects_should_sync_filter() {
 		$post_id  = self::factory()->post->create();

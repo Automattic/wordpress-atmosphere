@@ -378,14 +378,8 @@ class Reaction_Sync {
 	}
 
 	/**
-	 * Apply the cross-type reaction umbrella filter.
-	 *
-	 * Fires for every reaction type (`like`, `repost`, and `comment` for
-	 * replies) so a consumer can disable reaction syncing wholesale with
-	 * a single hook. The per-type filters (`atmosphere_should_sync_like`,
-	 * `atmosphere_should_sync_repost`, `atmosphere_should_sync_reply`)
-	 * each receive this result as their default `$should`, so they can
-	 * override the umbrella in either direction.
+	 * Apply the cross-type reaction umbrella filter. Its result seeds the
+	 * default for each per-type filter (like/repost/reply).
 	 *
 	 * @param string $comment_type Target WP comment_type (like/repost/comment).
 	 * @param array  $notification Notification or synthesized own-record.
@@ -396,13 +390,9 @@ class Reaction_Sync {
 		/**
 		 * Filters whether a Bluesky reaction should be synced as a WordPress comment.
 		 *
-		 * The cross-type umbrella for inbound reactions. Fires before the
-		 * type-specific filters (`atmosphere_should_sync_like`,
-		 * `atmosphere_should_sync_repost`, `atmosphere_should_sync_reply`)
-		 * and seeds each of their default `$should` values, so returning
-		 * false here disables all reaction syncing unless a type-specific
-		 * filter re-enables it. Fires before any author profile resolution
-		 * so a vetoed reaction performs no network calls.
+		 * Cross-type umbrella for likes, reposts, and replies. Return false
+		 * to disable reaction syncing wholesale; the per-type filters can
+		 * still re-enable a specific type.
 		 *
 		 * @since unreleased
 		 *
@@ -487,33 +477,19 @@ class Reaction_Sync {
 			return false;
 		}
 
-		/*
-		 * Apply the cross-type umbrella first so its result becomes the
-		 * default the reply-specific filter receives. A consumer can turn
-		 * off all reaction syncing via `atmosphere_should_sync_reaction`
-		 * and still re-enable replies via `atmosphere_should_sync_reply`,
-		 * or vice versa.
-		 */
 		$should_sync = self::should_sync_reaction( 'comment', $notification, $post_id );
 
 		/**
 		 * Filters whether a reply should be synced as a WordPress comment.
 		 *
 		 * Fires after the reply's target post and parent comment have been
-		 * resolved, immediately before any work that depends on the reply
-		 * being kept (author profile resolution, comment row insert,
-		 * comment-meta writes). Return false to skip the insert.
-		 *
-		 * The incoming `$should` reflects the result of the cross-type
-		 * `atmosphere_should_sync_reaction` umbrella filter, so a consumer
-		 * that disabled all reaction syncing there can selectively
-		 * re-enable replies here (and vice versa).
+		 * resolved, before author profile resolution and the comment insert.
+		 * Return false to skip the insert. The incoming `$should` is the
+		 * `atmosphere_should_sync_reaction` umbrella result.
 		 *
 		 * Use case: consumers publishing multi-record threads from their
 		 * own DID may want to skip the round-tripped self-replies that
-		 * `Reaction_Sync` would otherwise ingest as comments. The filter
-		 * is intentionally policy-free upstream so consumers can express
-		 * whatever discriminator fits their publishing strategy.
+		 * `Reaction_Sync` would otherwise ingest as comments.
 		 *
 		 * @param bool  $should         Whether to sync this reply. Defaults to the umbrella result.
 		 * @param array $notification   Notification or synthesized own-record.
@@ -564,22 +540,16 @@ class Reaction_Sync {
 			return false;
 		}
 
-		/*
-		 * Gate before `resolve_author()` (a cached getProfile network
-		 * call) so a vetoed like/repost costs nothing, mirroring where
-		 * `atmosphere_should_sync_reply` sits in `process_reply()`.
-		 */
+		// Gate before resolve_author()'s getProfile call so a vetoed
+		// reaction costs no network round-trip.
 		$should_sync = self::should_sync_reaction( $comment_type, $notification, $post_id );
 
 		if ( 'like' === $comment_type ) {
 			/**
 			 * Filters whether a Bluesky like should be synced as a WordPress comment.
 			 *
-			 * The incoming `$should` reflects the result of the cross-type
-			 * `atmosphere_should_sync_reaction` umbrella filter, so a
-			 * consumer that disabled all reaction syncing there can
-			 * selectively re-enable likes here (and vice versa). Return
-			 * false to skip the insert.
+			 * Return false to skip the insert. The incoming `$should` is
+			 * the `atmosphere_should_sync_reaction` umbrella result.
 			 *
 			 * @since unreleased
 			 *
@@ -592,11 +562,8 @@ class Reaction_Sync {
 			/**
 			 * Filters whether a Bluesky repost should be synced as a WordPress comment.
 			 *
-			 * The incoming `$should` reflects the result of the cross-type
-			 * `atmosphere_should_sync_reaction` umbrella filter, so a
-			 * consumer that disabled all reaction syncing there can
-			 * selectively re-enable reposts here (and vice versa). Return
-			 * false to skip the insert.
+			 * Return false to skip the insert. The incoming `$should` is
+			 * the `atmosphere_should_sync_reaction` umbrella result.
 			 *
 			 * @since unreleased
 			 *
