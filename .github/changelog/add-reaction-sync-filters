@@ -1,0 +1,4 @@
+Significance: minor
+Type: added
+
+Added filters so developers can control which Bluesky reactions (likes, reposts, replies) are saved as WordPress comments.

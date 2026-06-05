@@ -37,6 +37,9 @@ ATmosphere exposes a small set of filters and actions for plugins to extend beha
 | `atmosphere_document_content` | filter | Last-chance modification of the parsed content object. |
 | `atmosphere_syncable_post_types` | filter | Add or remove post types eligible for cross-posting. |
 | `atmosphere_should_publish_comment` | filter | Customise which approved comments are mirrored as Bluesky replies. |
+| `atmosphere_should_sync_reaction` | filter | Cross-type gate for every inbound Bluesky reaction (likes, reposts, replies); return false to disable reaction-to-comment syncing wholesale. |
+| `atmosphere_should_sync_like` | filter | Customise which inbound Bluesky likes become WordPress comments. |
+| `atmosphere_should_sync_repost` | filter | Customise which inbound Bluesky reposts become WordPress comments. |
 | `atmosphere_should_sync_reply` | filter | Customise which inbound Bluesky replies become WordPress comments. |
 | `atmosphere_transform_bsky_post` | filter | Mutate the Bluesky post record before write. |
 | `atmosphere_transform_document` | filter | Mutate the document record before write. |

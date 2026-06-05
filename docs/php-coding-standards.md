@@ -219,7 +219,10 @@ use function Atmosphere\is_connected;
 ```php
 \apply_filters( 'atmosphere_syncable_post_types',     array( 'post' ) );
 \apply_filters( 'atmosphere_should_publish_comment',  $bool, $comment );
-\apply_filters( 'atmosphere_should_sync_reply',       $bool, $notification, $post_id );
+\apply_filters( 'atmosphere_should_sync_reaction',    $bool, $comment_type, $notification, $post_id ); // Umbrella; seeds the per-type defaults below.
+\apply_filters( 'atmosphere_should_sync_like',        $bool, $notification, $post_id );
+\apply_filters( 'atmosphere_should_sync_repost',      $bool, $notification, $post_id );
+\apply_filters( 'atmosphere_should_sync_reply',       $bool, $notification, $post_id, $comment_parent );
 \apply_filters( 'atmosphere_backfill_limit',          50 );
 \apply_filters( 'atmosphere_oauth_redirect_uri',      $uri );
 \apply_filters( 'atmosphere_client_metadata',         $metadata );

@@ -378,6 +378,43 @@ class Reaction_Sync {
 	}
 
 	/**
+	 * Apply the cross-type reaction umbrella filter.
+	 *
+	 * Fires for every reaction type (`like`, `repost`, and `comment` for
+	 * replies) so a consumer can disable reaction syncing wholesale with
+	 * a single hook. The per-type filters (`atmosphere_should_sync_like`,
+	 * `atmosphere_should_sync_repost`, `atmosphere_should_sync_reply`)
+	 * each receive this result as their default `$should`, so they can
+	 * override the umbrella in either direction.
+	 *
+	 * @param string $comment_type Target WP comment_type (like/repost/comment).
+	 * @param array  $notification Notification or synthesized own-record.
+	 * @param int    $post_id      Resolved local WP post the reaction targets.
+	 * @return bool Whether the reaction should be synced.
+	 */
+	private static function should_sync_reaction( string $comment_type, array $notification, int $post_id ): bool {
+		/**
+		 * Filters whether a Bluesky reaction should be synced as a WordPress comment.
+		 *
+		 * The cross-type umbrella for inbound reactions. Fires before the
+		 * type-specific filters (`atmosphere_should_sync_like`,
+		 * `atmosphere_should_sync_repost`, `atmosphere_should_sync_reply`)
+		 * and seeds each of their default `$should` values, so returning
+		 * false here disables all reaction syncing unless a type-specific
+		 * filter re-enables it. Fires before any author profile resolution
+		 * so a vetoed reaction performs no network calls.
+		 *
+		 * @since unreleased
+		 *
+		 * @param bool   $should       Whether to sync this reaction. Default true.
+		 * @param string $comment_type Target WP comment_type: 'like', 'repost', or 'comment' (replies).
+		 * @param array  $notification Notification or synthesized own-record.
+		 * @param int    $post_id      Resolved local WP post the reaction targets.
+		 */
+		return (bool) \apply_filters( 'atmosphere_should_sync_reaction', true, $comment_type, $notification, $post_id );
+	}
+
+	/**
 	 * Process a reply notification into a WordPress comment.
 	 *
 	 * @param array $notification Notification or synthesized own-record.
@@ -450,6 +487,15 @@ class Reaction_Sync {
 			return false;
 		}
 
+		/*
+		 * Apply the cross-type umbrella first so its result becomes the
+		 * default the reply-specific filter receives. A consumer can turn
+		 * off all reaction syncing via `atmosphere_should_sync_reaction`
+		 * and still re-enable replies via `atmosphere_should_sync_reply`,
+		 * or vice versa.
+		 */
+		$should_sync = self::should_sync_reaction( 'comment', $notification, $post_id );
+
 		/**
 		 * Filters whether a reply should be synced as a WordPress comment.
 		 *
@@ -458,20 +504,25 @@ class Reaction_Sync {
 		 * being kept (author profile resolution, comment row insert,
 		 * comment-meta writes). Return false to skip the insert.
 		 *
+		 * The incoming `$should` reflects the result of the cross-type
+		 * `atmosphere_should_sync_reaction` umbrella filter, so a consumer
+		 * that disabled all reaction syncing there can selectively
+		 * re-enable replies here (and vice versa).
+		 *
 		 * Use case: consumers publishing multi-record threads from their
 		 * own DID may want to skip the round-tripped self-replies that
 		 * `Reaction_Sync` would otherwise ingest as comments. The filter
 		 * is intentionally policy-free upstream so consumers can express
 		 * whatever discriminator fits their publishing strategy.
 		 *
-		 * @param bool  $should         Whether to sync this reply. Default true.
+		 * @param bool  $should         Whether to sync this reply. Defaults to the umbrella result.
 		 * @param array $notification   Notification or synthesized own-record.
 		 * @param int   $post_id        Resolved local WP post the reply targets.
 		 * @param int   $comment_parent Resolved local parent comment ID, 0 if top-level.
 		 */
 		$should_sync = (bool) \apply_filters(
 			'atmosphere_should_sync_reply',
-			true,
+			$should_sync,
 			$notification,
 			$post_id,
 			$comment_parent
@@ -510,6 +561,53 @@ class Reaction_Sync {
 		$post_id     = $subject_uri ? self::find_post_by_bsky_uri( $subject_uri ) : false;
 
 		if ( ! $post_id ) {
+			return false;
+		}
+
+		/*
+		 * Gate before `resolve_author()` (a cached getProfile network
+		 * call) so a vetoed like/repost costs nothing, mirroring where
+		 * `atmosphere_should_sync_reply` sits in `process_reply()`.
+		 */
+		$should_sync = self::should_sync_reaction( $comment_type, $notification, $post_id );
+
+		if ( 'like' === $comment_type ) {
+			/**
+			 * Filters whether a Bluesky like should be synced as a WordPress comment.
+			 *
+			 * The incoming `$should` reflects the result of the cross-type
+			 * `atmosphere_should_sync_reaction` umbrella filter, so a
+			 * consumer that disabled all reaction syncing there can
+			 * selectively re-enable likes here (and vice versa). Return
+			 * false to skip the insert.
+			 *
+			 * @since unreleased
+			 *
+			 * @param bool  $should       Whether to sync this like. Defaults to the umbrella result.
+			 * @param array $notification Notification or synthesized own-record.
+			 * @param int   $post_id      Resolved local WP post the like targets.
+			 */
+			$should_sync = (bool) \apply_filters( 'atmosphere_should_sync_like', $should_sync, $notification, $post_id );
+		} elseif ( 'repost' === $comment_type ) {
+			/**
+			 * Filters whether a Bluesky repost should be synced as a WordPress comment.
+			 *
+			 * The incoming `$should` reflects the result of the cross-type
+			 * `atmosphere_should_sync_reaction` umbrella filter, so a
+			 * consumer that disabled all reaction syncing there can
+			 * selectively re-enable reposts here (and vice versa). Return
+			 * false to skip the insert.
+			 *
+			 * @since unreleased
+			 *
+			 * @param bool  $should       Whether to sync this repost. Defaults to the umbrella result.
+			 * @param array $notification Notification or synthesized own-record.
+			 * @param int   $post_id      Resolved local WP post the repost targets.
+			 */
+			$should_sync = (bool) \apply_filters( 'atmosphere_should_sync_repost', $should_sync, $notification, $post_id );
+		}
+
+		if ( ! $should_sync ) {
 			return false;
 		}
 

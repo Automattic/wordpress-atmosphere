@@ -391,6 +391,11 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 	 * Test that a registered `atmosphere_should_sync_reply` callback can
 	 * suppress the comment insert. The filter receives the notification,
 	 * resolved post ID, and resolved parent-comment ID.
+	 *
+	 * With no `atmosphere_should_sync_reaction` umbrella callback hooked,
+	 * the incoming `$should` is the umbrella's default of true — the
+	 * dedicated umbrella/layering tests below cover the interaction
+	 * between the two filters.
 	 */
 	public function test_process_reply_respects_should_sync_filter() {
 		$post_id  = self::factory()->post->create();
@@ -1173,5 +1178,243 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 		$comments = \get_comments( array( 'post_id' => $post_id ) );
 		$this->assertCount( 1, $comments );
 		$this->assertSame( (string) $local_comment, (string) $comments[0]->comment_ID );
+	}
+
+	/**
+	 * Build a like/repost subject-reaction notification targeting $post_uri.
+	 *
+	 * @param string $comment_type 'like' or 'repost'.
+	 * @param string $post_uri     AT-URI of the target post.
+	 * @return array
+	 */
+	private function build_subject_reaction_notification( string $comment_type, string $post_uri ): array {
+		$collection = 'like' === $comment_type ? 'app.bsky.feed.like' : 'app.bsky.feed.repost';
+
+		return array(
+			'uri'    => 'at://did:plc:reactor/' . $collection . '/' . \uniqid(),
+			'cid'    => 'bafyrei' . $comment_type,
+			'record' => array(
+				'createdAt' => '2026-03-21T14:00:00.000Z',
+				'subject'   => array(
+					'uri' => $post_uri,
+					'cid' => 'bafyreimypost',
+				),
+			),
+			'author' => array(
+				'did'    => 'did:plc:reactor',
+				'handle' => 'reactor.bsky.social',
+			),
+		);
+	}
+
+	/**
+	 * Build a reply notification targeting $post_uri.
+	 *
+	 * @param string $post_uri AT-URI of the target post.
+	 * @return array
+	 */
+	private function build_reply_notification( string $post_uri ): array {
+		return array(
+			'uri'    => 'at://did:plc:friend/app.bsky.feed.post/reply-' . \uniqid(),
+			'cid'    => 'bafyreireply',
+			'record' => array(
+				'text'      => 'A reply.',
+				'createdAt' => '2026-03-21T12:00:00.000Z',
+				'reply'     => array(
+					'parent' => array( 'uri' => $post_uri ),
+					'root'   => array( 'uri' => $post_uri ),
+				),
+			),
+			'author' => array(
+				'did'    => 'did:plc:friend',
+				'handle' => 'friend.bsky.social',
+			),
+		);
+	}
+
+	/**
+	 * The `atmosphere_should_sync_reaction` umbrella suppresses every
+	 * reaction type and receives the comment_type for each.
+	 *
+	 * @dataProvider data_reaction_types
+	 * @param string $comment_type One of 'like', 'repost', 'comment'.
+	 */
+	public function test_should_sync_reaction_umbrella_suppresses_all_types( string $comment_type ) {
+		$post_id  = self::factory()->post->create();
+		$post_uri = 'at://did:plc:me/app.bsky.feed.post/umbrella-' . $comment_type;
+		\update_post_meta( $post_id, BskyPost::META_URI, $post_uri );
+
+		$captured = array();
+		$filter   = function ( $should, $type, $notification, $resolved_post_id ) use ( &$captured ) {
+			$captured = array(
+				'should'  => $should,
+				'type'    => $type,
+				'post_id' => $resolved_post_id,
+			);
+			return false;
+		};
+		\add_filter( 'atmosphere_should_sync_reaction', $filter, 10, 4 );
+
+		try {
+			if ( 'comment' === $comment_type ) {
+				$method       = new \ReflectionMethod( Reaction_Sync::class, 'process_reply' );
+				$notification = $this->build_reply_notification( $post_uri );
+				$result       = $method->invoke( null, $notification );
+			} else {
+				$method       = new \ReflectionMethod( Reaction_Sync::class, 'process_subject_reaction' );
+				$notification = $this->build_subject_reaction_notification( $comment_type, $post_uri );
+				$result       = $method->invoke( null, $notification, $comment_type );
+			}
+		} finally {
+			\remove_filter( 'atmosphere_should_sync_reaction', $filter, 10 );
+		}
+
+		$this->assertFalse( $result );
+		$this->assertTrue( $captured['should'] );
+		$this->assertSame( $comment_type, $captured['type'] );
+		$this->assertSame( $post_id, $captured['post_id'] );
+		$this->assertSame( array(), \get_comments( array( 'post_id' => $post_id ) ) );
+	}
+
+	/**
+	 * Data provider: every reaction comment_type.
+	 *
+	 * @return array<string, array{0: string}>
+	 */
+	public function data_reaction_types(): array {
+		return array(
+			'like'    => array( 'like' ),
+			'repost'  => array( 'repost' ),
+			'comment' => array( 'comment' ),
+		);
+	}
+
+	/**
+	 * `atmosphere_should_sync_like` suppresses likes only — a repost in
+	 * the same run is unaffected.
+	 */
+	public function test_should_sync_like_suppresses_only_likes() {
+		$post_id  = self::factory()->post->create();
+		$post_uri = 'at://did:plc:me/app.bsky.feed.post/likegate';
+		\update_post_meta( $post_id, BskyPost::META_URI, $post_uri );
+
+		\add_filter( 'atmosphere_should_sync_like', '__return_false' );
+
+		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_subject_reaction' );
+
+		try {
+			$like_result   = $method->invoke( null, $this->build_subject_reaction_notification( 'like', $post_uri ), 'like' );
+			$repost_result = $method->invoke( null, $this->build_subject_reaction_notification( 'repost', $post_uri ), 'repost' );
+		} finally {
+			\remove_filter( 'atmosphere_should_sync_like', '__return_false' );
+		}
+
+		$this->assertFalse( $like_result );
+		$this->assertIsInt( $repost_result );
+
+		$comments = \get_comments( array( 'post_id' => $post_id ) );
+		$this->assertCount( 1, $comments );
+		$this->assertSame( 'repost', $comments[0]->comment_type );
+	}
+
+	/**
+	 * `atmosphere_should_sync_repost` suppresses reposts only — a like in
+	 * the same run is unaffected.
+	 */
+	public function test_should_sync_repost_suppresses_only_reposts() {
+		$post_id  = self::factory()->post->create();
+		$post_uri = 'at://did:plc:me/app.bsky.feed.post/repostgate';
+		\update_post_meta( $post_id, BskyPost::META_URI, $post_uri );
+
+		\add_filter( 'atmosphere_should_sync_repost', '__return_false' );
+
+		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_subject_reaction' );
+
+		try {
+			$repost_result = $method->invoke( null, $this->build_subject_reaction_notification( 'repost', $post_uri ), 'repost' );
+			$like_result   = $method->invoke( null, $this->build_subject_reaction_notification( 'like', $post_uri ), 'like' );
+		} finally {
+			\remove_filter( 'atmosphere_should_sync_repost', '__return_false' );
+		}
+
+		$this->assertFalse( $repost_result );
+		$this->assertIsInt( $like_result );
+
+		$comments = \get_comments( array( 'post_id' => $post_id ) );
+		$this->assertCount( 1, $comments );
+		$this->assertSame( 'like', $comments[0]->comment_type );
+	}
+
+	/**
+	 * A per-type filter receives the umbrella result as its default and
+	 * can override it: umbrella off, but `atmosphere_should_sync_like`
+	 * re-enables likes.
+	 */
+	public function test_per_type_filter_can_override_umbrella() {
+		$post_id  = self::factory()->post->create();
+		$post_uri = 'at://did:plc:me/app.bsky.feed.post/override';
+		\update_post_meta( $post_id, BskyPost::META_URI, $post_uri );
+
+		$captured_default = null;
+		$like_filter      = function ( $should ) use ( &$captured_default ) {
+			$captured_default = $should;
+			return true;
+		};
+
+		\add_filter( 'atmosphere_should_sync_reaction', '__return_false' );
+		\add_filter( 'atmosphere_should_sync_like', $like_filter );
+
+		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_subject_reaction' );
+
+		try {
+			$like_result   = $method->invoke( null, $this->build_subject_reaction_notification( 'like', $post_uri ), 'like' );
+			$repost_result = $method->invoke( null, $this->build_subject_reaction_notification( 'repost', $post_uri ), 'repost' );
+		} finally {
+			\remove_filter( 'atmosphere_should_sync_reaction', '__return_false' );
+			\remove_filter( 'atmosphere_should_sync_like', $like_filter );
+		}
+
+		// The like filter saw the umbrella's false as its default.
+		$this->assertFalse( $captured_default );
+		// It re-enabled the like, while the repost stayed suppressed.
+		$this->assertIsInt( $like_result );
+		$this->assertFalse( $repost_result );
+
+		$comments = \get_comments( array( 'post_id' => $post_id ) );
+		$this->assertCount( 1, $comments );
+		$this->assertSame( 'like', $comments[0]->comment_type );
+	}
+
+	/**
+	 * The reply-specific filter receives the umbrella result as its
+	 * default, so a consumer can disable everything via the umbrella and
+	 * re-enable replies via `atmosphere_should_sync_reply`.
+	 */
+	public function test_reply_filter_receives_umbrella_default() {
+		$post_id  = self::factory()->post->create();
+		$post_uri = 'at://did:plc:me/app.bsky.feed.post/replyumbrella';
+		\update_post_meta( $post_id, BskyPost::META_URI, $post_uri );
+
+		$captured_default = null;
+		$reply_filter     = function ( $should ) use ( &$captured_default ) {
+			$captured_default = $should;
+			return true;
+		};
+
+		\add_filter( 'atmosphere_should_sync_reaction', '__return_false' );
+		\add_filter( 'atmosphere_should_sync_reply', $reply_filter );
+
+		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_reply' );
+
+		try {
+			$result = $method->invoke( null, $this->build_reply_notification( $post_uri ) );
+		} finally {
+			\remove_filter( 'atmosphere_should_sync_reaction', '__return_false' );
+			\remove_filter( 'atmosphere_should_sync_reply', $reply_filter );
+		}
+
+		$this->assertFalse( $captured_default );
+		$this->assertIsInt( $result );
+		$this->assertCount( 1, \get_comments( array( 'post_id' => $post_id ) ) );
 	}
 }
