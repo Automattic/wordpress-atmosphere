@@ -26,6 +26,7 @@ class Test_DPoP extends WP_UnitTestCase {
 	public function test_generate_key_produces_valid_jwk() {
 		$jwk = DPoP::generate_key();
 
+		$this->assertNotWPError( $jwk, 'Healthy OpenSSL builds must return a JWK, not an error.' );
 		$this->assertIsArray( $jwk );
 		$this->assertSame( 'EC', $jwk['kty'] );
 		$this->assertSame( 'P-256', $jwk['crv'] );
