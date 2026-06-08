@@ -2,10 +2,9 @@
 /**
  * Tests for the `wp atmosphere backfill` command's input parser.
  *
- * The CLI command's outer flow (progress bar, per-batch eviction,
- * exit code) runs through the WP-CLI runtime and is not exercised
- * here. The input-parsing contract is the part operators script
- * against, so it gets direct coverage.
+ * This file covers the static `parse_ids()` parser. The command's
+ * outer flow (argument validation, routing, exit codes, the publish
+ * loop) is exercised in {@see Test_Backfill_Command_Invoke}.
  *
  * @package Atmosphere
  * @group atmosphere
