@@ -720,8 +720,8 @@ class Publisher {
 			 *      Auto-publishing now would silently turn routine edits
 			 *      of legacy content into fresh Bluesky records, which
 			 *      consistently surprises users. The deliberate path for
-			 *      retro-syncing existing posts is the Backfill admin
-			 *      workflow.
+			 *      retro-syncing existing posts is the
+			 *      `wp atmosphere backfill` command.
 			 *
 			 *   2. Failed prior publish — `Post::META_TID` is set (the
 			 *      rkey was reserved by `Transformer::get_rkey()` during
