@@ -1174,4 +1174,150 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 		$this->assertCount( 1, $comments );
 		$this->assertSame( (string) $local_comment, (string) $comments[0]->comment_ID );
 	}
+
+	/**
+	 * With the reactions setting off, likes and reposts are not imported.
+	 */
+	public function test_reactions_setting_off_skips_import() {
+		$post_id  = self::factory()->post->create();
+		$post_uri = 'at://did:plc:me/app.bsky.feed.post/reactionoff';
+		\update_post_meta( $post_id, BskyPost::META_URI, $post_uri );
+
+		\update_option( 'atmosphere_sync_reactions', '0' );
+
+		$method       = new \ReflectionMethod( Reaction_Sync::class, 'process_subject_reaction' );
+		$notification = array(
+			'uri'    => 'at://did:plc:liker/app.bsky.feed.like/likeoff',
+			'cid'    => 'bafyreilikeoff',
+			'record' => array(
+				'subject' => array( 'uri' => $post_uri ),
+			),
+			'author' => array(
+				'did'    => 'did:plc:liker',
+				'handle' => 'liker.bsky.social',
+			),
+		);
+
+		$this->assertFalse( $method->invoke( null, $notification, 'like' ) );
+
+		// Query by type to bypass the always-on display exclusion and pin
+		// the assertion at the storage layer (no row was written).
+		$this->assertCount(
+			0,
+			\get_comments(
+				array(
+					'post_id'  => $post_id,
+					'type__in' => array( 'like', 'repost' ),
+				)
+			),
+			'No like/repost row should be written when reactions are off.'
+		);
+	}
+
+	/**
+	 * With the replies setting off, replies are not imported.
+	 */
+	public function test_replies_setting_off_skips_import() {
+		$post_id  = self::factory()->post->create();
+		$post_uri = 'at://did:plc:me/app.bsky.feed.post/replyoff';
+		\update_post_meta( $post_id, BskyPost::META_URI, $post_uri );
+
+		\update_option( 'atmosphere_sync_replies', '0' );
+
+		$method       = new \ReflectionMethod( Reaction_Sync::class, 'process_reply' );
+		$notification = array(
+			'uri'    => 'at://did:plc:replier/app.bsky.feed.post/replyoff',
+			'cid'    => 'bafyreireplyoff',
+			'record' => array(
+				'text'  => 'Nice one',
+				'reply' => array(
+					'parent' => array( 'uri' => $post_uri ),
+					'root'   => array( 'uri' => $post_uri ),
+				),
+			),
+			'author' => array(
+				'did'    => 'did:plc:replier',
+				'handle' => 'replier.bsky.social',
+			),
+		);
+
+		$this->assertFalse( $method->invoke( null, $notification ) );
+
+		// Query by type to pin the assertion at the storage layer.
+		$this->assertCount(
+			0,
+			\get_comments(
+				array(
+					'post_id'  => $post_id,
+					'type__in' => array( 'comment' ),
+				)
+			),
+			'No reply comment should be written when replies are off.'
+		);
+	}
+
+	/**
+	 * Likes and reposts are always excluded from the stored comment count,
+	 * regardless of the setting — they are reactions, not comments.
+	 */
+	public function test_reactions_always_excluded_from_count() {
+		$post_id = self::factory()->post->create();
+		\wp_insert_comment(
+			array(
+				'comment_post_ID'  => $post_id,
+				'comment_type'     => 'comment',
+				'comment_approved' => '1',
+			)
+		);
+		\wp_insert_comment(
+			array(
+				'comment_post_ID'  => $post_id,
+				'comment_type'     => 'like',
+				'comment_approved' => '1',
+			)
+		);
+		\wp_insert_comment(
+			array(
+				'comment_post_ID'  => $post_id,
+				'comment_type'     => 'repost',
+				'comment_approved' => '1',
+			)
+		);
+
+		$this->assertSame(
+			1,
+			Reaction_Sync::maybe_exclude_reactions_from_count( null, 0, $post_id ),
+			'Likes and reposts must never count toward the comment total.'
+		);
+		$this->assertSame(
+			5,
+			Reaction_Sync::maybe_exclude_reactions_from_count( 5, 0, $post_id ),
+			'A count already computed by another filter is left untouched.'
+		);
+	}
+
+	/**
+	 * A front-end comment query always excludes like/repost types, merging
+	 * with any exclusions already present and leaving explicit type
+	 * requests untouched.
+	 */
+	public function test_comment_query_excludes_reactions() {
+		// Default front-end query: reactions excluded.
+		$query             = new \WP_Comment_Query();
+		$query->query_vars = array();
+		Reaction_Sync::maybe_exclude_reactions_from_query( $query );
+		$this->assertSame( array( 'like', 'repost' ), $query->query_vars['type__not_in'] );
+
+		// Existing exclusions are preserved, not overwritten.
+		$query             = new \WP_Comment_Query();
+		$query->query_vars = array( 'type__not_in' => array( 'pingback' ) );
+		Reaction_Sync::maybe_exclude_reactions_from_query( $query );
+		$this->assertSame( array( 'pingback', 'like', 'repost' ), $query->query_vars['type__not_in'] );
+
+		// An explicit request for a specific type is left untouched.
+		$query             = new \WP_Comment_Query();
+		$query->query_vars = array( 'type' => 'like' );
+		Reaction_Sync::maybe_exclude_reactions_from_query( $query );
+		$this->assertArrayNotHasKey( 'type__not_in', $query->query_vars );
+	}
 }

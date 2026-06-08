@@ -109,6 +109,30 @@ class Settings_Fields {
 			'atmosphere_publishing'
 		);
 
+		// Reactions section.
+		\add_settings_section(
+			'atmosphere_reactions',
+			\__( 'Reactions', 'atmosphere' ),
+			array( self::class, 'render_reactions_section' ),
+			'atmosphere'
+		);
+
+		\add_settings_field(
+			'atmosphere_sync_reactions',
+			\__( 'Reactions', 'atmosphere' ),
+			array( self::class, 'render_sync_reactions_field' ),
+			'atmosphere',
+			'atmosphere_reactions'
+		);
+
+		\add_settings_field(
+			'atmosphere_sync_replies',
+			\__( 'Replies', 'atmosphere' ),
+			array( self::class, 'render_sync_replies_field' ),
+			'atmosphere',
+			'atmosphere_reactions'
+		);
+
 		/*
 		 * Register the domain-handle confirm row only when the offer is
 		 * meaningful (root install, feature enabled, current handle differs
@@ -451,6 +475,49 @@ class Settings_Fields {
 			);
 			?>
 		</p>
+		<?php
+	}
+
+	/**
+	 * Render the Reactions section description.
+	 */
+	public static function render_reactions_section(): void {
+		?>
+		<p><?php \esc_html_e( 'Choose which Bluesky interactions are saved to your posts. Likes and reposts are not shown in your comment section.', 'atmosphere' ); ?></p>
+		<?php
+	}
+
+	/**
+	 * Render the "save likes and reposts" toggle.
+	 */
+	public static function render_sync_reactions_field(): void {
+		?>
+		<label>
+			<input
+				type="checkbox"
+				name="atmosphere_sync_reactions"
+				value="1"
+				<?php \checked( \get_option( 'atmosphere_sync_reactions', '1' ), '1' ); ?>
+			>
+			<?php \esc_html_e( 'Save likes and reposts', 'atmosphere' ); ?>
+		</label>
+		<?php
+	}
+
+	/**
+	 * Render the "save replies as comments" toggle.
+	 */
+	public static function render_sync_replies_field(): void {
+		?>
+		<label>
+			<input
+				type="checkbox"
+				name="atmosphere_sync_replies"
+				value="1"
+				<?php \checked( \get_option( 'atmosphere_sync_replies', '1' ), '1' ); ?>
+			>
+			<?php \esc_html_e( 'Save replies as comments', 'atmosphere' ); ?>
+		</label>
 		<?php
 	}
 }

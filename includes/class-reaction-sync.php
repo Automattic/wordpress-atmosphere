@@ -106,11 +106,116 @@ class Reaction_Sync {
 	private const OPTION_LAST_SEEN_OWN_PREFIX = 'atmosphere_last_seen_own_';
 
 	/**
+	 * Comment types treated as reactions rather than comments.
+	 *
+	 * These are always kept out of the comment list, the REST comments
+	 * endpoint, and the comment count — they are reactions, not comments.
+	 *
+	 * @var string[]
+	 */
+	private const REACTION_COMMENT_TYPES = array( 'like', 'repost' );
+
+	/**
 	 * Register display-side hooks.
 	 */
 	public static function register(): void {
 		\add_filter( 'get_avatar_comment_types', array( self::class, 'avatar_comment_types' ) );
 		\add_filter( 'pre_get_avatar_data', array( self::class, 'filter_avatar_data' ), 10, 2 );
+
+		/*
+		 * Likes and reposts are reactions, not comments, so they are always
+		 * kept out of the front-end comment list and the comment count. The
+		 * REST comments endpoint already defaults to `type => comment`,
+		 * which excludes them, so it needs no hook of its own. The rows stay
+		 * in `wp_comments` as the federation history record.
+		 */
+		\add_action( 'pre_get_comments', array( self::class, 'maybe_exclude_reactions_from_query' ) );
+		\add_filter( 'pre_wp_update_comment_count_now', array( self::class, 'maybe_exclude_reactions_from_count' ), 5, 3 );
+	}
+
+	/**
+	 * Whether likes and reposts are imported (user setting).
+	 *
+	 * @return bool
+	 */
+	private static function reactions_enabled(): bool {
+		return '1' === \get_option( 'atmosphere_sync_reactions', '1' );
+	}
+
+	/**
+	 * Whether replies are imported as comments (user setting).
+	 *
+	 * @return bool
+	 */
+	private static function replies_enabled(): bool {
+		return '1' === \get_option( 'atmosphere_sync_replies', '1' );
+	}
+
+	/**
+	 * Exclude like/repost comments from front-end comment queries.
+	 *
+	 * @param \WP_Comment_Query $query Comment query, modified by reference.
+	 */
+	public static function maybe_exclude_reactions_from_query( $query ): void {
+		if ( ! $query instanceof \WP_Comment_Query ) {
+			return;
+		}
+
+		// The admin needs every row for moderation and counts.
+		if ( \is_admin() ) {
+			return;
+		}
+
+		$query->query_vars = self::merge_reaction_exclusions( $query->query_vars );
+	}
+
+	/**
+	 * Add the reaction comment types to a query's `type__not_in`, merging
+	 * with any exclusions already present.
+	 *
+	 * Leaves the vars untouched when the caller explicitly asked for
+	 * specific types (`type` / `type__in`) — e.g. a likes-only query — so
+	 * the exclusion never overrides a deliberate request for reactions.
+	 *
+	 * @param array $vars Comment query vars.
+	 * @return array
+	 */
+	private static function merge_reaction_exclusions( array $vars ): array {
+		if ( ! empty( $vars['type'] ) || ! empty( $vars['type__in'] ) ) {
+			return $vars;
+		}
+
+		$excluded             = (array) ( $vars['type__not_in'] ?? array() );
+		$vars['type__not_in'] = \array_values( \array_unique( \array_merge( $excluded, self::REACTION_COMMENT_TYPES ) ) );
+
+		return $vars;
+	}
+
+	/**
+	 * Drop like/repost rows from the stored comment count.
+	 *
+	 * Hooked at priority 5 so a single recomputation can compose with
+	 * other plugins that also exclude comment types from the count.
+	 *
+	 * @param int|null $new_count Pre-computed count, or null for the default.
+	 * @param int      $old_count The current stored count.
+	 * @param int      $post_id   The post being counted.
+	 * @return int|null
+	 */
+	public static function maybe_exclude_reactions_from_count( $new_count, $old_count, $post_id ) {
+		if ( null !== $new_count ) {
+			return $new_count;
+		}
+
+		global $wpdb;
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		return (int) $wpdb->get_var(
+			$wpdb->prepare(
+				"SELECT COUNT(*) FROM {$wpdb->comments} WHERE comment_post_ID = %d AND comment_approved = '1' AND comment_type NOT IN ( 'like', 'repost' )",
+				$post_id
+			)
+		);
 	}
 
 	/**
@@ -384,6 +489,10 @@ class Reaction_Sync {
 	 * @return int|false Comment ID or false.
 	 */
 	private static function process_reply( array $notification ): int|false {
+		if ( ! self::replies_enabled() ) {
+			return false;
+		}
+
 		$reply_uri = $notification['uri'] ?? '';
 		$record    = $notification['record'] ?? array();
 		$author    = $notification['author'] ?? array();
@@ -494,6 +603,10 @@ class Reaction_Sync {
 	 * @return int|false Comment ID or false.
 	 */
 	private static function process_subject_reaction( array $notification, string $comment_type ): int|false {
+		if ( ! self::reactions_enabled() ) {
+			return false;
+		}
+
 		$uri    = $notification['uri'] ?? '';
 		$record = $notification['record'] ?? array();
 		$author = $notification['author'] ?? array();
