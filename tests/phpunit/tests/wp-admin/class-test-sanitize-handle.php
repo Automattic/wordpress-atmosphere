@@ -159,7 +159,7 @@ class Test_Sanitize_Handle extends WP_UnitTestCase {
 
 	/**
 	 * A non-HTTPS auth URL (poisoned auth-server metadata) is caught
-	 * by `sanitize_handle()`'s defence-in-depth scheme check — surfaces
+	 * by `Sanitize::handle()`'s defence-in-depth scheme check — surfaces
 	 * a settings error and never reaches `wp_safe_redirect`.
 	 */
 	public function test_http_auth_url_surfaces_error_and_does_not_redirect(): void {
@@ -177,10 +177,10 @@ class Test_Sanitize_Handle extends WP_UnitTestCase {
 
 		Sanitize::handle( 'alice.bsky-test-handle.io' );
 
-		$this->assertFalse( $redirected, 'sanitize_handle must not redirect on a non-HTTPS auth URL.' );
+		$this->assertFalse( $redirected, 'Sanitize::handle must not redirect on a non-HTTPS auth URL.' );
 
 		$errors = \get_settings_errors( 'atmosphere' );
-		$this->assertNotEmpty( $errors, 'sanitize_handle must add a settings error on a non-HTTPS auth URL.' );
+		$this->assertNotEmpty( $errors, 'Sanitize::handle must add a settings error on a non-HTTPS auth URL.' );
 		$this->assertSame( 'auth_failed', $errors[0]['code'] );
 	}
 
@@ -206,7 +206,7 @@ class Test_Sanitize_Handle extends WP_UnitTestCase {
 
 		Sanitize::handle( 'alice.bsky-test-handle.io' );
 
-		$this->assertFalse( $redirected, 'sanitize_handle must not redirect when authorize() returns WP_Error.' );
+		$this->assertFalse( $redirected, 'Sanitize::handle must not redirect when authorize() returns WP_Error.' );
 
 		$errors = \get_settings_errors( 'atmosphere' );
 		$this->assertNotEmpty( $errors );

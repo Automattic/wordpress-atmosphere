@@ -12,14 +12,18 @@ namespace Atmosphere;
 /**
  * Registers every stored plugin option with the Settings API.
  *
- * Mirrors the convention the ActivityPub plugin uses: hook
- * `register_settings()` on both `admin_init` (so `options.php` form
- * submissions run the registered sanitize callbacks) and
- * `rest_api_init` (so `/wp-json/wp/v2/settings` exposes the registered
- * shape and resolves defaults for REST callers). Without the REST
- * registration, third-party code reading these options through the
- * REST endpoint would see empty values instead of the documented
- * defaults on a fresh install.
+ * Registers on `admin_init` (so `options.php` form submissions run the
+ * sanitize callbacks) and `rest_api_init` (so `/wp-json/wp/v2/settings`
+ * reports the registered shape and resolves defaults for REST callers).
+ *
+ * The registered `default` only resolves for a bare `get_option()` when
+ * `register_setting()` has run in the current request — but neither of
+ * those hooks fires under WP-CLI or cron, where a scheduled-post publish
+ * (or a bare `get_option()` from a script) still needs the defaults. So we
+ * additionally register on `init` in just those two contexts. Front-end
+ * page views deliberately do NOT register: nothing there reads these
+ * options without passing an explicit default, so there is no reason to do
+ * the work on every request.
  */
 class Options {
 
@@ -29,6 +33,10 @@ class Options {
 	public static function init(): void {
 		\add_action( 'admin_init', array( self::class, 'register_settings' ) );
 		\add_action( 'rest_api_init', array( self::class, 'register_settings' ) );
+
+		if ( ( \defined( 'WP_CLI' ) && \WP_CLI ) || \wp_doing_cron() ) {
+			\add_action( 'init', array( self::class, 'register_settings' ), 5 );
+		}
 	}
 
 	/**
