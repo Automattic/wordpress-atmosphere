@@ -50,7 +50,16 @@ class Options {
 			array(
 				'type'              => 'string',
 				'default'           => '1',
-				'sanitize_callback' => 'sanitize_text_field',
+				'sanitize_callback' => static function ( $value ) {
+					/*
+					 * Collapse every input to the canonical '0' / '1' the
+					 * publish gate compares against: an unchecked checkbox
+					 * submits nothing (stored as null), and REST / WP-CLI
+					 * writers may send a bool, int, or empty string.
+					 */
+					return $value ? '1' : '0';
+				},
+				'show_in_rest'      => true,
 			)
 		);
 
