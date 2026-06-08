@@ -14,6 +14,7 @@ use Atmosphere\Publisher;
 use Atmosphere\Transformer\Document;
 
 use function Atmosphere\get_supported_post_types;
+use function Atmosphere\is_connected;
 use function Atmosphere\is_post_publishable;
 
 /**
@@ -111,24 +112,38 @@ class Backfill_Command extends \WP_CLI_Command {
 		}
 
 		$post_type_arg = isset( $assoc_args['post-type'] ) ? (string) $assoc_args['post-type'] : '';
-		$ids_arg       = isset( $assoc_args['ids'] ) ? (string) $assoc_args['ids'] : '';
 
 		/*
-		 * Validate --limit before coercion. A bare `--limit` (no value)
-		 * arrives as boolean true, which `(int)` would silently promote
-		 * to 1 — running a single-post backfill the user did not ask
-		 * for. A negative value would short-circuit our `> 0` cap check
-		 * and run unbounded. Reject both with a clear message; literal
-		 * `0` and an absent flag still mean "no cap".
+		 * Reject a bare `--ids` (no value). WP-CLI delivers a valueless
+		 * flag as boolean `true`, and `(string) true` is `"1"` — so a
+		 * forgotten value would silently target post 1 and, with --force,
+		 * republish it. A publish-to-the-internet command must fail loudly
+		 * here rather than act on a phantom ID. (`--limit` gets the same
+		 * treatment below.)
+		 */
+		if ( isset( $assoc_args['ids'] ) && ! \is_string( $assoc_args['ids'] ) ) {
+			\WP_CLI::error( \__( '--ids requires a value, e.g. --ids=12,34. It was passed with no value.', 'atmosphere' ) );
+		}
+
+		$ids_arg = isset( $assoc_args['ids'] ) ? (string) $assoc_args['ids'] : '';
+
+		/*
+		 * Validate --limit with a strict whole-number check before
+		 * coercion. `ctype_digit` accepts only digit strings, so it
+		 * rejects every silent-coercion trap at once: a bare `--limit`
+		 * (boolean true, not a string), negatives (`-1`), and decimals or
+		 * exponents (`5.5`, `1e3`) that `is_numeric()` would pass and
+		 * `(int)` would truncate to an unintended value. Literal `0` and
+		 * an absent flag still mean "no cap".
 		 */
 		if ( isset( $assoc_args['limit'] ) ) {
 			$raw_limit = $assoc_args['limit'];
 
-			if ( ! \is_numeric( $raw_limit ) || (int) $raw_limit < 0 ) {
+			if ( ! \is_string( $raw_limit ) || ! \ctype_digit( $raw_limit ) ) {
 				\WP_CLI::error(
 					\sprintf(
 						/* translators: %s: the rejected --limit value. */
-						\__( 'Invalid --limit value "%s": expected 0 (no cap) or a positive integer.', 'atmosphere' ),
+						\__( 'Invalid --limit value "%s": expected 0 (no cap) or a positive whole number.', 'atmosphere' ),
 						\is_scalar( $raw_limit ) ? (string) $raw_limit : \gettype( $raw_limit )
 					)
 				);
@@ -145,13 +160,17 @@ class Backfill_Command extends \WP_CLI_Command {
 		$original_time = ! empty( $assoc_args['original-time'] );
 
 		/*
-		 * `--original-time` is intentionally captured but unused in this
-		 * PR. A follow-up will branch on this flag to call a
-		 * historical-TID code path. Reference the variable so static
-		 * analysers do not flag it as unused while the wire-up is in
-		 * flight.
+		 * `--original-time` is parsed but not yet wired to a code path; a
+		 * follow-up will branch on it for historical-TID support. Until
+		 * then, warn rather than silently ignoring it, so an operator who
+		 * passes it is not misled into thinking original timestamps were
+		 * preserved.
 		 */
-		unset( $original_time );
+		if ( $original_time ) {
+			\WP_CLI::warning(
+				\__( '--original-time is not yet implemented and has no effect; records use the default timestamp behavior. Support is planned for a future release.', 'atmosphere' )
+			);
+		}
 
 		$post_types = $supported;
 
@@ -225,6 +244,16 @@ class Backfill_Command extends \WP_CLI_Command {
 			return;
 		}
 
+		/*
+		 * Fail fast when the plugin is not connected. A real run would
+		 * otherwise march through every post returning the same
+		 * `atmosphere_not_connected` error, burning a query each. Dry-run
+		 * skips this so previews still work while disconnected.
+		 */
+		if ( ! $dry_run && ! is_connected() ) {
+			\WP_CLI::error( \__( 'Not connected to AT Protocol. Connect the plugin from Settings → ATmosphere before running a backfill.', 'atmosphere' ) );
+		}
+
 		$total = \count( $post_ids );
 
 		\WP_CLI::log(
@@ -267,8 +296,6 @@ class Backfill_Command extends \WP_CLI_Command {
 		$batch_ids = array();
 
 		foreach ( $post_ids as $post_id ) {
-			$tick_progress = true;
-
 			$post = \get_post( $post_id );
 
 			if ( ! $post instanceof \WP_Post ) {
@@ -311,8 +338,6 @@ class Backfill_Command extends \WP_CLI_Command {
 						)
 					);
 					++$synced;
-					// Dry-run does not drive the progress bar (none is created).
-					$tick_progress = false;
 				} else {
 					/*
 					 * `--force` on an already-synced post routes through
@@ -339,6 +364,35 @@ class Backfill_Command extends \WP_CLI_Command {
 							)
 						);
 						++$errors;
+
+						/*
+						 * A lost connection will fail identically for every
+						 * remaining post. Stop now instead of grinding
+						 * through the rest of the queue (a query each) only
+						 * to report the same error N times. $errors > 0
+						 * already guarantees a non-zero exit below.
+						 */
+						if ( 'atmosphere_not_connected' === $result->get_error_code() ) {
+							\WP_CLI::warning( \__( 'Connection to AT Protocol was lost; aborting the remaining posts.', 'atmosphere' ) );
+							break;
+						}
+					} elseif ( $already_synced && \is_array( $result ) && empty( $result ) ) {
+						/*
+						 * `update_post()` returns an empty array when the
+						 * post carries a document URI but has no Bluesky
+						 * publication history to update (a half-synced
+						 * state) — nothing was sent to the PDS. Reporting
+						 * "Updated" here would inflate $synced and hide that
+						 * no record was written.
+						 */
+						\WP_CLI::warning(
+							\sprintf(
+								/* translators: %d: post ID. */
+								\__( 'Skipping post %d: no Bluesky publication to update.', 'atmosphere' ),
+								$post_id
+							)
+						);
+						++$skipped;
 					} else {
 						/*
 						 * Both branches pass the same placeholders so PHPCS's
@@ -359,7 +413,7 @@ class Backfill_Command extends \WP_CLI_Command {
 				}
 			}
 
-			if ( $progress && $tick_progress ) {
+			if ( $progress ) {
 				$progress->tick();
 			}
 
@@ -381,13 +435,13 @@ class Backfill_Command extends \WP_CLI_Command {
 			 * the boundary one — the boundary-only variant the previous
 			 * round shipped only freed 1 entry per `--batch` posts.
 			 */
-			if ( ! $dry_run && 0 === $ticks % $batch ) {
+			if ( 0 === $ticks % $batch ) {
 				foreach ( $batch_ids as $cached_id ) {
 					\clean_post_cache( $cached_id );
 				}
 				$batch_ids = array();
 
-				if ( $ticks < $total ) {
+				if ( ! $dry_run && $ticks < $total ) {
 					\WP_CLI::log(
 						\sprintf(
 							/* translators: 1: number processed, 2: total. */
@@ -401,7 +455,7 @@ class Backfill_Command extends \WP_CLI_Command {
 		}
 
 		// Final-batch sweep so the trailing posts under one full $batch are not left cached.
-		if ( ! $dry_run && ! empty( $batch_ids ) ) {
+		if ( ! empty( $batch_ids ) ) {
 			foreach ( $batch_ids as $cached_id ) {
 				\clean_post_cache( $cached_id );
 			}
