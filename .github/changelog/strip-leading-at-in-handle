@@ -1,0 +1,4 @@
+Significance: patch
+Type: fixed
+
+Accept Bluesky handles entered with a leading "@" — pasting "@alice.bsky.social" now connects just like "alice.bsky.social".
