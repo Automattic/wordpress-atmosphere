@@ -252,4 +252,38 @@ class Test_Sanitize_Handle extends WP_UnitTestCase {
 			'auth-server host must be in allowed_redirect_hosts during wp_safe_redirect.'
 		);
 	}
+
+	/**
+	 * A leading "@" is stripped before resolution. People copy handles
+	 * from Bluesky as "@alice.bsky.social", but the resolver rejects the
+	 * "@"-prefixed form as an invalid DNS-style identifier. If the "@"
+	 * survived, `Client::authorize()` would short-circuit to a WP_Error
+	 * and never redirect — so a successful redirect proves the strip ran.
+	 */
+	public function test_leading_at_is_stripped_before_resolution(): void {
+		$this->become_admin();
+		$this->stub_resolver_chain( 'https://auth.example.com/oauth/authorize' );
+
+		$captured_target = null;
+		$this->add_filter_tracked(
+			'wp_redirect',
+			static function ( $location ) use ( &$captured_target ) {
+				$captured_target = $location;
+				throw new WPDieException( 'redirect_intercepted' );
+			}
+		);
+
+		try {
+			Sanitize::handle( '@alice.bsky-test-handle.io' );
+			$this->fail( 'Expected redirect to be intercepted.' );
+		} catch ( WPDieException $e ) {
+			$this->assertSame( 'redirect_intercepted', $e->getMessage() );
+		}
+
+		$this->assertIsString(
+			$captured_target,
+			'A leading "@" must be stripped so the handle resolves and redirects.'
+		);
+		$this->assertStringStartsWith( 'https://auth.example.com/oauth/authorize', $captured_target );
+	}
 }

@@ -39,6 +39,13 @@ class Sanitize {
 
 		$handle = \sanitize_text_field( $value );
 
+		/*
+		 * Strip a leading "@". Bluesky surfaces handles as "@alice.bsky.social",
+		 * so people naturally type the "@" in — but the resolver expects a bare
+		 * DNS-style identifier and would reject the "@"-prefixed form as invalid.
+		 */
+		$handle = \ltrim( $handle, '@' );
+
 		if ( empty( $handle ) ) {
 			return '';
 		}
