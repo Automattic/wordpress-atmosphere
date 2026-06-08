@@ -605,7 +605,14 @@ class Atmosphere {
 			return;
 		}
 
-		if ( '0' === \get_option( 'atmosphere_auto_publish', '1' ) ) {
+		/*
+		 * Publish only when auto-publish is explicitly on. An unchecked
+		 * checkbox submits no value, so a saved "off" state is stored as
+		 * an empty string rather than '0' — comparing against '1' (with a
+		 * '1' default for never-saved installs) treats every non-'1' value
+		 * as off, the same way the ActivityPub plugin gates its toggles.
+		 */
+		if ( '1' !== \get_option( 'atmosphere_auto_publish', '1' ) ) {
 			return;
 		}
 

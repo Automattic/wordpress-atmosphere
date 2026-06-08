@@ -126,6 +126,48 @@ class Test_Atmosphere extends WP_UnitTestCase {
 	}
 
 	/**
+	 * Auto-publish turned off via the checkbox must not schedule a publish.
+	 *
+	 * An unchecked checkbox submits no value, so a saved "off" state is
+	 * stored as an empty string rather than '0'. The gate publishes only on
+	 * an explicit '1', so the empty string must be treated as off.
+	 */
+	public function test_auto_publish_off_empty_string_does_not_schedule_publish() {
+		\update_option( 'atmosphere_auto_publish', '' );
+
+		$post = self::factory()->post->create_and_get(
+			array( 'post_status' => 'publish' )
+		);
+
+		$this->reset_publishing_action();
+		$this->atmosphere->on_status_change( 'publish', 'draft', $post );
+
+		$this->assertFalse(
+			\wp_next_scheduled( 'atmosphere_publish_post', array( $post->ID ) ),
+			'Auto-publish stored as an empty string must be treated as off.'
+		);
+	}
+
+	/**
+	 * Auto-publish explicitly set to '0' must not schedule a publish.
+	 */
+	public function test_auto_publish_off_zero_does_not_schedule_publish() {
+		\update_option( 'atmosphere_auto_publish', '0' );
+
+		$post = self::factory()->post->create_and_get(
+			array( 'post_status' => 'publish' )
+		);
+
+		$this->reset_publishing_action();
+		$this->atmosphere->on_status_change( 'publish', 'draft', $post );
+
+		$this->assertFalse(
+			\wp_next_scheduled( 'atmosphere_publish_post', array( $post->ID ) ),
+			'Auto-publish stored as "0" must be treated as off.'
+		);
+	}
+
+	/**
 	 * Test that publish → publish schedules an update event.
 	 */
 	public function test_publish_to_publish_schedules_update() {

@@ -48,18 +48,10 @@ class Options {
 			'atmosphere',
 			'atmosphere_auto_publish',
 			array(
-				'type'              => 'string',
-				'default'           => '1',
-				'sanitize_callback' => static function ( $value ) {
-					/*
-					 * Collapse every input to the canonical '0' / '1' the
-					 * publish gate compares against: an unchecked checkbox
-					 * submits nothing (stored as null), and REST / WP-CLI
-					 * writers may send a bool, int, or empty string.
-					 */
-					return $value ? '1' : '0';
-				},
-				'show_in_rest'      => true,
+				'type'         => 'boolean',
+				'description'  => 'Whether new posts are automatically published to AT Protocol.',
+				'default'      => '1',
+				'show_in_rest' => true,
 			)
 		);
 
