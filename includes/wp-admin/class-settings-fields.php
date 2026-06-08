@@ -190,9 +190,8 @@ class Settings_Fields {
 	 * {@see Handle::should_offer()} agrees the offer is meaningful.
 	 */
 	public static function render_domain_handle_field(): void {
-		$current  = (string) ( get_connection()['handle'] ?? '' );
-		$target   = Handle::get_target_handle();
-		$post_url = \admin_url( 'admin-post.php?action=atmosphere_set_domain_handle' );
+		$current = (string) ( get_connection()['handle'] ?? '' );
+		$target  = Handle::get_target_handle();
 		?>
 		<p>
 			<?php
@@ -219,23 +218,26 @@ class Settings_Fields {
 		<p>
 			<?php
 			/*
-			 * The settings page wraps every field in a single outer
-			 * <form action="options.php" method="post">. A nested form
-			 * would be invalid HTML, so the submit button overrides the
-			 * outer form's destination via formaction/formmethod when —
-			 * and only when — this button is the one clicked. The Save
-			 * button at the bottom of the settings page still posts to
-			 * options.php as normal. This keeps the nonce in the request
-			 * body instead of leaking it through the URL / Referer
-			 * header / link prefetching, which an <a> with
-			 * wp_nonce_url() would do.
+			 * `name`/`value` mark the button so {@see
+			 * Admin::maybe_set_domain_handle()} (hooked on
+			 * `admin_init`) can detect this specific click. The
+			 * Save Changes button at the bottom of the page does
+			 * not carry this name, so a regular settings save lands
+			 * `$_POST['atmosphere_set_domain_handle']` as empty and
+			 * the trigger handler bails — only an explicit click on
+			 * THIS button reaches `Handle::set_handle()`.
+			 *
+			 * Stays inside the WP Settings form: the click rides on
+			 * the form's own nonce + capability gate and options.php
+			 * issues the normal redirect afterwards, so the settings
+			 * notice posted by `Handle::set_handle()` surfaces on the
+			 * next pageview without any custom redirect path.
 			 */
-			\wp_nonce_field( 'atmosphere_set_domain_handle', 'atmosphere_nonce', false );
 			?>
 			<button
 				type="submit"
-				formaction="<?php echo \esc_url( $post_url ); ?>"
-				formmethod="post"
+				name="atmosphere_set_domain_handle"
+				value="1"
 				class="button">
 				<?php
 				echo \esc_html(
