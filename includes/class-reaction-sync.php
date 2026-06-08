@@ -152,7 +152,12 @@ class Reaction_Sync {
 	}
 
 	/**
-	 * Exclude like/repost comments from front-end comment queries.
+	 * Exclude like/repost comments from the single-post comment list.
+	 *
+	 * Mirrors the ActivityPub plugin's `comment_query`: only the front-end
+	 * singular comment list is touched. REST already defaults to the
+	 * 'comment' type, the admin needs every row for moderation, and any
+	 * query that already constrains the comment type is left alone.
 	 *
 	 * @param \WP_Comment_Query $query Comment query, modified by reference.
 	 */
@@ -161,34 +166,26 @@ class Reaction_Sync {
 			return;
 		}
 
-		// The admin needs every row for moderation and counts.
-		if ( \is_admin() ) {
+		// REST handles its own type default; the admin needs every row.
+		if ( ( \defined( 'REST_REQUEST' ) && REST_REQUEST ) || \is_admin() ) {
 			return;
 		}
 
-		$query->query_vars = self::merge_reaction_exclusions( $query->query_vars );
-	}
-
-	/**
-	 * Add the reaction comment types to a query's `type__not_in`, merging
-	 * with any exclusions already present.
-	 *
-	 * Leaves the vars untouched when the caller explicitly asked for
-	 * specific types (`type` / `type__in`) — e.g. a likes-only query — so
-	 * the exclusion never overrides a deliberate request for reactions.
-	 *
-	 * @param array $vars Comment query vars.
-	 * @return array
-	 */
-	private static function merge_reaction_exclusions( array $vars ): array {
-		if ( ! empty( $vars['type'] ) || ! empty( $vars['type__in'] ) ) {
-			return $vars;
+		// Only the single-post comment list should hide reactions.
+		if ( ! \is_singular() ) {
+			return;
 		}
 
-		$excluded             = (array) ( $vars['type__not_in'] ?? array() );
-		$vars['type__not_in'] = \array_values( \array_unique( \array_merge( $excluded, self::REACTION_COMMENT_TYPES ) ) );
+		// Leave queries that already constrain the comment type alone.
+		if (
+			! empty( $query->query_vars['type'] )
+			|| ! empty( $query->query_vars['type__in'] )
+			|| ! empty( $query->query_vars['type__not_in'] )
+		) {
+			return;
+		}
 
-		return $vars;
+		$query->query_vars['type__not_in'] = self::REACTION_COMMENT_TYPES;
 	}
 
 	/**

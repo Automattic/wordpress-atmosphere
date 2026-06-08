@@ -1297,26 +1297,40 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 	}
 
 	/**
-	 * A front-end comment query always excludes like/repost types, merging
-	 * with any exclusions already present and leaving explicit type
-	 * requests untouched.
+	 * On a single post, the comment query excludes like/repost types, but
+	 * leaves any query that already constrains the comment type alone.
 	 */
-	public function test_comment_query_excludes_reactions() {
-		// Default front-end query: reactions excluded.
+	public function test_comment_query_excludes_reactions_on_singular() {
+		$post_id = self::factory()->post->create();
+		$this->go_to( \get_permalink( $post_id ) );
+
+		// Default singular comment list: reactions excluded.
 		$query             = new \WP_Comment_Query();
 		$query->query_vars = array();
 		Reaction_Sync::maybe_exclude_reactions_from_query( $query );
 		$this->assertSame( array( 'like', 'repost' ), $query->query_vars['type__not_in'] );
 
-		// Existing exclusions are preserved, not overwritten.
+		// A query that already constrains the type is left untouched.
 		$query             = new \WP_Comment_Query();
 		$query->query_vars = array( 'type__not_in' => array( 'pingback' ) );
 		Reaction_Sync::maybe_exclude_reactions_from_query( $query );
-		$this->assertSame( array( 'pingback', 'like', 'repost' ), $query->query_vars['type__not_in'] );
+		$this->assertSame( array( 'pingback' ), $query->query_vars['type__not_in'] );
 
 		// An explicit request for a specific type is left untouched.
 		$query             = new \WP_Comment_Query();
 		$query->query_vars = array( 'type' => 'like' );
+		Reaction_Sync::maybe_exclude_reactions_from_query( $query );
+		$this->assertArrayNotHasKey( 'type__not_in', $query->query_vars );
+	}
+
+	/**
+	 * Off a singular view, the comment query is left untouched.
+	 */
+	public function test_comment_query_untouched_off_singular() {
+		$this->go_to( \home_url( '/' ) );
+
+		$query             = new \WP_Comment_Query();
+		$query->query_vars = array();
 		Reaction_Sync::maybe_exclude_reactions_from_query( $query );
 		$this->assertArrayNotHasKey( 'type__not_in', $query->query_vars );
 	}
