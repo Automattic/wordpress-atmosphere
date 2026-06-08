@@ -107,8 +107,20 @@ class Backfill {
 					'has_password'           => false,
 					'posts_per_page'         => $chunk_size,
 					'paged'                  => $page,
-					'orderby'                => 'date',
-					'order'                  => 'DESC',
+
+					/*
+					 * Sort by date with ID as a tiebreaker. `date` alone is
+					 * not a stable sort: posts sharing a `post_date` (bulk
+					 * imports, migrations) can come back in a different
+					 * order on each page, which under OFFSET paging would
+					 * duplicate one ID and skip another even with no
+					 * concurrent writes. The ID tiebreaker makes the walk
+					 * deterministic across pages.
+					 */
+					'orderby'                => array(
+						'date' => 'DESC',
+						'ID'   => 'DESC',
+					),
 					'fields'                 => 'ids',
 					'no_found_rows'          => true,
 					'update_post_term_cache' => false,
@@ -129,6 +141,14 @@ class Backfill {
 				}
 
 				if ( $limit > 0 && \count( $unsynced ) >= $limit ) {
+					/*
+					 * Evict this chunk's primed meta before bailing. The
+					 * `break 2` would otherwise skip the eviction below,
+					 * leaving the final chunk's post_meta resident for the
+					 * rest of the request — the capped path should bound
+					 * memory the same way the full walk does.
+					 */
+					\wp_cache_delete_multiple( $chunk, 'post_meta' );
 					break 2;
 				}
 			}
