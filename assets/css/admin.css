@@ -10,9 +10,3 @@
 	display: inline-block;
 	margin-top: 2px;
 }
-
-#atmosphere-backfill-progress progress {
-	display: block;
-	width: 100%;
-	height: 24px;
-}

@@ -97,23 +97,6 @@ class Admin {
 			array(),
 			ATMOSPHERE_VERSION
 		);
-
-		\wp_enqueue_script(
-			'atmosphere-settings',
-			ATMOSPHERE_PLUGIN_URL . 'assets/js/settings.js',
-			array(),
-			ATMOSPHERE_VERSION,
-			true
-		);
-
-		\wp_localize_script(
-			'atmosphere-settings',
-			'atmosphere',
-			array(
-				'ajax_url'       => \admin_url( 'admin-ajax.php' ),
-				'backfill_nonce' => \wp_create_nonce( 'atmosphere_backfill' ),
-			)
-		);
 	}
 
 	/**

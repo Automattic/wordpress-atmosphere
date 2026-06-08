@@ -101,14 +101,6 @@ class Settings_Fields {
 			'atmosphere_publishing'
 		);
 
-		\add_settings_field(
-			'atmosphere_backfill',
-			\__( 'Backfill', 'atmosphere' ),
-			array( self::class, 'render_backfill_field' ),
-			'atmosphere',
-			'atmosphere_publishing'
-		);
-
 		/*
 		 * Register the domain-handle confirm row only when the offer is
 		 * meaningful (root install, feature enabled, current handle differs
@@ -421,35 +413,6 @@ class Settings_Fields {
 		</fieldset>
 		<p class="description">
 			<?php \esc_html_e( 'Select which post types are published to AT Protocol.', 'atmosphere' ); ?>
-		</p>
-		<?php
-	}
-
-	/**
-	 * Render the Backfill field.
-	 */
-	public static function render_backfill_field(): void {
-		$limit = (int) \apply_filters( 'atmosphere_backfill_limit', 10 );
-
-		?>
-		<div id="atmosphere-backfill">
-			<button type="button" class="button" id="atmosphere-backfill-start">
-				<?php \esc_html_e( 'Start Backfill', 'atmosphere' ); ?>
-			</button>
-			<div id="atmosphere-backfill-progress" style="display:none; margin-top: 10px;">
-				<progress id="atmosphere-backfill-bar" value="0" max="100" style="width: 100%;"></progress>
-				<p id="atmosphere-backfill-status"></p>
-			</div>
-		</div>
-		<p class="description">
-			<?php
-			// phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- %d with intval is safe.
-			\printf(
-				/* translators: %d: maximum number of posts to backfill */
-				\esc_html__( 'Sync the last %d published posts that haven\'t been sent to AT Protocol yet. You can run this multiple times to gradually sync older content.', 'atmosphere' ),
-				\intval( $limit )
-			);
-			?>
 		</p>
 		<?php
 	}
