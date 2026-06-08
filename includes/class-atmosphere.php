@@ -71,8 +71,10 @@ class Atmosphere {
 	/**
 	 * Maximum re-schedule hops for a child comment waiting on a
 	 * not-yet-published parent. After this many deferrals the child
-	 * publishes as a top-level reply on the post (current fallback
-	 * behavior) so a stuck parent does not block it forever.
+	 * is skipped if the parent still lacks a threadable strongRef so a
+	 * stuck parent does not block it forever — see
+	 * {@see Atmosphere::parent_has_bsky_representation()} for the
+	 * skip rule.
 	 *
 	 * @var int
 	 */
@@ -121,6 +123,7 @@ class Atmosphere {
 
 		// Frontend verification headers.
 		\add_action( 'wp_head', array( $this, 'output_document_link' ) );
+		\add_action( 'wp_head', array( $this, 'output_publication_link' ) );
 
 		// Well-known endpoints.
 		\add_action( 'init', array( $this, 'register_wellknown_rewrite' ) );
@@ -157,16 +160,46 @@ class Atmosphere {
 		\add_action( 'edit_comment', array( $this, 'on_comment_edit' ) );
 		\add_action( 'delete_comment', array( $this, 'on_comment_before_delete' ) );
 
-		// Auto-sync publication when site identity changes.
+		/*
+		 * Auto-sync the publication record whenever something the record
+		 * derives from changes. The record bakes in WordPress's site
+		 * identity (name, description, icon, home URL) and the active
+		 * theme's primary colours; keeping it in lockstep with those
+		 * sources avoids a stale publication on the PDS until the next
+		 * unrelated event happens to re-sync.
+		 *
+		 * Triggers cover both surfaces a site administrator can edit
+		 * theme colours from: classic-theme Customizer saves
+		 * (`customize_save_after`) and block-theme Site Editor saves
+		 * (the `wp_global_styles` post update).
+		 */
 		\add_action( 'update_option_blogname', array( $this, 'schedule_publication_sync' ) );
 		\add_action( 'update_option_blogdescription', array( $this, 'schedule_publication_sync' ) );
 		\add_action( 'update_option_site_icon', array( $this, 'schedule_publication_sync' ) );
+		\add_action( 'update_option_home', array( $this, 'schedule_publication_sync' ) );
+		\add_action( 'update_option_siteurl', array( $this, 'schedule_publication_sync' ) );
+		\add_action( 'switch_theme', array( $this, 'schedule_publication_sync' ) );
+		\add_action( 'save_post_wp_global_styles', array( $this, 'schedule_publication_sync' ) );
+		\add_action( 'customize_save_after', array( $this, 'schedule_publication_sync' ) );
 
 		// Token refresh cron.
 		\add_action( 'atmosphere_refresh_token', array( $this, 'cron_refresh_token' ) );
 
+		/*
+		 * Migrate sites that scheduled this event on a previous version
+		 * (twicedaily) to the hourly cadence. Bluesky access tokens live
+		 * 60 minutes and the auth server's DPoP nonces only 3 minutes,
+		 * so a 12-hour interval left the refresh worker far too sparse
+		 * to recover from a single failed run before the session aged
+		 * past the refresh-token replay window.
+		 */
+		$schedule = \wp_get_schedule( 'atmosphere_refresh_token' );
+		if ( false !== $schedule && 'hourly' !== $schedule ) {
+			\wp_clear_scheduled_hook( 'atmosphere_refresh_token' );
+		}
+
 		if ( ! \wp_next_scheduled( 'atmosphere_refresh_token' ) && is_connected() ) {
-			\wp_schedule_event( \time(), 'twicedaily', 'atmosphere_refresh_token' );
+			\wp_schedule_event( \time(), 'hourly', 'atmosphere_refresh_token' );
 		}
 
 		/*
@@ -204,6 +237,16 @@ class Atmosphere {
 	 * verification link survives a temporary OAuth refresh failure —
 	 * the document AT-URI is computed from the DID, which is stable
 	 * across session expiry and `needs_reauth` states.
+	 *
+	 * Also gated on `META_URI` so the link is emitted only for posts
+	 * the Publisher actually wrote to the PDS. Without this check, a
+	 * disconnected site (identity preserved, no live session) would
+	 * advertise document AT-URIs for every published WP post and lazy-
+	 * mint META_TID rows for posts that have no corresponding record
+	 * on the PDS — federation/discovery consumers would 404 each one.
+	 * Posts published before a disconnect already carry META_URI and
+	 * remain correctly advertised; new posts created during a disconnect
+	 * stay silent until reconnect + publish lands a real record.
 	 */
 	public function output_document_link(): void {
 		if ( ! has_identity() || ! \is_singular() ) {
@@ -217,6 +260,11 @@ class Atmosphere {
 		}
 
 		if ( ! is_post_publishable( $post ) ) {
+			return;
+		}
+
+		$bsky_uri = \get_post_meta( $post->ID, Post::META_URI, true );
+		if ( empty( $bsky_uri ) ) {
 			return;
 		}
 
@@ -240,20 +288,96 @@ class Atmosphere {
 	}
 
 	/**
+	 * Output `<link rel="site.standard.publication">` on the URLs that
+	 * map to the publication record's `url` field.
+	 *
+	 * Emitted on:
+	 *
+	 * - Singular publishable posts, so a resolver landing on an article
+	 *   URL can find the parent publication directly without first
+	 *   fetching the document record.
+	 * - The WordPress front page, since the publication record's `url`
+	 *   field is `home_url('/')`. Lets a resolver verify the page <->
+	 *   publication binding by matching AT-URIs, sparing the
+	 *   `.well-known/site.standard.publication` round-trip.
+	 *
+	 * Gated on `has_identity()` (not `is_connected()`) so the
+	 * verification link survives transient OAuth refresh failures, in
+	 * lockstep with {@see Atmosphere::output_document_link()}.
+	 */
+	public function output_publication_link(): void {
+		if ( ! has_identity() ) {
+			return;
+		}
+
+		$pub_tid = \get_option( Publication::OPTION_TID );
+
+		if ( ! $pub_tid ) {
+			return;
+		}
+
+		if ( ! self::is_publication_url() ) {
+			return;
+		}
+
+		$uri = build_at_uri( get_did(), 'site.standard.publication', $pub_tid );
+
+		\printf(
+			'<link rel="site.standard.publication" href="%s" />' . "\n",
+			\esc_attr( $uri )
+		);
+	}
+
+	/**
+	 * Whether the current request URL maps to the publication record's
+	 * `url` field — i.e. a URL where the `<link rel="site.standard.publication">`
+	 * tag belongs.
+	 *
+	 * - The WordPress front page always qualifies, regardless of
+	 *   whether it shows posts or a static page (a static page set
+	 *   as front is both `is_front_page()` AND `is_singular('page')`;
+	 *   checking the front-page condition first is what keeps the
+	 *   tag emitting in that configuration).
+	 * - A publishable singular post qualifies because its document
+	 *   record carries a reference back to the publication.
+	 */
+	private static function is_publication_url(): bool {
+		if ( \is_front_page() ) {
+			return true;
+		}
+
+		if ( ! \is_singular() ) {
+			return false;
+		}
+
+		$post = \get_queried_object();
+
+		return $post instanceof \WP_Post && is_post_publishable( $post );
+	}
+
+	/**
+	 * Regex patterns of the well-known rewrite rules this plugin owns.
+	 *
+	 * Maps each pattern to its `index.php` query target. Kept as a single
+	 * source of truth so {@see register_wellknown_rewrite()} and
+	 * {@see maybe_flush_wellknown_rewrites()} stay in lockstep — if a
+	 * future rule is added or renamed, both surfaces pick it up without
+	 * a separate edit, and the persisted-rules check still detects drift.
+	 *
+	 * @var array<string, string>
+	 */
+	private const WELLKNOWN_REWRITE_PATTERNS = array(
+		'^\.well-known/atproto-did$'                 => 'index.php?atmosphere_wellknown=atproto-did',
+		'^\.well-known/site\.standard\.publication$' => 'index.php?atmosphere_wellknown=publication',
+	);
+
+	/**
 	 * Register rewrite rules for well-known endpoints.
 	 */
 	public function register_wellknown_rewrite(): void {
-		\add_rewrite_rule(
-			'^\.well-known/atproto-did$',
-			'index.php?atmosphere_wellknown=atproto-did',
-			'top'
-		);
-
-		\add_rewrite_rule(
-			'^\.well-known/site\.standard\.publication$',
-			'index.php?atmosphere_wellknown=publication',
-			'top'
-		);
+		foreach ( self::WELLKNOWN_REWRITE_PATTERNS as $pattern => $target ) {
+			\add_rewrite_rule( $pattern, $target, 'top' );
+		}
 
 		\add_filter(
 			'query_vars',
@@ -262,6 +386,87 @@ class Atmosphere {
 				return $vars;
 			}
 		);
+	}
+
+	/**
+	 * Ensure the well-known rewrite rules are present in the persisted
+	 * `rewrite_rules` option, and flush them in if not.
+	 *
+	 * The activation hook flushes once, but the rule set can drift away
+	 * from the persisted array later for several real install paths:
+	 *
+	 * - Programmatic loads (FOSSE bundle, `require_once`, mu-plugin,
+	 *   etc.) never fire `register_activation_hook`, so the initial
+	 *   flush never runs.
+	 * - Some plugins or hosts wipe `wp_options.rewrite_rules` outside
+	 *   of activation. WP then rebuilds the array from whatever rules
+	 *   happen to be registered at that moment, which may or may not
+	 *   include ours.
+	 * - Another plugin that flushes earlier on `init` than our rule
+	 *   registration produces a persisted array missing our patterns.
+	 *
+	 * In all three cases the runtime registration in
+	 * {@see register_wellknown_rewrite()} keeps happening on every
+	 * request but is functionally inert, because WP routes from the
+	 * persisted array, not the in-memory one. The user-facing symptom
+	 * is "External handle did not resolve to DID" when the PDS fetches
+	 * `/.well-known/atproto-did` and WP serves the normal 404 template
+	 * instead of our handler.
+	 *
+	 * Called surgically from the moments that matter so this is not
+	 * paid on every request:
+	 *
+	 * - After a successful OAuth handshake persists an identity —
+	 *   {@see \Atmosphere\OAuth\Client::handle_callback()}.
+	 * - When an administrator loads the Atmosphere settings page —
+	 *   {@see \Atmosphere\WP_Admin\Admin::add_menu()}.
+	 * - Before the `updateHandle` XRPC call, which triggers the PDS to
+	 *   fetch the well-known endpoint immediately —
+	 *   {@see \Atmosphere\Handle::set_handle()}.
+	 *
+	 * Uses a soft flush (no `.htaccess` rewrite): WordPress's default
+	 * rewrite fallback already routes unmatched URLs to `index.php`, so
+	 * refreshing the persisted `rewrite_rules` option is enough to make
+	 * our rules take effect without touching the webserver config.
+	 */
+	public static function maybe_flush_wellknown_rewrites(): void {
+		global $wp_rewrite;
+
+		/*
+		 * Plain permalinks (the WordPress default `?p=N` scheme) keep
+		 * `rewrite_rules` empty and route every request through the query
+		 * string. Our `^\.well-known/...$` patterns can never appear in
+		 * the persisted array on such a site, and the endpoints cannot
+		 * resolve via rewrite there regardless. Bail before the
+		 * missing-pattern check so we do not read an always-empty array
+		 * as "patterns missing" and burn an `update_option` write on
+		 * every call.
+		 *
+		 * Read the state from `$wp_rewrite` rather than the
+		 * `permalink_structure` option: `flush_rewrite_rules()` rebuilds
+		 * from `$wp_rewrite`'s in-memory structure, so gating on the same
+		 * source keeps the guard and the flush in agreement even if
+		 * something wrote the option directly after `WP_Rewrite::init()`
+		 * ran this request.
+		 */
+		if ( ! $wp_rewrite instanceof \WP_Rewrite || ! $wp_rewrite->using_permalinks() ) {
+			return;
+		}
+
+		$rules = \get_option( 'rewrite_rules' );
+
+		if ( \is_array( $rules ) ) {
+			foreach ( self::WELLKNOWN_REWRITE_PATTERNS as $pattern => $target ) {
+				if ( ! isset( $rules[ $pattern ] ) || $rules[ $pattern ] !== $target ) {
+					\flush_rewrite_rules( false );
+					return;
+				}
+			}
+
+			return;
+		}
+
+		\flush_rewrite_rules( false );
 	}
 
 	/**
@@ -276,6 +481,14 @@ class Atmosphere {
 		if ( \get_query_var( 'atmosphere_wellknown' ) !== 'atproto-did' ) {
 			return;
 		}
+
+		/*
+		 * Bidirectional verification re-fetches this endpoint on every
+		 * profile load, so a fronting page/CDN cache must never retain a
+		 * pre-connect 404 or a post-disconnect 200 with a stale DID. Send
+		 * no-cache headers on every response branch below.
+		 */
+		\nocache_headers();
 
 		/*
 		 * Identity gate (not connection gate): an expired OAuth session
@@ -306,6 +519,14 @@ class Atmosphere {
 		if ( \get_query_var( 'atmosphere_wellknown' ) !== 'publication' ) {
 			return;
 		}
+
+		/*
+		 * Bidirectional verification re-fetches this endpoint on every
+		 * profile load, so a fronting page/CDN cache must never retain a
+		 * pre-connect 404 or a post-disconnect 200 with a stale AT-URI.
+		 * Send no-cache headers on every response branch below.
+		 */
+		\nocache_headers();
 
 		/*
 		 * Identity gate (not connection gate): the publication AT-URI is
@@ -973,9 +1194,23 @@ class Atmosphere {
 
 	/**
 	 * Cron: proactively refresh the access token.
+	 *
+	 * Skips when the stored access token still has more than ten
+	 * minutes of life on it — the hourly cadence catches up before
+	 * any genuine expiry, and an unconditional refresh on every tick
+	 * burns a refresh-token rotation that does not need to happen.
+	 * Each rotation is also another chance for the dead-holder
+	 * scenario (worker dies mid-flight after the auth server has
+	 * already rotated) to bite, so refreshing less aggressively is
+	 * strictly more reliable on a healthy session.
 	 */
 	public function cron_refresh_token(): void {
 		if ( ! is_connected() ) {
+			return;
+		}
+
+		$conn = \get_option( 'atmosphere_connection', array() );
+		if ( ! empty( $conn['expires_at'] ) && $conn['expires_at'] > \time() + 600 ) {
 			return;
 		}
 
@@ -1162,6 +1397,21 @@ class Atmosphere {
 				if ( self::defer_when_parent_pending( $comment ) ) {
 					return;
 				}
+				if ( ! self::parent_has_bsky_representation( $comment ) ) {
+					/*
+					 * Parent is local-only: anonymous WP commenter, an
+					 * ineligible comment that will never publish, or a
+					 * federation source other than bsky. Publishing the
+					 * reply anyway would either fail at strongRef
+					 * construction or fall back to a top-level reply on
+					 * the post (losing the WP thread context). Skip
+					 * instead, and clear the deferral counter so a
+					 * future re-publish (e.g. if the parent gains a URI
+					 * later) gets a fresh budget.
+					 */
+					\delete_comment_meta( $comment_id, self::META_PUBLISH_ATTEMPTS );
+					return;
+				}
 				\delete_comment_meta( $comment_id, self::META_PUBLISH_ATTEMPTS );
 
 				$result = Publisher::publish_comment( $comment );
@@ -1241,13 +1491,14 @@ class Atmosphere {
 	 *
 	 * Comments are scheduled as independent single events with no
 	 * dependency ordering: if a user approves a parent and its reply
-	 * together, the child's cron event can fire first, see
-	 * resolve_parent_ref() return null, and publish flat as a
-	 * top-level reply on the root post. This defers the child a short
-	 * interval (up to PARENT_DEFER_MAX_ATTEMPTS hops) to give the
-	 * parent time to publish first. After the cap the child publishes
-	 * anyway using the root fallback — a stuck parent must not block
-	 * the child forever.
+	 * together, the child's cron event can fire first and see
+	 * `resolve_parent_ref()` return null. This defers the child a
+	 * short interval (up to PARENT_DEFER_MAX_ATTEMPTS hops) so the
+	 * parent has time to publish first. After the cap the cron
+	 * handler's {@see Atmosphere::parent_has_bsky_representation()}
+	 * check skips the child entirely rather than letting
+	 * {@see Comment::build_reply_ref()} fall back to a top-level
+	 * reply on the post — losing the WP thread context.
 	 *
 	 * @param \WP_Comment $comment Comment being published.
 	 * @return bool True when the publish was deferred, false to proceed now.
@@ -1266,8 +1517,12 @@ class Atmosphere {
 		}
 
 		if ( ! self::should_publish_comment( $parent ) ) {
-			// Parent is ineligible (anon, rejected, etc.); resolve_parent_ref
-			// will fall back to root, which is the correct behavior.
+			// Parent is ineligible (anon, rejected, etc.). No reason to
+			// defer — it will never gain a bsky URI. The subsequent
+			// `parent_has_bsky_representation()` check in the cron
+			// handler will skip the publish entirely so we don't
+			// promote a nested WP reply into a confusing top-level
+			// bsky reply on the post.
 			return false;
 		}
 
@@ -1280,8 +1535,12 @@ class Atmosphere {
 		$attempts   = (int) \get_comment_meta( $comment_id, self::META_PUBLISH_ATTEMPTS, true );
 
 		if ( $attempts >= self::PARENT_DEFER_MAX_ATTEMPTS ) {
-			// Give up and publish with root as parent; clear the counter
-			// so a future re-publish gets a fresh deferral budget.
+			// Give up on the deferral budget; clear the counter so a
+			// future re-publish gets a fresh budget. The subsequent
+			// `parent_has_bsky_representation()` check skips the publish
+			// rather than letting `build_reply_ref()` fall back to a
+			// top-level reply on the post, which would lose the WP
+			// thread context.
 			\delete_comment_meta( $comment_id, self::META_PUBLISH_ATTEMPTS );
 			return false;
 		}
@@ -1294,6 +1553,72 @@ class Atmosphere {
 		);
 
 		return true;
+	}
+
+	/**
+	 * Whether the comment's immediate WP parent has an AT Protocol
+	 * strongRef the reply record can thread under.
+	 *
+	 * Mirrors the exact requirements of {@see Comment::resolve_parent_ref()}:
+	 * a strongRef needs BOTH `uri` and `cid`. Half-state rows (URI
+	 * present but CID missing, or `META_PROTOCOL = atproto` without
+	 * the federated CID alongside) would let `resolve_parent_ref()`
+	 * fall through and `build_reply_ref()` substitute the post root,
+	 * silently promoting the nested reply to a top-level post — the
+	 * exact bug this check is here to prevent.
+	 *
+	 * Returns true when:
+	 *
+	 * - The comment has no parent (top-level reply to the post). The
+	 *   post itself has a bsky record; the publish path threads against
+	 *   that root.
+	 * - The parent comment carries both {@see Comment::META_URI} and
+	 *   {@see Comment::META_CID} — the plugin already published the
+	 *   parent to the PDS.
+	 * - The parent comment is marked as ingested by
+	 *   {@see Reaction_Sync} (`META_PROTOCOL = atproto`) AND carries
+	 *   both `META_SOURCE_ID` (URI) and `META_BSKY_CID`.
+	 *
+	 * Only the immediate parent is checked: any comment that passes
+	 * this gate was itself only publishable through the same gate, so
+	 * by induction every WP ancestor is also threadable.
+	 *
+	 * Known legacy edge case: sites that ran a pre-fix version of the
+	 * plugin may have "demoted" comments on bsky — comments whose
+	 * original WP parent was local-only but which the old root-fallback
+	 * still pushed to bsky as top-level replies under the post. Their
+	 * rows now carry valid `META_URI` / `META_CID`, so new replies to
+	 * them pass this gate even though the deeper WP ancestor chain is
+	 * incomplete. The strongRef itself is still valid (the demoted
+	 * comment is on bsky); the bsky-side view simply omits the
+	 * pre-existing local-only ancestor, which mirrors what the WP user
+	 * sees with the local-only commenter anyway. No further migration
+	 * is planned for those legacy rows.
+	 *
+	 * @param \WP_Comment $comment Comment about to be published.
+	 * @return bool
+	 */
+	private static function parent_has_bsky_representation( \WP_Comment $comment ): bool {
+		$parent_id = (int) $comment->comment_parent;
+
+		if ( $parent_id <= 0 ) {
+			return true;
+		}
+
+		$local_uri = \get_comment_meta( $parent_id, Comment::META_URI, true );
+		$local_cid = \get_comment_meta( $parent_id, Comment::META_CID, true );
+		if ( ! empty( $local_uri ) && ! empty( $local_cid ) ) {
+			return true;
+		}
+
+		if ( 'atproto' !== \get_comment_meta( $parent_id, Reaction_Sync::META_PROTOCOL, true ) ) {
+			return false;
+		}
+
+		$federated_uri = \get_comment_meta( $parent_id, Reaction_Sync::META_SOURCE_ID, true );
+		$federated_cid = \get_comment_meta( $parent_id, Reaction_Sync::META_BSKY_CID, true );
+
+		return ! empty( $federated_uri ) && ! empty( $federated_cid );
 	}
 
 	/**

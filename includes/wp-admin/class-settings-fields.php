@@ -112,12 +112,17 @@ class Settings_Fields {
 		/*
 		 * Register the domain-handle confirm row only when the offer is
 		 * meaningful (root install, feature enabled, current handle differs
-		 * from the site host). Skipping registration is the cleanest way to
-		 * suppress the row entirely without rendering an empty <tr>.
+		 * from the site host, AND a live OAuth session exists). Skipping
+		 * registration is the cleanest way to suppress the row entirely
+		 * without rendering an empty <tr>. The `is_connected()` check
+		 * matters specifically while identity is preserved across a
+		 * disconnect — without it, the row would render after Disconnect
+		 * and a click would dead-end at `Handle::set_handle()`'s "Connect
+		 * to Bluesky before setting your domain handle." gate.
 		 */
 		if ( Handle::should_offer(
 			array(
-				'connected' => true,
+				'connected' => is_connected(),
 				'handle'    => get_connection()['handle'] ?? '',
 			)
 		) ) {

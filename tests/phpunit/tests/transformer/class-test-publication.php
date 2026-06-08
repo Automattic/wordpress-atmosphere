@@ -3,17 +3,18 @@
  * Tests for the Publication transformer.
  *
  * @package Atmosphere
+ * @group atmosphere
+ * @group transformer
  */
 
 namespace Atmosphere\Tests\Transformer;
 
-use WP_UnitTestCase;
 use Atmosphere\Transformer\Publication;
 
 /**
  * Publication transformer tests.
  */
-class Test_Publication extends WP_UnitTestCase {
+class Test_Publication extends \WP_UnitTestCase {
 
 	/**
 	 * Test hex_to_rgb with a full hex color.
@@ -65,5 +66,508 @@ class Test_Publication extends WP_UnitTestCase {
 		$pub = new Publication( null );
 
 		$this->assertSame( 'site.standard.publication', $pub->get_collection() );
+	}
+
+	/**
+	 * The site icon populates the spec-compliant `icon` field, not the
+	 * legacy non-spec `avatar` field.
+	 *
+	 * Seeds the `_atmosphere_blob_ref` cache so the transformer resolves
+	 * the blob from post meta instead of performing a network upload.
+	 */
+	public function test_site_icon_maps_to_icon_field() {
+		$attachment_id = self::factory()->attachment->create_object(
+			array(
+				'file'           => 'site-icon.png',
+				'post_mime_type' => 'image/png',
+			),
+			0,
+			array(
+				'post_title' => 'Site icon',
+			)
+		);
+
+		$blob = array(
+			'cid'      => 'bafyicon',
+			'mimeType' => 'image/png',
+			'size'     => 4096,
+		);
+		\update_post_meta( $attachment_id, '_atmosphere_blob_ref', $blob );
+		\update_option( 'site_icon', $attachment_id );
+
+		$record = ( new Publication( null ) )->transform();
+
+		$this->assertSame( 'site.standard.publication', $record['$type'] );
+		$this->assertSame( $blob, $record['icon'], 'Site icon should populate the spec `icon` field.' );
+		$this->assertArrayNotHasKey( 'avatar', $record, 'The non-spec `avatar` field must not be present.' );
+	}
+
+	/**
+	 * When a site icon is set but its blob cannot be uploaded, the `icon`
+	 * key is omitted rather than written as null. The attachment has no
+	 * backing file and no cached blob ref, so upload_image_blob() returns
+	 * null at its `! $file` guard without a network call.
+	 */
+	public function test_site_icon_omitted_when_blob_upload_fails() {
+		$attachment_id = self::factory()->attachment->create_object(
+			array(
+				'file'           => 'missing.png',
+				'post_mime_type' => 'image/png',
+			),
+			0,
+			array(
+				'post_title' => 'Site icon',
+			)
+		);
+		\delete_post_meta( $attachment_id, '_wp_attached_file' );
+		\update_option( 'site_icon', $attachment_id );
+
+		$record = ( new Publication( null ) )->transform();
+
+		$this->assertArrayNotHasKey( 'icon', $record );
+	}
+
+	/**
+	 * The publication record uses the spec field `name` and omits the
+	 * non-spec `displayName` field carried over from the bsky profile shape.
+	 */
+	public function test_record_omits_non_spec_display_name() {
+		$record = ( new Publication( null ) )->transform();
+
+		$this->assertArrayHasKey( 'name', $record );
+		$this->assertArrayNotHasKey( 'displayName', $record );
+	}
+
+	/**
+	 * The name and description are HTML-entity decoded before they reach
+	 * the record. WordPress stores `blogname` / `blogdescription`
+	 * entity-encoded (esc_html at save time), so the raw values carry
+	 * `&#039;`, `&amp;`, etc. Use `pre_option_*` filters to inject the
+	 * stored (encoded) form deterministically.
+	 */
+	public function test_name_and_description_decode_html_entities() {
+		\add_filter( 'pre_option_blogname', static fn() => 'Toni&#039;s blog' );
+		\add_filter( 'pre_option_blogdescription', static fn() => 'Tom &amp; Jerry' );
+
+		try {
+			$record = ( new Publication( null ) )->transform();
+		} finally {
+			\remove_all_filters( 'pre_option_blogname' );
+			\remove_all_filters( 'pre_option_blogdescription' );
+		}
+
+		$this->assertSame( "Toni's blog", $record['name'] );
+		$this->assertSame( 'Tom & Jerry', $record['description'] );
+	}
+
+	/**
+	 * End-to-end proof against WordPress's real storage path: a site name
+	 * and tagline saved with special characters round-trip to clean text
+	 * in the record.
+	 *
+	 * `update_option()` runs the value through `sanitize_option()`, which
+	 * `esc_html()`s `blogname` / `blogdescription` exactly once. `esc_html()`
+	 * is idempotent (`_wp_specialchars()` defaults to `$double_encode =
+	 * false`), so the stored value is always single-encoded — a single
+	 * `html_entity_decode()` pass in `sanitize_text()` fully decodes it.
+	 * This is the realistic counterpart to the `pre_option_*` test above,
+	 * which injects an arbitrary encoded string directly.
+	 */
+	public function test_name_and_description_round_trip_real_option_values() {
+		\update_option( 'blogname', "Toni's blog & Co" );
+		\update_option( 'blogdescription', "Books, coffee & friends'" );
+
+		$record = ( new Publication( null ) )->transform();
+
+		$this->assertSame( "Toni's blog & Co", $record['name'] );
+		$this->assertSame( "Books, coffee & friends'", $record['description'] );
+	}
+
+	/**
+	 * A `blogname` longer than the standard.site lexicon limit (500
+	 * graphemes for `name`) is hard-clamped before it lands in the
+	 * record, so the PDS does not reject the putRecord with a Lexicon
+	 * validation error.
+	 */
+	public function test_name_is_clamped_to_lexicon_grapheme_limit() {
+		$long_name = \str_repeat( 'a', 600 );
+
+		\add_filter( 'pre_option_blogname', static fn() => $long_name );
+
+		try {
+			$record = ( new Publication( null ) )->transform();
+		} finally {
+			\remove_all_filters( 'pre_option_blogname' );
+		}
+
+		$count = \function_exists( 'grapheme_strlen' )
+			? \grapheme_strlen( $record['name'] )
+			: \mb_strlen( $record['name'] );
+
+		$this->assertLessThanOrEqual( 500, $count );
+		$this->assertSame( \str_repeat( 'a', 500 ), $record['name'] );
+	}
+
+	/**
+	 * The 3000-grapheme cap applies to `description` in the same way
+	 * `name` is clamped — long taglines do not reach the PDS in a
+	 * lexicon-violating shape.
+	 */
+	public function test_description_is_clamped_to_lexicon_grapheme_limit() {
+		$long_description = \str_repeat( 'b', 3500 );
+
+		\add_filter( 'pre_option_blogdescription', static fn() => $long_description );
+
+		try {
+			$record = ( new Publication( null ) )->transform();
+		} finally {
+			\remove_all_filters( 'pre_option_blogdescription' );
+		}
+
+		$count = \function_exists( 'grapheme_strlen' )
+			? \grapheme_strlen( $record['description'] )
+			: \mb_strlen( $record['description'] );
+
+		$this->assertLessThanOrEqual( 3000, $count );
+		$this->assertSame( \str_repeat( 'b', 3000 ), $record['description'] );
+	}
+
+	/**
+	 * `build_basic_theme()` produces the spec-shaped record with all
+	 * four required colours when background/foreground/accent are
+	 * resolvable from the supplied styles. Each colour carries the
+	 * `site.standard.theme.color#rgb` union discriminator.
+	 */
+	public function test_build_basic_theme_returns_spec_shape_with_all_four_colors() {
+		$styles = array(
+			'color'    => array(
+				'background' => '#ffffff',
+				'text'       => '#111111',
+			),
+			'elements' => array(
+				'link' => array( 'color' => array( 'text' => '#0066cc' ) ),
+			),
+		);
+
+		$record = Publication::build_basic_theme( $styles, array() );
+
+		$this->assertIsArray( $record );
+
+		/*
+		 * Lexicon JSON objects are unordered — only the set of keys is
+		 * part of the contract. Canonicalizing the comparison guards
+		 * against false positives if a future refactor emits the same
+		 * required fields in a different `transform()` insertion order.
+		 */
+		$this->assertEqualsCanonicalizing(
+			array( 'background', 'foreground', 'accent', 'accentForeground' ),
+			\array_keys( $record ),
+			'basicTheme must carry all four required colours.'
+		);
+
+		foreach ( $record as $key => $color ) {
+			$this->assertSame(
+				'site.standard.theme.color#rgb',
+				$color['$type'],
+				"Color object `{$key}` must carry the rgb union discriminator."
+			);
+			$this->assertIsInt( $color['r'] );
+			$this->assertIsInt( $color['g'] );
+			$this->assertIsInt( $color['b'] );
+		}
+
+		$this->assertSame(
+			array(
+				'$type' => 'site.standard.theme.color#rgb',
+				'r'     => 255,
+				'g'     => 255,
+				'b'     => 255,
+			),
+			$record['background']
+		);
+		$this->assertSame(
+			array(
+				'$type' => 'site.standard.theme.color#rgb',
+				'r'     => 17,
+				'g'     => 17,
+				'b'     => 17,
+			),
+			$record['foreground']
+		);
+		$this->assertSame(
+			array(
+				'$type' => 'site.standard.theme.color#rgb',
+				'r'     => 0,
+				'g'     => 102,
+				'b'     => 204,
+			),
+			$record['accent']
+		);
+	}
+
+	/**
+	 * Each required colour gates the entire record: if any one of
+	 * background / foreground / accent cannot be resolved, `null` is
+	 * returned and the caller omits `basicTheme` entirely. A partial
+	 * record would be rejected by the PDS — the spec demands all four.
+	 */
+	public function test_build_basic_theme_returns_null_when_any_required_color_missing() {
+		$base = array(
+			'color'    => array(
+				'background' => '#ffffff',
+				'text'       => '#000000',
+			),
+			'elements' => array( 'link' => array( 'color' => array( 'text' => '#0066cc' ) ) ),
+		);
+
+		// No background.
+		$without_bg                        = $base;
+		$without_bg['color']['background'] = '';
+		$this->assertNull( Publication::build_basic_theme( $without_bg, array() ) );
+
+		// No foreground.
+		$without_fg                  = $base;
+		$without_fg['color']['text'] = '';
+		$this->assertNull( Publication::build_basic_theme( $without_fg, array() ) );
+
+		// No accent and no `accent` slug in palette.
+		$without_accent                                      = $base;
+		$without_accent['elements']['link']['color']['text'] = '';
+		$this->assertNull( Publication::build_basic_theme( $without_accent, array() ) );
+	}
+
+	/**
+	 * A `var(--wp--preset--color--{slug})` reference in any colour
+	 * field resolves against the supplied palette lookup. This is the
+	 * common modern shape — WP themes emit CSS variables that the
+	 * browser later resolves against `:root` custom properties.
+	 */
+	public function test_build_basic_theme_resolves_css_var_references_against_palette() {
+		$styles  = array(
+			'color'    => array(
+				'background' => 'var(--wp--preset--color--base)',
+				'text'       => 'var(--wp--preset--color--contrast)',
+			),
+			'elements' => array(
+				'link' => array( 'color' => array( 'text' => 'var(--wp--preset--color--primary)' ) ),
+			),
+		);
+		$palette = array(
+			'base'     => '#fafafa',
+			'contrast' => '#222222',
+			'primary'  => '#aa2233',
+		);
+
+		$record = Publication::build_basic_theme( $styles, $palette );
+
+		$this->assertIsArray( $record );
+		$this->assertSame( 250, $record['background']['r'] );
+		$this->assertSame( 34, $record['foreground']['r'] );
+		$this->assertSame( 170, $record['accent']['r'] );
+	}
+
+	/**
+	 * A `var(...)` reference embedded in a larger expression — typically
+	 * a gradient — does NOT resolve to a single RGB triple. The
+	 * resulting publication record would advertise a flat colour where
+	 * the rendered page draws a gradient, so the safer behaviour is to
+	 * treat the value as unresolvable and omit `basicTheme` entirely
+	 * (per the all-or-nothing required-fields contract).
+	 */
+	public function test_build_basic_theme_rejects_var_inside_gradient() {
+		$styles  = array(
+			'color'    => array(
+				'background' => 'linear-gradient(var(--wp--preset--color--primary), #ffffff)',
+				'text'       => '#000000',
+			),
+			'elements' => array(
+				'link' => array( 'color' => array( 'text' => '#0066cc' ) ),
+			),
+		);
+		$palette = array( 'primary' => '#ff0000' );
+
+		$this->assertNull(
+			Publication::build_basic_theme( $styles, $palette ),
+			'A var() inside a gradient must not be silently resolved to a single colour.'
+		);
+	}
+
+	/**
+	 * `get_palette_lookup()` accepts the origin-grouped shape returned
+	 * by some context-passing variants of `wp_get_global_settings()`,
+	 * not just the flat default form. Slugs from later origin groups
+	 * (typically `theme` after `default`) overwrite same-named slugs
+	 * from earlier groups — matching CSS-variable precedence.
+	 */
+	public function test_get_palette_lookup_flattens_origin_grouped_shape() {
+		$nested = array(
+			'default' => array(
+				array(
+					'slug'  => 'primary',
+					'color' => '#000000',
+				),
+				array(
+					'slug'  => 'base',
+					'color' => '#ffffff',
+				),
+			),
+			'theme'   => array(
+				array(
+					'slug'  => 'primary',
+					'color' => '#ff0000',
+				),
+				array(
+					'slug'  => 'accent',
+					'color' => '#00ff00',
+				),
+			),
+		);
+
+		$lookup = Publication::get_palette_lookup( $nested );
+
+		$this->assertSame( '#ff0000', $lookup['primary'], 'Theme-origin slug should override default-origin slug.' );
+		$this->assertSame( '#ffffff', $lookup['base'] );
+		$this->assertSame( '#00ff00', $lookup['accent'] );
+	}
+
+	/**
+	 * `get_palette_lookup()` still flattens a plain `{ slug, color }`
+	 * list — the default shape `wp_get_global_settings()` returns when
+	 * no context is supplied.
+	 */
+	public function test_get_palette_lookup_flattens_flat_shape() {
+		$flat = array(
+			array(
+				'slug'  => 'primary',
+				'color' => '#112233',
+			),
+			array(
+				'slug'  => 'accent',
+				'color' => '#445566',
+			),
+		);
+
+		$lookup = Publication::get_palette_lookup( $flat );
+
+		$this->assertSame( '#112233', $lookup['primary'] );
+		$this->assertSame( '#445566', $lookup['accent'] );
+	}
+
+	/**
+	 * Themes that don't style links explicitly fall back to a palette
+	 * slug literally named `accent` for the accent colour source.
+	 */
+	public function test_build_basic_theme_falls_back_to_palette_accent_slug() {
+		$styles  = array(
+			'color' => array(
+				'background' => '#ffffff',
+				'text'       => '#000000',
+			),
+		);
+		$palette = array( 'accent' => '#ff5500' );
+
+		$record = Publication::build_basic_theme( $styles, $palette );
+
+		$this->assertIsArray( $record );
+		$this->assertSame( 255, $record['accent']['r'] );
+		$this->assertSame( 85, $record['accent']['g'] );
+		$this->assertSame( 0, $record['accent']['b'] );
+	}
+
+	/**
+	 * `accentForeground` is derived from the accent's WCAG relative
+	 * luminance — pure black for a light accent (yellow), pure white
+	 * for a dark accent (deep blue). The 0.5 threshold places yellow
+	 * (~0.93) firmly on the light side and deep blue (~0.05) firmly
+	 * on the dark side.
+	 */
+	public function test_build_basic_theme_derives_accent_foreground_from_luminance() {
+		$light_accent = array(
+			'color'    => array(
+				'background' => '#ffffff',
+				'text'       => '#000000',
+			),
+			'elements' => array( 'link' => array( 'color' => array( 'text' => '#ffeb3b' ) ) ),
+		);
+		$dark_accent  = array(
+			'color'    => array(
+				'background' => '#ffffff',
+				'text'       => '#000000',
+			),
+			'elements' => array( 'link' => array( 'color' => array( 'text' => '#0d47a1' ) ) ),
+		);
+
+		$light = Publication::build_basic_theme( $light_accent, array() );
+		$dark  = Publication::build_basic_theme( $dark_accent, array() );
+
+		$this->assertSame(
+			array(
+				'$type' => 'site.standard.theme.color#rgb',
+				'r'     => 0,
+				'g'     => 0,
+				'b'     => 0,
+			),
+			$light['accentForeground'],
+			'Light accent should yield black foreground.'
+		);
+		$this->assertSame(
+			array(
+				'$type' => 'site.standard.theme.color#rgb',
+				'r'     => 255,
+				'g'     => 255,
+				'b'     => 255,
+			),
+			$dark['accentForeground'],
+			'Dark accent should yield white foreground.'
+		);
+	}
+
+	/**
+	 * The record uses the spec field `basicTheme` (not the legacy
+	 * `theme` field, which was modelled on the bsky profile shape and
+	 * gets ignored by standard.site consumers).
+	 */
+	public function test_record_omits_non_spec_theme_field() {
+		$record = ( new Publication( null ) )->transform();
+
+		$this->assertArrayNotHasKey( 'theme', $record, 'Non-spec `theme` field must not be present.' );
+	}
+
+	/**
+	 * `get_strong_ref()` returns a well-formed `com.atproto.repo.strongRef`
+	 * when all three inputs are present: the connected DID, the
+	 * stored TID, and the captured CID.
+	 */
+	public function test_get_strong_ref_returns_strong_ref_when_all_inputs_present() {
+		\update_option( 'atmosphere_identity', array( 'did' => 'did:plc:test123' ), false );
+		\update_option( Publication::OPTION_TID, '3kpub00000000', false );
+		\update_option( Publication::OPTION_CID, 'bafyreipublication0000000000000000000000000000000000000000000', false );
+
+		$ref = Publication::get_strong_ref();
+
+		$this->assertIsArray( $ref );
+		$this->assertSame( 'com.atproto.repo.strongRef', $ref['$type'] );
+		$this->assertSame( 'at://did:plc:test123/site.standard.publication/3kpub00000000', $ref['uri'] );
+		$this->assertSame( 'bafyreipublication0000000000000000000000000000000000000000000', $ref['cid'] );
+
+		\delete_option( 'atmosphere_identity' );
+		\delete_option( Publication::OPTION_TID );
+		\delete_option( Publication::OPTION_CID );
+	}
+
+	/**
+	 * `get_strong_ref()` returns null when the publication has never
+	 * been successfully sync'd (CID missing). The caller skips the
+	 * strongRef rather than shipping a malformed entry without `cid`.
+	 */
+	public function test_get_strong_ref_returns_null_when_cid_is_missing() {
+		\update_option( 'atmosphere_identity', array( 'did' => 'did:plc:test123' ), false );
+		\update_option( Publication::OPTION_TID, '3kpub00000000', false );
+		\delete_option( Publication::OPTION_CID );
+
+		$this->assertNull( Publication::get_strong_ref() );
+
+		\delete_option( 'atmosphere_identity' );
+		\delete_option( Publication::OPTION_TID );
 	}
 }

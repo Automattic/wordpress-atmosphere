@@ -46,14 +46,20 @@ function build_at_uri( string $did, string $collection, string $rkey ): string {
 }
 
 /**
- * Strip HTML, decode entities, normalise whitespace.
+ * Decode entities, strip HTML, normalise whitespace.
  *
  * @param string $text Raw text.
  * @return string Clean text.
  */
 function sanitize_text( string $text ): string {
-	$text = \wp_strip_all_tags( $text );
+	// Decode BEFORE stripping. WordPress stores many strings HTML-entity
+	// encoded (esc_html at save time), so an entity-encoded tag such as
+	// `&lt;script&gt;` arrives with no literal angle brackets. Stripping
+	// first would leave it untouched and the later decode would turn it
+	// into live `<script>` markup in the record. Decoding first turns it
+	// into a real tag that wp_strip_all_tags then removes.
 	$text = \html_entity_decode( $text, ENT_QUOTES, 'UTF-8' );
+	$text = \wp_strip_all_tags( $text );
 	// `/u` matches Unicode whitespace too — without it NBSP (U+00A0),
 	// ideographic space (U+3000), and similar survive both this collapse
 	// and the trim() below, masquerading as real prose downstream.
@@ -63,6 +69,64 @@ function sanitize_text( string $text ): string {
 	$text      = \is_string( $collapsed ) ? $collapsed : $text;
 
 	return \trim( $text );
+}
+
+/**
+ * Hard-clamp a string to an AT Protocol `maxGraphemes` limit.
+ *
+ * Uses `grapheme_substr` when the `intl` extension is loaded — the
+ * spec-exact form, matching the way Lexicon counts characters. Falls
+ * back to `mb_substr` (code points) otherwise: every grapheme is at
+ * least one code point, so a code-point clamp at `$max_graphemes` is
+ * always within the grapheme limit, just sometimes more conservative
+ * than needed for emoji-heavy or combining-character text.
+ *
+ * A non-positive `$max_graphemes` returns an empty string. Both
+ * `grapheme_substr()` and `mb_substr()` would otherwise interpret a
+ * negative length as "drop the last N characters" — not a clamp, and
+ * the opposite of what every caller wants.
+ *
+ * No marker is appended — used for canonical fields like the
+ * `site.standard.publication` `name` / `description`, where adding
+ * `…` would mislead consumers about the original length and burn
+ * grapheme budget. Callers that want an ellipsis on excerpts should
+ * use {@see truncate_text()} instead.
+ *
+ * @param string $text          Text to clamp.
+ * @param int    $max_graphemes Maximum graphemes.
+ * @return string
+ */
+function truncate_graphemes( string $text, int $max_graphemes ): string {
+	if ( $max_graphemes <= 0 ) {
+		return '';
+	}
+
+	if ( \function_exists( 'grapheme_strlen' ) ) {
+		$length = \grapheme_strlen( $text );
+
+		/*
+		 * `grapheme_strlen()` returns null for invalid UTF-8. Falling
+		 * through to the `mb_*` branch instead of returning unchanged
+		 * keeps the clamp load-bearing — a malformed-and-oversized
+		 * blogname must still leave with a bounded length even if the
+		 * grapheme count is indeterminate.
+		 */
+		if ( null !== $length ) {
+			if ( $length <= $max_graphemes ) {
+				return $text;
+			}
+			$clamped = \grapheme_substr( $text, 0, $max_graphemes );
+			if ( \is_string( $clamped ) ) {
+				return $clamped;
+			}
+		}
+	}
+
+	if ( \mb_strlen( $text ) <= $max_graphemes ) {
+		return $text;
+	}
+
+	return \mb_substr( $text, 0, $max_graphemes );
 }
 
 /**
@@ -101,10 +165,19 @@ function to_iso8601( string $datetime ): string {
 /**
  * Get the stored connection (OAuth credentials + ephemeral state).
  *
+ * Normalizes non-array values to an empty array so a corrupted
+ * `atmosphere_connection` option (e.g. an admin overwrote it with a
+ * scalar via wp-cli or a misbehaving import plugin) cannot raise a
+ * TypeError at every caller's `: array` return-type check. The
+ * `admin_notices` hook in particular composes this with other
+ * checks during page render — a TypeError there whitescreens the
+ * admin until the row is repaired.
+ *
  * @return array
  */
 function get_connection(): array {
-	return \get_option( 'atmosphere_connection', array() );
+	$conn = \get_option( 'atmosphere_connection', array() );
+	return \is_array( $conn ) ? $conn : array();
 }
 
 /**

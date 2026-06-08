@@ -12,6 +12,7 @@ namespace Atmosphere\OAuth;
 
 \defined( 'ABSPATH' ) || exit;
 
+use Atmosphere\Atmosphere;
 use function Atmosphere\clear_scheduled_hooks;
 use function Atmosphere\get_connection;
 
@@ -49,6 +50,19 @@ class Client {
 	 * @var string
 	 */
 	public const REFRESH_LOCK_OPTION = '_atmosphere_refresh_lock';
+
+	/**
+	 * `wp_options` row name flagging an explicit operator-initiated disconnect.
+	 *
+	 * Set on {@see self::disconnect()} so the admin reauth notice can tell
+	 * "user clicked Disconnect" apart from "refresh token failed". Cleared
+	 * on the next successful authorization. Public so `uninstall.php` and
+	 * the test suite can refer to the same key without drifting from the
+	 * canonical value used here.
+	 *
+	 * @var string
+	 */
+	public const DISCONNECTED_OPTION = 'atmosphere_disconnected';
 
 	/**
 	 * Get the client_id URL (= client metadata endpoint).
@@ -153,6 +167,9 @@ class Client {
 
 		// DPoP key pair.
 		$dpop_jwk = DPoP::generate_key();
+		if ( \is_wp_error( $dpop_jwk ) ) {
+			return $dpop_jwk;
+		}
 
 		// State for CSRF.
 		$state = \wp_generate_password( 40, false );
@@ -525,6 +542,30 @@ class Client {
 		);
 
 		/*
+		 * Clear any prior explicit-disconnect marker BEFORE persisting
+		 * the new connection. Doing so afterward exposes a cross-tab
+		 * race: a stale Disconnect link fired from another admin tab
+		 * during the OAuth callback would land between the
+		 * `update_option('atmosphere_connection', ...)` and the
+		 * `delete_option(DISCONNECTED_OPTION)`, stamping a fresh marker
+		 * (Client::disconnect() also runs `delete_option`) — the
+		 * callback would then clear the new marker on its way out.
+		 * Final state: identity preserved, connection gone, marker
+		 * gone — the reauth notice would fall through to "session
+		 * expired" copy when the user actually triggered a deliberate
+		 * disconnect from another tab.
+		 *
+		 * Clearing first means: any concurrent disconnect that lands
+		 * between this delete and the persist below leaves the marker
+		 * set AND the connection gone, which the notice gate correctly
+		 * renders as "disconnected." The disconnect's own marker write
+		 * is the authoritative signal of operator intent. Safe to call
+		 * when nothing was set — `delete_option` is a no-op for missing
+		 * rows.
+		 */
+		\delete_option( self::DISCONNECTED_OPTION );
+
+		/*
 		 * Encrypted token blobs do not need to ride along in every
 		 * request's `alloptions` payload; they're only read on the
 		 * paths that actually talk to the PDS. WP 6.6+ honours the
@@ -533,6 +574,17 @@ class Client {
 		 */
 		\update_option( 'atmosphere_connection', $connection, false );
 
+		/*
+		 * Connecting is the moment our well-known endpoints become
+		 * meaningful — the PDS starts fetching `/.well-known/atproto-did`
+		 * to verify a domain handle, and resolvers hit
+		 * `/.well-known/site.standard.publication`. Make sure the
+		 * persisted rewrite rules serve them on the very next request.
+		 * See {@see Atmosphere::maybe_flush_wellknown_rewrites()} for the
+		 * install paths that need this beyond activation.
+		 */
+		Atmosphere::maybe_flush_wellknown_rewrites();
+
 		return true;
 	}
 
@@ -540,24 +592,29 @@ class Client {
 	 * Maximum lifetime (seconds) of the refresh lock before it is
 	 * presumed stale and reclaimed.
 	 *
-	 * `refresh_locked()` can issue up to two HTTP POSTs sequentially when
-	 * the auth server requires a `use_dpop_nonce` retry — each with a
-	 * 15-second `wp_safe_remote_post` timeout, plus encryption /
-	 * option I/O overhead. A TTL shorter than that worst case would
-	 * let a second worker reclaim a lock the first worker is still
-	 * legitimately holding, which reintroduces the concurrent-refresh
-	 * race the lock exists to close. 90 seconds covers 2 × 15s
-	 * timeouts plus ample margin.
+	 * `refresh_locked()` can issue up to two sequential HTTP POSTs on
+	 * the `use_dpop_nonce` retry path, each with a 15s
+	 * `wp_safe_remote_post` timeout. The first call typically returns
+	 * the nonce error in well under a second (the auth server rejects
+	 * before any real work) — but on a degraded auth server that
+	 * actually hangs on every call, both legs can run the full 15s
+	 * timeout, yielding a worst-case ~30s + encryption + option I/O
+	 * overhead. 45 seconds covers that pathological case plus a small
+	 * margin so a slow-but-legitimate refresh isn't stomped by a
+	 * second worker's CAS-steal. Going lower than the actual worst
+	 * case reintroduces the concurrent-refresh race the lock exists
+	 * to close; going much higher keeps a crashed worker's lock alive
+	 * for proportionally longer before any successor can take over.
 	 *
 	 * @var int
 	 */
-	private const REFRESH_LOCK_TTL = 90;
+	private const REFRESH_LOCK_TTL = 45;
 
 	/**
 	 * Refresh the access token.
 	 *
 	 * Gated by a cross-process coordination lock so a publish event
-	 * firing inline through `access_token()`, the twice-daily refresh
+	 * firing inline through `access_token()`, the hourly refresh
 	 * cron, an admin click, or any combination of those cannot both
 	 * POST the same refresh token to the auth server. The auth server
 	 * consumes the refresh token on first success and the loser would
@@ -962,7 +1019,7 @@ class Client {
 	 * holder to write a fresh access token (or to flip
 	 * `needs_reauth` on a permanent failure).
 	 *
-	 * The deadline matches `REFRESH_LOCK_TTL` (90s) rather than a
+	 * The deadline matches `REFRESH_LOCK_TTL` (45s) rather than a
 	 * conservative few-seconds wait. The previous 5-second budget
 	 * was shorter than the realistic worst case — two sequential
 	 * `wp_safe_remote_post` calls at 15-second timeouts on the
@@ -981,9 +1038,26 @@ class Client {
 	 * comment cron event does not get silently dropped when it
 	 * arrives mid-refresh.
 	 *
+	 * `$current_access_token_ciphertext` lets callers in the API
+	 * 401-recovery path require the access-token ciphertext to
+	 * *differ* from a known-stale snapshot before declaring the
+	 * wait done. The default behaviour (empty string) trusts the
+	 * `expires_at` window alone — fine for the `access_token()`
+	 * caller, which only waits when `expires_at` was within 5
+	 * minutes of now. For a 401 from the PDS, `expires_at` may
+	 * still be in the future (the auth server invalidated the jti
+	 * without the local clock catching up), so the ciphertext
+	 * snapshot is the only reliable "token has actually rotated"
+	 * signal.
+	 *
+	 * @param string $current_access_token_ciphertext Snapshot of
+	 *               `atmosphere_connection['access_token']` taken
+	 *               BEFORE the failed request whose retry is
+	 *               waiting on a fresh token. Empty string disables
+	 *               the ciphertext-change requirement.
 	 * @return true|\WP_Error
 	 */
-	private static function wait_for_token_refresh(): true|\WP_Error {
+	public static function wait_for_token_refresh( string $current_access_token_ciphertext = '' ): true|\WP_Error {
 		$deadline = \microtime( true ) + (float) self::REFRESH_LOCK_TTL;
 
 		while ( \microtime( true ) < $deadline ) {
@@ -1002,6 +1076,8 @@ class Client {
 			if ( ! empty( $conn['access_token'] )
 				&& ! empty( $conn['expires_at'] )
 				&& $conn['expires_at'] > \time() + 300
+				&& ( '' === $current_access_token_ciphertext
+					|| ( $conn['access_token'] ?? '' ) !== $current_access_token_ciphertext )
 			) {
 				return true;
 			}
@@ -1069,7 +1145,23 @@ class Client {
 	}
 
 	/**
-	 * Disconnect: remove all stored credentials and clear queued cron events.
+	 * Disconnect: remove stored credentials and clear queued cron events.
+	 *
+	 * Drops `atmosphere_connection` (the OAuth session) but deliberately
+	 * preserves `atmosphere_identity`. Identity holds the DID, handle, and
+	 * PDS endpoint that drive the bidirectional verification headers
+	 * (`/.well-known/atproto-did` and the publication link tag). Sites that
+	 * adopted a custom domain handle (e.g. `example.com` instead of
+	 * `alice.bsky.social`) depend on that route to resolve their handle
+	 * back to a DID during reconnect — wiping identity here breaks the
+	 * chain: `Resolver::handle_to_did()` then 404s on both DNS TXT and the
+	 * HTTPS well-known, and the user is locked out of reconnecting with
+	 * their domain handle. The split between identity and credentials was
+	 * introduced precisely so a failed token refresh would not break this
+	 * route (see `get_identity()`); explicit disconnect must honor the
+	 * same invariant. A reconnect overwrites identity in place; sites that
+	 * truly want to forget the DID should clear `atmosphere_identity`
+	 * separately.
 	 *
 	 * Queued events (`atmosphere_delete_records`,
 	 * `atmosphere_delete_comment_record`) issue applyWrites without a
@@ -1123,8 +1215,30 @@ class Client {
 			);
 		}
 
+		/*
+		 * Mark the disconnect as operator-initiated BEFORE wiping the
+		 * connection row so the admin reauth notice's copy swap is
+		 * race-free. With the marker set first, any concurrent admin
+		 * request that loads `Admin::maybe_render_reauth_notice()` while
+		 * this method is in-flight sees either: (a) a live connection
+		 * (needs_reauth false, notice silent), or (b) a missing
+		 * connection AND a set marker (the "disconnected" copy renders).
+		 * Reversing the order would expose a narrow window where the
+		 * connection is gone but the marker is not yet present — the
+		 * gate would fall through to the misleading "session has
+		 * expired" wording the marker exists to suppress. Set with
+		 * `autoload = false` because the value is only consulted by the
+		 * admin notice (single per-request read after a needs_reauth
+		 * gate), so paying for it on every page-load is wasteful.
+		 *
+		 * Stamped with `\time()` so a future caller could expire stale
+		 * markers (e.g. after N days); the notice gate itself only
+		 * reads truthiness. Cleared on the next successful
+		 * authorization (see `handle_callback()`).
+		 */
+		\update_option( self::DISCONNECTED_OPTION, \time(), false );
+
 		\delete_option( 'atmosphere_connection' );
-		\delete_option( 'atmosphere_identity' );
 		\delete_option( self::REFRESH_LOCK_OPTION );
 
 		/*

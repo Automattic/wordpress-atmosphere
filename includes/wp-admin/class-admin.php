@@ -9,12 +9,15 @@ namespace Atmosphere\WP_Admin;
 
 \defined( 'ABSPATH' ) || exit;
 
+use Atmosphere\Atmosphere;
 use Atmosphere\Handle;
 use Atmosphere\OAuth\Client;
 use Atmosphere\Publisher;
+use function Atmosphere\get_connection;
 use function Atmosphere\get_supported_post_types;
 use function Atmosphere\is_connected;
 use function Atmosphere\needs_reauth;
+use function Atmosphere\sanitize_text;
 
 /**
  * Admin class.
@@ -55,15 +58,28 @@ class Admin {
 	 * Register the settings page under Settings.
 	 */
 	public static function add_menu(): void {
-		\add_options_page(
+		$hook = \add_options_page(
 			\__( 'ATmosphere', 'atmosphere' ),
 			\__( 'ATmosphere', 'atmosphere' ),
 			'manage_options',
 			'atmosphere',
 			array( self::class, 'render_page' )
 		);
-	}
 
+		if ( ! $hook ) {
+			return;
+		}
+
+		/*
+		 * Self-heal the well-known rewrite rules whenever an
+		 * administrator loads our settings page — the surface where this
+		 * bug surfaces, and so the right place to silently fix it.
+		 * Hooked on `load-{suffix}` so it runs before the page renders
+		 * and only on our page, not on every admin request. See
+		 * {@see Atmosphere::maybe_flush_wellknown_rewrites()} for detail.
+		 */
+		\add_action( "load-{$hook}", array( Atmosphere::class, 'maybe_flush_wellknown_rewrites' ) );
+	}
 
 	/**
 	 * Enqueue admin CSS/JS on our settings page only.
@@ -209,24 +225,6 @@ class Admin {
 
 		\check_admin_referer( 'atmosphere_disconnect', 'atmosphere_nonce' );
 
-		/*
-		 * Best-effort handle revert BEFORE the disconnect drops the OAuth
-		 * token: if the site previously set the handle to its domain, restore
-		 * the snapshotted previous handle while the access token is still
-		 * valid. The call posts a notice on the way out; disconnect proceeds
-		 * regardless of result so a token-revoked or network-failed revert
-		 * can't trap the user in a connected state.
-		 */
-		Handle::maybe_revert_on_disconnect();
-
-		/*
-		 * Clear the snapshot regardless of revert outcome so it cannot be
-		 * revived by a future reconnect to a different account. Once the
-		 * OAuth token is gone there is no way to retry a failed revert
-		 * anyway, so the snapshot is dead weight after this point.
-		 */
-		\delete_option( Handle::OPTION_PREVIOUS_HANDLE );
-
 		Client::disconnect();
 
 		\add_settings_error(
@@ -281,6 +279,10 @@ class Admin {
 	 * user reconnects — without a visible nudge, an expired refresh
 	 * token can sit unnoticed for days. The notice is dismissible per
 	 * page-load only so the user is reminded again on their next visit.
+	 *
+	 * Swaps copy when the disconnect was operator-initiated (the user
+	 * clicked Disconnect) so the message does not falsely claim "your
+	 * session has expired" for a state the user just chose.
 	 */
 	public static function maybe_render_reauth_notice(): void {
 		if ( ! \current_user_can( 'manage_options' ) ) {
@@ -293,19 +295,41 @@ class Admin {
 
 		$settings_url = \admin_url( 'options-general.php?page=atmosphere' );
 
+		/*
+		 * Treat the explicit-disconnect marker as authoritative only
+		 * when the connection row is genuinely empty. `Client::disconnect()`
+		 * deletes `atmosphere_connection` before any other admin request
+		 * can land, so a missing connection alongside the marker is a
+		 * true operator-initiated disconnect. After a refresh failure,
+		 * the connection row stays put (with `needs_reauth = true` and
+		 * an emptied access_token) — if a stale marker from an earlier
+		 * disconnect survived (e.g. `handle_callback()`'s `delete_option`
+		 * silently failed at a cache layer), the connection's presence
+		 * outs the marker as stale and the gate falls through to the
+		 * "session expired" copy, which is the accurate framing for the
+		 * actual failure mode.
+		 */
+		$disconnected = \get_option( Client::DISCONNECTED_OPTION, false ) && empty( get_connection() );
+
+		if ( $disconnected ) {
+			$heading = \__( 'ATmosphere: disconnected', 'atmosphere' );
+			/* translators: %s: URL to the ATmosphere settings page. */
+			$message = \__( 'ATmosphere is disconnected from AT Protocol. New posts and comments will not publish until you <a href="%s">reconnect on the settings page</a>. Your publishing preferences and verification headers stay in place in the meantime.', 'atmosphere' );
+		} else {
+			$heading = \__( 'ATmosphere: reconnection required', 'atmosphere' );
+			/* translators: %s: URL to the ATmosphere settings page. */
+			$message = \__( 'Your AT Protocol session has expired. New posts and comments will not publish until you <a href="%s">reconnect on the settings page</a>. Your publishing preferences and verification headers stay in place in the meantime.', 'atmosphere' );
+		}
+
 		?>
 		<div class="notice notice-warning is-dismissible">
 			<p>
-				<strong><?php \esc_html_e( 'ATmosphere: reconnection required', 'atmosphere' ); ?></strong>
+				<strong><?php echo \esc_html( $heading ); ?></strong>
 			</p>
 			<p>
 				<?php
 				echo \wp_kses(
-					\sprintf(
-						/* translators: %s: URL to the ATmosphere settings page. */
-						\__( 'Your AT Protocol session has expired. New posts and comments will not publish until you <a href="%s">reconnect on the settings page</a>. Your publishing preferences and verification headers stay in place in the meantime.', 'atmosphere' ),
-						\esc_url( $settings_url )
-					),
+					\sprintf( $message, \esc_url( $settings_url ) ),
 					array( 'a' => array( 'href' => array() ) )
 				);
 				?>
@@ -339,7 +363,7 @@ class Admin {
 	public static function serve_client_metadata(): \WP_REST_Response {
 		$metadata = array(
 			'client_id'                  => Client::client_id(),
-			'client_name'                => \get_bloginfo( 'name' ) . ' (ATmosphere)',
+			'client_name'                => sanitize_text( \get_bloginfo( 'name' ) ) . ' (ATmosphere)',
 			'client_uri'                 => \home_url( '/' ),
 			'redirect_uris'              => array( Client::redirect_uri() ),
 			'grant_types'                => array( 'authorization_code', 'refresh_token' ),

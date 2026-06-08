@@ -55,6 +55,8 @@ class Test_Atmosphere extends WP_UnitTestCase {
 	public function tear_down(): void {
 		\delete_option( 'atmosphere_connection' );
 		\delete_option( 'atmosphere_identity' );
+		\delete_option( 'atmosphere_publication_tid' );
+		\delete_option( \Atmosphere\OAuth\Client::DISCONNECTED_OPTION );
 
 		\wp_clear_scheduled_hook( 'atmosphere_publish_post' );
 		\wp_clear_scheduled_hook( 'atmosphere_update_post' );
@@ -1473,6 +1475,70 @@ class Test_Atmosphere extends WP_UnitTestCase {
 	}
 
 	/**
+	 * `Client::disconnect` preserves `atmosphere_identity` so the
+	 * bidirectional verification headers (`.well-known/atproto-did`,
+	 * publication link tag) keep serving after the OAuth session is
+	 * cleared. Sites that adopted a custom domain handle depend on the
+	 * well-known route to resolve their handle back to a DID during
+	 * reconnect; wiping identity here would 404 the route and lock the
+	 * user out of reconnecting with their domain handle (their entered
+	 * handle resolves to nothing on DNS TXT and HTTPS well-known).
+	 */
+	public function test_disconnect_preserves_identity_for_handle_resolution() {
+		$identity = array(
+			'did'          => 'did:plc:testidentity1234567890',
+			'handle'       => 'example.com',
+			'pds_endpoint' => 'https://pds.example.com',
+		);
+		\update_option( 'atmosphere_identity', $identity, true );
+
+		\Atmosphere\OAuth\Client::disconnect();
+
+		$this->assertSame(
+			$identity,
+			\get_option( 'atmosphere_identity' ),
+			'Client::disconnect must preserve atmosphere_identity so .well-known/atproto-did keeps serving and the user can reconnect with a custom domain handle.'
+		);
+	}
+
+	/**
+	 * `Client::disconnect` stamps the operator-initiated disconnect
+	 * marker so the admin reauth notice can swap its copy. Without
+	 * this, an intentional click on Disconnect would surface the same
+	 * "session has expired" warning that fires for a permanent refresh
+	 * failure — misleading copy for a state the user just chose.
+	 */
+	public function test_disconnect_sets_explicit_disconnect_marker() {
+		// Pre-clear so the assertion below cannot pass against a marker
+		// left over from a prior test (the suite shares process state
+		// inside a single transaction, and a stale recent timestamp
+		// would satisfy the lower-bound check even on a no-op).
+		\delete_option( \Atmosphere\OAuth\Client::DISCONNECTED_OPTION );
+
+		$before = \time();
+
+		\Atmosphere\OAuth\Client::disconnect();
+
+		$after  = \time();
+		$marker = \get_option( \Atmosphere\OAuth\Client::DISCONNECTED_OPTION );
+
+		$this->assertIsInt(
+			$marker,
+			'Client::disconnect must stamp the explicit-disconnect marker.'
+		);
+		$this->assertGreaterThanOrEqual(
+			$before,
+			$marker,
+			'Marker timestamp should be no earlier than the disconnect call.'
+		);
+		$this->assertLessThanOrEqual(
+			$after,
+			$marker,
+			'Marker timestamp should be no later than the disconnect call.'
+		);
+	}
+
+	/**
 	 * `Client::disconnect` sweeps the stale `atmosphere_publication_uri`
 	 * row that 1.0.0 used to write. Nothing in production consumes the
 	 * option (the well-known endpoint and Document transformer derive
@@ -1598,5 +1664,613 @@ class Test_Atmosphere extends WP_UnitTestCase {
 		);
 
 		\remove_all_filters( 'atmosphere_pre_apply_writes' );
+	}
+
+	/**
+	 * Capture what `output_publication_link()` prints to stdout.
+	 *
+	 * @return string Output (empty when the method bails before emit).
+	 */
+	private function capture_publication_link(): string {
+		\ob_start();
+		$this->atmosphere->output_publication_link();
+		return (string) \ob_get_clean();
+	}
+
+	/**
+	 * Drive the WP query into a state where `is_singular()` resolves to
+	 * a real post object — `go_to()` is the supported way to drop the
+	 * unit-test request into the singular branch of template_redirect.
+	 *
+	 * @param int $post_id Post ID.
+	 */
+	private function go_to_post( int $post_id ): void {
+		$this->go_to( (string) \get_permalink( $post_id ) );
+		// Belt-and-suspenders: `is_singular()` reads from $wp_query.
+		global $wp_query;
+		$wp_query->queried_object    = \get_post( $post_id );
+		$wp_query->queried_object_id = $post_id;
+	}
+
+	/**
+	 * Drive the WP query into the front-page state.
+	 */
+	private function go_to_front_page(): void {
+		$this->go_to( \home_url( '/' ) );
+	}
+
+	/**
+	 * Capture what `output_document_link()` prints to stdout.
+	 *
+	 * @return string Output (empty when the method bails before emit).
+	 */
+	private function capture_document_link(): string {
+		\ob_start();
+		$this->atmosphere->output_document_link();
+		return (string) \ob_get_clean();
+	}
+
+	/**
+	 * Document link emits for a previously-published post (META_URI on
+	 * file) even with no live OAuth session. The verification link is
+	 * the bidirectional anchor required by standard.site; it MUST keep
+	 * serving across a transient refresh failure or an explicit
+	 * disconnect so consumers do not lose the page <-> record binding.
+	 */
+	public function test_output_document_link_emits_for_published_post_with_meta_uri() {
+		\update_option(
+			'atmosphere_identity',
+			array(
+				'did'          => 'did:plc:test123',
+				'handle'       => 'example.com',
+				'pds_endpoint' => 'https://pds.example.com',
+			),
+			true
+		);
+		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		\update_post_meta(
+			$post_id,
+			\Atmosphere\Transformer\Post::META_URI,
+			'at://did:plc:test123/app.bsky.feed.post/3krealrecord00'
+		);
+
+		$this->go_to_post( $post_id );
+		$output = $this->capture_document_link();
+
+		$this->assertStringContainsString(
+			'<link rel="site.standard.document" href="at://did:plc:test123/site.standard.document/',
+			$output,
+			'A previously-published post must continue advertising its document link even after disconnect.'
+		);
+	}
+
+	/**
+	 * Document link stays silent for a post with no `META_URI` — the
+	 * Publisher never wrote a record to the PDS, so advertising an
+	 * AT-URI would point federation/discovery consumers at a 404. Lazy-
+	 * minting META_TID via `Document::get_rkey()` during page render is
+	 * specifically avoided here so a disconnected site does not seed
+	 * non-existent records into its post meta. Pins the gate added in
+	 * response to a Codex finding where preserved identity across
+	 * disconnect would silently emit document links for unpublished
+	 * posts.
+	 */
+	public function test_output_document_link_silent_for_unpublished_post_without_meta_uri() {
+		\update_option(
+			'atmosphere_identity',
+			array(
+				'did'          => 'did:plc:test123',
+				'handle'       => 'example.com',
+				'pds_endpoint' => 'https://pds.example.com',
+			),
+			true
+		);
+		\delete_option( 'atmosphere_connection' );
+		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		// No META_URI on the post — Publisher never ran.
+
+		$this->go_to_post( $post_id );
+		$output = $this->capture_document_link();
+
+		$this->assertSame(
+			'',
+			$output,
+			'A post that has never been published must not advertise a document link.'
+		);
+		$this->assertSame(
+			'',
+			\get_post_meta( $post_id, \Atmosphere\Transformer\Document::META_TID, true ),
+			'Frontend render must not lazy-mint META_TID for an unpublished post.'
+		);
+	}
+
+	/**
+	 * Publication link tag fires on a singular publishable post whenever
+	 * the site has minted its publication TID — that's the URL a third-
+	 * party resolver would land on after following a permalink from a
+	 * federated post, so they can find the parent publication without
+	 * fetching the document first.
+	 */
+	public function test_output_publication_link_emits_on_singular_publishable_post() {
+		\update_option( 'atmosphere_publication_tid', '3kpubtid000000' );
+		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		$this->go_to_post( $post_id );
+
+		$output = $this->capture_publication_link();
+
+		$this->assertStringContainsString(
+			'<link rel="site.standard.publication" href="at://did:plc:test123/site.standard.publication/3kpubtid000000" />',
+			$output
+		);
+	}
+
+	/**
+	 * Publication link tag fires on the WordPress front page, since the
+	 * publication record's `url` field is `home_url('/')`. Lets a
+	 * resolver verify the page-to-publication binding by matching
+	 * AT-URIs instead of round-tripping through `.well-known`.
+	 */
+	public function test_output_publication_link_emits_on_front_page() {
+		\update_option( 'atmosphere_publication_tid', '3kpubtid000000' );
+		$this->go_to_front_page();
+
+		$output = $this->capture_publication_link();
+
+		$this->assertStringContainsString(
+			'<link rel="site.standard.publication" href="at://did:plc:test123/site.standard.publication/3kpubtid000000" />',
+			$output
+		);
+	}
+
+	/**
+	 * Publication link tag fires on a static front page too — the
+	 * common "Settings → Reading → A static page" configuration.
+	 *
+	 * `is_front_page()` and `is_singular('page')` are BOTH true in
+	 * that scenario; the publishability gate would otherwise reject
+	 * the request because `page` is not in the default supported
+	 * post type list. The tag must still emit because `home_url('/')`
+	 * — which the publication record's `url` field points at — is
+	 * the static page's permalink.
+	 */
+	public function test_output_publication_link_emits_on_static_front_page() {
+		\update_option( 'atmosphere_publication_tid', '3kpubtid000000' );
+
+		$page_id = self::factory()->post->create(
+			array(
+				'post_type'   => 'page',
+				'post_status' => 'publish',
+				'post_title'  => 'Home',
+			)
+		);
+		\update_option( 'show_on_front', 'page' );
+		\update_option( 'page_on_front', $page_id );
+
+		// `?page_id=N` is the plain-permalink form WordPress uses to
+		// reach a singular page; with `page_on_front` set above,
+		// `WP_Query::is_front_page()` will recognise the queried page
+		// and flip both `is_singular()` and `is_front_page()` on.
+		$this->go_to( '?page_id=' . $page_id );
+
+		$this->assertTrue( \is_front_page(), 'Sanity check: static page must be the front page.' );
+		$this->assertTrue( \is_singular(), 'Sanity check: the static front page is also singular.' );
+
+		$output = $this->capture_publication_link();
+
+		\delete_option( 'show_on_front' );
+		\delete_option( 'page_on_front' );
+
+		$this->assertStringContainsString(
+			'<link rel="site.standard.publication" href="at://did:plc:test123/site.standard.publication/3kpubtid000000" />',
+			$output
+		);
+	}
+
+	/**
+	 * No emission when the site has not yet minted a publication TID
+	 * (fresh install, pre-sync). Without a TID there is no AT-URI to
+	 * point a resolver at, so emitting an empty `href` would be worse
+	 * than silence.
+	 */
+	public function test_output_publication_link_bails_without_publication_tid() {
+		\delete_option( 'atmosphere_publication_tid' );
+		$this->go_to_front_page();
+
+		$output = $this->capture_publication_link();
+
+		$this->assertSame( '', $output );
+	}
+
+	/**
+	 * No emission when the plugin is disconnected (no persisted
+	 * identity). The gate mirrors {@see Atmosphere::output_document_link()}
+	 * so the two link tags appear and disappear together.
+	 */
+	public function test_output_publication_link_bails_without_identity() {
+		\delete_option( 'atmosphere_connection' );
+		\delete_option( 'atmosphere_identity' );
+		\update_option( 'atmosphere_publication_tid', '3kpubtid000000' );
+		$this->go_to_front_page();
+
+		$output = $this->capture_publication_link();
+
+		$this->assertSame( '', $output );
+	}
+
+	/**
+	 * No emission on archive / category / search / 404 pages — only the
+	 * front page or a publishable singular qualifies.
+	 */
+	public function test_output_publication_link_bails_on_non_singular_non_front_page() {
+		\update_option( 'atmosphere_publication_tid', '3kpubtid000000' );
+		$this->go_to( \home_url( '/?s=anything' ) );
+
+		$output = $this->capture_publication_link();
+
+		$this->assertSame( '', $output );
+	}
+
+	/**
+	 * Singular posts that fail the publishability gate (e.g.
+	 * password-protected) get no publication tag either — it would
+	 * advertise a record we have not published and would not publish.
+	 */
+	public function test_output_publication_link_bails_on_non_publishable_singular() {
+		\update_option( 'atmosphere_publication_tid', '3kpubtid000000' );
+		$post_id = self::factory()->post->create(
+			array(
+				'post_status'   => 'publish',
+				'post_password' => 'secret',
+			)
+		);
+		$this->go_to_post( $post_id );
+
+		$output = $this->capture_publication_link();
+
+		$this->assertSame( '', $output );
+	}
+
+	/**
+	 * Every trigger that ought to schedule a publication re-sync is
+	 * wired up by `Atmosphere::init()`.
+	 *
+	 * The publication record bakes in WordPress's site identity (name,
+	 * description, icon, home URL) and the active theme's primary
+	 * colours; changing any of those sources without a re-sync would
+	 * leave the record on the PDS stale until the next unrelated
+	 * event happened to re-publish it. This test pins the full
+	 * trigger set so a future refactor can't silently drop one.
+	 */
+	public function test_init_wires_publication_sync_triggers() {
+		$triggers = array(
+			'update_option_blogname',
+			'update_option_blogdescription',
+			'update_option_site_icon',
+			'update_option_home',
+			'update_option_siteurl',
+			'switch_theme',
+			'save_post_wp_global_styles',
+			'customize_save_after',
+		);
+
+		$this->atmosphere->init();
+
+		try {
+			foreach ( $triggers as $trigger ) {
+				$this->assertNotFalse(
+					\has_action( $trigger, array( $this->atmosphere, 'schedule_publication_sync' ) ),
+					"{$trigger} must be wired to schedule_publication_sync."
+				);
+			}
+		} finally {
+			/*
+			 * `init()` writes to global hook + cron state that the WP test
+			 * framework does not roll back between tests. Roll back the
+			 * pieces our action triggers so a later test changing
+			 * `blogname` / `home` / etc. is not surprised by a spurious
+			 * `atmosphere_sync_publication` schedule, and clear the two
+			 * recurring crons `init()` queues so they do not survive
+			 * either.
+			 */
+			foreach ( $triggers as $trigger ) {
+				\remove_action( $trigger, array( $this->atmosphere, 'schedule_publication_sync' ) );
+			}
+			\wp_clear_scheduled_hook( 'atmosphere_sync_publication' );
+			\wp_clear_scheduled_hook( 'atmosphere_refresh_token' );
+			\wp_clear_scheduled_hook( 'atmosphere_sync_reactions' );
+		}
+	}
+
+	/**
+	 * Reply to a local-only parent comment (anonymous, never-published)
+	 * must not be published to the PDS. The previous behaviour would
+	 * silently demote the reply to a top-level post on the parent
+	 * article's bsky record after the deferral cap, losing the WP
+	 * thread context.
+	 */
+	public function test_publish_comment_skipped_when_parent_is_local_only() {
+		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		\update_post_meta( $post_id, Post::META_URI, 'at://did:plc:test123/app.bsky.feed.post/postroot' );
+		\update_post_meta( $post_id, Post::META_CID, 'bafypostroot' );
+
+		// Anonymous parent — `user_id = 0` makes the parent permanently
+		// ineligible for outbound publish, so it will never gain a
+		// bsky URI.
+		$parent_id = self::factory()->comment->create(
+			array(
+				'comment_post_ID'      => $post_id,
+				'comment_approved'     => '1',
+				'comment_type'         => 'comment',
+				'user_id'              => 0,
+				'comment_author'       => 'Anon',
+				'comment_author_email' => 'anon@example.com',
+				'comment_content'      => 'Anonymous comment.',
+			)
+		);
+
+		$child_id = self::factory()->comment->create(
+			array(
+				'comment_post_ID'  => $post_id,
+				'comment_approved' => '1',
+				'comment_type'     => 'comment',
+				'user_id'          => self::factory()->user->create(),
+				'comment_content'  => 'Reply to anon.',
+				'comment_parent'   => $parent_id,
+			)
+		);
+		// Seed a non-empty deferral counter so the post-skip assertion
+		// distinguishes "the cron handler cleared it" from "no value
+		// was ever written" — comment meta defaults to '' otherwise
+		// and the assertion would be trivially true.
+		\update_comment_meta( $child_id, '_atmosphere_publish_attempts', 2 );
+
+		$apply_writes_calls = 0;
+		\add_filter(
+			'atmosphere_pre_apply_writes',
+			function () use ( &$apply_writes_calls ) {
+				++$apply_writes_calls;
+				return array(
+					'results' => array(
+						array(
+							'uri' => 'at://x',
+							'cid' => 'bafyx',
+						),
+					),
+				);
+			},
+			10,
+			2
+		);
+
+		\do_action( 'atmosphere_publish_comment', $child_id );
+
+		$this->assertSame( 0, $apply_writes_calls, 'No PDS call should be attempted when parent has no bsky representation.' );
+		$this->assertSame( '', (string) \get_comment_meta( $child_id, Comment::META_URI, true ), 'Child must not gain a bsky URI.' );
+		$this->assertSame( '', (string) \get_comment_meta( $child_id, '_atmosphere_publish_attempts', true ), 'Deferral counter must be cleared on skip.' );
+	}
+
+	/**
+	 * A reply whose parent comment was previously published to the PDS
+	 * (carries `Comment::META_URI`) IS published — that's the happy
+	 * thread-on-bsky path.
+	 */
+	public function test_publish_comment_proceeds_when_parent_has_bsky_uri() {
+		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		\update_post_meta( $post_id, Post::META_URI, 'at://did:plc:test123/app.bsky.feed.post/postroot' );
+		\update_post_meta( $post_id, Post::META_CID, 'bafypostroot' );
+
+		$parent_id = self::factory()->comment->create(
+			array(
+				'comment_post_ID'  => $post_id,
+				'comment_approved' => '1',
+				'comment_type'     => 'comment',
+				'user_id'          => self::factory()->user->create(),
+				'comment_content'  => 'Already-published parent.',
+			)
+		);
+		\update_comment_meta( $parent_id, Comment::META_URI, 'at://did:plc:test123/app.bsky.feed.post/parent' );
+		\update_comment_meta( $parent_id, Comment::META_CID, 'bafyparent' );
+
+		$child_id = self::factory()->comment->create(
+			array(
+				'comment_post_ID'  => $post_id,
+				'comment_approved' => '1',
+				'comment_type'     => 'comment',
+				'user_id'          => self::factory()->user->create(),
+				'comment_content'  => 'Reply.',
+				'comment_parent'   => $parent_id,
+			)
+		);
+
+		$apply_writes_calls = 0;
+		\add_filter(
+			'atmosphere_pre_apply_writes',
+			function ( $short, $writes ) use ( &$apply_writes_calls ) {
+				++$apply_writes_calls;
+				$results = array();
+				foreach ( $writes as $write ) {
+					$results[] = array(
+						'uri' => 'at://did:plc:test123/' . ( $write['collection'] ?? 'app.bsky.feed.post' ) . '/' . ( $write['rkey'] ?? 'tid' ),
+						'cid' => 'bafychild',
+					);
+				}
+				return array( 'results' => $results );
+			},
+			10,
+			2
+		);
+
+		\do_action( 'atmosphere_publish_comment', $child_id );
+
+		$this->assertSame( 1, $apply_writes_calls, 'Publish should proceed when parent has a bsky URI.' );
+	}
+
+	/**
+	 * A reply whose parent was imported from bsky (Reaction_Sync stamps
+	 * `META_PROTOCOL = atproto`) IS published — its bsky strongRef is
+	 * available even though the parent comment was never published
+	 * outbound by this site.
+	 */
+	public function test_publish_comment_proceeds_when_parent_was_imported_from_bsky() {
+		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		\update_post_meta( $post_id, Post::META_URI, 'at://did:plc:test123/app.bsky.feed.post/postroot' );
+		\update_post_meta( $post_id, Post::META_CID, 'bafypostroot' );
+
+		// Imported-from-bsky parent: no user_id (federation imports
+		// typically write `user_id = 0`), but `META_PROTOCOL = atproto`
+		// signals "this row has a bsky URI we can thread under".
+		$parent_id = self::factory()->comment->create(
+			array(
+				'comment_post_ID'      => $post_id,
+				'comment_approved'     => '1',
+				'comment_type'         => 'comment',
+				'user_id'              => 0,
+				'comment_author'       => 'Federated User',
+				'comment_author_email' => 'fed@example.com',
+				'comment_content'      => 'Imported reply.',
+			)
+		);
+		\update_comment_meta( $parent_id, Reaction_Sync::META_PROTOCOL, 'atproto' );
+		\update_comment_meta( $parent_id, Reaction_Sync::META_SOURCE_ID, 'at://did:plc:other/app.bsky.feed.post/fedparent' );
+		\update_comment_meta( $parent_id, Reaction_Sync::META_BSKY_CID, 'bafyfedparent' );
+
+		$child_id = self::factory()->comment->create(
+			array(
+				'comment_post_ID'  => $post_id,
+				'comment_approved' => '1',
+				'comment_type'     => 'comment',
+				'user_id'          => self::factory()->user->create(),
+				'comment_content'  => 'Reply to federated.',
+				'comment_parent'   => $parent_id,
+			)
+		);
+
+		$apply_writes_calls = 0;
+		\add_filter(
+			'atmosphere_pre_apply_writes',
+			function ( $short, $writes ) use ( &$apply_writes_calls ) {
+				++$apply_writes_calls;
+				$results = array();
+				foreach ( $writes as $write ) {
+					$results[] = array(
+						'uri' => 'at://did:plc:test123/' . ( $write['collection'] ?? 'app.bsky.feed.post' ) . '/' . ( $write['rkey'] ?? 'tid' ),
+						'cid' => 'bafychild',
+					);
+				}
+				return array( 'results' => $results );
+			},
+			10,
+			2
+		);
+
+		\do_action( 'atmosphere_publish_comment', $child_id );
+
+		$this->assertSame( 1, $apply_writes_calls, 'Publish should proceed when parent was imported from bsky.' );
+	}
+
+	/**
+	 * A top-level comment (no `comment_parent`) always proceeds —
+	 * the post's own bsky record is the thread root, no per-comment
+	 * parent check applies.
+	 */
+	public function test_publish_comment_proceeds_for_top_level_comment() {
+		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		\update_post_meta( $post_id, Post::META_URI, 'at://did:plc:test123/app.bsky.feed.post/postroot' );
+		\update_post_meta( $post_id, Post::META_CID, 'bafypostroot' );
+
+		$comment_id = self::factory()->comment->create(
+			array(
+				'comment_post_ID'  => $post_id,
+				'comment_approved' => '1',
+				'comment_type'     => 'comment',
+				'user_id'          => self::factory()->user->create(),
+				'comment_content'  => 'Top-level comment.',
+			)
+		);
+
+		$apply_writes_calls = 0;
+		\add_filter(
+			'atmosphere_pre_apply_writes',
+			function ( $short, $writes ) use ( &$apply_writes_calls ) {
+				++$apply_writes_calls;
+				$results = array();
+				foreach ( $writes as $write ) {
+					$results[] = array(
+						'uri' => 'at://did:plc:test123/' . ( $write['collection'] ?? 'app.bsky.feed.post' ) . '/' . ( $write['rkey'] ?? 'tid' ),
+						'cid' => 'bafytop',
+					);
+				}
+				return array( 'results' => $results );
+			},
+			10,
+			2
+		);
+
+		\do_action( 'atmosphere_publish_comment', $comment_id );
+
+		$this->assertSame( 1, $apply_writes_calls, 'Top-level comment publish should proceed unconditionally.' );
+	}
+
+	/**
+	 * Half-state guard: a parent that has `Comment::META_URI` but no
+	 * matching `META_CID` must NOT count as having a bsky
+	 * representation. `Comment::resolve_parent_ref()` requires both
+	 * fields for the reply strongRef and would otherwise fall back to
+	 * the post root — reintroducing the top-level-fallback bug the
+	 * cron-handler gate is here to prevent. Symmetric check on the
+	 * federated path (atproto protocol flag without `META_BSKY_CID`)
+	 * is exercised by the existing tests via shared code paths.
+	 */
+	public function test_publish_comment_skipped_when_parent_has_uri_but_no_cid() {
+		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		\update_post_meta( $post_id, Post::META_URI, 'at://did:plc:test123/app.bsky.feed.post/postroot' );
+		\update_post_meta( $post_id, Post::META_CID, 'bafypostroot' );
+
+		$parent_id = self::factory()->comment->create(
+			array(
+				'comment_post_ID'  => $post_id,
+				'comment_approved' => '1',
+				'comment_type'     => 'comment',
+				'user_id'          => self::factory()->user->create(),
+				'comment_content'  => 'Half-published parent.',
+			)
+		);
+		// URI present but CID missing — a half-state row that would
+		// previously slip past the parent_has_bsky_representation
+		// gate yet still fall back to root in build_reply_ref().
+		\update_comment_meta( $parent_id, Comment::META_URI, 'at://did:plc:test123/app.bsky.feed.post/parent' );
+
+		$child_id = self::factory()->comment->create(
+			array(
+				'comment_post_ID'  => $post_id,
+				'comment_approved' => '1',
+				'comment_type'     => 'comment',
+				'user_id'          => self::factory()->user->create(),
+				'comment_content'  => 'Reply to half-state.',
+				'comment_parent'   => $parent_id,
+			)
+		);
+
+		$apply_writes_calls = 0;
+		\add_filter(
+			'atmosphere_pre_apply_writes',
+			function () use ( &$apply_writes_calls ) {
+				++$apply_writes_calls;
+				return array(
+					'results' => array(
+						array(
+							'uri' => 'at://x',
+							'cid' => 'bafyx',
+						),
+					),
+				);
+			},
+			10,
+			2
+		);
+
+		\do_action( 'atmosphere_publish_comment', $child_id );
+
+		$this->assertSame( 0, $apply_writes_calls, 'Publish must be skipped when parent has URI but no CID.' );
 	}
 }

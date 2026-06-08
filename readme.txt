@@ -1,10 +1,10 @@
 === ATmosphere ===
-Contributors: automattic, pfefferle, kraftbj, ryancowles
+Contributors: automattic, pfefferle, kraftbj, jeherve, ryanc413
 Tags: at-protocol, bluesky, fediverse, atproto, crossposting
 Requires at least: 6.2
 Tested up to: 7.0
 Requires PHP: 8.2
-Stable tag: 1.0.0
+Stable tag: 1.1.1
 License: GPL-2.0-or-later
 License URI: https://spdx.org/licenses/GPL-2.0-or-later.html
 
@@ -91,6 +91,35 @@ Not at this time. ATmosphere is designed for a single WordPress site. On a Netwo
 
 == Changelog ==
 
+### 1.1.1 - 2026-06-01
+#### Added
+- Posts shared to Bluesky now link back to both the site's publication record and the per-post document record, so Bluesky shows your site source, profile, and richer document metadata alongside the link preview.
+
+#### Changed
+- Likes and reposts synced from Bluesky now include a readable comment body ("… liked this!" / "… reposted this!") so they display sensibly in themes that render activity-feed comments.
+
+#### Fixed
+- Aside, status, and other short-form posts now include their images when published to Bluesky.
+- Fix a fatal error when saving the Bluesky handle on sites without auth keys defined in wp-config.php.
+- Fix unexpected disconnections by refreshing the AT Protocol session more reliably.
+- Preserve your AT Protocol identity when disconnecting so a custom domain handle (`example.com` instead of `alice.bsky.social`) can be used to reconnect later. Disconnect no longer wipes the verification endpoint that the handle resolver depends on, no longer auto-reverts the Bluesky handle back to its pre-domain value, and shows a clearer "disconnected" notice instead of a "session expired" warning.
+- Refresh admin assets after updating, so the latest styles and scripts load correctly.
+- Site names and descriptions containing characters like apostrophes or ampersands now publish correctly instead of showing raw HTML codes.
+- Stop reinjecting replies into the moderation queue when the parent Bluesky message has been deleted or blocked.
+- Your site icon now appears on your standard.site publication.
+
+### 1.1.0 - 2026-05-21
+#### Added
+- Add `atmosphere_post_embed` filter so downstream code can swap the default external link card for a richer embed (`app.bsky.embed.images`, `app.bsky.embed.video`, …) or attach an embed to a short-form post that would otherwise ship with none. The filter accepts `null` (suppress) or an array with a non-empty string `$type` key; non-array, empty-array, or missing-`$type` returns are rejected with `_doing_it_wrong` and the pre-filter value is restored. `Post::upload_thumbnail()` becomes a backward-compatible alias for the new generic `Post::upload_image_blob()`; a new `Post::get_attachment_aspect_ratio()` helper exposes the pixel dimensions consumers need for `embed.images`.
+- Advertise the site's standard.site publication record from the front page and from each published post via a new `<link rel="site.standard.publication">` tag, alongside the existing document link.
+
+#### Changed
+- Refresh the site's publication record when the site URL, the active theme, or the theme's colours change, so the published record always reflects the current site state.
+
+#### Fixed
+- Fix posts not appearing on Bluesky after a frontend visit lazily stamped the post, restore standard.site verification after reconnecting to a different account, and let the "use my domain as my Bluesky handle" button complete reliably without timing out.
+- Stop publishing replies to local-only WordPress comments to Bluesky. Previously such replies were demoted to a top-level reply on the post; they are now skipped so the Bluesky thread only mirrors comments whose ancestors are also on Bluesky.
+
 ### 1.0.0 - 2026-05-20
 #### Security
 - Harden OAuth and PDS HTTP request paths against SSRF, encrypt the temporary DPoP key used during connect, and validate URLs received from third-party servers before they are used or stored.
@@ -141,6 +170,10 @@ Not at this time. ATmosphere is designed for a single WordPress site. On a Netwo
 - Prevent password-protected or otherwise non-public posts from being published to AT Protocol records, and remove existing records when public posts become protected.
 - Remove a comment reply from Bluesky if the comment was deleted or unapproved while it was being published, instead of leaving an orphan reply behind.
 - Short posts under the long-form teaser-thread strategy no longer ship a redundant "continue reading" reply when the entire body already fits in a single Bluesky post. The link-back is preserved as a card on the same post.
+
+[1.1.1]: https://github.com/Automattic/wordpress-atmosphere/compare/1.1.0...1.1.1
+[1.1.0]: https://github.com/Automattic/wordpress-atmosphere/compare/1.0.0...1.1.0
+[1.0.0]: https://github.com/Automattic/wordpress-atmosphere/releases
 
 See full Changelog on [GitHub](https://github.com/Automattic/wordpress-atmosphere/blob/trunk/CHANGELOG.md).
 

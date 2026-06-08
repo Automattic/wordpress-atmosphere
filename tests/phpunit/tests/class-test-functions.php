@@ -7,18 +7,19 @@
 
 namespace Atmosphere\Tests;
 
-use WP_UnitTestCase;
 use function Atmosphere\parse_at_uri;
 use function Atmosphere\build_at_uri;
 use function Atmosphere\sanitize_text;
 use function Atmosphere\truncate_text;
+use function Atmosphere\truncate_graphemes;
 use function Atmosphere\to_iso8601;
 use function Atmosphere\is_post_publishable;
+use function Atmosphere\get_connection;
 
 /**
  * Function tests.
  */
-class Test_Functions extends WP_UnitTestCase {
+class Test_Functions extends \WP_UnitTestCase {
 
 	/**
 	 * Test parsing a valid AT-URI.
@@ -59,6 +60,19 @@ class Test_Functions extends WP_UnitTestCase {
 	}
 
 	/**
+	 * Entity-encoded markup must not survive as live tags. WordPress stores
+	 * values like the site title HTML-entity encoded, so `<b>` arrives as
+	 * `&lt;b&gt;`. sanitize_text() decodes before stripping, so the decoded
+	 * tag is removed rather than re-materialising as live markup in the
+	 * record.
+	 */
+	public function test_sanitize_text_removes_entity_encoded_markup() {
+		$this->assertSame( 'Bad', sanitize_text( '&lt;b&gt;Bad&lt;/b&gt;' ) );
+		$this->assertSame( '', sanitize_text( '&lt;script&gt;alert(1)&lt;/script&gt;' ) );
+		$this->assertStringNotContainsString( '<', sanitize_text( '&lt;img src=x onerror=alert(1)&gt;' ) );
+	}
+
+	/**
 	 * Unicode whitespace (NBSP, ideographic space) collapses and trims
 	 * just like ASCII whitespace. Without the `/u` regex flag a NBSP-only
 	 * string would survive both the collapse and the trim and leak
@@ -88,6 +102,99 @@ class Test_Functions extends WP_UnitTestCase {
 	 */
 	public function test_truncate_text_short() {
 		$this->assertSame( 'Hello', truncate_text( 'Hello', 300 ) );
+	}
+
+	/**
+	 * Returns text unchanged when it already fits the grapheme budget.
+	 */
+	public function test_truncate_graphemes_returns_short_text_unchanged() {
+		$this->assertSame( 'Hello', truncate_graphemes( 'Hello', 500 ) );
+	}
+
+	/**
+	 * Hard-clamps plain ASCII text at the grapheme limit and does NOT
+	 * append an ellipsis — canonical fields like publication `name`
+	 * must not have their grapheme budget burned by a marker.
+	 */
+	public function test_truncate_graphemes_hard_clamps_without_marker() {
+		$text   = \str_repeat( 'a', 600 );
+		$result = truncate_graphemes( $text, 500 );
+
+		$this->assertSame( 500, \mb_strlen( $result ) );
+		$this->assertStringEndsNotWith( '…', $result );
+		$this->assertStringEndsNotWith( '...', $result );
+	}
+
+	/**
+	 * Empty input is returned unchanged regardless of the limit.
+	 */
+	public function test_truncate_graphemes_returns_empty_string_unchanged() {
+		$this->assertSame( '', truncate_graphemes( '', 500 ) );
+		$this->assertSame( '', truncate_graphemes( '', 0 ) );
+	}
+
+	/**
+	 * Text exactly at the limit (`length === max_graphemes`) is returned
+	 * unchanged — the comparison is inclusive.
+	 */
+	public function test_truncate_graphemes_returns_text_at_exact_limit_unchanged() {
+		$text = \str_repeat( 'x', 500 );
+		$this->assertSame( $text, truncate_graphemes( $text, 500 ) );
+	}
+
+	/**
+	 * A negative limit clamps to an empty string. Without the guard,
+	 * `grapheme_substr( 'hello', 0, -1 )` returns `'hell'` — the
+	 * substring API interprets negative length as "drop N from the
+	 * end", which is the opposite of a clamp.
+	 */
+	public function test_truncate_graphemes_returns_empty_for_negative_limit() {
+		$this->assertSame( '', truncate_graphemes( 'hello', -1 ) );
+		$this->assertSame( '', truncate_graphemes( 'hello', -500 ) );
+	}
+
+	/**
+	 * Multi-codepoint grapheme clusters (a ZWJ emoji family) count as
+	 * one grapheme each under `intl`. A string of 5 family emoji
+	 * survives a 500-grapheme clamp intact even though it's many
+	 * code points.
+	 *
+	 * Requires the `intl` extension.
+	 */
+	public function test_truncate_graphemes_counts_zwj_emoji_as_single_graphemes() {
+		if ( ! \function_exists( 'grapheme_strlen' ) ) {
+			$this->markTestSkipped( 'intl extension required for grapheme counting.' );
+		}
+
+		// "Family: man, woman, girl" — one grapheme, five code points.
+		$family = "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}";
+		$text   = \str_repeat( $family, 5 );
+
+		$result = truncate_graphemes( $text, 500 );
+
+		$this->assertSame( $text, $result );
+		$this->assertSame( 5, \grapheme_strlen( $result ) );
+	}
+
+	/**
+	 * Clamping in the middle of a grapheme cluster must keep the
+	 * cluster intact — never produce a broken final emoji. The clamp
+	 * lands at the boundary, dropping the partial cluster entirely.
+	 */
+	public function test_truncate_graphemes_preserves_cluster_boundaries() {
+		if ( ! \function_exists( 'grapheme_strlen' ) ) {
+			$this->markTestSkipped( 'intl extension required for grapheme counting.' );
+		}
+
+		$family = "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}";
+		// 10 families, ~50 code points, but exactly 10 graphemes.
+		$text = \str_repeat( $family, 10 );
+
+		// Clamp to 3 graphemes: result must be exactly 3 family glyphs.
+		$result = truncate_graphemes( $text, 3 );
+
+		$this->assertSame( 3, \grapheme_strlen( $result ) );
+		$this->assertSame( \str_repeat( $family, 3 ), $result );
 	}
 
 	/**
@@ -156,5 +263,46 @@ class Test_Functions extends WP_UnitTestCase {
 		$this->assertFalse( is_post_publishable( $protected ) );
 		$this->assertFalse( is_post_publishable( $zero_string_password ) );
 		$this->assertFalse( is_post_publishable( $page ) );
+	}
+
+	/**
+	 * `get_connection()` returns the option array on a healthy install.
+	 */
+	public function test_get_connection_returns_array_for_healthy_option() {
+		\update_option(
+			'atmosphere_connection',
+			array(
+				'did'    => 'did:plc:test',
+				'handle' => 'example.com',
+			),
+			false
+		);
+
+		$conn = get_connection();
+
+		$this->assertIsArray( $conn );
+		$this->assertSame( 'did:plc:test', $conn['did'] );
+
+		\delete_option( 'atmosphere_connection' );
+	}
+
+	/**
+	 * `get_connection()` normalises a corrupted non-array option value
+	 * to an empty array. Without the coercion, the `: array` return-type
+	 * declaration would raise a TypeError mid-render of `admin_notices`
+	 * (Admin::maybe_render_reauth_notice composes get_connection() with
+	 * the disconnect-marker gate), whitescreening the admin until the
+	 * row is repaired. Repair paths (wp-cli, the Disconnect button)
+	 * live in that same admin, so a crash here would be self-trapping.
+	 */
+	public function test_get_connection_normalises_corrupted_non_array_option() {
+		\update_option( 'atmosphere_connection', 'corrupted-scalar-string', false );
+
+		$conn = get_connection();
+
+		$this->assertIsArray( $conn );
+		$this->assertSame( array(), $conn );
+
+		\delete_option( 'atmosphere_connection' );
 	}
 }
