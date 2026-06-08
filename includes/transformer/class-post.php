@@ -779,7 +779,14 @@ class Post extends Base {
 				continue;
 			}
 
-			if ( \filesize( $candidate ) <= self::MAX_BLOB_BYTES ) {
+			/*
+			 * `filesize()` returns false on a stat failure (some stream
+			 * wrappers, race with deletion). `false <= MAX` would coerce to
+			 * `0 <= MAX` and wrongly accept an unknown-size file, so fail
+			 * closed: skip the candidate when the size can't be read.
+			 */
+			$size = \filesize( $candidate );
+			if ( false !== $size && $size <= self::MAX_BLOB_BYTES ) {
 				return array(
 					'path' => $candidate,
 					'mime' => $candidate_mime,
