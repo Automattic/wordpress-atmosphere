@@ -278,7 +278,7 @@ class Test_API extends \WP_UnitTestCase {
 		};
 		\add_filter( 'atmosphere_pre_upload_blob', $invalid, 10, 0 );
 
-		$result = API::upload_blob( '/tmp/whatever.jpg', 'image/jpeg' );
+		$result = API::upload_blob( \sys_get_temp_dir() . '/whatever.jpg', 'image/jpeg' );
 
 		\remove_filter( 'atmosphere_pre_upload_blob', $invalid, 10 );
 
@@ -297,7 +297,7 @@ class Test_API extends \WP_UnitTestCase {
 		};
 		\add_filter( 'atmosphere_pre_upload_blob', $shorter, 10, 0 );
 
-		$result = API::upload_blob( '/tmp/does-not-exist.jpg', 'image/jpeg' );
+		$result = API::upload_blob( \sys_get_temp_dir() . '/does-not-exist.jpg', 'image/jpeg' );
 
 		\remove_filter( 'atmosphere_pre_upload_blob', $shorter, 10 );
 

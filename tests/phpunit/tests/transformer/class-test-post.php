@@ -44,22 +44,19 @@ class Test_Post extends WP_UnitTestCase {
 	 * @return string Encoded image bytes.
 	 */
 	private function image_bytes( string $format = 'jpeg' ): string {
+		if ( ! \function_exists( 'imagecreatetruecolor' ) ) {
+			$this->markTestSkipped( 'GD is not available in this environment.' );
+		}
+
+		$encoder = "image{$format}";
+		if ( ! \function_exists( $encoder ) ) {
+			$this->markTestSkipped( \sprintf( 'GD support for %s is not available.', $format ) );
+		}
+
 		$image = \imagecreatetruecolor( 4, 4 );
 
 		\ob_start();
-		switch ( $format ) {
-			case 'png':
-				\imagepng( $image );
-				break;
-			case 'gif':
-				\imagegif( $image );
-				break;
-			case 'webp':
-				\imagewebp( $image );
-				break;
-			default:
-				\imagejpeg( $image );
-		}
+		$encoder( $image );
 		$bytes = (string) \ob_get_clean();
 
 		\imagedestroy( $image );

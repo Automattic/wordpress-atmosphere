@@ -679,7 +679,7 @@ class Post extends Base {
 			// phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
 			\error_log(
 				\sprintf(
-					'[atmosphere] could not resolve an uploadable image for attachment %d (no readable local file and no fetchable size URL under the 1 MB cap); cover image / thumbnail will be omitted',
+					'[atmosphere] could not resolve an uploadable image for attachment %d (no readable local file and no fetchable size URL under the 1 MB cap); the image blob will be omitted',
 					$attachment_id
 				)
 			);
@@ -898,7 +898,14 @@ class Post extends Base {
 				continue;
 			}
 
-			$temp = \wp_tempnam( \basename( $url ) );
+			/*
+			 * Derive the temp-file hint from the URL path only — CDN /
+			 * offload URLs often carry a query string, and the raw
+			 * basename (`photo.jpg?w=769`) makes a messy/invalid filename.
+			 */
+			$path_part = (string) \wp_parse_url( $url, \PHP_URL_PATH );
+			$hint      = '' !== $path_part ? \basename( $path_part ) : 'image';
+			$temp      = \wp_tempnam( $hint );
 			if ( ! $temp ) {
 				continue;
 			}
