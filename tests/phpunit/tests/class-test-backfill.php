@@ -263,9 +263,10 @@ class Test_Backfill extends \WP_UnitTestCase {
 
 	/**
 	 * Page-boundary exact-multiple regression: when the candidate set
-	 * exactly fills an integer number of chunks, the do/while must
-	 * exit via the `0 === $chunk_count` branch rather than producing a
-	 * spurious extra query (or, worse, missing the last full chunk).
+	 * exactly fills an integer number of chunks, the do/while walks one
+	 * final empty page to confirm completion, then exits via the
+	 * `0 === $chunk_count` branch — so the last full chunk is neither
+	 * missed nor returned twice.
 	 */
 	public function test_paged_walk_handles_exact_multiple_of_chunk_size() {
 		\add_filter(

@@ -6,9 +6,9 @@
  * classes under `includes/cli/` can be autoloaded under PHPUnit. WP-CLI
  * itself is not loaded by the WP test bootstrap; without this stub,
  * autoloading `Atmosphere\Cli\Backfill_Command` fatals on the missing
- * parent class. Tests that exercise the command's outer flow are not
- * in scope — only its static input parser is — so an empty stub is
- * sufficient.
+ * parent class. This stub only has to supply the (empty) parent class
+ * so the command autoloads; the command's outer flow is exercised via
+ * the WP_CLI facade stub in `tests/phpunit/class-wp-cli.php`.
  *
  * @package Atmosphere
  */

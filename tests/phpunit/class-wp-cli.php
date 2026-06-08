@@ -133,7 +133,11 @@ if ( ! \class_exists( 'WP_CLI' ) ) {
 			);
 
 			if ( $halt ) {
-				throw new WP_CLI_Halt( \esc_html( $text ) );
+				/*
+				 * Throw the raw text so assertions see the real message,
+				 * matching the WP-CLI runtime (which does not HTML-escape).
+				 */
+				throw new WP_CLI_Halt( $text ); // phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped
 			}
 		}
 	}
