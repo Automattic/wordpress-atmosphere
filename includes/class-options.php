@@ -12,31 +12,32 @@ namespace Atmosphere;
 /**
  * Registers every stored plugin option with the Settings API.
  *
- * Registers on `admin_init` (so `options.php` form submissions run the
- * sanitize callbacks) and `rest_api_init` (so `/wp-json/wp/v2/settings`
- * reports the registered shape and resolves defaults for REST callers).
- *
  * The registered `default` only resolves for a bare `get_option()` when
- * `register_setting()` has run in the current request — but neither of
- * those hooks fires under WP-CLI or cron, where a scheduled-post publish
- * (or a bare `get_option()` from a script) still needs the defaults. So we
- * additionally register on `init` in just those two contexts. Front-end
- * page views deliberately do NOT register: nothing there reads these
- * options without passing an explicit default, so there is no reason to do
- * the work on every request.
+ * `register_setting()` has run in the current request. `admin_init` covers
+ * `options.php` form submissions and `rest_api_init` covers the
+ * `/wp-json/wp/v2/settings` schema + default resolution — but neither fires
+ * under WP-CLI or cron, where a scheduled-post publish (or a bare
+ * `get_option()` from a script) still needs the defaults. `init()` is
+ * itself hooked on `init` from {@see Atmosphere::init()} and dispatches
+ * accordingly: register immediately on WP-CLI / cron, otherwise defer to
+ * the matching hook. Front-end page views deliberately do NOT register —
+ * nothing there reads these options without passing an explicit default.
  */
 class Options {
 
 	/**
-	 * Wire the registration hooks.
+	 * Dispatch the registration onto the right hook for the request.
+	 *
+	 * Invoked on the `init` action.
 	 */
 	public static function init(): void {
+		if ( ( \defined( 'WP_CLI' ) && \WP_CLI ) || \wp_doing_cron() ) {
+			self::register_settings();
+			return;
+		}
+
 		\add_action( 'admin_init', array( self::class, 'register_settings' ) );
 		\add_action( 'rest_api_init', array( self::class, 'register_settings' ) );
-
-		if ( ( \defined( 'WP_CLI' ) && \WP_CLI ) || \wp_doing_cron() ) {
-			\add_action( 'init', array( self::class, 'register_settings' ), 5 );
-		}
 	}
 
 	/**
