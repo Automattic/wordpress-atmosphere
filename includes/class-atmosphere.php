@@ -103,9 +103,8 @@ class Atmosphere {
 		 * Settings API option registration (`Options::init()`) and
 		 * Settings page UI assembly (`Settings_Fields::init()`) live in
 		 * their own classes, matching the layout the ActivityPub plugin
-		 * uses. Wired on `init` (priority 5) the same way as `Admin` and
-		 * `Backfill` above, so each can self-wire the request-specific
-		 * hooks it needs.
+		 * uses. Wired on `init` (priority 5) the same way as `Admin`
+		 * above, so each can self-wire the request-specific hooks it needs.
 		 */
 		\add_action( 'init', array( Options::class, 'init' ), 5 );
 		\add_action( 'init', array( Settings_Fields::class, 'init' ), 5 );

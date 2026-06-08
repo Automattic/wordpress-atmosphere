@@ -253,7 +253,7 @@ class Backfill_Command extends \WP_CLI_Command {
 
 		$progress = null;
 
-		if ( ! $dry_run && \function_exists( '\WP_CLI\Utils\make_progress_bar' ) ) {
+		if ( ! $dry_run && \function_exists( 'WP_CLI\Utils\make_progress_bar' ) ) {
 			$progress = \WP_CLI\Utils\make_progress_bar(
 				\__( 'Publishing posts', 'atmosphere' ),
 				$total
@@ -420,7 +420,7 @@ class Backfill_Command extends \WP_CLI_Command {
 			 */
 			\WP_CLI::success(
 				\sprintf(
-					/* translators: 1: number of posts that would be published, 2: number of posts skipped. */
+					/* translators: 1: number of posts that would be published, 2: total posts queued, 3: number of posts skipped. */
 					\__( 'Would publish %1$d of %2$d posts (%3$d skipped). Dry run, nothing was sent to AT Protocol.', 'atmosphere' ),
 					$synced,
 					$total,
@@ -500,7 +500,7 @@ class Backfill_Command extends \WP_CLI_Command {
 			 * `$rejected` and the caller errors out before any publish.
 			 */
 			if ( ! \ctype_digit( $trimmed ) ) {
-				$rejected[] = $part;
+				$rejected[] = $trimmed;
 				continue;
 			}
 

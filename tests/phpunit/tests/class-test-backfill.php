@@ -27,6 +27,12 @@ class Test_Backfill extends \WP_UnitTestCase {
 	public function tear_down(): void {
 		\remove_all_filters( 'atmosphere_syncable_post_types' );
 		\remove_all_filters( 'atmosphere_backfill_query_chunk_size' );
+
+		// Fail-safe: unregister the test CPT even if an assertion above bailed.
+		if ( \post_type_exists( 'atmo_test_cpt' ) ) {
+			\unregister_post_type( 'atmo_test_cpt' );
+		}
+
 		parent::tear_down();
 	}
 
@@ -163,8 +169,6 @@ class Test_Backfill extends \WP_UnitTestCase {
 
 		$this->assertContains( $post_id, $only_post );
 		$this->assertNotContains( $cpt_id, $only_post );
-
-		\unregister_post_type( 'atmo_test_cpt' );
 	}
 
 	/**
