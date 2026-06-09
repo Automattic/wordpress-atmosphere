@@ -24,10 +24,15 @@ namespace Atmosphere\Content_Parser;
 class Leaflet extends Parser_Base {
 
 	/**
+	 * The lexicon NSID this parser produces.
+	 */
+	const TYPE = 'pub.leaflet.content';
+
+	/**
 	 * {@inheritDoc}
 	 */
 	public function get_type(): string {
-		return 'pub.leaflet.content';
+		return self::TYPE;
 	}
 
 	/**

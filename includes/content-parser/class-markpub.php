@@ -21,10 +21,15 @@ namespace Atmosphere\Content_Parser;
 class Markpub extends Parser_Base {
 
 	/**
+	 * The lexicon NSID this parser produces.
+	 */
+	const TYPE = 'at.markpub.markdown';
+
+	/**
 	 * {@inheritDoc}
 	 */
 	public function get_type(): string {
-		return 'at.markpub.markdown';
+		return self::TYPE;
 	}
 
 	/**

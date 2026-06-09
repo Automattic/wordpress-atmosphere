@@ -11,6 +11,9 @@ namespace Atmosphere\WP_Admin;
 
 use Atmosphere\Atmosphere;
 use Atmosphere\Content_Parser\Html;
+use Atmosphere\Content_Parser\Leaflet;
+use Atmosphere\Content_Parser\Markpub;
+use Atmosphere\Content_Parser\Pckt;
 use Atmosphere\Content_Parser\Registry;
 use Atmosphere\Handle;
 use function Atmosphere\get_connection;
@@ -491,11 +494,11 @@ class Settings_Fields {
 		switch ( $type ) {
 			case Html::TYPE:
 				return \__( 'Understood by every standard.site reader.', 'atmosphere' );
-			case 'at.markpub.markdown':
+			case Markpub::TYPE:
 				return \__( 'Markdown, for Markpub and other Markdown-based readers.', 'atmosphere' );
-			case 'pub.leaflet.content':
+			case Leaflet::TYPE:
 				return \__( 'Rich format read by the Leaflet app.', 'atmosphere' );
-			case 'blog.pckt.content':
+			case Pckt::TYPE:
 				return \__( 'Rich format read by the pckt app.', 'atmosphere' );
 			default:
 				return '';
@@ -515,11 +518,11 @@ class Settings_Fields {
 		switch ( $type ) {
 			case Html::TYPE:
 				return \__( 'HTML', 'atmosphere' );
-			case 'at.markpub.markdown':
+			case Markpub::TYPE:
 				return \__( 'Markdown (Markpub)', 'atmosphere' );
-			case 'pub.leaflet.content':
+			case Leaflet::TYPE:
 				return \__( 'Leaflet', 'atmosphere' );
-			case 'blog.pckt.content':
+			case Pckt::TYPE:
 				return \__( 'pckt', 'atmosphere' );
 			default:
 				return $type;

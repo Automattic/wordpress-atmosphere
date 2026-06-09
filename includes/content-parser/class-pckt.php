@@ -24,10 +24,15 @@ namespace Atmosphere\Content_Parser;
 class Pckt extends Parser_Base {
 
 	/**
+	 * The lexicon NSID this parser produces.
+	 */
+	const TYPE = 'blog.pckt.content';
+
+	/**
 	 * {@inheritDoc}
 	 */
 	public function get_type(): string {
-		return 'blog.pckt.content';
+		return self::TYPE;
 	}
 
 	/**
