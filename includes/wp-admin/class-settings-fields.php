@@ -454,6 +454,9 @@ class Settings_Fields {
 			);
 		}
 		?>
+		<p class="description">
+			<?php \esc_html_e( 'Apps on the standard.site network read this format to display your post. A post that a chosen format cannot represent is saved as HTML instead, so nothing is dropped.', 'atmosphere' ); ?>
+		</p>
 		<fieldset>
 			<legend class="screen-reader-text">
 				<?php \esc_html_e( 'Content format', 'atmosphere' ); ?>
@@ -476,9 +479,6 @@ class Settings_Fields {
 				</p>
 			<?php endforeach; ?>
 		</fieldset>
-		<p class="description">
-			<?php \esc_html_e( 'Apps on the standard.site network read this format to display your post. A post that a chosen format cannot represent is saved as HTML instead, so nothing is dropped.', 'atmosphere' ); ?>
-		</p>
 		<?php
 	}
 
