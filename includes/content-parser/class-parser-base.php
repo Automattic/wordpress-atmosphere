@@ -473,9 +473,14 @@ abstract class Parser_Base implements Content_Parser {
 	 * @return string
 	 */
 	private static function normalize_visibility_text( string $text ): string {
-		$text = \html_entity_decode( $text, ENT_QUOTES, 'UTF-8' );
-		$text = \preg_replace( '/\s+/u', ' ', $text );
+		$text      = \html_entity_decode( $text, ENT_QUOTES, 'UTF-8' );
+		$collapsed = \preg_replace( '/\s+/u', ' ', $text );
 
-		return \trim( (string) $text );
+		/*
+		 * preg_replace returns null on a PCRE error (e.g. invalid UTF-8
+		 * under the /u flag). Keep the pre-collapse text rather than
+		 * blanking it, which would skew the saved-content comparison.
+		 */
+		return \trim( null === $collapsed ? $text : $collapsed );
 	}
 }

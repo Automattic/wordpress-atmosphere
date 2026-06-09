@@ -147,7 +147,13 @@ class Registry {
 	 * @return bool
 	 */
 	private static function parser_applies_to( Content_Parser $parser, \WP_Post $post ): bool {
-		if ( ! \method_exists( $parser, 'applies_to' ) ) {
+		/*
+		 * `is_callable()` rather than `method_exists()`: the latter is true
+		 * for protected/private methods too, so a custom parser declaring a
+		 * non-public `applies_to()` would pass the guard and then fatal on
+		 * the external call. `is_callable()` checks accessibility from here.
+		 */
+		if ( ! \is_callable( array( $parser, 'applies_to' ) ) ) {
 			return true;
 		}
 
