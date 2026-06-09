@@ -236,6 +236,34 @@ class API {
 	 * @return array|\WP_Error Blob reference from PDS.
 	 */
 	public static function upload_blob( string $file_path, string $mime_type ): array|\WP_Error {
+		/**
+		 * Short-circuits the uploadBlob call before it reaches the PDS.
+		 *
+		 * Return a non-null array (the PDS success shape, e.g.
+		 * `[ 'blob' => [...] ]`) or a `WP_Error` to bypass the real HTTP
+		 * round-trip. Mirrors `atmosphere_pre_apply_writes`: the real
+		 * upload runs inside `wp_safe_remote_request` after a DPoP proof
+		 * has been built, so test environments and the FOSSE harness use
+		 * this filter to observe or mock the upload without a live PDS.
+		 *
+		 * @param null|array|\WP_Error $short_circuit Short-circuit value. Return null to skip.
+		 * @param string               $file_path     Local path of the file about to be uploaded.
+		 * @param string               $mime_type     MIME type of the file.
+		 */
+		$short_circuit = \apply_filters( 'atmosphere_pre_upload_blob', null, $file_path, $mime_type );
+		if ( \is_array( $short_circuit ) || \is_wp_error( $short_circuit ) ) {
+			return $short_circuit;
+		}
+		if ( null !== $short_circuit ) {
+			// Malformed filter return (scalar / object / etc). Surface as a
+			// WP_Error instead of letting PHP fatal on the `array|\WP_Error`
+			// return type. Mirrors `atmosphere_pre_apply_writes`.
+			return new \WP_Error(
+				'atmosphere_invalid_pre_upload_blob_return',
+				\__( 'atmosphere_pre_upload_blob must return null, an array, or a WP_Error.', 'atmosphere' )
+			);
+		}
+
 		if ( ! \is_readable( $file_path ) ) {
 			return new \WP_Error( 'atmosphere_file', \__( 'File not found or not readable.', 'atmosphere' ) );
 		}
