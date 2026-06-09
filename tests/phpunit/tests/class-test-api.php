@@ -266,4 +266,41 @@ class Test_API extends \WP_UnitTestCase {
 		);
 		$this->assertSame( 1, $pds_calls, 'PDS should only be hit once — no retry on non-locked refresh error.' );
 	}
+
+	/**
+	 * A malformed `atmosphere_pre_upload_blob` return (scalar / object)
+	 * is coerced into a WP_Error rather than fataling against the
+	 * `array|WP_Error` return type. Mirrors `atmosphere_pre_apply_writes`.
+	 */
+	public function test_upload_blob_pre_filter_rejects_invalid_return() {
+		$invalid = static function () {
+			return 'not-an-array';
+		};
+		\add_filter( 'atmosphere_pre_upload_blob', $invalid, 10, 0 );
+
+		$result = API::upload_blob( \sys_get_temp_dir() . '/whatever.jpg', 'image/jpeg' );
+
+		\remove_filter( 'atmosphere_pre_upload_blob', $invalid, 10 );
+
+		$this->assertWPError( $result );
+		$this->assertSame( 'atmosphere_invalid_pre_upload_blob_return', $result->get_error_code() );
+	}
+
+	/**
+	 * A well-formed array return from `atmosphere_pre_upload_blob`
+	 * short-circuits the upload and is returned verbatim.
+	 */
+	public function test_upload_blob_pre_filter_short_circuits_with_array() {
+		$blob    = array( 'blob' => array( 'cid' => 'bafyshort' ) );
+		$shorter = static function () use ( $blob ) {
+			return $blob;
+		};
+		\add_filter( 'atmosphere_pre_upload_blob', $shorter, 10, 0 );
+
+		$result = API::upload_blob( \sys_get_temp_dir() . '/does-not-exist.jpg', 'image/jpeg' );
+
+		\remove_filter( 'atmosphere_pre_upload_blob', $shorter, 10 );
+
+		$this->assertSame( $blob, $result );
+	}
 }
