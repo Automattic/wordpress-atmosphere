@@ -6,9 +6,9 @@
 	"license": "GPL-2.0-or-later",
 	"private": true,
 	"scripts": {
-		"env-start": "wp-env start --auto-port",
+		"env-start": "wp-env start",
 		"env-stop": "wp-env stop",
-		"preenv-test": "wp-env start --auto-port",
+		"preenv-test": "wp-env start",
 		"env-test": "wp-env run tests-cli --env-cwd=\"wp-content/plugins/wordpress-atmosphere\" vendor/bin/phpunit",
 		"release": "node bin/release.js"
 	},
