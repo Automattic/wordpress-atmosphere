@@ -467,7 +467,7 @@ class Settings_Fields {
 							value="<?php echo \esc_attr( $value ); ?>"
 							<?php \checked( $current, $value ); ?>
 						>
-						<?php echo \esc_html( $choice['label'] ); ?>
+						<strong><?php echo \esc_html( $choice['label'] ); ?></strong>
 					</label>
 					<?php if ( '' !== $choice['description'] ) : ?>
 						<br>
