@@ -237,7 +237,8 @@ use function Atmosphere\is_connected;
 
 **Test-only short-circuit:**
 ```php
-\apply_filters( 'atmosphere_pre_apply_writes', null, $writes );
+\apply_filters( 'atmosphere_pre_apply_writes', null, $writes );                    // Short-circuit / observe an applyWrites batch.
+\apply_filters( 'atmosphere_pre_upload_blob', null, $file_path, $mime_type );      // Short-circuit / observe a blob upload.
 ```
 
 ## Documentation Standards
