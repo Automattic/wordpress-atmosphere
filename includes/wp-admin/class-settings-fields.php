@@ -316,6 +316,9 @@ class Settings_Fields {
 		$current = \get_option( 'atmosphere_long_form_composition', 'link-card' );
 
 		?>
+		<p class="description">
+			<?php \esc_html_e( 'How posts longer than the Bluesky 300-character limit are published. Plugins can override this per post via the atmosphere_long_form_composition filter.', 'atmosphere' ); ?>
+		</p>
 		<fieldset>
 			<legend class="screen-reader-text">
 				<?php \esc_html_e( 'Long-form composition', 'atmosphere' ); ?>
@@ -339,9 +342,6 @@ class Settings_Fields {
 				</p>
 			<?php endforeach; ?>
 		</fieldset>
-		<p class="description">
-			<?php \esc_html_e( 'How posts longer than the Bluesky 300-character limit are published. Plugins can override this per post via the atmosphere_long_form_composition filter.', 'atmosphere' ); ?>
-		</p>
 		<?php
 	}
 
@@ -455,7 +455,7 @@ class Settings_Fields {
 		}
 		?>
 		<p class="description">
-			<?php \esc_html_e( 'Apps on the standard.site network read this format to display your post. A post that a chosen format cannot represent is saved as HTML instead, so nothing is dropped.', 'atmosphere' ); ?>
+			<?php \esc_html_e( 'The rich content format saved in each post\'s standard.site document. A post that a chosen format cannot represent is saved as HTML instead, so nothing is dropped.', 'atmosphere' ); ?>
 		</p>
 		<fieldset>
 			<legend class="screen-reader-text">
@@ -493,13 +493,13 @@ class Settings_Fields {
 	private static function content_format_description( string $type ): string {
 		switch ( $type ) {
 			case Html::TYPE:
-				return \__( 'Understood by every standard.site reader.', 'atmosphere' );
+				return \__( 'Plain HTML — the simplest, most portable option, and the fallback when a richer format does not fit.', 'atmosphere' );
 			case Markpub::TYPE:
-				return \__( 'Markdown, for Markpub and other Markdown-based readers.', 'atmosphere' );
+				return \__( 'Markdown, in the Markpub format.', 'atmosphere' );
 			case Leaflet::TYPE:
-				return \__( 'Rich format read by the Leaflet app.', 'atmosphere' );
+				return \__( 'The Leaflet app\'s rich content format.', 'atmosphere' );
 			case Pckt::TYPE:
-				return \__( 'Rich format read by the pckt app.', 'atmosphere' );
+				return \__( 'The pckt app\'s rich content format.', 'atmosphere' );
 			default:
 				return '';
 		}
