@@ -317,7 +317,14 @@ class Settings_Fields {
 
 		?>
 		<p class="description">
-			<?php \esc_html_e( 'How posts longer than the Bluesky 300-character limit are published. Plugins can override this per post via the atmosphere_long_form_composition filter.', 'atmosphere' ); ?>
+			<?php
+			// phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- Filter name is a static, safe literal.
+			\printf(
+				/* translators: %s: the long-form composition filter name, wrapped in a code tag. */
+				\esc_html__( 'How posts longer than the Bluesky 300-character limit are published. Plugins can override this per post via the %s filter.', 'atmosphere' ),
+				'<code>atmosphere_long_form_composition</code>'
+			);
+			?>
 		</p>
 		<fieldset>
 			<legend class="screen-reader-text">
