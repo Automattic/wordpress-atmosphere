@@ -23,7 +23,7 @@ When you publish a post, ATmosphere automatically shares it on Bluesky and store
 * **Use your own domain as your Bluesky handle.** With one click, your handle becomes something like `@yourblog.com` instead of `@you.bsky.social`. ATmosphere does the technical bit; Bluesky verifies it.
 * **Bluesky reactions become WordPress comments.** Replies appear in your comments. Likes and reposts show up alongside them with their own counts so the engagement is visible to your readers.
 * **WordPress comments become Bluesky replies.** When a logged-in reader leaves an approved comment on a cross-posted article, it's sent to Bluesky as a reply under the original post.
-* **Catch up on older posts.** A built-in Backfill tool can publish posts you wrote before installing the plugin.
+* **Catch up on older posts.** A `wp atmosphere backfill` command can publish posts you wrote before installing the plugin.
 * **Per-post control.** You can opt individual posts out of cross-posting straight from the editor sidebar.
 * **No middleman.** ATmosphere talks directly to your Bluesky account using modern, secure sign-in. Nothing is routed through a third-party service, and your tokens never leave your WordPress site.
 * **Translation-ready.** Help translate ATmosphere into your language.
@@ -37,7 +37,7 @@ When you publish a post, ATmosphere automatically shares it on Bluesky and store
 5. Open Bluesky — your post is there. People can reply, like, repost, and follow as they normally would.
 6. Replies, likes, and reposts will start appearing as comments on your WordPress post. Comments you approve on WordPress will appear as replies on Bluesky.
 
-**Note:** Cross-posting only kicks in for posts you publish *after* connecting. To bring older posts across, use the **Backfill** tool on the settings page.
+**Note:** Cross-posting only kicks in for posts you publish *after* connecting. To bring older posts across, run `wp atmosphere backfill` from WP-CLI.
 
 == Installation ==
 
@@ -79,7 +79,7 @@ Yes. ATmosphere checks Bluesky periodically and turns replies, likes, and repost
 
 = What about posts I already published before installing? =
 
-By default, only new posts are shared. You can publish older ones on demand with the **Backfill** tool on the settings page.
+By default, only new posts are shared. You can publish older ones on demand by running `wp atmosphere backfill` from WP-CLI.
 
 = Can I undo a cross-post? =
 

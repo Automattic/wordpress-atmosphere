@@ -92,21 +92,19 @@ class Atmosphere {
 	 */
 	public function init(): void {
 		/*
-		 * Admin and Backfill self-register on init. This runs before
-		 * admin_init, rest_api_init, and wp_ajax_* so sub-hooks those
-		 * callbacks add are wired up in time, and it also ensures
-		 * REST/AJAX endpoints are available on non-admin requests.
+		 * Admin self-registers on init. This runs before admin_init,
+		 * rest_api_init, and wp_ajax_* so sub-hooks those callbacks add
+		 * are wired up in time, and it also ensures REST endpoints are
+		 * available on non-admin requests.
 		 */
 		\add_action( 'init', array( Admin::class, 'register' ), 5 );
-		\add_action( 'init', array( Backfill::class, 'register' ), 5 );
 
 		/*
 		 * Settings API option registration (`Options::init()`) and
 		 * Settings page UI assembly (`Settings_Fields::init()`) live in
 		 * their own classes, matching the layout the ActivityPub plugin
-		 * uses. Wired on `init` (priority 5) the same way as `Admin` and
-		 * `Backfill` above, so each can self-wire the request-specific
-		 * hooks it needs.
+		 * uses. Wired on `init` (priority 5) the same way as `Admin`
+		 * above, so each can self-wire the request-specific hooks it needs.
 		 */
 		\add_action( 'init', array( Options::class, 'init' ), 5 );
 		\add_action( 'init', array( Settings_Fields::class, 'init' ), 5 );
