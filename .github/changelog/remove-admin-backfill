@@ -1,0 +1,4 @@
+Significance: patch
+Type: removed
+
+The "Start Backfill" button has moved from the settings page to WP-CLI. Run "wp atmosphere backfill" to sync existing posts.

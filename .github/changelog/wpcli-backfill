@@ -1,0 +1,4 @@
+Significance: minor
+Type: added
+
+A new `wp atmosphere backfill` WP-CLI command publishes your older posts to Bluesky in bulk from the command line.

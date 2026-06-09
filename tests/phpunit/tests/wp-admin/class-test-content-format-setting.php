@@ -13,8 +13,8 @@ require_once __DIR__ . '/../content-parser/class-fake-parser.php';
 
 use Atmosphere\Atmosphere;
 use Atmosphere\Content_Parser\Registry;
+use Atmosphere\Sanitize;
 use Atmosphere\Tests\Content_Parser\Fake_Parser;
-use Atmosphere\WP_Admin\Admin;
 
 /**
  * Content format setting tests.
@@ -43,27 +43,27 @@ class Test_Content_Format_Setting extends \WP_UnitTestCase {
 	 * An empty value (automatic) passes through.
 	 */
 	public function test_empty_value_is_automatic() {
-		$this->assertSame( '', Admin::sanitize_content_format( '' ) );
+		$this->assertSame( '', Sanitize::content_format( '' ) );
 	}
 
 	/**
 	 * A registered NSID is accepted.
 	 */
 	public function test_registered_nsid_accepted() {
-		$this->assertSame( 'test.format', Admin::sanitize_content_format( 'test.format' ) );
+		$this->assertSame( 'test.format', Sanitize::content_format( 'test.format' ) );
 	}
 
 	/**
 	 * An unregistered NSID falls back to automatic.
 	 */
 	public function test_unregistered_nsid_rejected() {
-		$this->assertSame( '', Admin::sanitize_content_format( 'bogus.format' ) );
+		$this->assertSame( '', Sanitize::content_format( 'bogus.format' ) );
 	}
 
 	/**
 	 * A non-string value falls back to automatic.
 	 */
 	public function test_non_string_rejected() {
-		$this->assertSame( '', Admin::sanitize_content_format( array( 'x' ) ) );
+		$this->assertSame( '', Sanitize::content_format( array( 'x' ) ) );
 	}
 }

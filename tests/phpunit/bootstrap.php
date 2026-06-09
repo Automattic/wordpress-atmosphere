@@ -50,5 +50,9 @@ function http_disable_request( $response, $args, $url ) {
 }
 \tests_add_filter( 'pre_http_request', 'http_disable_request', 99, 3 );
 
+require_once __DIR__ . '/class-wp-cli-command.php';
+require_once __DIR__ . '/class-wp-cli-halt.php';
+require_once __DIR__ . '/class-wp-cli.php';
+
 // Start up the WP testing environment.
 require $_tests_dir . '/includes/bootstrap.php';

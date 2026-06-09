@@ -21,6 +21,7 @@ use Atmosphere\Transformer\Post;
 use Atmosphere\Transformer\Publication;
 use Atmosphere\Integrations\Load;
 use Atmosphere\WP_Admin\Admin;
+use Atmosphere\WP_Admin\Settings_Fields;
 
 /**
  * Atmosphere main class.
@@ -96,13 +97,22 @@ class Atmosphere {
 	 */
 	public function init(): void {
 		/*
-		 * Admin and Backfill self-register on init. This runs before
-		 * admin_init, rest_api_init, and wp_ajax_* so sub-hooks those
-		 * callbacks add are wired up in time, and it also ensures
-		 * REST/AJAX endpoints are available on non-admin requests.
+		 * Admin self-registers on init. This runs before admin_init,
+		 * rest_api_init, and wp_ajax_* so sub-hooks those callbacks add
+		 * are wired up in time, and it also ensures REST endpoints are
+		 * available on non-admin requests.
 		 */
 		\add_action( 'init', array( Admin::class, 'register' ), 5 );
-		\add_action( 'init', array( Backfill::class, 'register' ), 5 );
+
+		/*
+		 * Settings API option registration (`Options::init()`) and
+		 * Settings page UI assembly (`Settings_Fields::init()`) live in
+		 * their own classes, matching the layout the ActivityPub plugin
+		 * uses. Wired on `init` (priority 5) the same way as `Admin`
+		 * above, so each can self-wire the request-specific hooks it needs.
+		 */
+		\add_action( 'init', array( Options::class, 'init' ), 5 );
+		\add_action( 'init', array( Settings_Fields::class, 'init' ), 5 );
 
 		/*
 		 * Seed the long-form composition strategy from the user's
@@ -619,7 +629,14 @@ class Atmosphere {
 			return;
 		}
 
-		if ( '0' === \get_option( 'atmosphere_auto_publish', '1' ) ) {
+		/*
+		 * Publish only when auto-publish is explicitly on. An unchecked
+		 * checkbox submits no value, so a saved "off" state is stored as
+		 * an empty string rather than '0' — comparing against '1' (with a
+		 * '1' default for never-saved installs) treats every non-'1' value
+		 * as off, the same way the ActivityPub plugin gates its toggles.
+		 */
+		if ( '1' !== \get_option( 'atmosphere_auto_publish', '1' ) ) {
 			return;
 		}
 
