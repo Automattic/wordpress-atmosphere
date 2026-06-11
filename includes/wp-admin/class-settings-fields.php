@@ -111,7 +111,7 @@ class Settings_Fields {
 
 		\add_settings_field(
 			'atmosphere_sync_reactions',
-			\__( 'Reactions', 'atmosphere' ),
+			\__( 'Likes and reposts', 'atmosphere' ),
 			array( self::class, 'render_sync_reactions_field' ),
 			'atmosphere',
 			'atmosphere_reactions'
@@ -464,6 +464,7 @@ class Settings_Fields {
 			>
 			<?php \esc_html_e( 'Save likes and reposts', 'atmosphere' ); ?>
 		</label>
+		<p class="description"><?php \esc_html_e( 'New likes and reposts are skipped while this is disabled and will not be imported when you turn it back on. Reactions that were already imported are kept.', 'atmosphere' ); ?></p>
 		<?php
 	}
 
@@ -481,6 +482,7 @@ class Settings_Fields {
 			>
 			<?php \esc_html_e( 'Save replies as comments', 'atmosphere' ); ?>
 		</label>
+		<p class="description"><?php \esc_html_e( 'New replies are skipped while this is disabled and will not be imported when you turn it back on. Replies that were already imported are kept.', 'atmosphere' ); ?></p>
 		<?php
 	}
 }

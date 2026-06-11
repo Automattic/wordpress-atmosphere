@@ -116,6 +116,11 @@ class Reaction_Sync {
 	/**
 	 * Whether likes and reposts are imported (user setting).
 	 *
+	 * The gate is intentionally per-item: the sync watermarks keep
+	 * advancing while the setting is off, so interactions from the
+	 * off period are skipped for good rather than imported
+	 * retroactively when the setting is re-enabled.
+	 *
 	 * @return bool
 	 */
 	private static function reactions_enabled(): bool {
@@ -124,6 +129,10 @@ class Reaction_Sync {
 
 	/**
 	 * Whether replies are imported as comments (user setting).
+	 *
+	 * Same going-forward semantics as {@see self::reactions_enabled()}:
+	 * replies that arrive while the setting is off are not imported
+	 * retroactively on re-enable.
 	 *
 	 * @return bool
 	 */
