@@ -57,6 +57,28 @@ class Options {
 
 		\register_setting(
 			'atmosphere',
+			'atmosphere_sync_reactions',
+			array(
+				'type'         => 'boolean',
+				'description'  => 'Whether Bluesky likes and reposts are imported.',
+				'default'      => '1',
+				'show_in_rest' => true,
+			)
+		);
+
+		\register_setting(
+			'atmosphere',
+			'atmosphere_sync_replies',
+			array(
+				'type'         => 'boolean',
+				'description'  => 'Whether Bluesky replies are imported as comments.',
+				'default'      => '1',
+				'show_in_rest' => true,
+			)
+		);
+
+		\register_setting(
+			'atmosphere',
 			'atmosphere_long_form_composition',
 			array(
 				'type'              => 'string',
