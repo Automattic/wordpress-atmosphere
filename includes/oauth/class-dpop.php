@@ -135,7 +135,10 @@ class DPoP {
 
 			return self::sign_es256( $header, $payload, $jwk );
 		} catch ( \Throwable $e ) {
-			\wp_trigger_error( __METHOD__, 'DPoP proof generation failed: ' . self::describe_throwable( $e ) );
+			// wp_trigger_error() requires WP 6.4; the plugin supports 6.2.
+			if ( \function_exists( 'wp_trigger_error' ) ) {
+				\wp_trigger_error( __METHOD__, 'DPoP proof generation failed: ' . self::describe_throwable( $e ) );
+			}
 			return false;
 		}
 	}
