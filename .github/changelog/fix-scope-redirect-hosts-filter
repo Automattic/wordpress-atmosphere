@@ -1,0 +1,4 @@
+Significance: patch
+Type: security
+
+Hardened the Bluesky connect flow so a redirect interruption cannot loosen redirect safety checks for the rest of the request.

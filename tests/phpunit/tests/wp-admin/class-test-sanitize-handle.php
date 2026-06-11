@@ -254,6 +254,37 @@ class Test_Sanitize_Handle extends WP_UnitTestCase {
 	}
 
 	/**
+	 * A throwing `wp_redirect` filter must not leave the auth-server
+	 * host attached to `allowed_redirect_hosts` for the rest of the
+	 * request. The redirect is wrapped in try/finally so the scoped
+	 * filter is detached on the exception path, too.
+	 */
+	public function test_allowed_redirect_hosts_filter_is_removed_when_redirect_throws(): void {
+		$this->become_admin();
+		$this->stub_resolver_chain( 'https://auth.example.com/oauth/authorize' );
+
+		$this->add_filter_tracked(
+			'wp_redirect',
+			static function () {
+				throw new WPDieException( 'redirect_intercepted' );
+			}
+		);
+
+		try {
+			Sanitize::handle( 'alice.bsky-test-handle.io' );
+			$this->fail( 'Expected redirect to be intercepted.' );
+		} catch ( WPDieException $e ) {
+			$this->assertSame( 'redirect_intercepted', $e->getMessage() );
+		}
+
+		$this->assertNotContains(
+			'auth.example.com',
+			\apply_filters( 'allowed_redirect_hosts', array(), '' ),
+			'The scoped allowed_redirect_hosts filter must be detached even when the redirect throws.'
+		);
+	}
+
+	/**
 	 * A leading "@" is stripped before resolution. People copy handles
 	 * from Bluesky as "@alice.bsky.social", but the resolver rejects the
 	 * "@"-prefixed form as an invalid DNS-style identifier. If the "@"
