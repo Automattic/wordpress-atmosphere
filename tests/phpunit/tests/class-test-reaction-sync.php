@@ -1200,8 +1200,7 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 
 		$this->assertFalse( $method->invoke( null, $notification, 'like' ) );
 
-		// Query by type to bypass the always-on display exclusion and pin
-		// the assertion at the storage layer (no row was written).
+		// Query by type to pin the assertion at the storage layer.
 		$this->assertCount(
 			0,
 			\get_comments(
@@ -1254,84 +1253,5 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 			),
 			'No reply comment should be written when replies are off.'
 		);
-	}
-
-	/**
-	 * Likes and reposts are always excluded from the stored comment count,
-	 * regardless of the setting — they are reactions, not comments.
-	 */
-	public function test_reactions_always_excluded_from_count() {
-		$post_id = self::factory()->post->create();
-		\wp_insert_comment(
-			array(
-				'comment_post_ID'  => $post_id,
-				'comment_type'     => 'comment',
-				'comment_approved' => '1',
-			)
-		);
-		\wp_insert_comment(
-			array(
-				'comment_post_ID'  => $post_id,
-				'comment_type'     => 'like',
-				'comment_approved' => '1',
-			)
-		);
-		\wp_insert_comment(
-			array(
-				'comment_post_ID'  => $post_id,
-				'comment_type'     => 'repost',
-				'comment_approved' => '1',
-			)
-		);
-
-		$this->assertSame(
-			1,
-			Reaction_Sync::maybe_exclude_reactions_from_count( null, 0, $post_id ),
-			'Likes and reposts must never count toward the comment total.'
-		);
-		$this->assertSame(
-			5,
-			Reaction_Sync::maybe_exclude_reactions_from_count( 5, 0, $post_id ),
-			'A count already computed by another filter is left untouched.'
-		);
-	}
-
-	/**
-	 * On a single post, the comment query excludes like/repost types, but
-	 * leaves any query that already constrains the comment type alone.
-	 */
-	public function test_comment_query_excludes_reactions_on_singular() {
-		$post_id = self::factory()->post->create();
-		$this->go_to( \get_permalink( $post_id ) );
-
-		// Default singular comment list: reactions excluded.
-		$query             = new \WP_Comment_Query();
-		$query->query_vars = array();
-		Reaction_Sync::maybe_exclude_reactions_from_query( $query );
-		$this->assertSame( array( 'like', 'repost' ), $query->query_vars['type__not_in'] );
-
-		// A query that already constrains the type is left untouched.
-		$query             = new \WP_Comment_Query();
-		$query->query_vars = array( 'type__not_in' => array( 'pingback' ) );
-		Reaction_Sync::maybe_exclude_reactions_from_query( $query );
-		$this->assertSame( array( 'pingback' ), $query->query_vars['type__not_in'] );
-
-		// An explicit request for a specific type is left untouched.
-		$query             = new \WP_Comment_Query();
-		$query->query_vars = array( 'type' => 'like' );
-		Reaction_Sync::maybe_exclude_reactions_from_query( $query );
-		$this->assertArrayNotHasKey( 'type__not_in', $query->query_vars );
-	}
-
-	/**
-	 * Off a singular view, the comment query is left untouched.
-	 */
-	public function test_comment_query_untouched_off_singular() {
-		$this->go_to( \home_url( '/' ) );
-
-		$query             = new \WP_Comment_Query();
-		$query->query_vars = array();
-		Reaction_Sync::maybe_exclude_reactions_from_query( $query );
-		$this->assertArrayNotHasKey( 'type__not_in', $query->query_vars );
 	}
 }

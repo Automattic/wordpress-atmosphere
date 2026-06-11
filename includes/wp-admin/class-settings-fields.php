@@ -446,7 +446,7 @@ class Settings_Fields {
 	 */
 	public static function render_reactions_section(): void {
 		?>
-		<p><?php \esc_html_e( 'Choose which Bluesky interactions are saved to your posts. Likes and reposts are not shown in your comment section.', 'atmosphere' ); ?></p>
+		<p><?php \esc_html_e( 'Choose which Bluesky interactions are saved to your posts.', 'atmosphere' ); ?></p>
 		<?php
 	}
 

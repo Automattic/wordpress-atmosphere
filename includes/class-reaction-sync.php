@@ -106,31 +106,11 @@ class Reaction_Sync {
 	private const OPTION_LAST_SEEN_OWN_PREFIX = 'atmosphere_last_seen_own_';
 
 	/**
-	 * Comment types treated as reactions rather than comments.
-	 *
-	 * These are always kept out of the comment list, the REST comments
-	 * endpoint, and the comment count — they are reactions, not comments.
-	 *
-	 * @var string[]
-	 */
-	private const REACTION_COMMENT_TYPES = array( 'like', 'repost' );
-
-	/**
 	 * Register display-side hooks.
 	 */
 	public static function register(): void {
 		\add_filter( 'get_avatar_comment_types', array( self::class, 'avatar_comment_types' ) );
 		\add_filter( 'pre_get_avatar_data', array( self::class, 'filter_avatar_data' ), 10, 2 );
-
-		/*
-		 * Likes and reposts are reactions, not comments, so they are always
-		 * kept out of the front-end comment list and the comment count. The
-		 * REST comments endpoint already defaults to `type => comment`,
-		 * which excludes them, so it needs no hook of its own. The rows stay
-		 * in `wp_comments` as the federation history record.
-		 */
-		\add_action( 'pre_get_comments', array( self::class, 'maybe_exclude_reactions_from_query' ) );
-		\add_filter( 'pre_wp_update_comment_count_now', array( self::class, 'maybe_exclude_reactions_from_count' ), 5, 3 );
 	}
 
 	/**
@@ -149,70 +129,6 @@ class Reaction_Sync {
 	 */
 	private static function replies_enabled(): bool {
 		return '1' === \get_option( 'atmosphere_sync_replies', '1' );
-	}
-
-	/**
-	 * Exclude like/repost comments from the single-post comment list.
-	 *
-	 * Mirrors the ActivityPub plugin's `comment_query`: only the front-end
-	 * singular comment list is touched. REST already defaults to the
-	 * 'comment' type, the admin needs every row for moderation, and any
-	 * query that already constrains the comment type is left alone.
-	 *
-	 * @param \WP_Comment_Query $query Comment query, modified by reference.
-	 */
-	public static function maybe_exclude_reactions_from_query( $query ): void {
-		if ( ! $query instanceof \WP_Comment_Query ) {
-			return;
-		}
-
-		// REST handles its own type default; the admin needs every row.
-		if ( ( \defined( 'REST_REQUEST' ) && REST_REQUEST ) || \is_admin() ) {
-			return;
-		}
-
-		// Only the single-post comment list should hide reactions.
-		if ( ! \is_singular() ) {
-			return;
-		}
-
-		// Leave queries that already constrain the comment type alone.
-		if (
-			! empty( $query->query_vars['type'] )
-			|| ! empty( $query->query_vars['type__in'] )
-			|| ! empty( $query->query_vars['type__not_in'] )
-		) {
-			return;
-		}
-
-		$query->query_vars['type__not_in'] = self::REACTION_COMMENT_TYPES;
-	}
-
-	/**
-	 * Drop like/repost rows from the stored comment count.
-	 *
-	 * Hooked at priority 5 so a single recomputation can compose with
-	 * other plugins that also exclude comment types from the count.
-	 *
-	 * @param int|null $new_count Pre-computed count, or null for the default.
-	 * @param int      $old_count The current stored count.
-	 * @param int      $post_id   The post being counted.
-	 * @return int|null
-	 */
-	public static function maybe_exclude_reactions_from_count( $new_count, $old_count, $post_id ) {
-		if ( null !== $new_count ) {
-			return $new_count;
-		}
-
-		global $wpdb;
-
-		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
-		return (int) $wpdb->get_var(
-			$wpdb->prepare(
-				"SELECT COUNT(*) FROM {$wpdb->comments} WHERE comment_post_ID = %d AND comment_approved = '1' AND comment_type NOT IN ( 'like', 'repost' )",
-				$post_id
-			)
-		);
 	}
 
 	/**
