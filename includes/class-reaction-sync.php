@@ -114,6 +114,33 @@ class Reaction_Sync {
 	}
 
 	/**
+	 * Whether likes and reposts are imported (user setting).
+	 *
+	 * The gate is intentionally per-item: the sync watermarks keep
+	 * advancing while the setting is off, so interactions from the
+	 * off period are skipped for good rather than imported
+	 * retroactively when the setting is re-enabled.
+	 *
+	 * @return bool
+	 */
+	private static function reactions_enabled(): bool {
+		return '1' === \get_option( 'atmosphere_sync_reactions', '1' );
+	}
+
+	/**
+	 * Whether replies are imported as comments (user setting).
+	 *
+	 * Same going-forward semantics as {@see self::reactions_enabled()}:
+	 * replies that arrive while the setting is off are not imported
+	 * retroactively on re-enable.
+	 *
+	 * @return bool
+	 */
+	private static function replies_enabled(): bool {
+		return '1' === \get_option( 'atmosphere_sync_replies', '1' );
+	}
+
+	/**
 	 * Tell WordPress that like and repost comments are avatar-eligible.
 	 *
 	 * @param array $types Registered avatar-eligible comment types.
@@ -384,6 +411,10 @@ class Reaction_Sync {
 	 * @return int|false Comment ID or false.
 	 */
 	private static function process_reply( array $notification ): int|false {
+		if ( ! self::replies_enabled() ) {
+			return false;
+		}
+
 		$reply_uri = $notification['uri'] ?? '';
 		$record    = $notification['record'] ?? array();
 		$author    = $notification['author'] ?? array();
@@ -494,6 +525,10 @@ class Reaction_Sync {
 	 * @return int|false Comment ID or false.
 	 */
 	private static function process_subject_reaction( array $notification, string $comment_type ): int|false {
+		if ( ! self::reactions_enabled() ) {
+			return false;
+		}
+
 		$uri    = $notification['uri'] ?? '';
 		$record = $notification['record'] ?? array();
 		$author = $notification['author'] ?? array();

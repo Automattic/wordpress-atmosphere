@@ -1174,4 +1174,84 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 		$this->assertCount( 1, $comments );
 		$this->assertSame( (string) $local_comment, (string) $comments[0]->comment_ID );
 	}
+
+	/**
+	 * With the reactions setting off, likes and reposts are not imported.
+	 */
+	public function test_reactions_setting_off_skips_import() {
+		$post_id  = self::factory()->post->create();
+		$post_uri = 'at://did:plc:me/app.bsky.feed.post/reactionoff';
+		\update_post_meta( $post_id, BskyPost::META_URI, $post_uri );
+
+		\update_option( 'atmosphere_sync_reactions', '0' );
+
+		$method       = new \ReflectionMethod( Reaction_Sync::class, 'process_subject_reaction' );
+		$notification = array(
+			'uri'    => 'at://did:plc:liker/app.bsky.feed.like/likeoff',
+			'cid'    => 'bafyreilikeoff',
+			'record' => array(
+				'subject' => array( 'uri' => $post_uri ),
+			),
+			'author' => array(
+				'did'    => 'did:plc:liker',
+				'handle' => 'liker.bsky.social',
+			),
+		);
+
+		$this->assertFalse( $method->invoke( null, $notification, 'like' ) );
+
+		// Query by type to pin the assertion at the storage layer.
+		$this->assertCount(
+			0,
+			\get_comments(
+				array(
+					'post_id'  => $post_id,
+					'type__in' => array( 'like', 'repost' ),
+				)
+			),
+			'No like/repost row should be written when reactions are off.'
+		);
+	}
+
+	/**
+	 * With the replies setting off, replies are not imported.
+	 */
+	public function test_replies_setting_off_skips_import() {
+		$post_id  = self::factory()->post->create();
+		$post_uri = 'at://did:plc:me/app.bsky.feed.post/replyoff';
+		\update_post_meta( $post_id, BskyPost::META_URI, $post_uri );
+
+		\update_option( 'atmosphere_sync_replies', '0' );
+
+		$method       = new \ReflectionMethod( Reaction_Sync::class, 'process_reply' );
+		$notification = array(
+			'uri'    => 'at://did:plc:replier/app.bsky.feed.post/replyoff',
+			'cid'    => 'bafyreireplyoff',
+			'record' => array(
+				'text'  => 'Nice one',
+				'reply' => array(
+					'parent' => array( 'uri' => $post_uri ),
+					'root'   => array( 'uri' => $post_uri ),
+				),
+			),
+			'author' => array(
+				'did'    => 'did:plc:replier',
+				'handle' => 'replier.bsky.social',
+			),
+		);
+
+		$this->assertFalse( $method->invoke( null, $notification ) );
+
+		// Query by type to pin the assertion at the storage layer.
+		$this->assertCount(
+			0,
+			\get_comments(
+				array(
+					'post_id'  => $post_id,
+					'type__in' => array( 'comment' ),
+				)
+			),
+			'No reply comment should be written when replies are off.'
+		);
+	}
 }

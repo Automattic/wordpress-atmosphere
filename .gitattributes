@@ -23,6 +23,9 @@
 /CLAUDE.md        export-ignore
 /AGENTS.md        export-ignore
 /README.md        export-ignore
+/CODE_OF_CONDUCT.md export-ignore
+/CONTRIBUTING.md  export-ignore
+/SECURITY.md      export-ignore
 
 # GitHub linguist attributes
 /docs/**           linguist-documentation
