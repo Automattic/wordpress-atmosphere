@@ -115,4 +115,129 @@ class Test_Facet extends WP_UnitTestCase {
 			);
 		}
 	}
+
+	/**
+	 * Applying a link facet must resolve Bluesky's truncated display
+	 * string back to the real URL. This is the exact record reported in
+	 * issue #132: the post `text` stores `bsky.app/profile/jere...` and
+	 * the full URL lives only in the facet's `uri`.
+	 */
+	public function test_apply_resolves_truncated_link() {
+		$text   = "And to put the new editor to the test, here is an exact copy of my post, just copied / pasted into SkyPress :)\n\nbsky.app/profile/jere...";
+		$facets = array(
+			array(
+				'index'    => array(
+					'byteStart' => 112,
+					'byteEnd'   => 136,
+				),
+				'features' => array(
+					array(
+						'$type' => 'app.bsky.richtext.facet#link',
+						'uri'   => 'https://bsky.app/profile/jeremy.herve.bzh/post/3mnzu7nvcss2e',
+					),
+				),
+			),
+		);
+
+		$result = Facet::apply( $text, $facets );
+
+		$this->assertStringContainsString(
+			'<a href="https://bsky.app/profile/jeremy.herve.bzh/post/3mnzu7nvcss2e">bsky.app/profile/jere...</a>',
+			$result
+		);
+		// Surrounding plain text is preserved verbatim.
+		$this->assertStringContainsString( 'just copied / pasted into SkyPress :)', $result );
+	}
+
+	/**
+	 * Text with no facets must come back byte-for-byte identical.
+	 */
+	public function test_apply_without_facets_is_identity() {
+		$text = 'Plain reply, no links here.';
+		$this->assertSame( $text, Facet::apply( $text, array() ) );
+	}
+
+	/**
+	 * Mention facets link to the author's profile by DID.
+	 */
+	public function test_apply_links_mention() {
+		$text   = 'Hi @alice.bsky.social!';
+		$facets = array(
+			array(
+				'index'    => array(
+					'byteStart' => 3,
+					'byteEnd'   => 21,
+				),
+				'features' => array(
+					array(
+						'$type' => 'app.bsky.richtext.facet#mention',
+						'did'   => 'did:plc:abc123',
+					),
+				),
+			),
+		);
+
+		$result = Facet::apply( $text, $facets );
+
+		$this->assertStringContainsString(
+			'<a href="https://bsky.app/profile/did:plc:abc123">@alice.bsky.social</a>',
+			$result
+		);
+	}
+
+	/**
+	 * Facet indexes are UTF-8 byte ranges. A multibyte character before
+	 * the facet must not shift the splice — reassembly is byte-based.
+	 */
+	public function test_apply_respects_byte_offsets_with_multibyte() {
+		// "héllo " is 7 bytes (é is 2 bytes); the link starts at byte 7.
+		$text = 'héllo https://example.com end';
+		$url  = 'https://example.com';
+
+		$facets = array(
+			array(
+				'index'    => array(
+					'byteStart' => 7,
+					'byteEnd'   => 7 + \strlen( $url ),
+				),
+				'features' => array(
+					array(
+						'$type' => 'app.bsky.richtext.facet#link',
+						'uri'   => $url,
+					),
+				),
+			),
+		);
+
+		$result = Facet::apply( $text, $facets );
+
+		$this->assertStringContainsString( '<a href="https://example.com">https://example.com</a>', $result );
+		$this->assertStringContainsString( 'héllo ', $result );
+		$this->assertStringContainsString( ' end', $result );
+	}
+
+	/**
+	 * Malformed or out-of-bounds facet ranges are skipped without
+	 * corrupting the surrounding text.
+	 */
+	public function test_apply_skips_invalid_ranges() {
+		$text   = 'Short text';
+		$facets = array(
+			// byteEnd past the end of the string.
+			array(
+				'index'    => array(
+					'byteStart' => 6,
+					'byteEnd'   => 999,
+				),
+				'features' => array(
+					array(
+						'$type' => 'app.bsky.richtext.facet#link',
+						'uri'   => 'https://example.com',
+					),
+				),
+			),
+		);
+
+		$this->assertSame( $text, Facet::apply( $text, $facets ) );
+	}
 }

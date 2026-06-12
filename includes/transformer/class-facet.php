@@ -77,6 +77,103 @@ class Facet {
 	}
 
 	/**
+	 * Reassemble rich text by applying facets back onto a plain-text string.
+	 *
+	 * The inverse of {@see Facet::extract()}. AT Protocol stores a post's
+	 * `text` as the *display* string — Bluesky truncates long URLs (e.g.
+	 * `bsky.app/profile/jere...`) — while the real target lives in the
+	 * `facets` array, which maps a byte range in `text` to a feature
+	 * (link `uri`, mention `did`, or `tag`). Without this step an imported
+	 * comment keeps only the lossy display string.
+	 *
+	 * Link and mention features become anchors; tags become hashtag-search
+	 * links; the byte ranges between facets are copied through untouched.
+	 * The result is an HTML fragment intended to be passed through
+	 * `wp_kses_post()` by the caller (as the reaction-sync path does), so
+	 * only the generated `href` attributes are escaped here.
+	 *
+	 * @since unreleased
+	 *
+	 * @param string $text   Plain-text display string from the record.
+	 * @param array  $facets Facet array from the record, as stored on the PDS.
+	 * @return string Text with facets resolved to anchors.
+	 */
+	public static function apply( string $text, array $facets ): string {
+		if ( empty( $facets ) ) {
+			return $text;
+		}
+
+		\usort(
+			$facets,
+			static fn( $a, $b ) => ( $a['index']['byteStart'] ?? 0 ) <=> ( $b['index']['byteStart'] ?? 0 )
+		);
+
+		// Facet indexes are UTF-8 byte offsets, so splice in byte space.
+		$length = \strlen( $text );
+		$cursor = 0;
+		$result = '';
+
+		foreach ( $facets as $facet ) {
+			$start = $facet['index']['byteStart'] ?? null;
+			$end   = $facet['index']['byteEnd'] ?? null;
+
+			/*
+			 * Skip ranges that are malformed, empty, out of bounds, or
+			 * that overlap a facet we've already consumed. Dropping a bad
+			 * range leaves its display text in place rather than corrupting
+			 * the surrounding bytes.
+			 */
+			if ( ! \is_int( $start ) || ! \is_int( $end ) || $start < $cursor || $start >= $end || $end > $length ) {
+				continue;
+			}
+
+			$result .= \substr( $text, $cursor, $start - $cursor );
+			$result .= self::render_feature( $facet['features'][0] ?? array(), \substr( $text, $start, $end - $start ) );
+			$cursor  = $end;
+		}
+
+		return $result . \substr( $text, $cursor );
+	}
+
+	/**
+	 * Render a single facet feature around its display text.
+	 *
+	 * Unknown feature types fall back to the display text unchanged, so a
+	 * facet type we don't handle never drops the text it annotated.
+	 *
+	 * @param array  $feature Facet feature (first entry of a facet's `features`).
+	 * @param string $display Display text the facet covers.
+	 * @return string HTML fragment, or the display text unchanged.
+	 */
+	private static function render_feature( array $feature, string $display ): string {
+		switch ( $feature['$type'] ?? '' ) {
+			case 'app.bsky.richtext.facet#link':
+				$uri = $feature['uri'] ?? '';
+				if ( '' === $uri ) {
+					return $display;
+				}
+				return '<a href="' . \esc_url( $uri ) . '">' . $display . '</a>';
+
+			case 'app.bsky.richtext.facet#mention':
+				$did = $feature['did'] ?? '';
+				if ( '' === $did ) {
+					return $display;
+				}
+				return '<a href="' . \esc_url( 'https://bsky.app/profile/' . $did ) . '">' . $display . '</a>';
+
+			case 'app.bsky.richtext.facet#tag':
+				$tag = $feature['tag'] ?? '';
+				if ( '' === $tag ) {
+					return $display;
+				}
+				return '<a href="' . \esc_url( 'https://bsky.app/hashtag/' . \rawurlencode( $tag ) ) . '">' . $display . '</a>';
+
+			default:
+				return $display;
+		}
+	}
+
+	/**
 	 * Find URLs in text and return link facets.
 	 *
 	 * @param string $text Plain text.

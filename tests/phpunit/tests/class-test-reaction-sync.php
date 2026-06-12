@@ -190,6 +190,65 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 	}
 
 	/**
+	 * A reply whose `text` contains a Bluesky-truncated link must be
+	 * stored with the real URL resolved from the record's facets, not
+	 * the lossy `bsky.app/profile/jere...` display string. Regression
+	 * test for issue #132.
+	 */
+	public function test_process_reply_resolves_truncated_link_facet() {
+		$post_id  = self::factory()->post->create();
+		$post_uri = 'at://did:plc:me/app.bsky.feed.post/mypost';
+
+		\update_post_meta( $post_id, BskyPost::META_URI, $post_uri );
+
+		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_reply' );
+
+		$notification = array(
+			'uri'    => 'at://did:plc:replier/app.bsky.feed.post/linkreply',
+			'cid'    => 'bafyrei789',
+			'record' => array(
+				'text'      => "An exact copy of my post :)\n\nbsky.app/profile/jere...",
+				'createdAt' => '2026-06-11T18:31:10.876Z',
+				'facets'    => array(
+					array(
+						'index'    => array(
+							'byteStart' => 29,
+							'byteEnd'   => 53,
+						),
+						'features' => array(
+							array(
+								'$type' => 'app.bsky.richtext.facet#link',
+								'uri'   => 'https://bsky.app/profile/jeremy.herve.bzh/post/3mnzu7nvcss2e',
+							),
+						),
+					),
+				),
+				'reply'     => array(
+					'parent' => array( 'uri' => $post_uri ),
+					'root'   => array( 'uri' => $post_uri ),
+				),
+			),
+			'author' => array(
+				'did'    => 'did:plc:replier',
+				'handle' => 'replier.bsky.social',
+			),
+		);
+
+		$comment_id = $method->invoke( null, $notification );
+
+		$this->assertIsInt( $comment_id );
+
+		$comment = \get_comment( $comment_id );
+
+		$this->assertStringContainsString(
+			'<a href="https://bsky.app/profile/jeremy.herve.bzh/post/3mnzu7nvcss2e">bsky.app/profile/jere...</a>',
+			$comment->comment_content
+		);
+		// The plain-text portion survives intact.
+		$this->assertStringContainsString( 'An exact copy of my post :)', $comment->comment_content );
+	}
+
+	/**
 	 * Test that process_reply drops a reply when get_comment() returns
 	 * null for the resolved parent comment ID (race: comment deleted
 	 * between the meta lookup and the get_comment call). The previous

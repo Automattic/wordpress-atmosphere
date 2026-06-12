@@ -11,6 +11,7 @@ namespace Atmosphere;
 \defined( 'ABSPATH' ) || exit;
 
 use Atmosphere\OAuth\Client;
+use Atmosphere\Transformer\Facet;
 use Atmosphere\Transformer\Post as BskyPost;
 
 /**
@@ -480,6 +481,15 @@ class Reaction_Sync {
 		if ( '' === $text ) {
 			return false;
 		}
+
+		/*
+		 * Bluesky stores `text` as the display string — long URLs are
+		 * truncated to e.g. `bsky.app/profile/jere...` and the real
+		 * target lives only in `facets`. Resolve those byte ranges back
+		 * into anchors before the text becomes comment content; otherwise
+		 * imported replies keep the lossy, unclickable display string.
+		 */
+		$text = Facet::apply( $text, $record['facets'] ?? array() );
 
 		/**
 		 * Filters whether a reply should be synced as a WordPress comment.
