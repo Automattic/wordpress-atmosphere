@@ -1267,10 +1267,9 @@ class Atmosphere {
 		}
 
 		if ( ! \get_transient( 'atmosphere_invalid_long_form_composition_logged' ) ) {
-			// phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
-			\error_log(
+			debug_log(
 				\sprintf(
-					'[atmosphere] invalid `atmosphere_long_form_composition` option value %s; falling through to default',
+					'invalid `atmosphere_long_form_composition` option value %s; falling through to default',
 					\wp_json_encode( $option )
 				)
 			);
@@ -1385,9 +1384,9 @@ class Atmosphere {
 					 * replies + outbound comment replies + document) on the
 					 * PDS with no operator-visible breadcrumb.
 					 */
-					\error_log( // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
+					debug_log(
 						\sprintf(
-							'[atmosphere] delete_records failed (bsky=%d, doc=%s, comments=%d): %s — %s',
+							'delete_records failed (bsky=%d, doc=%s, comments=%d): %s — %s',
 							\is_array( $bsky_tids ) ? \count( $bsky_tids ) : (int) ! empty( $bsky_tids ),
 							$doc_tid ? 'yes' : 'no',
 							\count( $comment_tids ),
@@ -1501,9 +1500,9 @@ class Atmosphere {
 					// Worst-case path: the WP comment row is already gone,
 					// so operators need the TID to clean up the orphan
 					// record manually.
-					\error_log( // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
+					debug_log(
 						\sprintf(
-							'[atmosphere] delete_comment_record tid=%s failed: %s — %s',
+							'delete_comment_record tid=%s failed: %s — %s',
 							$tid,
 							$result->get_error_code(),
 							$result->get_error_message()
@@ -1672,19 +1671,17 @@ class Atmosphere {
 		 * PDS error messages flow through `WP_Error::get_error_message()`
 		 * via `API::apply_writes` and can include attacker-controlled
 		 * bytes (CRLF, ANSI escapes, fake `[atmosphere]` prefixes that
-		 * imitate other log lines). `error_log` does not escape them,
-		 * so a misbehaving PDS could otherwise smuggle multiline noise
+		 * imitate other log lines). `debug_log()` collapses CRLF before
+		 * writing, so a misbehaving PDS cannot smuggle multiline noise
 		 * into log-shipping pipelines that parse line prefixes.
 		 */
-		$message = \str_replace( array( "\r", "\n" ), ' ', $result->get_error_message() );
-
-		\error_log( // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
+		debug_log(
 			\sprintf(
-				'[atmosphere] %s %d failed: %s — %s',
+				'%s %d failed: %s — %s',
 				$op,
 				$object_id,
 				$result->get_error_code(),
-				$message
+				$result->get_error_message()
 			)
 		);
 	}

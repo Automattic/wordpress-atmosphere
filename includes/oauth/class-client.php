@@ -14,6 +14,7 @@ namespace Atmosphere\OAuth;
 
 use Atmosphere\Atmosphere;
 use function Atmosphere\clear_scheduled_hooks;
+use function Atmosphere\debug_log;
 use function Atmosphere\get_connection;
 
 /**
@@ -1380,9 +1381,9 @@ class Client {
 		);
 
 		if ( \is_wp_error( $response ) ) {
-			\error_log( // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
+			debug_log(
 				\sprintf(
-					'[atmosphere] refresh-token revocation failed: %s',
+					'refresh-token revocation failed: %s',
 					$response->get_error_message()
 				)
 			);
@@ -1422,9 +1423,9 @@ class Client {
 			);
 
 			if ( \is_wp_error( $response ) ) {
-				\error_log( // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
+				debug_log(
 					\sprintf(
-						'[atmosphere] refresh-token revocation retry failed: %s',
+						'refresh-token revocation retry failed: %s',
 						$response->get_error_message()
 					)
 				);
@@ -1446,9 +1447,9 @@ class Client {
 		 * way disconnect proceeds.
 		 */
 		if ( $status >= 400 ) {
-			\error_log( // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
+			debug_log(
 				\sprintf(
-					'[atmosphere] refresh-token revocation returned status %d',
+					'refresh-token revocation returned status %d',
 					$status
 				)
 			);

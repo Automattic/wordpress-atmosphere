@@ -160,10 +160,9 @@ class Publisher {
 				 * `source` / `associatedProfiles` enrichment for this
 				 * one record.
 				 */
-				// phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
-				\error_log(
+				debug_log(
 					\sprintf(
-						'[atmosphere] post %d: document CID precompute failed (%s) — publishing without document associatedRef',
+						'post %d: document CID precompute failed (%s) — publishing without document associatedRef',
 						$post->ID,
 						$doc_cid->get_error_code()
 					)
@@ -672,10 +671,9 @@ class Publisher {
 
 		\update_post_meta( $post_id, Post::META_ORPHAN_RECORDS, $existing );
 
-		// phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
-		\error_log(
+		debug_log(
 			\sprintf(
-				'[atmosphere] thread rollback failed for post %d; orphans persisted to %s: %s',
+				'thread rollback failed for post %d; orphans persisted to %s: %s',
 				$post_id,
 				Post::META_ORPHAN_RECORDS,
 				\wp_json_encode( $entry )
@@ -1096,10 +1094,9 @@ class Publisher {
 
 		\update_post_meta( $post_id, Post::META_ORPHAN_RECORDS, $existing );
 
-		// phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
-		\error_log(
+		debug_log(
 			\sprintf(
-				'[atmosphere] rewrite_thread republish failed for post %d; deleted records logged to %s: %s',
+				'rewrite_thread republish failed for post %d; deleted records logged to %s: %s',
 				$post_id,
 				Post::META_ORPHAN_RECORDS,
 				$publish_error->get_error_message()
@@ -1780,10 +1777,9 @@ class Publisher {
 			)
 		);
 
-		// phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
-		\error_log(
+		debug_log(
 			\sprintf(
-				'[atmosphere] post %d: doc-ref update failed during thread publish (%s); continuing with replies',
+				'post %d: doc-ref update failed during thread publish (%s); continuing with replies',
 				$post_id,
 				$error->get_error_code()
 			)
