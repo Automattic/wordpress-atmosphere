@@ -217,6 +217,38 @@ class Test_Facet extends WP_UnitTestCase {
 	}
 
 	/**
+	 * Display text comes from the remote record, so HTML-significant
+	 * characters in it must be escaped — otherwise a crafted `text` could
+	 * break out of the anchor or inject markup before KSES runs.
+	 */
+	public function test_apply_escapes_anchor_display_text() {
+		$text   = 'evil</a><script>alert(1)</script>';
+		$facets = array(
+			array(
+				'index'    => array(
+					'byteStart' => 0,
+					'byteEnd'   => \strlen( $text ),
+				),
+				'features' => array(
+					array(
+						'$type' => 'app.bsky.richtext.facet#link',
+						'uri'   => 'https://example.com',
+					),
+				),
+			),
+		);
+
+		$result = Facet::apply( $text, $facets );
+
+		// The raw closing tag and script must not survive verbatim.
+		$this->assertStringNotContainsString( '</a><script>', $result );
+		$this->assertStringContainsString( '&lt;/a&gt;&lt;script&gt;', $result );
+		// Exactly one real anchor, opened and closed by us.
+		$this->assertSame( 1, \substr_count( $result, '<a href=' ) );
+		$this->assertSame( 1, \substr_count( $result, '</a>' ) );
+	}
+
+	/**
 	 * Malformed or out-of-bounds facet ranges are skipped without
 	 * corrupting the surrounding text.
 	 */

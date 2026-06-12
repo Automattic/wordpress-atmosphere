@@ -146,6 +146,14 @@ class Facet {
 	 * @return string HTML fragment, or the display text unchanged.
 	 */
 	private static function render_feature( array $feature, string $display ): string {
+		/*
+		 * The display text is a slice of the remote record's `text`, so it
+		 * can contain HTML-significant characters (e.g. `</a>`). Escape it
+		 * before embedding so the anchor can't be broken out of and no
+		 * markup is injected, independent of any downstream wp_kses_post().
+		 */
+		$display = \esc_html( $display );
+
 		switch ( $feature['$type'] ?? '' ) {
 			case 'app.bsky.richtext.facet#link':
 				$uri = $feature['uri'] ?? '';
