@@ -1,52 +1,49 @@
 <?php
 /**
- * Stub content parser for testing.
+ * Configurable fake parser for registry tests.
  *
  * @package Atmosphere
  */
 
-namespace Atmosphere\Tests\Transformer;
+namespace Atmosphere\Tests\Content_Parser;
 
 use Atmosphere\Content_Parser\Content_Parser;
 
 /**
- * Stub content parser that returns raw content as-is.
+ * A parser whose NSID and applicability are set at construction.
  */
-class Stub_Parser implements Content_Parser {
+class Fake_Parser implements Content_Parser {
 
 	/**
-	 * Whether parse() should return null.
-	 *
-	 * @var bool
-	 */
-	public bool $return_null = false;
-
-	/**
-	 * Whether parse() should omit the $type field.
-	 *
-	 * @var bool
-	 */
-	public bool $omit_type = false;
-
-	/**
-	 * The $type value parse() returns.
+	 * NSID this parser reports.
 	 *
 	 * @var string
 	 */
-	public string $output_type = 'test.stub.parser';
+	private string $type;
 
 	/**
-	 * Whether applies_to() should return true.
+	 * Whether applies_to() returns true.
 	 *
 	 * @var bool
 	 */
-	public bool $applies = true;
+	private bool $applies;
+
+	/**
+	 * Constructor.
+	 *
+	 * @param string $type    NSID.
+	 * @param bool   $applies Whether the parser applies.
+	 */
+	public function __construct( string $type, bool $applies = true ) {
+		$this->type    = $type;
+		$this->applies = $applies;
+	}
 
 	/**
 	 * {@inheritDoc}
 	 */
 	public function get_type(): string {
-		return 'test.stub.parser';
+		return $this->type;
 	}
 
 	/**
@@ -66,18 +63,6 @@ class Stub_Parser implements Content_Parser {
 	 * @param \WP_Post $post    The WordPress post object.
 	 */
 	public function parse( string $content, \WP_Post $post ): ?array { // phpcs:ignore Generic.CodeAnalysis.UnusedFunctionParameter.Found, VariableAnalysis.CodeAnalysis.VariableAnalysis.UnusedVariable
-		if ( $this->return_null ) {
-			return null;
-		}
-
-		$record = array(
-			'text' => $content,
-		);
-
-		if ( ! $this->omit_type ) {
-			$record['$type'] = $this->output_type;
-		}
-
-		return $record;
+		return array( '$type' => $this->type );
 	}
 }

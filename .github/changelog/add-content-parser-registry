@@ -1,0 +1,4 @@
+Significance: minor
+Type: added
+
+Add a Content format setting so you can choose how your posts are saved for standard.site readers — rendered HTML, Markdown, Leaflet, or pckt.

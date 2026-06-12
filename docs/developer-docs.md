@@ -33,7 +33,7 @@ ATmosphere exposes a small set of filters and actions for plugins to extend beha
 
 | Hook | Type | Use |
 |------|------|-----|
-| `atmosphere_content_parser` | filter | Return a `Content_Parser` instance to populate `site.standard.document.content`. |
+| `atmosphere_content_parser` | filter | Deprecated parser hook; use `Content_Parser\Registry::register()` instead. |
 | `atmosphere_document_content` | filter | Last-chance modification of the parsed content object. |
 | `atmosphere_syncable_post_types` | filter | Add or remove post types eligible for cross-posting. |
 | `atmosphere_should_publish_comment` | filter | Customise which approved comments are mirrored as Bluesky replies. |
@@ -48,13 +48,17 @@ When adding a new public hook, mark its `@since` tag as `unreleased` — the rel
 
 ## Extending Content Formats
 
-The `site.standard.document` record's `content` field is an open union of typed content objects (see [`docs/content-formats.md`](content-formats.md)). ATmosphere ships only the `Content_Parser` interface — concrete parsers come from integrations.
+The `site.standard.document` record's `content` field is a singular open union of typed content objects (see [`docs/content-formats.md`](content-formats.md)). ATmosphere ships built-in parsers for HTML, Markpub, Leaflet, and pckt formats, and integrations can register additional parsers.
 
 To provide a parser:
 
-1. Implement `Atmosphere\Content_Parser\Content_Parser` (defined in `includes/content-parser/interface-content-parser.php`).
-2. Register through the `atmosphere_content_parser` filter, returning your instance.
-3. Return `null` from the filter when you don't want to handle a given post — other integrations can then take over.
+1. Implement `Atmosphere\Content_Parser\Content_Parser` (defined in `includes/content-parser/interface-content-parser.php`), or extend `Atmosphere\Content_Parser\Parser_Base` for WordPress/block helpers.
+2. Register the parser with `Atmosphere\Content_Parser\Registry::register( $parser, $priority )`.
+3. Optionally expose `applies_to( \WP_Post $post ): bool` so the registry can skip posts the parser cannot represent.
+
+The deprecated `atmosphere_content_parser` filter remains for existing integrations. A returned parser still wins over the registry, and `null` still suppresses the `content` field, but using the filter emits a deprecation notice.
+
+The **Content format** setting is a preference, not an absolute guarantee for every post. When the selected parser does not apply or cannot safely represent a post, the registry falls back to the next applicable parser, normally rendered HTML.
 
 A complete worked example (with `class-load.php` registration) is in [`integrations/README.md`](../integrations/README.md).
 

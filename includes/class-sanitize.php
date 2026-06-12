@@ -9,6 +9,7 @@ namespace Atmosphere;
 
 \defined( 'ABSPATH' ) || exit;
 
+use Atmosphere\Content_Parser\Registry;
 use Atmosphere\OAuth\Client;
 
 /**
@@ -117,5 +118,25 @@ class Sanitize {
 		$value = \is_string( $value ) ? \sanitize_text_field( $value ) : '';
 
 		return \in_array( $value, Atmosphere::LONG_FORM_STRATEGIES, true ) ? $value : 'link-card';
+	}
+
+	/**
+	 * Sanitize the content-format setting.
+	 *
+	 * Used as the `sanitize_callback` for the `atmosphere_content_format`
+	 * option. Accepts an empty string (automatic) or a registered parser
+	 * NSID; anything else falls back to automatic.
+	 *
+	 * @param mixed $value Submitted value.
+	 * @return string
+	 */
+	public static function content_format( $value ): string {
+		$value = \is_string( $value ) ? \sanitize_text_field( $value ) : '';
+
+		if ( '' === $value ) {
+			return '';
+		}
+
+		return Registry::has( $value ) ? $value : '';
 	}
 }
