@@ -44,8 +44,11 @@ git checkout -b fix/something
 ## Opening the PR
 
 ```bash
-gh pr create --assignee @me
+# Create PR (includes required assignment/reviewer).
+gh pr create --assignee @me --reviewer Automattic/atmosphere
 ```
+
+Copilot is requested as a reviewer automatically by the trunk branch ruleset — don't add it manually.
 
 Use `.github/PULL_REQUEST_TEMPLATE.md` as-is — don't invent custom formatting. The body must include:
 
