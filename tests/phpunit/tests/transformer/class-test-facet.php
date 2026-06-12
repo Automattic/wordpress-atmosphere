@@ -272,4 +272,181 @@ class Test_Facet extends WP_UnitTestCase {
 
 		$this->assertSame( $text, Facet::apply( $text, $facets ) );
 	}
+
+	/**
+	 * Tag facets link to the Bluesky hashtag-search page.
+	 */
+	public function test_apply_links_hashtag() {
+		$text   = 'Love #WordPress here';
+		$facets = array(
+			array(
+				'index'    => array(
+					'byteStart' => 5,
+					'byteEnd'   => 15,
+				),
+				'features' => array(
+					array(
+						'$type' => 'app.bsky.richtext.facet#tag',
+						'tag'   => 'WordPress',
+					),
+				),
+			),
+		);
+
+		$result = Facet::apply( $text, $facets );
+
+		$this->assertStringContainsString(
+			'<a href="https://bsky.app/hashtag/WordPress">#WordPress</a>',
+			$result
+		);
+	}
+
+	/**
+	 * Two facets that touch (the second starts exactly where the first
+	 * ends) must both render — the boundary is inclusive on neither side.
+	 */
+	public function test_apply_handles_adjacent_facets() {
+		$text   = 'ab';
+		$facets = array(
+			array(
+				'index'    => array(
+					'byteStart' => 0,
+					'byteEnd'   => 1,
+				),
+				'features' => array(
+					array(
+						'$type' => 'app.bsky.richtext.facet#link',
+						'uri'   => 'https://a.example',
+					),
+				),
+			),
+			array(
+				'index'    => array(
+					'byteStart' => 1,
+					'byteEnd'   => 2,
+				),
+				'features' => array(
+					array(
+						'$type' => 'app.bsky.richtext.facet#link',
+						'uri'   => 'https://b.example',
+					),
+				),
+			),
+		);
+
+		$result = Facet::apply( $text, $facets );
+
+		$this->assertSame( 2, \substr_count( $result, '<a href=' ) );
+		$this->assertStringContainsString( '<a href="https://a.example">a</a>', $result );
+		$this->assertStringContainsString( '<a href="https://b.example">b</a>', $result );
+	}
+
+	/**
+	 * An unrecognised feature type keeps its display text rather than
+	 * dropping the bytes it annotated.
+	 */
+	public function test_apply_unknown_feature_type_keeps_text() {
+		$text   = 'hello world';
+		$facets = array(
+			array(
+				'index'    => array(
+					'byteStart' => 0,
+					'byteEnd'   => 5,
+				),
+				'features' => array(
+					array(
+						'$type' => 'app.bsky.richtext.facet#unknownFuture',
+					),
+				),
+			),
+		);
+
+		$result = Facet::apply( $text, $facets );
+
+		$this->assertSame( 'hello world', $result );
+		$this->assertStringNotContainsString( '<a', $result );
+	}
+
+	/**
+	 * A link whose scheme `esc_url()` strips (e.g. `javascript:`) must fall
+	 * back to bare display text, never an empty `href` to the current page.
+	 */
+	public function test_apply_unsafe_scheme_falls_back_to_text() {
+		$text   = 'click me';
+		$facets = array(
+			array(
+				'index'    => array(
+					'byteStart' => 0,
+					'byteEnd'   => 8,
+				),
+				'features' => array(
+					array(
+						'$type' => 'app.bsky.richtext.facet#link',
+						'uri'   => 'javascript:alert(1)',
+					),
+				),
+			),
+		);
+
+		$result = Facet::apply( $text, $facets );
+
+		$this->assertStringNotContainsString( '<a', $result );
+		$this->assertStringNotContainsString( 'href=""', $result );
+		$this->assertStringContainsString( 'click me', $result );
+	}
+
+	/**
+	 * Facets are untrusted PDS JSON. A facet entry that is a scalar rather
+	 * than an array must be skipped, not fatal with a TypeError.
+	 */
+	public function test_apply_tolerates_non_array_facet_entry() {
+		$text   = 'plain text';
+		$facets = array( 'not-an-array' );
+
+		$this->assertSame( $text, Facet::apply( $text, $facets ) );
+	}
+
+	/**
+	 * A present-but-non-array `features` value must not reach the
+	 * array-typed renderer — the facet is rendered as plain display text.
+	 * Regression test for the TypeError flagged on PR #134.
+	 */
+	public function test_apply_tolerates_non_array_features() {
+		$text   = 'hello world';
+		$facets = array(
+			array(
+				'index'    => array(
+					'byteStart' => 0,
+					'byteEnd'   => 5,
+				),
+				'features' => 'oops-a-string',
+			),
+		);
+
+		$result = Facet::apply( $text, $facets );
+
+		$this->assertSame( 'hello world', $result );
+		$this->assertStringNotContainsString( '<a', $result );
+	}
+
+	/**
+	 * A non-array `index` value must be skipped rather than fataling on
+	 * array access during the sort or the splice.
+	 */
+	public function test_apply_tolerates_non_array_index() {
+		$text   = 'hello world';
+		$facets = array(
+			array(
+				'index'    => 'oops',
+				'features' => array(
+					array(
+						'$type' => 'app.bsky.richtext.facet#link',
+						'uri'   => 'https://example.com',
+					),
+				),
+			),
+		);
+
+		$this->assertSame( $text, Facet::apply( $text, $facets ) );
+	}
 }

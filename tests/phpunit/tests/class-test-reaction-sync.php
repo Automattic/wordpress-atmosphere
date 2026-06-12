@@ -249,6 +249,44 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 	}
 
 	/**
+	 * A reply whose record carries a malformed `facets` value (untrusted
+	 * PDS JSON) must still import as a plain comment rather than fataling
+	 * the cron sync with a TypeError. Regression test for PR #134.
+	 */
+	public function test_process_reply_tolerates_malformed_facets() {
+		$post_id  = self::factory()->post->create();
+		$post_uri = 'at://did:plc:me/app.bsky.feed.post/mypost';
+
+		\update_post_meta( $post_id, BskyPost::META_URI, $post_uri );
+
+		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_reply' );
+
+		$notification = array(
+			'uri'    => 'at://did:plc:replier/app.bsky.feed.post/badfacets',
+			'cid'    => 'bafyreibad',
+			'record' => array(
+				'text'      => 'Plain reply text.',
+				'createdAt' => '2026-06-11T18:31:10.876Z',
+				'facets'    => 'not-an-array',
+				'reply'     => array(
+					'parent' => array( 'uri' => $post_uri ),
+					'root'   => array( 'uri' => $post_uri ),
+				),
+			),
+			'author' => array(
+				'did'    => 'did:plc:replier',
+				'handle' => 'replier.bsky.social',
+			),
+		);
+
+		$comment_id = $method->invoke( null, $notification );
+
+		$this->assertIsInt( $comment_id );
+		$comment = \get_comment( $comment_id );
+		$this->assertSame( 'Plain reply text.', $comment->comment_content );
+	}
+
+	/**
 	 * Test that process_reply drops a reply when get_comment() returns
 	 * null for the resolved parent comment ID (race: comment deleted
 	 * between the meta lookup and the get_comment call). The previous

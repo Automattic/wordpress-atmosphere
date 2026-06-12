@@ -99,13 +99,20 @@ class Facet {
 	 * @return string Text with facets resolved to anchors.
 	 */
 	public static function apply( string $text, array $facets ): string {
+		/*
+		 * Facets come from untrusted PDS JSON, so every nested shape is
+		 * treated as unknown: drop facet entries that aren't arrays before
+		 * touching them, otherwise a scalar entry fatals on array access.
+		 */
+		$facets = \array_filter( $facets, '\is_array' );
+
 		if ( empty( $facets ) ) {
 			return $text;
 		}
 
 		\usort(
 			$facets,
-			static fn( $a, $b ) => ( $a['index']['byteStart'] ?? 0 ) <=> ( $b['index']['byteStart'] ?? 0 )
+			static fn( $a, $b ) => self::byte_start( $a ) <=> self::byte_start( $b )
 		);
 
 		// Facet indexes are UTF-8 byte offsets, so splice in byte space.
@@ -114,8 +121,14 @@ class Facet {
 		$result = '';
 
 		foreach ( $facets as $facet ) {
-			$start = $facet['index']['byteStart'] ?? null;
-			$end   = $facet['index']['byteEnd'] ?? null;
+			$index = $facet['index'] ?? null;
+
+			if ( ! \is_array( $index ) ) {
+				continue;
+			}
+
+			$start = $index['byteStart'] ?? null;
+			$end   = $index['byteEnd'] ?? null;
 
 			/*
 			 * Skip ranges that are malformed, empty, out of bounds, or
@@ -127,12 +140,35 @@ class Facet {
 				continue;
 			}
 
+			/*
+			 * A facet may carry several features; in practice Bluesky emits
+			 * one, and a non-array `features` (again, untrusted JSON) must
+			 * not reach the array-typed renderer.
+			 */
+			$features = $facet['features'] ?? null;
+			$feature  = \is_array( $features ) && \is_array( $features[0] ?? null ) ? $features[0] : array();
+
 			$result .= \substr( $text, $cursor, $start - $cursor );
-			$result .= self::render_feature( $facet['features'][0] ?? array(), \substr( $text, $start, $end - $start ) );
+			$result .= self::render_feature( $feature, \substr( $text, $start, $end - $start ) );
 			$cursor  = $end;
 		}
 
 		return $result . \substr( $text, $cursor );
+	}
+
+	/**
+	 * Safely read a facet's `byteStart` for sorting.
+	 *
+	 * Tolerates malformed facet shapes from untrusted PDS JSON — a missing
+	 * or non-array `index` sorts as 0 rather than fataling on array access.
+	 *
+	 * @param array $facet Facet array.
+	 * @return int Byte offset, or 0 when absent/malformed.
+	 */
+	private static function byte_start( array $facet ): int {
+		$index = $facet['index'] ?? null;
+
+		return \is_array( $index ) && \is_int( $index['byteStart'] ?? null ) ? $index['byteStart'] : 0;
 	}
 
 	/**
@@ -156,29 +192,40 @@ class Facet {
 
 		switch ( $feature['$type'] ?? '' ) {
 			case 'app.bsky.richtext.facet#link':
-				$uri = $feature['uri'] ?? '';
-				if ( '' === $uri ) {
-					return $display;
-				}
-				return '<a href="' . \esc_url( $uri ) . '">' . $display . '</a>';
+				$href = \esc_url( $feature['uri'] ?? '' );
+				break;
 
 			case 'app.bsky.richtext.facet#mention':
-				$did = $feature['did'] ?? '';
-				if ( '' === $did ) {
-					return $display;
-				}
-				return '<a href="' . \esc_url( 'https://bsky.app/profile/' . $did ) . '">' . $display . '</a>';
+				/*
+				 * The mention facet only carries the DID, so link by DID.
+				 * bsky.app/profile/{did} resolves the same as the handle
+				 * form used elsewhere in Reaction_Sync.
+				 */
+				$did  = $feature['did'] ?? '';
+				$href = '' === $did ? '' : \esc_url( 'https://bsky.app/profile/' . $did );
+				break;
 
 			case 'app.bsky.richtext.facet#tag':
-				$tag = $feature['tag'] ?? '';
-				if ( '' === $tag ) {
-					return $display;
-				}
-				return '<a href="' . \esc_url( 'https://bsky.app/hashtag/' . \rawurlencode( $tag ) ) . '">' . $display . '</a>';
+				$tag  = $feature['tag'] ?? '';
+				$href = '' === $tag ? '' : \esc_url( 'https://bsky.app/hashtag/' . \rawurlencode( $tag ) );
+				break;
 
 			default:
-				return $display;
+				$href = '';
+				break;
 		}
+
+		/*
+		 * Fall back to the bare (escaped) display text when there's no
+		 * usable target — an unknown feature type, a missing value, or a
+		 * scheme `esc_url()` rejected — rather than emitting an empty
+		 * `href` that would link to the current page.
+		 */
+		if ( '' === $href ) {
+			return $display;
+		}
+
+		return '<a href="' . $href . '">' . $display . '</a>';
 	}
 
 	/**

@@ -488,8 +488,13 @@ class Reaction_Sync {
 		 * target lives only in `facets`. Resolve those byte ranges back
 		 * into anchors before the text becomes comment content; otherwise
 		 * imported replies keep the lossy, unclickable display string.
+		 *
+		 * `facets` is untrusted PDS JSON: guard the type here so a
+		 * present-but-non-array value can't fatal the typed `apply()` call
+		 * and silently kill this notification's cron sync.
 		 */
-		$text = Facet::apply( $text, $record['facets'] ?? array() );
+		$facets = $record['facets'] ?? array();
+		$text   = Facet::apply( $text, \is_array( $facets ) ? $facets : array() );
 
 		/**
 		 * Filters whether a reply should be synced as a WordPress comment.
