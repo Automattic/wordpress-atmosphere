@@ -421,10 +421,16 @@ class Resolver {
 	 *    `authorization_endpoint` URL is handed straight to
 	 *    `wp_redirect()` with no host-safety net at all. Rejecting IP
 	 *    literals here closes both gaps in one place.
-	 *  - host carries no percent-encoding — the IP check judges the
-	 *    decoded form (`%31%32%37.0.0.1` is `127.0.0.1`), and a host
-	 *    still containing `%` after one decode pass is rejected as
-	 *    double-encoding.
+	 *  - the IP check judges the percent-decoded host, so an IP literal
+	 *    hidden behind one pass of encoding (`%31%32%37.0.0.1` is
+	 *    `127.0.0.1`) is still caught. A host that still contains `%`
+	 *    after that pass is rejected as double-encoding.
+	 *  - the decoded host contains no URL-structure delimiters
+	 *    (`@`, `:`, `/`, `?`, `#`, whitespace). Decoding can turn
+	 *    `user%40127.0.0.1` into `user@127.0.0.1`, which a downstream
+	 *    parser reinterprets as `userinfo@host`, routing to loopback
+	 *    with attacker-supplied credentials — the same smuggling the
+	 *    IP-literal decode closes, via the userinfo/port grammar.
 	 *  - no embedded `user:pass@` credentials (a known URL-injection
 	 *    vector that would otherwise be carried into the persisted
 	 *    connection)
@@ -476,6 +482,19 @@ class Resolver {
 		 */
 		$host_candidate = \trim( $host_candidate, '[]' );
 		if ( false !== \filter_var( $host_candidate, FILTER_VALIDATE_IP ) ) {
+			return false;
+		}
+
+		/*
+		 * Reject decoded hosts carrying URL-structure delimiters. A
+		 * bare DNS hostname never contains `@`, `/`, `?`, `#`, `:`, or
+		 * whitespace; if decoding produced one, a downstream parser can
+		 * reinterpret the URL — `user@127.0.0.1` as userinfo + host,
+		 * `host:1` as host + port — and route somewhere this gate never
+		 * vetted. (A legitimate IPv6 literal also contains `:`, but
+		 * those were already rejected by the IP check above.)
+		 */
+		if ( \preg_match( '#[@:/?\#\s]#', $host_candidate ) ) {
 			return false;
 		}
 

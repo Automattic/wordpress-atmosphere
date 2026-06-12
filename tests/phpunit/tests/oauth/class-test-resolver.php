@@ -539,6 +539,51 @@ class Test_Resolver extends WP_UnitTestCase {
 	}
 
 	/**
+	 * `pds_from_did_doc` rejects HTTPS URLs whose host hides a URL
+	 * delimiter behind percent-encoding. `wp_parse_url()` leaves the
+	 * delimiter encoded — so `user`/`pass` stay unset and the host
+	 * isn't a bare IP — but a downstream layer that decodes the host
+	 * reinterprets `user%40127.0.0.1` as `userinfo@host` (routing to
+	 * loopback) or `127.0.0.1%3A443` as `host:port`.
+	 *
+	 * @dataProvider provide_pct_encoded_delimiter_endpoints
+	 *
+	 * @param string $endpoint serviceEndpoint URL under test.
+	 */
+	public function test_pds_from_did_doc_rejects_pct_encoded_delimiter_endpoint( string $endpoint ) {
+		$did_doc = array(
+			'id'      => 'did:plc:test',
+			'service' => array(
+				array(
+					'id'              => '#atproto_pds',
+					'type'            => 'AtprotoPersonalDataServer',
+					'serviceEndpoint' => $endpoint,
+				),
+			),
+		);
+
+		$result = Resolver::pds_from_did_doc( $did_doc );
+
+		$this->assertWPError( $result );
+		$this->assertSame( 'atmosphere_unsafe_pds', $result->get_error_code() );
+	}
+
+	/**
+	 * Data provider — percent-encoded URL-delimiter hosts that must
+	 * never be accepted as a PDS / auth-server endpoint.
+	 *
+	 * @return array<string, array{0:string}>
+	 */
+	public function provide_pct_encoded_delimiter_endpoints(): array {
+		return array(
+			'encoded-userinfo-at' => array( 'https://user%40127.0.0.1' ),
+			'encoded-port-colon'  => array( 'https://127.0.0.1%3A443' ),
+			'encoded-path-slash'  => array( 'https://evil.example%2Fpds.lan' ),
+			'encoded-query-mark'  => array( 'https://evil.example%3Ffoo=bar.lan' ),
+		);
+	}
+
+	/**
 	 * `pds_from_did_doc` rejects a `serviceEndpoint` that contains
 	 * embedded HTTP credentials. URLs with `user:pass@host` are a
 	 * known injection vector — the credentials would otherwise be
