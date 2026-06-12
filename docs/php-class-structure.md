@@ -18,15 +18,21 @@ wordpress-atmosphere/
 ├── includes/                       # Core plugin code.
 │   ├── class-atmosphere.php        # Plugin orchestration; rewrite rules + well-known handlers; cron registration.
 │   ├── class-api.php               # DPoP-authenticated PDS request layer with nonce retry.
-│   ├── class-autoloader.php        # Custom classmap autoloader.
+│   ├── class-autoloader.php        # Custom WordPress-style autoloader.
 │   ├── class-backfill.php          # Bulk re-sync of existing posts.
 │   ├── class-handle.php            # Domain-handle setup helper (writes /.well-known/atproto-did).
 │   ├── class-post-types.php        # Supported post-type discovery and option storage.
 │   ├── class-publisher.php         # Atomic applyWrites for both Bluesky post + standard.site document.
 │   ├── class-reaction-sync.php     # Mirrors Bluesky reactions back to WordPress comments.
-│   ├── functions.php               # Helper functions (loaded via Composer `files`).
+│   ├── functions.php               # Helper functions (loaded directly from atmosphere.php).
 │   │
 │   ├── content-parser/             # Pluggable content formats for site.standard.document.
+│   │   ├── class-html.php
+│   │   ├── class-leaflet.php
+│   │   ├── class-markpub.php
+│   │   ├── class-parser-base.php
+│   │   ├── class-pckt.php
+│   │   ├── class-registry.php
 │   │   └── interface-content-parser.php
 │   │
 │   ├── oauth/                      # Native OAuth flow (PKCE + DPoP + PAR).
@@ -141,7 +147,9 @@ Periodically polls the PDS for notifications and self-collections (`app.bsky.fee
 
 ### Content Parser (`includes/content-parser/`)
 
-Provides the `Atmosphere\Content_Parser\Content_Parser` interface for plugins that want to populate the `content` field of `site.standard.document` records (see [`docs/content-formats.md`](content-formats.md)). The plugin ships only the interface — concrete parsers register through the `atmosphere_content_parser` filter from `integrations/` or third-party plugins.
+Provides the parser registry for the singular `content` field of `site.standard.document` records (see [`docs/content-formats.md`](content-formats.md)). Built-in parsers live in this directory (`Html`, `Markpub`, `Leaflet`, `Pckt`) and integrations register additional `Content_Parser` instances with `Atmosphere\Content_Parser\Registry::register()`.
+
+`Content_Parser` stays intentionally small: `get_type()` and `parse()`. Parsers that need WordPress helpers should extend `Parser_Base`, which provides block-tree access, rendered HTML, image blob helpers, grapheme truncation, and an optional `applies_to()` method the registry understands. Parsers without `applies_to()` are treated as applicable for third-party compatibility.
 
 ## Namespace Organization
 
@@ -215,7 +223,7 @@ Add one when you have:
 - A clear domain boundary (e.g. all OAuth-flow concerns live in `oauth/`).
 - A reason to keep the concerns from leaking into surrounding files.
 
-After adding or renaming a class file, run `composer dump-autoload` so the Composer classmap picks it up.
+After adding or renaming a class file under the `Atmosphere` namespace, no Composer autoload step is needed. The runtime autoloader in `includes/class-autoloader.php` maps namespace segments to WordPress-style filenames such as `class-parser-base.php` and `interface-content-parser.php`.
 
 ## Architectural Patterns
 
@@ -326,4 +334,4 @@ class Load {
 }
 ```
 
-See [`integrations/README.md`](../integrations/README.md) for the full pattern, including how `atmosphere_content_parser` and `atmosphere_document_content` filters compose.
+See [`integrations/README.md`](../integrations/README.md) for the full registry pattern and the remaining `atmosphere_document_content` filter.

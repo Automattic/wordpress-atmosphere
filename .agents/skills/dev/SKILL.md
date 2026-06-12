@@ -23,7 +23,6 @@ composer test                               # Local (needs MySQL).
 # Code quality.
 composer lint                # PHPCS check.
 composer lint:fix            # PHPCS auto-fix.
-composer dump-autoload       # Regenerate classmap after adding/renaming classes.
 
 # Release.
 npm run release              # Interactive release script. See the release skill.
@@ -39,14 +38,11 @@ npm run release              # Interactive release script. See the release skill
 
 ```bash
 # 1. Make changes.
-# 2. If a class file was added/renamed:
-composer dump-autoload
-
-# 3. Run relevant tests + lint.
+# 2. Run relevant tests + lint.
 npm run env-test -- --filter=FeatureName
 composer lint
 
-# 4. Commit.
+# 3. Commit.
 ```
 
 ## WP-CLI Inside wp-env

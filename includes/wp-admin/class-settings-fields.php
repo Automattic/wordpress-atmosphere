@@ -10,6 +10,11 @@ namespace Atmosphere\WP_Admin;
 \defined( 'ABSPATH' ) || exit;
 
 use Atmosphere\Atmosphere;
+use Atmosphere\Content_Parser\Html;
+use Atmosphere\Content_Parser\Leaflet;
+use Atmosphere\Content_Parser\Markpub;
+use Atmosphere\Content_Parser\Pckt;
+use Atmosphere\Content_Parser\Registry;
 use Atmosphere\Handle;
 use function Atmosphere\get_connection;
 use function Atmosphere\get_supported_post_types;
@@ -97,6 +102,14 @@ class Settings_Fields {
 			'atmosphere_support_post_types',
 			\__( 'Post types', 'atmosphere' ),
 			array( self::class, 'render_support_post_types_field' ),
+			'atmosphere',
+			'atmosphere_publishing'
+		);
+
+		\add_settings_field(
+			Registry::OPTION_FORMAT,
+			\__( 'Content format', 'atmosphere' ),
+			array( self::class, 'render_content_format_field' ),
 			'atmosphere',
 			'atmosphere_publishing'
 		);
@@ -327,6 +340,16 @@ class Settings_Fields {
 		$current = \get_option( 'atmosphere_long_form_composition', 'link-card' );
 
 		?>
+		<p class="description">
+			<?php
+			// phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- Filter name is a static, safe literal.
+			\printf(
+				/* translators: %s: the long-form composition filter name, wrapped in a code tag. */
+				\esc_html__( 'How posts longer than the Bluesky 300-character limit are published. Plugins can override this per post via the %s filter.', 'atmosphere' ),
+				'<code>atmosphere_long_form_composition</code>'
+			);
+			?>
+		</p>
 		<fieldset>
 			<legend class="screen-reader-text">
 				<?php \esc_html_e( 'Long-form composition', 'atmosphere' ); ?>
@@ -350,9 +373,6 @@ class Settings_Fields {
 				</p>
 			<?php endforeach; ?>
 		</fieldset>
-		<p class="description">
-			<?php \esc_html_e( 'How posts longer than the Bluesky 300-character limit are published. Plugins can override this per post via the atmosphere_long_form_composition filter.', 'atmosphere' ); ?>
-		</p>
 		<?php
 	}
 
@@ -442,12 +462,111 @@ class Settings_Fields {
 	}
 
 	/**
+	 * Render the content-format radio group.
+	 *
+	 * Radios (rather than a select) so each format can carry its own
+	 * inline description of what it targets — automatic, the universal
+	 * HTML baseline, and each app-specific format.
+	 */
+	public static function render_content_format_field(): void {
+		$current = (string) \get_option( Registry::OPTION_FORMAT, '' );
+
+		$choices = array(
+			'' => array(
+				'label'       => \__( 'Automatic (recommended)', 'atmosphere' ),
+				'description' => \__( 'Saves the richest format each post supports — HTML for ordinary posts, an app-specific format when a post fits one.', 'atmosphere' ),
+			),
+		);
+
+		foreach ( \array_keys( Registry::all() ) as $type ) {
+			$choices[ $type ] = array(
+				'label'       => self::content_format_label( $type ),
+				'description' => self::content_format_description( $type ),
+			);
+		}
+		?>
+		<p class="description">
+			<?php \esc_html_e( 'The rich content format saved in each post\'s standard.site document. A post that a chosen format cannot represent is saved as HTML instead, so nothing is dropped.', 'atmosphere' ); ?>
+		</p>
+		<fieldset>
+			<legend class="screen-reader-text">
+				<?php \esc_html_e( 'Content format', 'atmosphere' ); ?>
+			</legend>
+			<?php foreach ( $choices as $value => $choice ) : ?>
+				<p>
+					<label>
+						<input
+							type="radio"
+							name="<?php echo \esc_attr( Registry::OPTION_FORMAT ); ?>"
+							value="<?php echo \esc_attr( $value ); ?>"
+							<?php \checked( $current, $value ); ?>
+						>
+						<strong><?php echo \esc_html( $choice['label'] ); ?></strong>
+					</label>
+					<?php if ( '' !== $choice['description'] ) : ?>
+						<br>
+						<span class="description"><?php echo \esc_html( $choice['description'] ); ?></span>
+					<?php endif; ?>
+				</p>
+			<?php endforeach; ?>
+		</fieldset>
+		<?php
+	}
+
+	/**
 	 * Render the Reactions section description.
 	 */
 	public static function render_reactions_section(): void {
 		?>
 		<p><?php \esc_html_e( 'Choose which Bluesky interactions are saved to your posts.', 'atmosphere' ); ?></p>
 		<?php
+	}
+
+	/**
+	 * Short description of what a content-format NSID targets.
+	 *
+	 * Empty for unknown / third-party NSIDs, where the label alone shows.
+	 *
+	 * @param string $type Parser NSID.
+	 * @return string
+	 */
+	private static function content_format_description( string $type ): string {
+		switch ( $type ) {
+			case Html::TYPE:
+				return \__( 'Plain HTML — the simplest, most portable option, and the fallback when a richer format does not fit.', 'atmosphere' );
+			case Markpub::TYPE:
+				return \__( 'Markdown, in the Markpub format.', 'atmosphere' );
+			case Leaflet::TYPE:
+				return \__( 'The Leaflet app\'s rich content format.', 'atmosphere' );
+			case Pckt::TYPE:
+				return \__( 'The pckt app\'s rich content format.', 'atmosphere' );
+			default:
+				return '';
+		}
+	}
+
+	/**
+	 * Friendly label for a content-format NSID.
+	 *
+	 * Falls back to the raw NSID so third-party parsers still show a
+	 * meaningful (if technical) option.
+	 *
+	 * @param string $type Parser NSID.
+	 * @return string
+	 */
+	private static function content_format_label( string $type ): string {
+		switch ( $type ) {
+			case Html::TYPE:
+				return \__( 'HTML', 'atmosphere' );
+			case Markpub::TYPE:
+				return \__( 'Markdown (Markpub)', 'atmosphere' );
+			case Leaflet::TYPE:
+				return \__( 'Leaflet', 'atmosphere' );
+			case Pckt::TYPE:
+				return \__( 'pckt', 'atmosphere' );
+			default:
+				return $type;
+		}
 	}
 
 	/**

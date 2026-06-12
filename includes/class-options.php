@@ -9,6 +9,8 @@ namespace Atmosphere;
 
 \defined( 'ABSPATH' ) || exit;
 
+use Atmosphere\Content_Parser\Registry;
+
 /**
  * Registers every stored plugin option with the Settings API.
  *
@@ -117,6 +119,18 @@ class Options {
 				'type'              => 'string',
 				'show_in_rest'      => false,
 				'sanitize_callback' => array( Sanitize::class, 'handle' ),
+			)
+		);
+
+		\register_setting(
+			'atmosphere',
+			Registry::OPTION_FORMAT,
+			array(
+				'type'              => 'string',
+				'description'       => 'Preferred standard.site content format (NSID), or empty for automatic.',
+				'default'           => '',
+				'sanitize_callback' => array( Sanitize::class, 'content_format' ),
+				'show_in_rest'      => false,
 			)
 		);
 	}

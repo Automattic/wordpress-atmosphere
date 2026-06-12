@@ -135,9 +135,27 @@ class DPoP {
 
 			return self::sign_es256( $header, $payload, $jwk );
 		} catch ( \Throwable $e ) {
-			\wp_trigger_error( __METHOD__, 'DPoP proof generation failed: ' . $e->getMessage() );
+			// wp_trigger_error() requires WP 6.4; the plugin supports 6.2.
+			if ( \function_exists( 'wp_trigger_error' ) ) {
+				\wp_trigger_error( __METHOD__, 'DPoP proof generation failed: ' . self::describe_throwable( $e ) );
+			}
 			return false;
 		}
+	}
+
+	/**
+	 * Summarize a throwable for logging without its message.
+	 *
+	 * Signing failures are thrown with the private-key JWK in scope,
+	 * and OpenSSL error strings are not guaranteed to be free of key
+	 * material — so only the class name and throw site are safe to
+	 * log. Never add getMessage() here.
+	 *
+	 * @param \Throwable $e Caught throwable.
+	 * @return string Class name plus file:line of the throw site.
+	 */
+	private static function describe_throwable( \Throwable $e ): string {
+		return \sprintf( '%s at %s:%d', $e::class, \basename( $e->getFile() ), $e->getLine() );
 	}
 
 	/**

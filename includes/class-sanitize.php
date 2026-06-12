@@ -9,6 +9,7 @@ namespace Atmosphere;
 
 \defined( 'ABSPATH' ) || exit;
 
+use Atmosphere\Content_Parser\Registry;
 use Atmosphere\OAuth\Client;
 
 /**
@@ -72,7 +73,9 @@ class Sanitize {
 		 * so it can't affect any subsequent redirect — the `exit`
 		 * makes that production-redundant, but pinning the invariant
 		 * here keeps it intact if a test or a `wp_die()` handler ever
-		 * intercepts the redirect before `exit` fires.
+		 * intercepts the redirect before `exit` fires. The `finally`
+		 * guarantees detachment even when a `wp_redirect` filter throws
+		 * instead of returning.
 		 */
 		$auth_host   = \is_string( $auth_url ) ? \wp_parse_url( $auth_url, PHP_URL_HOST ) : '';
 		$auth_scheme = \is_string( $auth_url ) ? \wp_parse_url( $auth_url, PHP_URL_SCHEME ) : '';
@@ -92,8 +95,11 @@ class Sanitize {
 		};
 
 		\add_filter( 'allowed_redirect_hosts', $allow_auth_host );
-		\wp_safe_redirect( $auth_url );
-		\remove_filter( 'allowed_redirect_hosts', $allow_auth_host );
+		try {
+			\wp_safe_redirect( $auth_url );
+		} finally {
+			\remove_filter( 'allowed_redirect_hosts', $allow_auth_host );
+		}
 		exit;
 	}
 
@@ -112,5 +118,25 @@ class Sanitize {
 		$value = \is_string( $value ) ? \sanitize_text_field( $value ) : '';
 
 		return \in_array( $value, Atmosphere::LONG_FORM_STRATEGIES, true ) ? $value : 'link-card';
+	}
+
+	/**
+	 * Sanitize the content-format setting.
+	 *
+	 * Used as the `sanitize_callback` for the `atmosphere_content_format`
+	 * option. Accepts an empty string (automatic) or a registered parser
+	 * NSID; anything else falls back to automatic.
+	 *
+	 * @param mixed $value Submitted value.
+	 * @return string
+	 */
+	public static function content_format( $value ): string {
+		$value = \is_string( $value ) ? \sanitize_text_field( $value ) : '';
+
+		if ( '' === $value ) {
+			return '';
+		}
+
+		return Registry::has( $value ) ? $value : '';
 	}
 }
