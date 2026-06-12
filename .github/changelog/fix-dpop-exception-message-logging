@@ -1,0 +1,4 @@
+Significance: patch
+Type: security
+
+Hardened error logging so details from cryptographic failures are never written to the log.

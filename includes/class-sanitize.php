@@ -73,7 +73,9 @@ class Sanitize {
 		 * so it can't affect any subsequent redirect — the `exit`
 		 * makes that production-redundant, but pinning the invariant
 		 * here keeps it intact if a test or a `wp_die()` handler ever
-		 * intercepts the redirect before `exit` fires.
+		 * intercepts the redirect before `exit` fires. The `finally`
+		 * guarantees detachment even when a `wp_redirect` filter throws
+		 * instead of returning.
 		 */
 		$auth_host   = \is_string( $auth_url ) ? \wp_parse_url( $auth_url, PHP_URL_HOST ) : '';
 		$auth_scheme = \is_string( $auth_url ) ? \wp_parse_url( $auth_url, PHP_URL_SCHEME ) : '';
@@ -93,8 +95,11 @@ class Sanitize {
 		};
 
 		\add_filter( 'allowed_redirect_hosts', $allow_auth_host );
-		\wp_safe_redirect( $auth_url );
-		\remove_filter( 'allowed_redirect_hosts', $allow_auth_host );
+		try {
+			\wp_safe_redirect( $auth_url );
+		} finally {
+			\remove_filter( 'allowed_redirect_hosts', $allow_auth_host );
+		}
 		exit;
 	}
 
