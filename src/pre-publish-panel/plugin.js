@@ -3,7 +3,7 @@
  *
  * Registers a PluginPrePublishPanel that tells the author, before they
  * publish, whether the post will go to Bluesky, which strategy will run,
- * and how the body measures against Bluesky's 300-grapheme limit. The
+ * and how the body measures against Bluesky's 300-character limit. The
  * "what will actually happen" answer comes from the admin REST projector,
  * which runs the real server-side transformer, so it never drifts from
  * publish.
@@ -132,7 +132,7 @@ function PrePublishPanel() {
 					{ sprintf(
 						/* translators: 1: character count, 2: the 300-character limit. */
 						__( '%1$d / %2$d characters', 'atmosphere' ),
-						records[ 0 ].graphemes,
+						records[ 0 ].characters,
 						preview.limit
 					) }
 				</p>
@@ -156,7 +156,7 @@ function PrePublishPanel() {
 									'atmosphere'
 								),
 								index + 1,
-								record.graphemes,
+								record.characters,
 								preview.limit
 							) }
 						</li>

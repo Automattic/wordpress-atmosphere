@@ -3438,7 +3438,7 @@ class Test_Post extends WP_UnitTestCase {
 		$this->assertSame( 'short-form', $projection['strategy'] );
 		$this->assertSame( 300, $projection['limit'] );
 		$this->assertCount( 1, $projection['records'] );
-		$this->assertSame( 25, $projection['records'][0]['graphemes'] );
+		$this->assertSame( 25, $projection['records'][0]['characters'] );
 		$this->assertFalse( $projection['records'][0]['over_limit'] );
 	}
 
@@ -3450,7 +3450,7 @@ class Test_Post extends WP_UnitTestCase {
 	 * @covers ::project
 	 */
 	public function test_project_short_form_over_limit_reports_untruncated_count() {
-		$long_body = \str_repeat( 'word ', 100 ); // 500 graphemes.
+		$long_body = \str_repeat( 'word ', 100 ); // 500 characters.
 		$post      = self::factory()->post->create_and_get(
 			array(
 				'post_title'   => '',
@@ -3462,7 +3462,7 @@ class Test_Post extends WP_UnitTestCase {
 
 		$this->assertTrue( $projection['is_short_form'] );
 		$this->assertCount( 1, $projection['records'] );
-		$this->assertGreaterThan( 300, $projection['records'][0]['graphemes'] );
+		$this->assertGreaterThan( 300, $projection['records'][0]['characters'] );
 		$this->assertTrue( $projection['records'][0]['over_limit'] );
 	}
 
@@ -3486,7 +3486,7 @@ class Test_Post extends WP_UnitTestCase {
 		$this->assertFalse( $projection['is_short_form'] );
 		$this->assertSame( 'link-card', $projection['strategy'] );
 		$this->assertCount( 1, $projection['records'] );
-		$this->assertLessThanOrEqual( 300, $projection['records'][0]['graphemes'] );
+		$this->assertLessThanOrEqual( 300, $projection['records'][0]['characters'] );
 	}
 
 	/**
@@ -3511,7 +3511,7 @@ class Test_Post extends WP_UnitTestCase {
 		$this->assertSame( 'teaser-thread', $projection['strategy'] );
 		$this->assertGreaterThan( 1, \count( $projection['records'] ) );
 		foreach ( $projection['records'] as $record ) {
-			$this->assertLessThanOrEqual( 300, $record['graphemes'] );
+			$this->assertLessThanOrEqual( 300, $record['characters'] );
 		}
 	}
 

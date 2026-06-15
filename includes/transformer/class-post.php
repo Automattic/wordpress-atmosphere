@@ -15,7 +15,6 @@ namespace Atmosphere\Transformer;
 
 use Atmosphere\API;
 use function Atmosphere\debug_log;
-use function Atmosphere\grapheme_length;
 use function Atmosphere\sanitize_text;
 use function Atmosphere\truncate_text;
 
@@ -186,18 +185,21 @@ class Post extends Base {
 	 * ({@see self::$projecting}) so no blobs are uploaded and no meta is
 	 * touched.
 	 *
-	 * Counts are reported against the user's *untruncated* text: a
-	 * short-form post longer than the 300-grapheme limit publishes a
-	 * clamped record, but the panel surfaces the real length (e.g.
-	 * "340 / 300") so the author knows truncation will happen before they
-	 * publish. Composed long-form records (link card, teaser-thread
-	 * chunks) are built to fit, so their record text is the source text.
+	 * Counts are reported in the same unit the publish path clamps on —
+	 * code points (`mb_strlen`), as used by `truncate_text()` — so the
+	 * preview never says "within limit" for text the publisher would
+	 * shorten. They are measured against the user's *untruncated* text: a
+	 * short-form post longer than the limit still publishes a clamped
+	 * record, but the panel surfaces the real length (e.g. "340 / 300") so
+	 * the author knows truncation will happen before they publish. Composed
+	 * long-form records (link card, teaser-thread chunks) are built to fit,
+	 * so their record text is the source text.
 	 *
 	 * @return array{
 	 *     is_short_form: bool,
 	 *     strategy: string,
 	 *     limit: int,
-	 *     records: array<int, array{graphemes: int, over_limit: bool}>
+	 *     records: array<int, array{characters: int, over_limit: bool}>
 	 * }
 	 */
 	public function project(): array {
@@ -233,10 +235,10 @@ class Post extends Base {
 				? $this->render_post_content_plain( $this->object )
 				: (string) ( $record['text'] ?? '' );
 
-			$graphemes   = grapheme_length( $measured );
+			$characters  = \mb_strlen( $measured );
 			$projected[] = array(
-				'graphemes'  => $graphemes,
-				'over_limit' => $graphemes > $limit,
+				'characters' => $characters,
+				'over_limit' => $characters > $limit,
 			);
 		}
 

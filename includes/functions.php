@@ -130,36 +130,6 @@ function truncate_graphemes( string $text, int $max_graphemes ): string {
 }
 
 /**
- * Count the graphemes in a string, the unit Bluesky uses for its
- * 300-character post limit.
- *
- * Uses `grapheme_strlen()` when the `intl` extension is loaded — matching
- * the AT Protocol spec's grapheme semantics — and falls back to
- * `mb_strlen()` (code points) otherwise. The fallback never undercounts:
- * every grapheme is at least one code point, so a code-point count is an
- * upper bound and an over-limit indicator built on it stays conservative.
- *
- * @param string $text Text to measure.
- * @return int Grapheme count.
- */
-function grapheme_length( string $text ): int {
-	if ( \function_exists( 'grapheme_strlen' ) ) {
-		$length = \grapheme_strlen( $text );
-
-		/*
-		 * `grapheme_strlen()` returns null (or false) on invalid UTF-8;
-		 * fall through to the `mb_strlen()` branch so the count stays
-		 * defined rather than surfacing a null length to callers.
-		 */
-		if ( \is_int( $length ) ) {
-			return $length;
-		}
-	}
-
-	return \mb_strlen( $text );
-}
-
-/**
  * Truncate text to a character limit, breaking at word boundaries.
  *
  * @param string $text   Text to truncate.

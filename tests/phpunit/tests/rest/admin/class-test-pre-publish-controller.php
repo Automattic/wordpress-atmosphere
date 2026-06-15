@@ -112,7 +112,7 @@ class Test_Pre_Publish_Controller extends WP_UnitTestCase {
 		$this->assertSame( 'short-form', $data['strategy'] );
 		$this->assertSame( 300, $data['limit'] );
 		$this->assertCount( 1, $data['records'] );
-		$this->assertSame( 13, $data['records'][0]['graphemes'] );
+		$this->assertSame( 13, $data['records'][0]['characters'] );
 		$this->assertFalse( $data['records'][0]['over_limit'] );
 	}
 
@@ -138,7 +138,7 @@ class Test_Pre_Publish_Controller extends WP_UnitTestCase {
 		)->get_data();
 
 		$this->assertSame( 'short-form', $data['strategy'] );
-		$this->assertSame( 13, $data['records'][0]['graphemes'] );
+		$this->assertSame( 13, $data['records'][0]['characters'] );
 	}
 
 	/**
@@ -160,7 +160,7 @@ class Test_Pre_Publish_Controller extends WP_UnitTestCase {
 			$this->make_request( $post->ID, array( 'content' => \str_repeat( 'word ', 100 ) ) )
 		)->get_data();
 
-		$this->assertGreaterThan( 300, $data['records'][0]['graphemes'] );
+		$this->assertGreaterThan( 300, $data['records'][0]['characters'] );
 		$this->assertTrue( $data['records'][0]['over_limit'] );
 	}
 

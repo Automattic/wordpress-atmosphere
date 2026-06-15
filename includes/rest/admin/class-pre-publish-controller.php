@@ -187,7 +187,24 @@ class Pre_Publish_Controller extends \WP_REST_Controller {
 		$draft->post_status   = 'publish';
 		$draft->post_password = '';
 
-		$projection = ( new Post( $draft ) )->project();
+		/*
+		 * Projection renders `the_content`, whose filter chain can fire
+		 * oEmbed/shortcode HTTP requests. This endpoint is keystroke-driven,
+		 * so block all outbound HTTP for the duration to keep the preview
+		 * truly side-effect-free and prevent it being used as an egress
+		 * amplifier. Embeds simply fall back to their plain-text URL.
+		 */
+		$block_http = static function () {
+			return new WP_Error( 'atmosphere_projection_no_http', 'HTTP is disabled during pre-publish projection.' );
+		};
+
+		\add_filter( 'pre_http_request', $block_http, 0 );
+
+		try {
+			$projection = ( new Post( $draft ) )->project();
+		} finally {
+			\remove_filter( 'pre_http_request', $block_http, 0 );
+		}
 
 		return \rest_ensure_response(
 			array(
