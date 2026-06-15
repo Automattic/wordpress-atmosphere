@@ -73,6 +73,7 @@ class Test_Pre_Publish_Controller extends WP_UnitTestCase {
 		$request->set_param( 'excerpt', $overrides['excerpt'] ?? '' );
 		$request->set_param( 'status', $overrides['status'] ?? 'publish' );
 		$request->set_param( 'password', $overrides['password'] ?? '' );
+		$request->set_param( 'disabled', $overrides['disabled'] ?? false );
 
 		return $request;
 	}
@@ -265,6 +266,29 @@ class Test_Pre_Publish_Controller extends WP_UnitTestCase {
 
 		$this->assertFalse( $data['will_publish'] );
 		$this->assertStringContainsString( 'Password', $data['reason'] );
+	}
+
+	/**
+	 * A post the author switched sharing off for (the document-panel toggle,
+	 * unsaved) is reported as not shared.
+	 *
+	 * @covers ::get_preview
+	 */
+	public function test_preview_disabled_toggle_reports_reason() {
+		$post = self::factory()->post->create_and_get();
+
+		$data = $this->controller->get_preview(
+			$this->make_request(
+				$post->ID,
+				array(
+					'content'  => 'Not this one.',
+					'disabled' => true,
+				)
+			)
+		)->get_data();
+
+		$this->assertFalse( $data['will_publish'] );
+		$this->assertStringContainsString( 'switched off', $data['reason'] );
 	}
 
 	/**

@@ -416,7 +416,25 @@ function is_supported_post_type( string $post_type ): bool {
 function is_post_publishable( \WP_Post $post ): bool {
 	return 'publish' === $post->post_status
 		&& '' === (string) $post->post_password
-		&& is_supported_post_type( $post->post_type );
+		&& is_supported_post_type( $post->post_type )
+		&& is_sharing_enabled( $post );
+}
+
+/**
+ * Whether per-post sharing to Bluesky is enabled.
+ *
+ * Sharing is opt-out: it defaults to on, and an author can switch a single
+ * post off from the block-editor panel, which stores the
+ * `atmosphere_disabled` post meta. Because this folds into
+ * {@see is_post_publishable()}, switching a post off after it was shared
+ * routes it through the same cleanup path as making it private — the
+ * remote records are removed.
+ *
+ * @param \WP_Post $post Post object.
+ * @return bool
+ */
+function is_sharing_enabled( \WP_Post $post ): bool {
+	return '1' !== (string) \get_post_meta( $post->ID, ATMOSPHERE_META_DISABLED, true );
 }
 
 /**

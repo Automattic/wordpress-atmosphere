@@ -238,6 +238,34 @@ class Test_Atmosphere extends WP_UnitTestCase {
 	}
 
 	/**
+	 * Switching the per-post share toggle off on a previously-synced post
+	 * schedules cleanup (delete), not an update — so the records are removed
+	 * from Bluesky rather than left orphaned.
+	 */
+	public function test_disabling_share_on_synced_post_schedules_delete() {
+		$post = self::factory()->post->create_and_get( array( 'post_status' => 'publish' ) );
+		\wp_clear_scheduled_hook( 'atmosphere_publish_post', array( $post->ID ) );
+
+		\update_post_meta( $post->ID, Post::META_TID, 'bsky-tid-123' );
+		\update_post_meta( $post->ID, Document::META_TID, 'doc-tid-456' );
+
+		// Author switches sharing off for this already-shared post.
+		\update_post_meta( $post->ID, ATMOSPHERE_META_DISABLED, '1' );
+
+		$this->reset_publishing_action();
+		$this->atmosphere->on_status_change( 'publish', 'publish', $post );
+
+		$this->assertFalse(
+			\wp_next_scheduled( 'atmosphere_update_post', array( $post->ID ) ),
+			'Disabling sharing must not schedule a record update.'
+		);
+		$this->assertNotFalse(
+			\wp_next_scheduled( 'atmosphere_delete_post', array( $post->ID ) ),
+			'Disabling sharing on a synced post must schedule remote cleanup.'
+		);
+	}
+
+	/**
 	 * Multiple visibility transitions in one request each schedule cleanup.
 	 */
 	public function test_bulk_password_protected_updates_schedule_cleanup_for_each_post() {
@@ -2314,5 +2342,39 @@ class Test_Atmosphere extends WP_UnitTestCase {
 		\do_action( 'atmosphere_publish_comment', $child_id );
 
 		$this->assertSame( 0, $apply_writes_calls, 'Publish must be skipped when parent has URI but no CID.' );
+	}
+
+	/**
+	 * The `atmosphere_url` REST field exposes the bsky.app web URL for a
+	 * shared post (built from the stored AT-URI), and is empty before the
+	 * post has been shared.
+	 */
+	public function test_atmosphere_url_rest_field() {
+		$admin = self::factory()->user->create( array( 'role' => 'administrator' ) );
+		\wp_set_current_user( $admin );
+
+		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
+
+		$this->assertSame( '', $this->rest_get_atmosphere_url( $post_id ) );
+
+		\update_post_meta( $post_id, Post::META_URI, 'at://did:plc:abc123/app.bsky.feed.post/3kabc' );
+
+		$this->assertSame(
+			'https://bsky.app/profile/did:plc:abc123/post/3kabc',
+			$this->rest_get_atmosphere_url( $post_id )
+		);
+	}
+
+	/**
+	 * Fetch a post's `atmosphere_url` REST field in the edit context.
+	 *
+	 * @param int $post_id Post ID.
+	 * @return string
+	 */
+	private function rest_get_atmosphere_url( int $post_id ): string {
+		$request = new \WP_REST_Request( 'GET', '/wp/v2/posts/' . $post_id );
+		$request->set_param( 'context', 'edit' );
+
+		return (string) ( \rest_do_request( $request )->get_data()['atmosphere_url'] ?? '' );
 	}
 }

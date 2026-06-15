@@ -2,9 +2,10 @@
 /**
  * Block-editor asset loading.
  *
- * Enqueues the pre-publish federation panel in the block editor. Kept
- * separate from the REST controller that feeds the panel: this class owns
- * only the front-of-editor asset, the controller owns only the data.
+ * Enqueues the ATmosphere block-editor panels: the document-sidebar share
+ * toggle and the pre-publish federation panel. Kept separate from the REST
+ * controller that feeds the pre-publish panel — this class owns only the
+ * front-of-editor assets, the controller owns only the data.
  *
  * @package Atmosphere
  */
@@ -19,6 +20,13 @@ namespace Atmosphere;
 class Block_Editor {
 
 	/**
+	 * Built editor scripts, keyed by their `src/`/`build/` directory name.
+	 *
+	 * @var string[]
+	 */
+	private const SCRIPTS = array( 'editor-plugin', 'pre-publish-panel' );
+
+	/**
 	 * Register the editor asset hook.
 	 */
 	public static function register(): void {
@@ -26,7 +34,7 @@ class Block_Editor {
 	}
 
 	/**
-	 * Enqueue the pre-publish panel script on supported post types only.
+	 * Enqueue the editor scripts on supported post types only.
 	 */
 	public static function enqueue(): void {
 		$screen = \function_exists( 'get_current_screen' ) ? \get_current_screen() : null;
@@ -35,22 +43,37 @@ class Block_Editor {
 			return;
 		}
 
-		$asset_file = ATMOSPHERE_PLUGIN_DIR . 'build/pre-publish-panel/plugin.asset.php';
+		foreach ( self::SCRIPTS as $name ) {
+			self::enqueue_script( $name );
+		}
+	}
+
+	/**
+	 * Enqueue one built editor script by its directory name.
+	 *
+	 * Bails silently when the build output is missing so the plugin still
+	 * loads from a source checkout that hasn't run `npm run build`.
+	 *
+	 * @param string $name The `build/<name>/` directory holding `plugin.js`.
+	 */
+	private static function enqueue_script( string $name ): void {
+		$asset_file = ATMOSPHERE_PLUGIN_DIR . 'build/' . $name . '/plugin.asset.php';
 
 		if ( ! \file_exists( $asset_file ) ) {
 			return;
 		}
 
-		$asset = include $asset_file;
+		$asset  = include $asset_file;
+		$handle = 'atmosphere-' . $name;
 
 		\wp_enqueue_script(
-			'atmosphere-pre-publish-panel',
-			ATMOSPHERE_PLUGIN_URL . 'build/pre-publish-panel/plugin.js',
+			$handle,
+			ATMOSPHERE_PLUGIN_URL . 'build/' . $name . '/plugin.js',
 			$asset['dependencies'],
 			$asset['version'],
 			true
 		);
 
-		\wp_set_script_translations( 'atmosphere-pre-publish-panel', 'atmosphere' );
+		\wp_set_script_translations( $handle, 'atmosphere' );
 	}
 }

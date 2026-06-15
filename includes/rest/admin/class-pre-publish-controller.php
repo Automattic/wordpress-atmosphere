@@ -102,6 +102,11 @@ class Pre_Publish_Controller extends \WP_REST_Controller {
 							'type'        => 'string',
 							'default'     => '',
 						),
+						'disabled' => array(
+							'description' => \__( 'Whether sharing is switched off for this post.', 'atmosphere' ),
+							'type'        => 'boolean',
+							'default'     => false,
+						),
 					),
 				),
 			)
@@ -167,7 +172,8 @@ class Pre_Publish_Controller extends \WP_REST_Controller {
 		$decision = $this->publish_decision(
 			$draft,
 			(string) $request['status'],
-			(string) $request['password']
+			(string) $request['password'],
+			(bool) $request['disabled']
 		);
 
 		/*
@@ -208,9 +214,10 @@ class Pre_Publish_Controller extends \WP_REST_Controller {
 	 * @param WP_Post $post     The post being edited (for post type).
 	 * @param string  $status   The intended post status (e.g. 'publish', 'private').
 	 * @param string  $password The intended post password ('' when not protected).
+	 * @param bool    $disabled Whether sharing is switched off for this post.
 	 * @return array{will_publish: bool, reason: ?string}
 	 */
-	private function publish_decision( WP_Post $post, string $status, string $password ): array {
+	private function publish_decision( WP_Post $post, string $status, string $password, bool $disabled ): array {
 		if ( ! is_connected() ) {
 			return array(
 				'will_publish' => false,
@@ -222,6 +229,13 @@ class Pre_Publish_Controller extends \WP_REST_Controller {
 			return array(
 				'will_publish' => false,
 				'reason'       => \__( 'Automatic publishing to Bluesky is turned off in settings.', 'atmosphere' ),
+			);
+		}
+
+		if ( $disabled ) {
+			return array(
+				'will_publish' => false,
+				'reason'       => \__( 'Sharing is switched off for this post.', 'atmosphere' ),
 			);
 		}
 

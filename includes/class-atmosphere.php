@@ -139,6 +139,12 @@ class Atmosphere {
 		);
 		Block_Editor::register();
 
+		// Per-post "share to Bluesky" toggle meta (REST-exposed for the editor panel).
+		\add_action( 'init', array( $this, 'register_share_meta' ) );
+
+		// Read-only REST field exposing the published post's Bluesky URL.
+		\add_action( 'rest_api_init', array( $this, 'register_share_status_field' ) );
+
 		// Frontend verification headers.
 		\add_action( 'wp_head', array( $this, 'output_document_link' ) );
 		\add_action( 'wp_head', array( $this, 'output_publication_link' ) );
@@ -1292,6 +1298,79 @@ class Atmosphere {
 		}
 
 		return $strategy;
+	}
+
+	/**
+	 * Register the per-post "share to Bluesky" toggle meta.
+	 *
+	 * Registered for every supported post type with `show_in_rest` so the
+	 * block-editor document panel can bind a toggle to it via the core
+	 * entity store. Writing it requires `edit_post` on the post.
+	 */
+	public function register_share_meta(): void {
+		foreach ( get_supported_post_types() as $post_type ) {
+			\register_post_meta(
+				$post_type,
+				ATMOSPHERE_META_DISABLED,
+				array(
+					'type'              => 'boolean',
+					'single'            => true,
+					'default'           => false,
+					'show_in_rest'      => true,
+					'sanitize_callback' => 'rest_sanitize_boolean',
+					'auth_callback'     => static function ( $allowed, $meta_key, $post_id ) {
+						return \current_user_can( 'edit_post', $post_id );
+					},
+				)
+			);
+		}
+	}
+
+	/**
+	 * Register a read-only REST field with the published post's Bluesky URL.
+	 *
+	 * Lets the block-editor panel show a "View on Bluesky" link once the
+	 * post has been shared, without exposing internal AT-URI meta keys.
+	 * Empty until the post has a Bluesky record.
+	 */
+	public function register_share_status_field(): void {
+		foreach ( get_supported_post_types() as $post_type ) {
+			\register_rest_field(
+				$post_type,
+				'atmosphere_url',
+				array(
+					'get_callback'    => static function ( $post_arr ) {
+						$uri = (string) \get_post_meta( (int) $post_arr['id'], Post::META_URI, true );
+
+						return '' === $uri ? '' : self::bsky_web_url_from_uri( $uri );
+					},
+					'update_callback' => null,
+					'schema'          => array(
+						'type'        => 'string',
+						'description' => \__( 'The Bluesky web URL for this post, empty until it is shared.', 'atmosphere' ),
+						'context'     => array( 'edit' ),
+					),
+				)
+			);
+		}
+	}
+
+	/**
+	 * Build the bsky.app web URL for one of our own post AT-URIs.
+	 *
+	 * `at://<did>/app.bsky.feed.post/<rkey>` →
+	 * `https://bsky.app/profile/<did>/post/<rkey>`. bsky.app resolves the
+	 * DID form, so no handle lookup is needed.
+	 *
+	 * @param string $uri AT-URI from `Post::META_URI`.
+	 * @return string Web URL, or '' when the URI shape is unexpected.
+	 */
+	private static function bsky_web_url_from_uri( string $uri ): string {
+		if ( ! \preg_match( '#^at://(?P<did>[^/]+)/app\.bsky\.feed\.post/(?P<rkey>[^/]+)$#', $uri, $matches ) ) {
+			return '';
+		}
+
+		return \esc_url_raw( 'https://bsky.app/profile/' . $matches['did'] . '/post/' . $matches['rkey'] );
 	}
 
 	/**

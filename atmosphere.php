@@ -24,6 +24,15 @@ namespace Atmosphere;
 \define( 'ATMOSPHERE_PLUGIN_URL', \plugin_dir_url( __FILE__ ) );
 \define( 'ATMOSPHERE_PLUGIN_FILE', __FILE__ );
 
+/**
+ * Post meta key: per-post opt-out from sharing to Bluesky.
+ *
+ * Stored as a registered, REST-exposed boolean so the block-editor panel
+ * can bind a toggle to it. '1' (true) means the author switched sharing
+ * off for this post; absent/empty means the default — sharing is on.
+ */
+\define( 'ATMOSPHERE_META_DISABLED', 'atmosphere_disabled' );
+
 /*
  * Custom autoloader for Atmosphere classes — maps the Atmosphere
  * namespace to includes/ using WordPress filename conventions.

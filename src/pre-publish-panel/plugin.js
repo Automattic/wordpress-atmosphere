@@ -12,6 +12,7 @@
 import { PluginPrePublishPanel, store as editorStore } from '@wordpress/editor';
 import { registerPlugin } from '@wordpress/plugins';
 import { useSelect } from '@wordpress/data';
+import { useEntityProp } from '@wordpress/core-data';
 import { useState, useEffect, useRef } from '@wordpress/element';
 import { __, sprintf } from '@wordpress/i18n';
 import apiFetch from '@wordpress/api-fetch';
@@ -24,20 +25,22 @@ import { strategyLabel, hasOverLimit } from './utils';
  * @return {React.JSX.Element} Panel.
  */
 function PrePublishPanel() {
-	const { postId, title, content, excerpt, status, password } = useSelect(
-		( select ) => {
+	const { postId, postType, title, content, excerpt, status, password } =
+		useSelect( ( select ) => {
 			const editor = select( editorStore );
 			return {
 				postId: editor.getCurrentPostId(),
+				postType: editor.getCurrentPostType(),
 				title: editor.getEditedPostAttribute( 'title' ),
 				content: editor.getEditedPostContent(),
 				excerpt: editor.getEditedPostAttribute( 'excerpt' ),
 				status: editor.getEditedPostAttribute( 'status' ),
 				password: editor.getEditedPostAttribute( 'password' ),
 			};
-		},
-		[]
-	);
+		}, [] );
+
+	const [ meta ] = useEntityProp( 'postType', postType, 'meta' );
+	const disabled = !! ( meta && meta.atmosphere_disabled );
 
 	const [ preview, setPreview ] = useState( null );
 	const [ loading, setLoading ] = useState( true );
@@ -58,7 +61,15 @@ function PrePublishPanel() {
 			apiFetch( {
 				path: '/atmosphere/1.0/admin/pre-publish-preview',
 				method: 'POST',
-				data: { id: postId, title, content, excerpt, status, password },
+				data: {
+					id: postId,
+					title,
+					content,
+					excerpt,
+					status,
+					password,
+					disabled,
+				},
 			} )
 				.then( ( result ) => {
 					setPreview( result );
@@ -71,7 +82,7 @@ function PrePublishPanel() {
 		}, 400 );
 
 		return () => clearTimeout( debounce.current );
-	}, [ postId, title, content, excerpt, status, password ] );
+	}, [ postId, title, content, excerpt, status, password, disabled ] );
 
 	if ( loading ) {
 		return <Spinner />;

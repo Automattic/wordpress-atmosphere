@@ -14,8 +14,6 @@ use Atmosphere\Handle;
 use Atmosphere\OAuth\Client;
 use Atmosphere\Publisher;
 use function Atmosphere\get_connection;
-use function Atmosphere\get_supported_post_types;
-use function Atmosphere\is_connected;
 use function Atmosphere\needs_reauth;
 use function Atmosphere\sanitize_text;
 
@@ -43,9 +41,6 @@ class Admin {
 		\add_action( 'admin_notices', array( self::class, 'maybe_render_reauth_notice' ) );
 
 		\add_action( 'admin_post_atmosphere_disconnect', array( self::class, 'handle_disconnect' ) );
-
-		// Meta box on syncable post types.
-		\add_action( 'add_meta_boxes', array( self::class, 'add_meta_box' ) );
 
 		/*
 		 * REST route for client metadata is registered globally from
@@ -220,38 +215,6 @@ class Admin {
 
 		\wp_safe_redirect( \admin_url( 'options-general.php?page=atmosphere' ) );
 		exit;
-	}
-
-	/**
-	 * Add the ATmosphere meta box to syncable post types.
-	 */
-	public static function add_meta_box(): void {
-		if ( ! is_connected() ) {
-			return;
-		}
-
-		foreach ( get_supported_post_types() as $post_type ) {
-			\add_meta_box(
-				'atmosphere',
-				\__( 'ATmosphere', 'atmosphere' ),
-				array( self::class, 'render_meta_box' ),
-				$post_type,
-				'side'
-			);
-		}
-	}
-
-	/**
-	 * Render the meta box content.
-	 *
-	 * @param \WP_Post $post Current post.
-	 */
-	public static function render_meta_box( \WP_Post $post ): void {
-		\load_template(
-			ATMOSPHERE_PLUGIN_DIR . 'templates/meta-box.php',
-			false,
-			array( 'post' => $post )
-		);
 	}
 
 	/**
