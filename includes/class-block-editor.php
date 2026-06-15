@@ -14,6 +14,8 @@ namespace Atmosphere;
 
 \defined( 'ABSPATH' ) || exit;
 
+use Atmosphere\REST\Admin\Pre_Publish_Controller;
+
 /**
  * Block-editor integration.
  */
@@ -75,5 +77,23 @@ class Block_Editor {
 		);
 
 		\wp_set_script_translations( $handle, 'atmosphere' );
+
+		// Single source of truth for values the JS shares with PHP.
+		\wp_localize_script( $handle, 'atmosphereEditor', self::script_data() );
+	}
+
+	/**
+	 * Shared config exposed to the editor scripts as `window.atmosphereEditor`.
+	 *
+	 * Keeps the REST route and the share-toggle meta key defined once on the
+	 * PHP side so the JS never hardcodes (and drifts from) them.
+	 *
+	 * @return array{previewPath: string, metaKey: string}
+	 */
+	private static function script_data(): array {
+		return array(
+			'previewPath' => Pre_Publish_Controller::full_route(),
+			'metaKey'     => ATMOSPHERE_META_DISABLED,
+		);
 	}
 }

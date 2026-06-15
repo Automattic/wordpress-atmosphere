@@ -29,21 +29,47 @@ use function Atmosphere\is_supported_post_type;
 class Pre_Publish_Controller extends \WP_REST_Controller {
 
 	/**
-	 * The namespace of this controller's route.
+	 * The REST namespace for this controller's route.
 	 *
 	 * Deliberately separate from the public OAuth `atmosphere/v1`
 	 * namespace: this is an authenticated, editor-only surface.
 	 *
 	 * @var string
 	 */
-	protected $namespace = 'atmosphere/1.0';
+	public const ROUTE_NAMESPACE = 'atmosphere/1.0';
 
 	/**
 	 * The base of this controller's route.
 	 *
 	 * @var string
 	 */
-	protected $rest_base = 'admin/pre-publish-preview';
+	public const ROUTE_BASE = 'admin/pre-publish-preview';
+
+	/**
+	 * The namespace of this controller's route.
+	 *
+	 * @var string
+	 */
+	protected $namespace = self::ROUTE_NAMESPACE;
+
+	/**
+	 * The base of this controller's route.
+	 *
+	 * @var string
+	 */
+	protected $rest_base = self::ROUTE_BASE;
+
+	/**
+	 * The full REST path for the preview route, leading slash included.
+	 *
+	 * Single source of truth shared with the editor JS via
+	 * {@see Block_Editor::script_data()} so the path is not duplicated.
+	 *
+	 * @return string
+	 */
+	public static function full_route(): string {
+		return '/' . self::ROUTE_NAMESPACE . '/' . self::ROUTE_BASE;
+	}
 
 	/**
 	 * Register the route.

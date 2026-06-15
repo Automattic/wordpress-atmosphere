@@ -17,6 +17,7 @@ import { ToggleControl, ExternalLink } from '@wordpress/components';
 import { useSelect } from '@wordpress/data';
 import { useEntityProp } from '@wordpress/core-data';
 import { __ } from '@wordpress/i18n';
+import { META_KEY } from '../config';
 import { isSharingEnabled } from './utils';
 
 /**
@@ -55,7 +56,7 @@ const EditorPlugin = () => {
 				label={ __( 'Share this post to Bluesky', 'atmosphere' ) }
 				checked={ enabled }
 				onChange={ ( value ) =>
-					setMeta( { ...meta, atmosphere_disabled: ! value } )
+					setMeta( { ...meta, [ META_KEY ]: ! value } )
 				}
 				help={
 					enabled

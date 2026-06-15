@@ -17,6 +17,7 @@ import { useState, useEffect, useRef } from '@wordpress/element';
 import { __, sprintf } from '@wordpress/i18n';
 import apiFetch from '@wordpress/api-fetch';
 import { Notice, Spinner } from '@wordpress/components';
+import { META_KEY, PREVIEW_PATH } from '../config';
 import { strategyLabel, hasOverLimit } from './utils';
 
 /**
@@ -40,7 +41,7 @@ function PrePublishPanel() {
 		}, [] );
 
 	const [ meta ] = useEntityProp( 'postType', postType, 'meta' );
-	const disabled = !! ( meta && meta.atmosphere_disabled );
+	const disabled = !! ( meta && meta[ META_KEY ] );
 
 	const [ preview, setPreview ] = useState( null );
 	const [ loading, setLoading ] = useState( true );
@@ -59,7 +60,7 @@ function PrePublishPanel() {
 		clearTimeout( debounce.current );
 		debounce.current = setTimeout( () => {
 			apiFetch( {
-				path: '/atmosphere/1.0/admin/pre-publish-preview',
+				path: PREVIEW_PATH,
 				method: 'POST',
 				data: {
 					id: postId,
