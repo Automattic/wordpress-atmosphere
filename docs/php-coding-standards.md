@@ -503,7 +503,7 @@ if ( $errors->has_errors() ) {
 try {
     $result = self::risky_operation();
 } catch ( \Exception $e ) {
-    debug_log( $e->getMessage() );
+    \Atmosphere\debug_log( $e->getMessage() );
     return new \WP_Error( 'atmosphere_exception', $e->getMessage(), array( 'code' => $e->getCode() ) );
 }
 ```
