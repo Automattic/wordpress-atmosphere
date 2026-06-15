@@ -77,6 +77,158 @@ class Facet {
 	}
 
 	/**
+	 * Reassemble rich text by applying facets back onto a plain-text string.
+	 *
+	 * The inverse of {@see Facet::extract()}. AT Protocol stores a post's
+	 * `text` as the *display* string — Bluesky truncates long URLs (e.g.
+	 * `bsky.app/profile/jere...`) — while the real target lives in the
+	 * `facets` array, which maps a byte range in `text` to a feature
+	 * (link `uri`, mention `did`, or `tag`). Without this step an imported
+	 * comment keeps only the lossy display string.
+	 *
+	 * Link and mention features become anchors; tags become hashtag-search
+	 * links; the byte ranges between facets are copied through untouched.
+	 * The result is an HTML fragment intended to be passed through
+	 * `wp_kses_post()` by the caller (as the reaction-sync path does), so
+	 * only the generated `href` attributes are escaped here.
+	 *
+	 * @since unreleased
+	 *
+	 * @param string $text   Plain-text display string from the record.
+	 * @param array  $facets Facet array from the record, as stored on the PDS.
+	 * @return string Text with facets resolved to anchors.
+	 */
+	public static function apply( string $text, array $facets ): string {
+		/*
+		 * Facets come from untrusted PDS JSON, so every nested shape is
+		 * treated as unknown: drop facet entries that aren't arrays before
+		 * touching them, otherwise a scalar entry fatals on array access.
+		 */
+		$facets = \array_filter( $facets, '\is_array' );
+
+		if ( empty( $facets ) ) {
+			return $text;
+		}
+
+		\usort(
+			$facets,
+			static fn( $a, $b ) => self::byte_start( $a ) <=> self::byte_start( $b )
+		);
+
+		// Facet indexes are UTF-8 byte offsets, so splice in byte space.
+		$length = \strlen( $text );
+		$cursor = 0;
+		$result = '';
+
+		foreach ( $facets as $facet ) {
+			$index = $facet['index'] ?? null;
+
+			if ( ! \is_array( $index ) ) {
+				continue;
+			}
+
+			$start = $index['byteStart'] ?? null;
+			$end   = $index['byteEnd'] ?? null;
+
+			/*
+			 * Skip ranges that are malformed, empty, out of bounds, or
+			 * that overlap a facet we've already consumed. Dropping a bad
+			 * range leaves its display text in place rather than corrupting
+			 * the surrounding bytes.
+			 */
+			if ( ! \is_int( $start ) || ! \is_int( $end ) || $start < $cursor || $start >= $end || $end > $length ) {
+				continue;
+			}
+
+			/*
+			 * A facet may carry several features; in practice Bluesky emits
+			 * one, and a non-array `features` (again, untrusted JSON) must
+			 * not reach the array-typed renderer.
+			 */
+			$features = $facet['features'] ?? null;
+			$feature  = \is_array( $features ) && \is_array( $features[0] ?? null ) ? $features[0] : array();
+
+			$result .= \substr( $text, $cursor, $start - $cursor );
+			$result .= self::render_feature( $feature, \substr( $text, $start, $end - $start ) );
+			$cursor  = $end;
+		}
+
+		return $result . \substr( $text, $cursor );
+	}
+
+	/**
+	 * Safely read a facet's `byteStart` for sorting.
+	 *
+	 * Tolerates malformed facet shapes from untrusted PDS JSON — a missing
+	 * or non-array `index` sorts as 0 rather than fataling on array access.
+	 *
+	 * @param array $facet Facet array.
+	 * @return int Byte offset, or 0 when absent/malformed.
+	 */
+	private static function byte_start( array $facet ): int {
+		$index = $facet['index'] ?? null;
+
+		return \is_array( $index ) && \is_int( $index['byteStart'] ?? null ) ? $index['byteStart'] : 0;
+	}
+
+	/**
+	 * Render a single facet feature around its display text.
+	 *
+	 * Unknown feature types fall back to the display text unchanged, so a
+	 * facet type we don't handle never drops the text it annotated.
+	 *
+	 * @param array  $feature Facet feature (first entry of a facet's `features`).
+	 * @param string $display Display text the facet covers.
+	 * @return string HTML fragment, or the display text unchanged.
+	 */
+	private static function render_feature( array $feature, string $display ): string {
+		/*
+		 * The display text is a slice of the remote record's `text`, so it
+		 * can contain HTML-significant characters (e.g. `</a>`). Escape it
+		 * before embedding so the anchor can't be broken out of and no
+		 * markup is injected, independent of any downstream wp_kses_post().
+		 */
+		$display = \esc_html( $display );
+
+		switch ( $feature['$type'] ?? '' ) {
+			case 'app.bsky.richtext.facet#link':
+				$href = \esc_url( $feature['uri'] ?? '' );
+				break;
+
+			case 'app.bsky.richtext.facet#mention':
+				/*
+				 * The mention facet only carries the DID, so link by DID.
+				 * bsky.app/profile/{did} resolves the same as the handle
+				 * form used elsewhere in Reaction_Sync.
+				 */
+				$did  = $feature['did'] ?? '';
+				$href = '' === $did ? '' : \esc_url( 'https://bsky.app/profile/' . $did );
+				break;
+
+			case 'app.bsky.richtext.facet#tag':
+				$tag  = $feature['tag'] ?? '';
+				$href = '' === $tag ? '' : \esc_url( 'https://bsky.app/hashtag/' . \rawurlencode( $tag ) );
+				break;
+
+			default:
+				$href = '';
+				break;
+		}
+
+		/*
+		 * Fall back to the bare (escaped) display text when there's no
+		 * usable target — an unknown feature type, a missing value, or a
+		 * scheme `esc_url()` rejected — rather than emitting an empty
+		 * `href` that would link to the current page.
+		 */
+		if ( '' === $href ) {
+			return $display;
+		}
+
+		return '<a href="' . $href . '">' . $display . '</a>';
+	}
+
+	/**
 	 * Find URLs in text and return link facets.
 	 *
 	 * @param string $text Plain text.
