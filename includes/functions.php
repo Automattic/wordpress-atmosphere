@@ -388,3 +388,54 @@ function is_post_publishable( \WP_Post $post ): bool {
 		&& '' === (string) $post->post_password
 		&& is_supported_post_type( $post->post_type );
 }
+
+/**
+ * Write a debug message to the PHP error log, gated behind WP_DEBUG.
+ *
+ * `error_log()` honours the server's `log_errors` / `error_log` directives
+ * independently of `WP_DEBUG`, so unconditional calls land in production logs
+ * on any site that has PHP error logging enabled but has not opted into
+ * debugging. Routing every plugin log line through this helper keeps that
+ * noise out of production unless debugging is intentionally turned on.
+ *
+ * Centralising the call also means the `[atmosphere]` prefix and the
+ * newline stripping (PDS-supplied error strings can carry attacker-controlled
+ * CRLF / fake prefixes that would otherwise forge log lines) live in one
+ * place rather than being repeated at every call site.
+ *
+ * @since 1.2.0
+ *
+ * @param string $message Message to log, without the `[atmosphere]` prefix.
+ * @return void
+ */
+function debug_log( string $message ): void {
+	/**
+	 * Filters whether an ATmosphere debug message is written to the error log.
+	 *
+	 * Defaults to the `WP_DEBUG` state. Return true to surface ATmosphere log
+	 * lines independently of `WP_DEBUG` (useful for operators who want the
+	 * genuine anomaly breadcrumbs — failed cron PDS writes, thread-rollback
+	 * orphans — without enabling debugging site-wide), or false to silence
+	 * them entirely.
+	 *
+	 * @since 1.2.0
+	 *
+	 * @param bool   $enabled Whether to write the message. Defaults to `WP_DEBUG`.
+	 * @param string $message The message about to be logged (without the `[atmosphere]` prefix).
+	 */
+	$enabled = (bool) \apply_filters(
+		'atmosphere_debug_log',
+		\defined( 'WP_DEBUG' ) && \WP_DEBUG,
+		$message
+	);
+
+	if ( ! $enabled ) {
+		return;
+	}
+
+	// Collapse CRLF so a single logged message can't forge extra log lines.
+	$message = \str_replace( array( "\r", "\n" ), ' ', $message );
+
+	// phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
+	\error_log( '[atmosphere] ' . $message );
+}

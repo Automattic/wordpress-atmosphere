@@ -15,6 +15,7 @@ use function Atmosphere\truncate_graphemes;
 use function Atmosphere\to_iso8601;
 use function Atmosphere\is_post_publishable;
 use function Atmosphere\get_connection;
+use function Atmosphere\debug_log;
 
 /**
  * Function tests.
@@ -304,5 +305,108 @@ class Test_Functions extends \WP_UnitTestCase {
 		$this->assertSame( array(), $conn );
 
 		\delete_option( 'atmosphere_connection' );
+	}
+
+	/**
+	 * Capture everything `debug_log()` writes to the PHP error log while
+	 * running `$callback`, returning the raw log contents.
+	 *
+	 * @param callable $callback Code to run with the error log redirected.
+	 * @return string Captured error-log contents.
+	 */
+	private function capture_debug_log( callable $callback ): string {
+		$tmp  = \tempnam( \sys_get_temp_dir(), 'atmosphere-log' );
+		$orig = \ini_get( 'error_log' );
+		// Redirect error_log() to a temp file so the write is observable; restored below.
+		\ini_set( 'error_log', $tmp ); // phpcs:ignore WordPress.PHP.IniSet.Risky
+
+		try {
+			$callback();
+		} finally {
+			\ini_set( 'error_log', false === $orig ? '' : $orig ); // phpcs:ignore WordPress.PHP.IniSet.Risky
+		}
+
+		// phpcs:ignore WordPress.WP.AlternativeFunctions.file_get_contents_file_get_contents
+		$contents = (string) \file_get_contents( $tmp );
+		\unlink( $tmp ); // phpcs:ignore WordPress.WP.AlternativeFunctions.unlink_unlink
+
+		return $contents;
+	}
+
+	/**
+	 * `debug_log()` writes a prefixed line when logging is enabled.
+	 */
+	public function test_debug_log_writes_when_enabled() {
+		$contents = $this->capture_debug_log(
+			function () {
+				\add_filter( 'atmosphere_debug_log', '__return_true' );
+				debug_log( 'something happened' );
+				\remove_filter( 'atmosphere_debug_log', '__return_true' );
+			}
+		);
+
+		$this->assertStringContainsString( '[atmosphere] something happened', $contents );
+	}
+
+	/**
+	 * `debug_log()` is a no-op when logging is disabled, regardless of the
+	 * server's `log_errors` / `error_log` directives.
+	 */
+	public function test_debug_log_noop_when_disabled() {
+		$contents = $this->capture_debug_log(
+			function () {
+				\add_filter( 'atmosphere_debug_log', '__return_false' );
+				debug_log( 'should not be logged' );
+				\remove_filter( 'atmosphere_debug_log', '__return_false' );
+			}
+		);
+
+		$this->assertStringNotContainsString( 'should not be logged', $contents );
+	}
+
+	/**
+	 * The `atmosphere_debug_log` filter receives the WP_DEBUG default and the
+	 * unprefixed message, and its return value controls whether logging runs.
+	 */
+	public function test_debug_log_filter_receives_default_and_message() {
+		$received = array();
+
+		$capture = function ( $enabled, $message ) use ( &$received ) {
+			$received['enabled'] = $enabled;
+			$received['message'] = $message;
+			return false;
+		};
+
+		$this->capture_debug_log(
+			function () use ( $capture ) {
+				\add_filter( 'atmosphere_debug_log', $capture, 10, 2 );
+				debug_log( 'filter payload' );
+				\remove_filter( 'atmosphere_debug_log', $capture, 10 );
+			}
+		);
+
+		$this->assertArrayHasKey( 'enabled', $received );
+		$this->assertSame( \defined( 'WP_DEBUG' ) && \WP_DEBUG, $received['enabled'] );
+		$this->assertSame( 'filter payload', $received['message'] );
+	}
+
+	/**
+	 * `debug_log()` collapses CRLF so a single message cannot forge extra
+	 * log lines (PDS-supplied error strings can carry attacker-controlled
+	 * newlines and fake `[atmosphere]` prefixes).
+	 */
+	public function test_debug_log_collapses_newlines() {
+		$contents = $this->capture_debug_log(
+			function () {
+				\add_filter( 'atmosphere_debug_log', '__return_true' );
+				debug_log( "first line\r\n[atmosphere] forged second line" );
+				\remove_filter( 'atmosphere_debug_log', '__return_true' );
+			}
+		);
+
+		// Exactly one logged line carries the prefix; the forged one is folded in.
+		$this->assertSame( 1, \substr_count( $contents, '[atmosphere] first line' ) );
+		$this->assertStringNotContainsString( "first line\n", $contents );
+		$this->assertStringNotContainsString( "first line\r", $contents );
 	}
 }
