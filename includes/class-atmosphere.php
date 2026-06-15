@@ -20,6 +20,7 @@ use Atmosphere\Transformer\Document;
 use Atmosphere\Transformer\Post;
 use Atmosphere\Transformer\Publication;
 use Atmosphere\Integrations\Load;
+use Atmosphere\REST\Admin\Pre_Publish_Controller;
 use Atmosphere\WP_Admin\Admin;
 use Atmosphere\WP_Admin\Settings_Fields;
 
@@ -123,6 +124,20 @@ class Atmosphere {
 
 		// REST route (always active for client-metadata).
 		\add_action( 'rest_api_init', array( Admin::class, 'register_rest_routes' ) );
+
+		/*
+		 * Block-editor pre-publish panel. REST data and editor asset are
+		 * deliberately separate concerns: the controller serves the
+		 * projection on the admin `atmosphere/1.0` namespace, Block_Editor
+		 * only enqueues the script.
+		 */
+		\add_action(
+			'rest_api_init',
+			static function () {
+				( new Pre_Publish_Controller() )->register_routes();
+			}
+		);
+		Block_Editor::register();
 
 		// Frontend verification headers.
 		\add_action( 'wp_head', array( $this, 'output_document_link' ) );
