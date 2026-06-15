@@ -1,4 +1,0 @@
-Significance: patch
-Type: fixed
-
-Stop caches from holding on to a stale domain handle or publication link, so reconnecting or switching accounts takes effect right away.

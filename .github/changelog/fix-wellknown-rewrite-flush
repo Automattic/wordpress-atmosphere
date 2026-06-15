@@ -1,4 +1,0 @@
-Significance: patch
-Type: fixed
-
-Fix domain handle verification failing on some sites when using your site's domain as your Bluesky handle.

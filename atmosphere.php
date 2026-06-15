@@ -3,7 +3,7 @@
  * Plugin Name: ATmosphere
  * Plugin URI: https://github.com/pfefferle/atmosphere
  * Description: Publish WordPress posts to AT Protocol (Bluesky + standard.site) via native OAuth.
- * Version: 1.1.1
+ * Version: 1.2.0
  * Author: Automattic
  * Author URI: https://automattic.com
  * License: GPL-2.0-or-later
@@ -19,7 +19,7 @@ namespace Atmosphere;
 
 \defined( 'ABSPATH' ) || exit;
 
-\define( 'ATMOSPHERE_VERSION', '1.1.1' );
+\define( 'ATMOSPHERE_VERSION', '1.2.0' );
 \define( 'ATMOSPHERE_PLUGIN_DIR', \plugin_dir_path( __FILE__ ) );
 \define( 'ATMOSPHERE_PLUGIN_URL', \plugin_dir_url( __FILE__ ) );
 \define( 'ATMOSPHERE_PLUGIN_FILE', __FILE__ );
