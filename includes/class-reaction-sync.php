@@ -196,9 +196,9 @@ class Reaction_Sync {
 		 */
 		$token = Client::access_token();
 		if ( \is_wp_error( $token ) ) {
-			\error_log( // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
+			debug_log(
 				\sprintf(
-					'[atmosphere] reaction sync aborted: %s — %s',
+					'reaction sync aborted: %s — %s',
 					$token->get_error_code(),
 					$token->get_error_message()
 				)
@@ -270,9 +270,9 @@ class Reaction_Sync {
 				 * stopped making progress (rate limit, OAuth refresh
 				 * failure, transient 5xx all surface here identically).
 				 */
-				\error_log( // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
+				debug_log(
 					\sprintf(
-						'[atmosphere] reaction sync (%s) fetch failed: %s — %s',
+						'reaction sync (%s) fetch failed: %s — %s',
 						$option_key,
 						$response->get_error_code(),
 						$response->get_error_message()

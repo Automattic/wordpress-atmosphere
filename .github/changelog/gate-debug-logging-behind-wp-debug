@@ -1,0 +1,4 @@
+Significance: patch
+Type: changed
+
+Keep diagnostic messages out of your site's error log unless WordPress debugging (WP_DEBUG) is turned on.

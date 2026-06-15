@@ -15,6 +15,7 @@ Quick-reference for everyday work. Full reference: [`docs/php-coding-standards.m
 - **Use** imports for cross-namespace references — never inline `\Atmosphere\OAuth\Client`.
 - **Yoda conditions** for value-vs-variable comparisons: `if ( 'value' === $variable )`.
 - **`unreleased`** for `@since` / `@deprecated` tags on new code — the release script rewrites them.
+- **Never call `\error_log()` directly** — route every log line through `Atmosphere\debug_log()`, which gates on `WP_DEBUG`, adds the `[atmosphere]` prefix, and collapses CRLF. Pass the message without the prefix.
 
 ## File and Class Layout
 
@@ -63,6 +64,8 @@ Always reserve the rkey via meta in `get_rkey()` — that meta key is the marker
 
 **Actions:** `atmosphere_publishing`, `atmosphere_publish_post_result`, `atmosphere_publish_comment_result`, `atmosphere_update_skipped_unsynced_post`, `atmosphere_long_form_strategy_downgraded`, `atmosphere_reaction_synced`. `atmosphere_publishing` receives the current `WP_Post` and is not a request-wide guard.
 
+**Logging:** `atmosphere_debug_log` — `(bool $enabled, string $message)`; defaults to the `WP_DEBUG` state, lets operators opt log lines in/out independently of `WP_DEBUG`.
+
 **Test-only:** `atmosphere_pre_apply_writes` — Publisher fixture uses this to short-circuit `apply_writes` before the HTTP layer.
 
 Full signatures and docblocks: [`docs/php-coding-standards.md → Hook Patterns`](../../../docs/php-coding-standards.md#hook-patterns).
@@ -91,7 +94,7 @@ This pattern was extracted in PR #32 (review by @kraftbj). Full rationale: [`doc
 
 ## Cron Handler Errors — Never Swallow `WP_Error`
 
-Cron handlers in `register_async_hooks()` MUST surface `Publisher::*` errors via `error_log()` — typically through `log_cron_error()`. `wp_schedule_single_event` does not retry, so a silent drop loses the only signal operators have for transient PDS failures, expired refresh tokens, or DPoP nonce drift.
+Cron handlers in `register_async_hooks()` MUST surface `Publisher::*` errors via `debug_log()` — typically through `log_cron_error()`. `wp_schedule_single_event` does not retry, so a silent drop loses the only signal operators have for transient PDS failures, expired refresh tokens, or DPoP nonce drift. `debug_log()` gates the line behind `WP_DEBUG` (operators can opt in on production via the `atmosphere_debug_log` filter).
 
 When the handler operates on records the caller has already lost local state for (e.g. `atmosphere_delete_comment_record` after the WP comment row is gone), include the TID/identifier in the log line so the orphan is recoverable manually.
 
