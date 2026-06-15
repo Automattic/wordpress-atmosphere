@@ -403,7 +403,7 @@ function is_post_publishable( \WP_Post $post ): bool {
  * CRLF / fake prefixes that would otherwise forge log lines) live in one
  * place rather than being repeated at every call site.
  *
- * @since unreleased
+ * @since 1.2.0
  *
  * @param string $message Message to log, without the `[atmosphere]` prefix.
  * @return void
@@ -418,7 +418,7 @@ function debug_log( string $message ): void {
 	 * orphans — without enabling debugging site-wide), or false to silence
 	 * them entirely.
 	 *
-	 * @since unreleased
+	 * @since 1.2.0
 	 *
 	 * @param bool   $enabled Whether to write the message. Defaults to `WP_DEBUG`.
 	 * @param string $message The message about to be logged (without the `[atmosphere]` prefix).

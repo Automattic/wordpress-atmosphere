@@ -55,7 +55,7 @@ class Backfill {
 	 * not fire one SELECT per ID. `no_found_rows` skips the
 	 * `SQL_CALC_FOUND_ROWS` overhead — we never need the total count.
 	 *
-	 * @since unreleased
+	 * @since 1.2.0
 	 *
 	 * @param int      $limit      Maximum IDs to return. 0 or negative for no cap.
 	 * @param string[] $post_types Post type slugs to include. Caller should
@@ -79,7 +79,7 @@ class Backfill {
 		 * filter also gives the test suite a knob for driving the paged
 		 * loop with small fixtures.
 		 *
-		 * @since unreleased
+		 * @since 1.2.0
 		 *
 		 * @param int $chunk_size Posts per page. Default 500.
 		 */

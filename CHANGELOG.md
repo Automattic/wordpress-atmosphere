@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-06-15
+### Security
+- Hardened error logging so details from cryptographic failures are never written to the log. [#128]
+- Hardened the Bluesky connect flow so a redirect interruption cannot loosen redirect safety checks for the rest of the request. [#129]
+- Hardened the Bluesky server address checks to also catch unsafe addresses hidden behind URL encoding. [#130]
+
+### Added
+- Add a Content format setting so you can choose how your posts are saved for standard.site readers — rendered HTML, Markdown, Leaflet, or pckt. [#112]
+- Add rich content support for standard.site documents using the Markpub format. [#112]
+- A new `wp atmosphere backfill` WP-CLI command publishes your older posts to Bluesky in bulk from the command line. [#91]
+- New settings let you stop importing Bluesky likes and reposts, or replies. [#122]
+
+### Changed
+- Keep diagnostic messages out of your site's error log unless WordPress debugging (WP_DEBUG) is turned on. [#135]
+
+### Removed
+- The "Start Backfill" button has moved from the settings page to WP-CLI. Run "wp atmosphere backfill" to sync existing posts. [#91]
+
+### Fixed
+- Accept Bluesky handles entered with a leading "@" — pasting "@alice.bsky.social" now connects just like "alice.bsky.social". [#69]
+- Apply your auto-publish, post-type, and long-form preferences even when a post is published outside the WordPress admin (REST API, WP-CLI, or scheduled posts). [#69]
+- Fix domain handle verification failing on some sites when using your site's domain as your Bluesky handle. [#93]
+- Restore the cover image and Bluesky link preview thumbnail for posts whose featured image is served from a CDN, such as on WordPress.com sites. [#114]
+- Send your site's theme colours to standard.site in the format the network expects so they show up on your publication page. [#110]
+- Show a clear error instead of crashing when connecting on a server whose OpenSSL build cannot create the secure key Bluesky requires. [#117]
+- Stop caches from holding on to a stale domain handle or publication link, so reconnecting or switching accounts takes effect right away. [#111]
+- Trim very long site titles and taglines when syncing your publication so the record is always accepted by the network. [#108]
+
 ## [1.1.1] - 2026-06-01
 ### Added
 - Posts shared to Bluesky now link back to both the site's publication record and the per-post document record, so Bluesky shows your site source, profile, and richer document metadata alongside the link preview. [#106]
@@ -85,6 +113,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Remove a comment reply from Bluesky if the comment was deleted or unapproved while it was being published, instead of leaving an orphan reply behind. [#32]
 - Short posts under the long-form teaser-thread strategy no longer ship a redundant "continue reading" reply when the entire body already fits in a single Bluesky post. The link-back is preserved as a card on the same post. [#51]
 
+[1.2.0]: https://github.com/Automattic/wordpress-atmosphere/compare/1.1.1...1.2.0
 [1.1.1]: https://github.com/Automattic/wordpress-atmosphere/compare/1.1.0...1.1.1
 [1.1.0]: https://github.com/Automattic/wordpress-atmosphere/compare/1.0.0...1.1.0
 [1.0.0]: https://github.com/Automattic/wordpress-atmosphere/releases

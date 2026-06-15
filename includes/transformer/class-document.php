@@ -310,7 +310,7 @@ class Document extends Base {
 		/**
 		 * Filters the content parser used for site.standard.document records.
 		 *
-		 * @deprecated unreleased Register parsers with {@see \Atmosphere\Content_Parser\Registry::register()} instead.
+		 * @deprecated 1.2.0 Register parsers with {@see \Atmosphere\Content_Parser\Registry::register()} instead.
 		 *
 		 * @param Content_Parser|null $parser The content parser. Default: null.
 		 * @param \WP_Post            $post   The WordPress post.
@@ -319,7 +319,7 @@ class Document extends Base {
 
 		\_deprecated_hook(
 			'atmosphere_content_parser',
-			'unreleased',
+			'1.2.0',
 			'\Atmosphere\Content_Parser\Registry::register()'
 		);
 

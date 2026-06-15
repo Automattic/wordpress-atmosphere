@@ -1,4 +1,0 @@
-Significance: patch
-Type: security
-
-Hardened the Bluesky server address checks to also catch unsafe addresses hidden behind URL encoding.

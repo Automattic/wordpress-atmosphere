@@ -4,7 +4,7 @@ Tags: at-protocol, bluesky, fediverse, atproto, crossposting
 Requires at least: 6.2
 Tested up to: 7.0
 Requires PHP: 8.2
-Stable tag: 1.1.1
+Stable tag: 1.2.0
 License: GPL-2.0-or-later
 License URI: https://spdx.org/licenses/GPL-2.0-or-later.html
 
@@ -91,6 +91,34 @@ Not at this time. ATmosphere is designed for a single WordPress site. On a Netwo
 
 == Changelog ==
 
+### 1.2.0 - 2026-06-15
+#### Security
+- Hardened error logging so details from cryptographic failures are never written to the log.
+- Hardened the Bluesky connect flow so a redirect interruption cannot loosen redirect safety checks for the rest of the request.
+- Hardened the Bluesky server address checks to also catch unsafe addresses hidden behind URL encoding.
+
+#### Added
+- Add a Content format setting so you can choose how your posts are saved for standard.site readers — rendered HTML, Markdown, Leaflet, or pckt.
+- Add rich content support for standard.site documents using the Markpub format.
+- A new `wp atmosphere backfill` WP-CLI command publishes your older posts to Bluesky in bulk from the command line.
+- New settings let you stop importing Bluesky likes and reposts, or replies.
+
+#### Changed
+- Keep diagnostic messages out of your site's error log unless WordPress debugging (WP_DEBUG) is turned on.
+
+#### Removed
+- The "Start Backfill" button has moved from the settings page to WP-CLI. Run "wp atmosphere backfill" to sync existing posts.
+
+#### Fixed
+- Accept Bluesky handles entered with a leading "@" — pasting "@alice.bsky.social" now connects just like "alice.bsky.social".
+- Apply your auto-publish, post-type, and long-form preferences even when a post is published outside the WordPress admin (REST API, WP-CLI, or scheduled posts).
+- Fix domain handle verification failing on some sites when using your site's domain as your Bluesky handle.
+- Restore the cover image and Bluesky link preview thumbnail for posts whose featured image is served from a CDN, such as on WordPress.com sites.
+- Send your site's theme colours to standard.site in the format the network expects so they show up on your publication page.
+- Show a clear error instead of crashing when connecting on a server whose OpenSSL build cannot create the secure key Bluesky requires.
+- Stop caches from holding on to a stale domain handle or publication link, so reconnecting or switching accounts takes effect right away.
+- Trim very long site titles and taglines when syncing your publication so the record is always accepted by the network.
+
 ### 1.1.1 - 2026-06-01
 #### Added
 - Posts shared to Bluesky now link back to both the site's publication record and the per-post document record, so Bluesky shows your site source, profile, and richer document metadata alongside the link preview.
@@ -171,6 +199,7 @@ Not at this time. ATmosphere is designed for a single WordPress site. On a Netwo
 - Remove a comment reply from Bluesky if the comment was deleted or unapproved while it was being published, instead of leaving an orphan reply behind.
 - Short posts under the long-form teaser-thread strategy no longer ship a redundant "continue reading" reply when the entire body already fits in a single Bluesky post. The link-back is preserved as a card on the same post.
 
+[1.2.0]: https://github.com/Automattic/wordpress-atmosphere/compare/1.1.1...1.2.0
 [1.1.1]: https://github.com/Automattic/wordpress-atmosphere/compare/1.1.0...1.1.1
 [1.1.0]: https://github.com/Automattic/wordpress-atmosphere/compare/1.0.0...1.1.0
 [1.0.0]: https://github.com/Automattic/wordpress-atmosphere/releases
