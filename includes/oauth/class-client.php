@@ -34,7 +34,7 @@ class Client {
 	 *
 	 * MUST stay in lockstep with the `scope` value advertised in the
 	 * client-metadata REST endpoint
-	 * ({@see \Atmosphere\Admin::serve_client_metadata()}). The auth
+	 * ({@see \Atmosphere\Rest\Client_Metadata_Controller::get_metadata()}). The auth
 	 * server validates the requested scope against the metadata; a drift
 	 * silently downgrades every connection to whichever value is smaller.
 	 *

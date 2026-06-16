@@ -20,7 +20,8 @@ use Atmosphere\Transformer\Document;
 use Atmosphere\Transformer\Post;
 use Atmosphere\Transformer\Publication;
 use Atmosphere\Integrations\Load;
-use Atmosphere\REST\Admin\Pre_Publish_Controller;
+use Atmosphere\Rest\Admin\Pre_Publish_Controller;
+use Atmosphere\Rest\Client_Metadata_Controller;
 use Atmosphere\WP_Admin\Admin;
 use Atmosphere\WP_Admin\Settings_Fields;
 
@@ -122,8 +123,8 @@ class Atmosphere {
 		 */
 		\add_filter( 'atmosphere_long_form_composition', array( self::class, 'seed_long_form_composition' ), 1 );
 
-		// REST route (always active for client-metadata).
-		\add_action( 'rest_api_init', array( Admin::class, 'register_rest_routes' ) );
+		// Register every REST controller in one place.
+		\add_action( 'rest_api_init', array( $this, 'register_rest_controllers' ) );
 
 		/*
 		 * Block-editor pre-publish panel. REST data and editor asset are
@@ -131,12 +132,6 @@ class Atmosphere {
 		 * projection on the admin `atmosphere/1.0` namespace, Block_Editor
 		 * only enqueues the script.
 		 */
-		\add_action(
-			'rest_api_init',
-			static function () {
-				( new Pre_Publish_Controller() )->register_routes();
-			}
-		);
 		Block_Editor::register();
 
 		// Per-post "share to Bluesky" toggle meta (REST-exposed for the editor panel).
@@ -1298,6 +1293,18 @@ class Atmosphere {
 		}
 
 		return $strategy;
+	}
+
+	/**
+	 * Register every REST controller on `rest_api_init`.
+	 *
+	 * Public controllers live in `Atmosphere\Rest`; admin-only ones in
+	 * `Atmosphere\Rest\Admin`. Mirrors the wordpress-activitypub plugin's
+	 * `rest_init()`.
+	 */
+	public function register_rest_controllers(): void {
+		( new Client_Metadata_Controller() )->register_routes();
+		( new Pre_Publish_Controller() )->register_routes();
 	}
 
 	/**

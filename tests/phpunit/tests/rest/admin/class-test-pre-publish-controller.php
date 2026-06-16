@@ -7,16 +7,16 @@
  * @group rest
  */
 
-namespace Atmosphere\Tests\REST\Admin;
+namespace Atmosphere\Tests\Rest\Admin;
 
-use Atmosphere\REST\Admin\Pre_Publish_Controller;
+use Atmosphere\Rest\Admin\Pre_Publish_Controller;
 use WP_REST_Request;
 use WP_UnitTestCase;
 
 /**
  * Pre-publish preview controller tests.
  *
- * @coversDefaultClass \Atmosphere\REST\Admin\Pre_Publish_Controller
+ * @coversDefaultClass \Atmosphere\Rest\Admin\Pre_Publish_Controller
  */
 class Test_Pre_Publish_Controller extends WP_UnitTestCase {
 

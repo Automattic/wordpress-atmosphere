@@ -14,7 +14,7 @@ namespace Atmosphere;
 
 \defined( 'ABSPATH' ) || exit;
 
-use Atmosphere\REST\Admin\Pre_Publish_Controller;
+use Atmosphere\Rest\Admin\Pre_Publish_Controller;
 
 /**
  * Block-editor integration.

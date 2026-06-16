@@ -10,7 +10,7 @@
  * @package Atmosphere
  */
 
-namespace Atmosphere\REST\Admin;
+namespace Atmosphere\Rest\Admin;
 
 \defined( 'ABSPATH' ) || exit;
 
