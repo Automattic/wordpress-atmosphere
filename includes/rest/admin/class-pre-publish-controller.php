@@ -4,7 +4,7 @@
  *
  * Projects, for the post currently open in the block editor, whether it
  * will publish to Bluesky, which strategy will run, and how its text
- * measures against the 300-grapheme limit — all before the author clicks
+ * measures against the 300-character limit — all before the author clicks
  * Publish. Lives in the admin REST namespace; it is not a public route.
  *
  * @package Atmosphere

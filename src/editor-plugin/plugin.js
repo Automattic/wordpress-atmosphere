@@ -79,13 +79,15 @@ const EditorPlugin = () => {
 				</p>
 			) }
 
-			{ /* Sharing is off but the post is still on Bluesky — removal is
-			     pending (and a stuck removal stays visible so the author can
-			     re-save to retry). */ }
+			{ /* Sharing is off but the post is still on Bluesky. Removal
+			     happens on the next sync (which needs a live connection and
+			     auto-publishing on), so the wording doesn't promise timing.
+			     The notice stays visible until the record is gone, giving the
+			     author a reason to re-save if it lingers. */ }
 			{ sharedUrl && ! enabled && (
 				<Notice status="warning" isDismissible={ false }>
 					{ __(
-						'This post is still on Bluesky. It will be removed shortly; save again if it stays.',
+						'Sharing is off, but this post is still on Bluesky. It will be removed the next time your site syncs.',
 						'atmosphere'
 					) }
 				</Notice>

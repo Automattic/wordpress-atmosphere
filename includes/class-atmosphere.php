@@ -1373,7 +1373,8 @@ class Atmosphere {
 					'show_in_rest'      => true,
 					'sanitize_callback' => 'rest_sanitize_boolean',
 					'auth_callback'     => static function ( $allowed, $meta_key, $post_id ) {
-						return \current_user_can( 'edit_post', $post_id );
+						// Respect any prior denial rather than widening access.
+						return $allowed && \current_user_can( 'edit_post', $post_id );
 					},
 				)
 			);
