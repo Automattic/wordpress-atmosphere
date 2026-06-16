@@ -238,31 +238,64 @@ class Test_Atmosphere extends WP_UnitTestCase {
 	}
 
 	/**
-	 * Switching the per-post share toggle off on a previously-synced post
-	 * schedules cleanup (delete), not an update — so the records are removed
-	 * from Bluesky rather than left orphaned.
+	 * Changing the share toggle schedules a reconcile directly off the
+	 * committed meta write — the real REST order, where the meta lands after
+	 * any status transition (and a meta-only save fires no transition at all).
 	 */
-	public function test_disabling_share_on_synced_post_schedules_delete() {
+	public function test_share_toggle_change_schedules_reconcile() {
 		$post = self::factory()->post->create_and_get( array( 'post_status' => 'publish' ) );
-		\wp_clear_scheduled_hook( 'atmosphere_publish_post', array( $post->ID ) );
+		\wp_clear_scheduled_hook( 'atmosphere_update_post', array( $post->ID ) );
 
 		\update_post_meta( $post->ID, Post::META_TID, 'bsky-tid-123' );
-		\update_post_meta( $post->ID, Document::META_TID, 'doc-tid-456' );
-
-		// Author switches sharing off for this already-shared post.
 		\update_post_meta( $post->ID, ATMOSPHERE_META_DISABLED, '1' );
 
-		$this->reset_publishing_action();
-		$this->atmosphere->on_status_change( 'publish', 'publish', $post );
+		$this->atmosphere->on_share_meta_changed( 0, $post->ID, ATMOSPHERE_META_DISABLED );
+
+		$this->assertNotFalse(
+			\wp_next_scheduled( 'atmosphere_update_post', array( $post->ID ) ),
+			'Changing the share toggle must schedule a reconcile.'
+		);
+	}
+
+	/**
+	 * An unrelated meta key change does not schedule a reconcile.
+	 */
+	public function test_unrelated_meta_change_does_not_schedule_reconcile() {
+		$post = self::factory()->post->create_and_get( array( 'post_status' => 'publish' ) );
+		\wp_clear_scheduled_hook( 'atmosphere_update_post', array( $post->ID ) );
+
+		$this->atmosphere->on_share_meta_changed( 0, $post->ID, 'some_other_meta' );
 
 		$this->assertFalse(
-			\wp_next_scheduled( 'atmosphere_update_post', array( $post->ID ) ),
-			'Disabling sharing must not schedule a record update.'
+			\wp_next_scheduled( 'atmosphere_update_post', array( $post->ID ) )
 		);
-		$this->assertNotFalse(
-			\wp_next_scheduled( 'atmosphere_delete_post', array( $post->ID ) ),
-			'Disabling sharing on a synced post must schedule remote cleanup.'
+	}
+
+	/**
+	 * When the reconcile runs for a post whose sharing has been switched off,
+	 * the remote records are deleted — i.e. toggling sharing off removes the
+	 * post from Bluesky, not just "stops future publishes".
+	 */
+	public function test_reconcile_removes_records_when_share_disabled() {
+		\add_filter(
+			'atmosphere_pre_apply_writes',
+			static fn( $short, $writes ) => array( 'results' => \array_fill( 0, \count( $writes ), array() ) ),
+			10,
+			2
 		);
+
+		$post = self::factory()->post->create_and_get( array( 'post_status' => 'publish' ) );
+		\update_post_meta( $post->ID, Post::META_TID, 'bsky-tid-123' );
+		\update_post_meta( $post->ID, Post::META_URI, 'at://did:plc:test123/app.bsky.feed.post/bsky-tid-123' );
+		\update_post_meta( $post->ID, Document::META_TID, 'doc-tid-456' );
+		\update_post_meta( $post->ID, ATMOSPHERE_META_DISABLED, '1' );
+
+		\do_action( 'atmosphere_update_post', $post->ID );
+
+		\remove_all_filters( 'atmosphere_pre_apply_writes' );
+
+		$this->assertSame( '', \get_post_meta( $post->ID, Post::META_TID, true ) );
+		$this->assertSame( '', \get_post_meta( $post->ID, Document::META_TID, true ) );
 	}
 
 	/**

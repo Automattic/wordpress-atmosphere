@@ -137,6 +137,16 @@ class Atmosphere {
 		// Per-post "share to Bluesky" toggle meta (REST-exposed for the editor panel).
 		\add_action( 'init', array( $this, 'register_share_meta' ) );
 
+		/*
+		 * Reconcile when the share toggle itself changes. `transition_post_status`
+		 * alone is fragile here: the editor writes the meta *after* the post
+		 * update fires the transition, and a meta-only save fires no transition
+		 * at all — so react to the committed meta write directly.
+		 */
+		\add_action( 'added_post_meta', array( $this, 'on_share_meta_changed' ), 10, 3 );
+		\add_action( 'updated_post_meta', array( $this, 'on_share_meta_changed' ), 10, 3 );
+		\add_action( 'deleted_post_meta', array( $this, 'on_share_meta_changed' ), 10, 3 );
+
 		// Read-only REST field exposing the published post's Bluesky URL.
 		\add_action( 'rest_api_init', array( $this, 'register_share_status_field' ) );
 
@@ -1305,6 +1315,43 @@ class Atmosphere {
 	public function register_rest_controllers(): void {
 		( new Client_Metadata_Controller() )->register_routes();
 		( new Pre_Publish_Controller() )->register_routes();
+	}
+
+	/**
+	 * React to the per-post share toggle being changed.
+	 *
+	 * Fires on `added_/updated_/deleted_post_meta`, after the value is
+	 * committed, so the reconcile runs against fresh meta. It schedules the
+	 * standard `atmosphere_update_post` reconciliation, which re-checks
+	 * {@see is_post_publishable()} at fire time and either publishes, updates,
+	 * or deletes the remote records accordingly — turning the toggle off on an
+	 * already-shared post removes it from Bluesky.
+	 *
+	 * This is the robust counterpart to the `transition_post_status` path:
+	 * it covers a meta-only save (no status transition) and the race where a
+	 * transition-scheduled cron fires before the meta write commits.
+	 *
+	 * @param int|int[] $meta_id  Meta row ID(s); unused (signatures differ
+	 *                            across the three hooks).
+	 * @param int       $post_id  Object the meta belongs to.
+	 * @param string    $meta_key Meta key that changed.
+	 */
+	public function on_share_meta_changed( $meta_id, $post_id, $meta_key ): void {
+		if ( ATMOSPHERE_META_DISABLED !== $meta_key ) {
+			return;
+		}
+
+		if ( ! is_connected() || '1' !== \get_option( 'atmosphere_auto_publish', '1' ) ) {
+			return;
+		}
+
+		if ( ! \get_post( (int) $post_id ) instanceof \WP_Post ) {
+			return;
+		}
+
+		if ( ! \wp_next_scheduled( 'atmosphere_update_post', array( (int) $post_id ) ) ) {
+			\wp_schedule_single_event( \time(), 'atmosphere_update_post', array( (int) $post_id ) );
+		}
 	}
 
 	/**
