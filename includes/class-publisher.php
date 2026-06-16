@@ -1124,9 +1124,11 @@ class Publisher {
 	 * cascade semantics, so they have to be enumerated alongside the
 	 * post records or they orphan on Bluesky.
 	 *
-	 * Writes are chunked into bounded `applyWrites` calls (the lexicon
-	 * caps a single batch at 200), so a high-traffic post with a long
-	 * reply tail still cleans up cleanly.
+	 * The post + document deletes and the outbound comment-reply deletes
+	 * are submitted as two independent, individually-chunked `applyWrites`
+	 * batches (the lexicon caps a single batch at 200). The root batch
+	 * goes first: a long reply tail can neither inflate the root batch
+	 * past the cap nor, when it fails, block cleanup of the post itself.
 	 *
 	 * @param \WP_Post $post WordPress post.
 	 * @return array|\WP_Error
@@ -1174,48 +1176,67 @@ class Publisher {
 			);
 		}
 
-		$writes = array();
+		$root_writes = array();
 		foreach ( $stored as $record ) {
 			if ( empty( $record['tid'] ) ) {
 				continue;
 			}
-			$writes[] = array(
+			$root_writes[] = array(
 				'$type'      => 'com.atproto.repo.applyWrites#delete',
 				'collection' => 'app.bsky.feed.post',
 				'rkey'       => $record['tid'],
 			);
 		}
 		if ( $doc_tid ) {
-			$writes[] = array(
+			$root_writes[] = array(
 				'$type'      => 'com.atproto.repo.applyWrites#delete',
 				'collection' => 'site.standard.document',
 				'rkey'       => $doc_tid,
 			);
 		}
 
+		$comment_writes = array();
 		foreach ( $comment_tids as $comment_tid ) {
-			$writes[] = array(
+			$comment_writes[] = array(
 				'$type'      => 'com.atproto.repo.applyWrites#delete',
 				'collection' => 'app.bsky.feed.post',
 				'rkey'       => $comment_tid['tid'],
 			);
 		}
 
-		if ( empty( $writes ) ) {
+		if ( empty( $root_writes ) && empty( $comment_writes ) ) {
 			return new \WP_Error(
 				'atmosphere_not_published',
 				\__( 'Post has no AT Protocol records.', 'atmosphere' )
 			);
 		}
 
-		$result = self::apply_writes_chunked( $writes );
+		$outcome = self::delete_in_decoupled_batches( $root_writes, $comment_writes );
 
-		if ( \is_wp_error( $result ) ) {
-			// Leave meta intact so a retry can complete.
-			return $result;
+		if ( \is_wp_error( $outcome['root'] ) ) {
+			// Nothing was removed remotely; leave all meta intact so a retry can complete.
+			return $outcome['root'];
 		}
 
-		self::clear_all_record_meta( $post->ID );
+		/*
+		 * The post + document records are gone, so clear their local meta
+		 * now — before the comment-reply batch is even evaluated. This is
+		 * the decoupling guarantee: a comment cascade that overflows or
+		 * fails can no longer strand the post in a published-looking state.
+		 *
+		 * `$outcome['root']` is null only when there were no root writes —
+		 * i.e. a comment-only retry after a prior run already cleared the
+		 * post/document meta — so there is nothing left to clear and the
+		 * call is skipped.
+		 */
+		if ( null !== $outcome['root'] ) {
+			self::clear_all_record_meta( $post->ID );
+		}
+
+		if ( \is_wp_error( $outcome['comments'] ) ) {
+			// Comment-reply meta is left intact so a re-trash retries just those records.
+			return $outcome['comments'];
+		}
 
 		// Clean up comment meta for every reply we just deleted.
 		foreach ( $comment_tids as $comment_tid ) {
@@ -1225,7 +1246,7 @@ class Publisher {
 			\delete_comment_meta( $comment_tid['comment_id'], Reaction_Sync::META_SOURCE_ID );
 		}
 
-		return $result;
+		return self::merge_decoupled_results( $outcome );
 	}
 
 	/**
@@ -1290,8 +1311,13 @@ class Publisher {
 	 * accessible to `delete_post()`. Accepts either a single Bluesky TID
 	 * string (legacy single-record posts) or an array of TIDs
 	 * (thread-strategy posts), plus an optional list of outbound
-	 * comment-reply TIDs. All are issued in one atomic `applyWrites`
-	 * call so cleanup of root + thread + replies + document is atomic.
+	 * comment-reply TIDs. The post + document deletes and the
+	 * comment-reply deletes are submitted as two independent,
+	 * individually-chunked `applyWrites` batches (root first) so a long
+	 * reply tail can neither overflow the root batch nor block its
+	 * cleanup when it fails. Unlike `delete_post()`, this path has no
+	 * local meta to reconcile — the post row is already gone — so meta
+	 * cleanup is left entirely to the caller (`on_before_delete`).
 	 *
 	 * @param string|string[] $bsky_tids    Bluesky post TID or array of TIDs (may be empty).
 	 * @param string          $doc_tid      Document TID (may be empty).
@@ -1312,10 +1338,10 @@ class Publisher {
 			return new \WP_Error( 'atmosphere_not_published', \__( 'No TIDs provided.', 'atmosphere' ) );
 		}
 
-		$writes = array();
+		$root_writes = array();
 
 		foreach ( $bsky_tids as $bsky_tid ) {
-			$writes[] = array(
+			$root_writes[] = array(
 				'$type'      => 'com.atproto.repo.applyWrites#delete',
 				'collection' => 'app.bsky.feed.post',
 				'rkey'       => $bsky_tid,
@@ -1323,22 +1349,34 @@ class Publisher {
 		}
 
 		if ( $doc_tid ) {
-			$writes[] = array(
+			$root_writes[] = array(
 				'$type'      => 'com.atproto.repo.applyWrites#delete',
 				'collection' => 'site.standard.document',
 				'rkey'       => $doc_tid,
 			);
 		}
 
+		$comment_writes = array();
+
 		foreach ( $comment_tids as $comment_tid ) {
-			$writes[] = array(
+			$comment_writes[] = array(
 				'$type'      => 'com.atproto.repo.applyWrites#delete',
 				'collection' => 'app.bsky.feed.post',
 				'rkey'       => $comment_tid,
 			);
 		}
 
-		return self::apply_writes_chunked( $writes );
+		$outcome = self::delete_in_decoupled_batches( $root_writes, $comment_writes );
+
+		if ( \is_wp_error( $outcome['root'] ) ) {
+			return $outcome['root'];
+		}
+
+		if ( \is_wp_error( $outcome['comments'] ) ) {
+			return $outcome['comments'];
+		}
+
+		return self::merge_decoupled_results( $outcome );
 	}
 
 	/**
@@ -1392,6 +1430,65 @@ class Publisher {
 			}
 
 			++$succeeded;
+		}
+
+		return array( 'results' => $results );
+	}
+
+	/**
+	 * Submit record deletes as two decoupled `applyWrites` batches: the
+	 * post + document first, the outbound comment replies second.
+	 *
+	 * The two batches are chunked and submitted independently so a long
+	 * comment-reply tail can neither push the root batch past the lexicon
+	 * write cap nor, when it fails, block cleanup of the post + document
+	 * themselves. The root batch is submitted first; callers key local
+	 * record-meta cleanup on its success and comment-meta cleanup on the
+	 * comment batch's success.
+	 *
+	 * The comment batch is not attempted when the root batch fails — there
+	 * is nothing local to reconcile yet, and a retry re-runs both.
+	 *
+	 * @param array $root_writes    Post + document delete writes (may be empty).
+	 * @param array $comment_writes Outbound comment-reply delete writes (may be empty).
+	 * @return array{root: array|\WP_Error|null, comments: array|\WP_Error|null}
+	 *               Per-batch outcome; an element is null when that batch
+	 *               had no writes, and `comments` is null when the root
+	 *               batch failed and the comment batch was skipped.
+	 */
+	private static function delete_in_decoupled_batches( array $root_writes, array $comment_writes ): array {
+		$root_result = empty( $root_writes ) ? null : self::apply_writes_chunked( $root_writes );
+
+		if ( \is_wp_error( $root_result ) ) {
+			return array(
+				'root'     => $root_result,
+				'comments' => null,
+			);
+		}
+
+		$comment_result = empty( $comment_writes ) ? null : self::apply_writes_chunked( $comment_writes );
+
+		return array(
+			'root'     => $root_result,
+			'comments' => $comment_result,
+		);
+	}
+
+	/**
+	 * Flatten a decoupled-delete outcome into the single
+	 * `array{results: array}` shape callers expect from a successful
+	 * `applyWrites`. Batches that were empty or errored contribute nothing.
+	 *
+	 * @param array $outcome Result of {@see self::delete_in_decoupled_batches()}.
+	 * @return array
+	 */
+	private static function merge_decoupled_results( array $outcome ): array {
+		$results = array();
+
+		foreach ( array( $outcome['root'] ?? null, $outcome['comments'] ?? null ) as $batch ) {
+			if ( \is_array( $batch ) && isset( $batch['results'] ) && \is_array( $batch['results'] ) ) {
+				$results = \array_merge( $results, $batch['results'] );
+			}
 		}
 
 		return array( 'results' => $results );
