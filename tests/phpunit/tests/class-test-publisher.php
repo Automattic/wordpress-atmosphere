@@ -528,12 +528,12 @@ class Test_Publisher extends WP_UnitTestCase {
 		\update_comment_meta( $c3, Comment::META_TID, 'stale-tid' );
 		// No META_URI — previously-failed publish; must not be in the delete batch.
 
-		$captured_body = null;
+		$captured_bodies = array();
 		\add_filter(
 			'pre_http_request',
-			static function ( $response, $args, $url ) use ( &$captured_body ) {
+			static function ( $response, $args, $url ) use ( &$captured_bodies ) {
 				if ( false !== \strpos( $url, 'applyWrites' ) ) {
-					$captured_body = \json_decode( $args['body'], true );
+					$captured_bodies[] = \json_decode( $args['body'], true );
 
 					return array(
 						'response' => array( 'code' => 200 ),
@@ -549,22 +549,120 @@ class Test_Publisher extends WP_UnitTestCase {
 		Publisher::delete_post( $post );
 		\remove_all_filters( 'pre_http_request' );
 
-		if ( null === $captured_body ) {
+		if ( empty( $captured_bodies ) ) {
 			$this->markTestSkipped( 'API layer rejected request before stub.' );
 		}
 
-		$rkeys = \array_column( $captured_body['writes'], 'rkey' );
-		$this->assertContains( 'post-tid', $rkeys );
-		$this->assertContains( 'doc-tid', $rkeys );
-		$this->assertContains( 'reply-tid-1', $rkeys );
-		$this->assertContains( 'reply-tid-2', $rkeys );
-		$this->assertNotContains( 'stale-tid', $rkeys, 'Stale TID without URI must not be included.' );
+		/*
+		 * The post + document deletes and the comment-reply deletes go out
+		 * as two decoupled batches (root first), so cleanup of the post
+		 * itself is never entangled with the comment cascade.
+		 */
+		$this->assertCount( 2, $captured_bodies, 'Root and comment deletes must be separate batches.' );
+
+		$root_rkeys    = \array_column( $captured_bodies[0]['writes'], 'rkey' );
+		$comment_rkeys = \array_column( $captured_bodies[1]['writes'], 'rkey' );
+
+		$this->assertContains( 'post-tid', $root_rkeys );
+		$this->assertContains( 'doc-tid', $root_rkeys );
+		$this->assertNotContains( 'reply-tid-1', $root_rkeys, 'Comment replies must not ride in the root batch.' );
+
+		$this->assertContains( 'reply-tid-1', $comment_rkeys );
+		$this->assertContains( 'reply-tid-2', $comment_rkeys );
+		$this->assertNotContains( 'stale-tid', $comment_rkeys, 'Stale TID without URI must not be included.' );
 
 		// Meta cleanup on both the post and the published replies.
 		$this->assertSame( '', \get_comment_meta( $c1, Comment::META_URI, true ) );
 		$this->assertSame( '', \get_comment_meta( $c2, Comment::META_TID, true ) );
 		// Stale comment's TID is left alone — we did not touch its record.
 		$this->assertSame( 'stale-tid', \get_comment_meta( $c3, Comment::META_TID, true ) );
+	}
+
+	/**
+	 * When the comment-reply batch fails, the post + document deletes are
+	 * already done, so their meta is cleared regardless — the decoupling
+	 * guarantee. The comment meta is left intact so a re-trash retries
+	 * just the replies. Without decoupling, a failing comment cascade
+	 * would strand the post in a published-looking state.
+	 */
+	public function test_delete_post_clears_root_meta_when_comment_batch_fails() {
+		$post = self::factory()->post->create_and_get(
+			array( 'post_status' => 'trash' )
+		);
+		\update_post_meta( $post->ID, Post::META_TID, 'post-tid' );
+		\update_post_meta( $post->ID, Post::META_URI, 'at://did:plc:test123/app.bsky.feed.post/post-tid' );
+		\update_post_meta( $post->ID, Post::META_CID, 'bafyreibpost' );
+		\update_post_meta( $post->ID, Document::META_TID, 'doc-tid' );
+		\update_post_meta( $post->ID, Document::META_URI, 'at://did:plc:test123/site.standard.document/doc-tid' );
+
+		$c1 = self::factory()->comment->create( array( 'comment_post_ID' => $post->ID ) );
+		\update_comment_meta( $c1, Comment::META_TID, 'reply-tid-1' );
+		\update_comment_meta( $c1, Comment::META_URI, 'at://did:plc:test123/app.bsky.feed.post/reply-tid-1' );
+
+		// Call 1 is the root batch (succeeds); call 2 is the comment batch (fails).
+		$this->fail_call_indexes = array(
+			2 => new \WP_Error( 'atmosphere_pds_500', 'PDS rejected comment batch.' ),
+		);
+		$this->register_capture( $post->ID );
+
+		$result = Publisher::delete_post( $post );
+
+		$this->assertWPError( $result );
+		$this->assertSame( 'atmosphere_pds_500', $result->get_error_code() );
+
+		// Two batches were attempted, root first.
+		$this->assertCount( 2, $this->captured_calls );
+
+		// Root batch succeeded → the full post + document meta surface is cleared.
+		$this->assertSame( '', \get_post_meta( $post->ID, Post::META_TID, true ) );
+		$this->assertSame( '', \get_post_meta( $post->ID, Post::META_URI, true ) );
+		$this->assertSame( '', \get_post_meta( $post->ID, Post::META_CID, true ) );
+		$this->assertSame( '', \get_post_meta( $post->ID, Document::META_TID, true ) );
+		$this->assertSame( '', \get_post_meta( $post->ID, Document::META_URI, true ) );
+
+		// Comment batch failed → its meta is retained for a retry.
+		$this->assertSame( 'reply-tid-1', \get_comment_meta( $c1, Comment::META_TID, true ) );
+		$this->assertSame(
+			'at://did:plc:test123/app.bsky.feed.post/reply-tid-1',
+			\get_comment_meta( $c1, Comment::META_URI, true )
+		);
+	}
+
+	/**
+	 * When the root (post + document) batch fails, nothing was removed
+	 * remotely: all meta stays intact and the comment-reply batch is not
+	 * even attempted, so a retry re-runs the whole cascade cleanly.
+	 */
+	public function test_delete_post_root_batch_failure_leaves_all_meta_intact() {
+		$post = self::factory()->post->create_and_get(
+			array( 'post_status' => 'trash' )
+		);
+		\update_post_meta( $post->ID, Post::META_TID, 'post-tid' );
+		\update_post_meta( $post->ID, Post::META_URI, 'at://did:plc:test123/app.bsky.feed.post/post-tid' );
+		\update_post_meta( $post->ID, Document::META_TID, 'doc-tid' );
+
+		$c1 = self::factory()->comment->create( array( 'comment_post_ID' => $post->ID ) );
+		\update_comment_meta( $c1, Comment::META_TID, 'reply-tid-1' );
+		\update_comment_meta( $c1, Comment::META_URI, 'at://did:plc:test123/app.bsky.feed.post/reply-tid-1' );
+
+		// Fail the root batch (call 1). The comment batch must not be attempted.
+		$this->fail_call_indexes = array(
+			1 => new \WP_Error( 'atmosphere_pds_500', 'PDS rejected root batch.' ),
+		);
+		$this->register_capture( $post->ID );
+
+		$result = Publisher::delete_post( $post );
+
+		$this->assertWPError( $result );
+		$this->assertSame( 'atmosphere_pds_500', $result->get_error_code() );
+
+		// Only the root batch was attempted; the comment batch was skipped.
+		$this->assertCount( 1, $this->captured_calls );
+
+		// Nothing removed remotely → every meta value intact.
+		$this->assertSame( 'post-tid', \get_post_meta( $post->ID, Post::META_TID, true ) );
+		$this->assertSame( 'doc-tid', \get_post_meta( $post->ID, Document::META_TID, true ) );
+		$this->assertSame( 'reply-tid-1', \get_comment_meta( $c1, Comment::META_TID, true ) );
 	}
 
 	/**
@@ -2089,6 +2187,9 @@ class Test_Publisher extends WP_UnitTestCase {
 	 * `applyWrites` calls. The lexicon caps a single batch at 200 writes;
 	 * a high-traffic post with hundreds of outbound comment replies must
 	 * still clean up cleanly rather than failing the whole cascade.
+	 *
+	 * The root (post + document) deletes are their own batch, so the
+	 * 250-reply tail chunks independently of them.
 	 */
 	public function test_delete_post_by_tids_chunks_oversized_batches() {
 		$this->fail_call_indexes = array();
@@ -2106,8 +2207,12 @@ class Test_Publisher extends WP_UnitTestCase {
 		);
 
 		$this->assertIsArray( $result );
-		// 252 total writes / 100 per chunk = 3 calls.
-		$this->assertCount( 3, $this->captured_calls );
+		// Root batch (1 call: root-tid + doc-tid) + 250 replies / 100 (3 calls) = 4 calls.
+		$this->assertCount( 4, $this->captured_calls );
+
+		// First call is the decoupled root batch: just the post + document.
+		$root_rkeys = \array_column( $this->captured_calls[0]['writes'], 'rkey' );
+		$this->assertSame( array( 'root-tid', 'doc-tid' ), $root_rkeys );
 
 		$total_writes = 0;
 		foreach ( $this->captured_calls as $call ) {
@@ -2124,8 +2229,14 @@ class Test_Publisher extends WP_UnitTestCase {
 	 * it as a clean failure.
 	 */
 	public function test_delete_post_by_tids_chunked_failure_carries_progress_data() {
+		/*
+		 * Call 1 is the root batch (root-tid + doc-tid); calls 2-4 are the
+		 * three comment chunks. Fail the second comment chunk (call 3) so
+		 * the progress data is reported relative to the comment batch:
+		 * chunk index 1 of 3, with 1 chunk already succeeded.
+		 */
 		$this->fail_call_indexes = array(
-			2 => new \WP_Error( 'atmosphere_pds_500', 'PDS rejected batch.' ),
+			3 => new \WP_Error( 'atmosphere_pds_500', 'PDS rejected batch.' ),
 		);
 		$this->register_capture( 0 );
 
@@ -2151,10 +2262,11 @@ class Test_Publisher extends WP_UnitTestCase {
 	}
 
 	/**
-	 * Small batches (<= chunk size) take the single-call path and do
-	 * not touch the chunking layer's results-merging.
+	 * Even a small batch is split into a decoupled root batch (post +
+	 * document) and a comment batch, so the post's own cleanup never
+	 * shares an `applyWrites` call with the comment cascade.
 	 */
-	public function test_delete_post_by_tids_small_batch_uses_single_call() {
+	public function test_delete_post_by_tids_decouples_root_and_comment_batches() {
 		$this->fail_call_indexes = array();
 		$this->register_capture( 0 );
 
@@ -2165,8 +2277,38 @@ class Test_Publisher extends WP_UnitTestCase {
 		);
 
 		$this->assertIsArray( $result );
-		$this->assertCount( 1, $this->captured_calls );
-		$this->assertCount( 4, $this->captured_calls[0]['writes'] );
+		$this->assertCount( 2, $this->captured_calls );
+
+		$this->assertSame(
+			array( 'root-tid', 'doc-tid' ),
+			\array_column( $this->captured_calls[0]['writes'], 'rkey' )
+		);
+		$this->assertSame(
+			array( 'reply-1', 'reply-2' ),
+			\array_column( $this->captured_calls[1]['writes'], 'rkey' )
+		);
+	}
+
+	/**
+	 * If the root batch fails on the permanent-delete path, the comment
+	 * batch is not attempted — the failure short-circuits before the
+	 * comment cascade, mirroring the trash path.
+	 */
+	public function test_delete_post_by_tids_skips_comment_batch_when_root_fails() {
+		$this->fail_call_indexes = array(
+			1 => new \WP_Error( 'atmosphere_pds_500', 'PDS rejected root batch.' ),
+		);
+		$this->register_capture( 0 );
+
+		$result = Publisher::delete_post_by_tids(
+			array( 'root-tid' ),
+			'doc-tid',
+			array( 'reply-1', 'reply-2' )
+		);
+
+		$this->assertWPError( $result );
+		$this->assertSame( 'atmosphere_pds_500', $result->get_error_code() );
+		$this->assertCount( 1, $this->captured_calls, 'Comment batch must be skipped when the root batch fails.' );
 	}
 
 	/**
