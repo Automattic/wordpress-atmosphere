@@ -13,7 +13,7 @@ import {
 } from '@wordpress/editor';
 import { PluginDocumentSettingPanel as DocumentSettingPanel } from '@wordpress/edit-post';
 import { registerPlugin } from '@wordpress/plugins';
-import { ToggleControl, ExternalLink } from '@wordpress/components';
+import { ToggleControl, ExternalLink, Notice } from '@wordpress/components';
 import { useSelect } from '@wordpress/data';
 import { useEntityProp } from '@wordpress/core-data';
 import { __ } from '@wordpress/i18n';
@@ -71,12 +71,24 @@ const EditorPlugin = () => {
 				}
 			/>
 
-			{ sharedUrl && (
+			{ sharedUrl && enabled && (
 				<p>
 					<ExternalLink href={ sharedUrl }>
 						{ __( 'View on Bluesky', 'atmosphere' ) }
 					</ExternalLink>
 				</p>
+			) }
+
+			{ /* Sharing is off but the post is still on Bluesky — removal is
+			     pending (and a stuck removal stays visible so the author can
+			     re-save to retry). */ }
+			{ sharedUrl && ! enabled && (
+				<Notice status="warning" isDismissible={ false }>
+					{ __(
+						'This post is still on Bluesky. It will be removed shortly; save again if it stays.',
+						'atmosphere'
+					) }
+				</Notice>
 			) }
 		</SettingsPanel>
 	);
