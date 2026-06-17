@@ -238,6 +238,67 @@ class Test_Atmosphere extends WP_UnitTestCase {
 	}
 
 	/**
+	 * Changing the share toggle schedules a reconcile directly off the
+	 * committed meta write — the real REST order, where the meta lands after
+	 * any status transition (and a meta-only save fires no transition at all).
+	 */
+	public function test_share_toggle_change_schedules_reconcile() {
+		$post = self::factory()->post->create_and_get( array( 'post_status' => 'publish' ) );
+		\wp_clear_scheduled_hook( 'atmosphere_update_post', array( $post->ID ) );
+
+		\update_post_meta( $post->ID, Post::META_TID, 'bsky-tid-123' );
+		\update_post_meta( $post->ID, ATMOSPHERE_META_DISABLED, '1' );
+
+		$this->atmosphere->on_share_meta_changed( 0, $post->ID, ATMOSPHERE_META_DISABLED );
+
+		$this->assertNotFalse(
+			\wp_next_scheduled( 'atmosphere_update_post', array( $post->ID ) ),
+			'Changing the share toggle must schedule a reconcile.'
+		);
+	}
+
+	/**
+	 * An unrelated meta key change does not schedule a reconcile.
+	 */
+	public function test_unrelated_meta_change_does_not_schedule_reconcile() {
+		$post = self::factory()->post->create_and_get( array( 'post_status' => 'publish' ) );
+		\wp_clear_scheduled_hook( 'atmosphere_update_post', array( $post->ID ) );
+
+		$this->atmosphere->on_share_meta_changed( 0, $post->ID, 'some_other_meta' );
+
+		$this->assertFalse(
+			\wp_next_scheduled( 'atmosphere_update_post', array( $post->ID ) )
+		);
+	}
+
+	/**
+	 * When the reconcile runs for a post whose sharing has been switched off,
+	 * the remote records are deleted — i.e. toggling sharing off removes the
+	 * post from Bluesky, not just "stops future publishes".
+	 */
+	public function test_reconcile_removes_records_when_share_disabled() {
+		\add_filter(
+			'atmosphere_pre_apply_writes',
+			static fn( $short, $writes ) => array( 'results' => \array_fill( 0, \count( $writes ), array() ) ),
+			10,
+			2
+		);
+
+		$post = self::factory()->post->create_and_get( array( 'post_status' => 'publish' ) );
+		\update_post_meta( $post->ID, Post::META_TID, 'bsky-tid-123' );
+		\update_post_meta( $post->ID, Post::META_URI, 'at://did:plc:test123/app.bsky.feed.post/bsky-tid-123' );
+		\update_post_meta( $post->ID, Document::META_TID, 'doc-tid-456' );
+		\update_post_meta( $post->ID, ATMOSPHERE_META_DISABLED, '1' );
+
+		\do_action( 'atmosphere_update_post', $post->ID );
+
+		\remove_all_filters( 'atmosphere_pre_apply_writes' );
+
+		$this->assertSame( '', \get_post_meta( $post->ID, Post::META_TID, true ) );
+		$this->assertSame( '', \get_post_meta( $post->ID, Document::META_TID, true ) );
+	}
+
+	/**
 	 * Multiple visibility transitions in one request each schedule cleanup.
 	 */
 	public function test_bulk_password_protected_updates_schedule_cleanup_for_each_post() {
@@ -2314,5 +2375,39 @@ class Test_Atmosphere extends WP_UnitTestCase {
 		\do_action( 'atmosphere_publish_comment', $child_id );
 
 		$this->assertSame( 0, $apply_writes_calls, 'Publish must be skipped when parent has URI but no CID.' );
+	}
+
+	/**
+	 * The `atmosphere_url` REST field exposes the bsky.app web URL for a
+	 * shared post (built from the stored AT-URI), and is empty before the
+	 * post has been shared.
+	 */
+	public function test_atmosphere_url_rest_field() {
+		$admin = self::factory()->user->create( array( 'role' => 'administrator' ) );
+		\wp_set_current_user( $admin );
+
+		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
+
+		$this->assertSame( '', $this->rest_get_atmosphere_url( $post_id ) );
+
+		\update_post_meta( $post_id, Post::META_URI, 'at://did:plc:abc123/app.bsky.feed.post/3kabc' );
+
+		$this->assertSame(
+			'https://bsky.app/profile/did:plc:abc123/post/3kabc',
+			$this->rest_get_atmosphere_url( $post_id )
+		);
+	}
+
+	/**
+	 * Fetch a post's `atmosphere_url` REST field in the edit context.
+	 *
+	 * @param int $post_id Post ID.
+	 * @return string
+	 */
+	private function rest_get_atmosphere_url( int $post_id ): string {
+		$request = new \WP_REST_Request( 'GET', '/wp/v2/posts/' . $post_id );
+		$request->set_param( 'context', 'edit' );
+
+		return (string) ( \rest_do_request( $request )->get_data()['atmosphere_url'] ?? '' );
 	}
 }

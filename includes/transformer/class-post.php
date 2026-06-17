@@ -155,6 +155,124 @@ class Post extends Base {
 	private ?array $document_strong_ref = null;
 
 	/**
+	 * Whether the transformer is running in projection mode.
+	 *
+	 * Projection mode ({@see self::project()}) reproduces the exact text
+	 * and strategy the publish path would produce, but skips the blob
+	 * uploads the embed builders would otherwise perform — those make
+	 * network calls to the PDS and cache `_atmosphere_blob_ref` meta, so
+	 * they must not fire on a read-only editor preview request. Embed
+	 * *structure* is preserved (so the null/non-null branches that select
+	 * the record text stay identical to a real publish); only the upload
+	 * side effects are suppressed.
+	 *
+	 * Facet extraction is likewise skipped: it resolves @-mentions over
+	 * DNS, and running that per keystroke on unsaved, caller-supplied text
+	 * would turn the preview endpoint into a DNS-egress amplifier. Facets
+	 * annotate the text without changing it, so the grapheme count the
+	 * preview reports is identical either way.
+	 *
+	 * @var bool
+	 */
+	private bool $projecting = false;
+
+	/**
+	 * Project the records this post would publish, without side effects.
+	 *
+	 * Mirrors the short-form vs. long-form branch the Publisher takes, so
+	 * the editor pre-publish panel can show the real strategy and Bluesky
+	 * character count before anything is written. Runs in projection mode
+	 * ({@see self::$projecting}) so no blobs are uploaded and no meta is
+	 * touched.
+	 *
+	 * Counts are reported in the same unit the publish path clamps on —
+	 * code points (`mb_strlen`), as used by `truncate_text()` — so the
+	 * preview never says "within limit" for text the publisher would
+	 * shorten. They are measured against the user's *untruncated* text: a
+	 * short-form post longer than the limit still publishes a clamped
+	 * record, but the panel surfaces the real length (e.g. "340 / 300") so
+	 * the author knows truncation will happen before they publish. Composed
+	 * long-form records (link card, teaser-thread chunks) are built to fit,
+	 * so their record text is the source text.
+	 *
+	 * @return array{
+	 *     is_short_form: bool,
+	 *     strategy: string,
+	 *     limit: int,
+	 *     records: array<int, array{characters: int, over_limit: bool}>
+	 * }
+	 */
+	public function project(): array {
+		$this->projecting = true;
+
+		try {
+			$is_short = $this->is_short_form_post();
+
+			if ( $is_short ) {
+				$records  = array( $this->transform() );
+				$strategy = $this->is_redacted() ? 'redacted' : 'short-form';
+			} else {
+				$records  = $this->build_long_form_records();
+				$strategy = $this->projected_long_form_strategy( \count( $records ) );
+			}
+		} finally {
+			$this->projecting = false;
+		}
+
+		$limit     = 300;
+		$projected = array();
+
+		foreach ( $records as $index => $record ) {
+			/*
+			 * For the primary short-form record, count the untruncated
+			 * post body — `build_short_form_text()` has already clamped the
+			 * record to the limit, so reading the record text back would
+			 * never report an over-limit post. Composed records (link card,
+			 * teaser chunks) are bounded at build time, so their own text
+			 * is the right thing to measure.
+			 */
+			$measured = ( $is_short && 0 === $index && ! $this->is_redacted() )
+				? $this->render_post_content_plain( $this->object )
+				: (string) ( $record['text'] ?? '' );
+
+			$characters  = \mb_strlen( $measured );
+			$projected[] = array(
+				'characters' => $characters,
+				'over_limit' => $characters > $limit,
+			);
+		}
+
+		return array(
+			'is_short_form' => $is_short,
+			'strategy'      => $strategy,
+			'limit'         => $limit,
+			'records'       => $projected,
+		);
+	}
+
+	/**
+	 * Resolve the human-facing strategy label for a long-form projection.
+	 *
+	 * A teaser thread is unambiguous from its record count. A single
+	 * record is `truncate-link` only when that strategy was both requested
+	 * and not downgraded; every other single-record long-form outcome —
+	 * including a `teaser-thread`/`truncate-link` that the empty-body guard
+	 * collapsed to a link card — reports as `link-card`.
+	 *
+	 * @param int $record_count Number of projected records.
+	 * @return string Strategy key.
+	 */
+	private function projected_long_form_strategy( int $record_count ): string {
+		if ( $record_count > 1 ) {
+			return 'teaser-thread';
+		}
+
+		$requested = (string) \apply_filters( 'atmosphere_long_form_composition', 'link-card', $this->object );
+
+		return 'truncate-link' === $requested ? 'truncate-link' : 'link-card';
+	}
+
+	/**
 	 * Inject the document strongRef the embed builder should advertise
 	 * in `associatedRefs` on the initial publish.
 	 *
@@ -221,7 +339,8 @@ class Post extends Base {
 			'langs'     => $this->get_langs(),
 		);
 
-		$facets = Facet::extract( $text );
+		// Skip DNS-resolving facet extraction in projection mode (see $projecting).
+		$facets = $this->projecting ? array() : Facet::extract( $text );
 		if ( ! empty( $facets ) ) {
 			$record['facets'] = $facets;
 		}
@@ -416,7 +535,16 @@ class Post extends Base {
 
 		$images = array();
 		foreach ( $attachment_ids as $attachment_id ) {
-			$blob = self::upload_image_blob( $attachment_id );
+			/*
+			 * In projection mode, stand in a placeholder blob rather than
+			 * uploading. The preview only reads record text, but the embed
+			 * must stay non-null so `transform()` keeps selecting the
+			 * short-form body text instead of falling through to the
+			 * link-card path — matching what a real publish would produce.
+			 */
+			$blob = $this->projecting
+				? array( '$type' => 'blob' )
+				: self::upload_image_blob( $attachment_id );
 			if ( ! $blob ) {
 				continue;
 			}
@@ -556,7 +684,7 @@ class Post extends Base {
 		);
 
 		$thumb_id = \get_post_thumbnail_id( $this->object );
-		if ( $thumb_id ) {
+		if ( $thumb_id && ! $this->projecting ) {
 			$blob = self::upload_thumbnail( $thumb_id );
 			if ( $blob ) {
 				$external['thumb'] = $blob;
@@ -1883,7 +2011,8 @@ class Post extends Base {
 			'langs'     => $this->get_langs(),
 		);
 
-		$facets = Facet::extract( $text );
+		// Skip DNS-resolving facet extraction in projection mode (see $projecting).
+		$facets = $this->projecting ? array() : Facet::extract( $text );
 		if ( ! empty( $facets ) ) {
 			$record['facets'] = $facets;
 		}
@@ -1953,7 +2082,8 @@ class Post extends Base {
 			'langs'     => $this->get_langs(),
 		);
 
-		$facets = Facet::extract( $text );
+		// Skip DNS-resolving facet extraction in projection mode (see $projecting).
+		$facets = $this->projecting ? array() : Facet::extract( $text );
 		if ( ! empty( $facets ) ) {
 			$record['facets'] = $facets;
 		}
