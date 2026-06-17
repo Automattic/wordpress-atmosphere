@@ -155,6 +155,21 @@ class Post extends Base {
 	private ?array $document_strong_ref = null;
 
 	/**
+	 * Memoized short-form verdict for this post.
+	 *
+	 * {@see self::is_short_form_post()} is evaluated more than once per
+	 * publish (Publisher's document-strongRef precompute and the short/long
+	 * routing, plus {@see self::transform()}), and the
+	 * `atmosphere_is_short_form_post` filter fires on every call. Caching the
+	 * verdict on the instance keeps every caller in agreement even when a
+	 * subscriber's filter is stateful, so the embed-strategy label, the
+	 * document-strongRef precompute, and the published record cannot disagree.
+	 *
+	 * @var bool|null
+	 */
+	private ?bool $short_form_verdict = null;
+
+	/**
 	 * Whether the transformer is running in projection mode.
 	 *
 	 * Projection mode ({@see self::project()}) reproduces the exact text
@@ -304,30 +319,13 @@ class Post extends Base {
 	public function transform(): array {
 		$redacted = $this->is_redacted();
 
-		/**
-		 * Filters whether the post should be treated as short-form for Bluesky.
-		 *
-		 * Short-form posts publish natively (post body as text, no external
-		 * embed card). Long-form posts use the teaser composition (title +
-		 * excerpt + permalink) with an external card linking back to
-		 * WordPress. The default discriminator mirrors the ActivityPub
-		 * plugin's Post::get_type() logic: short-form when the post type
-		 * does not support titles, the post has an empty title, or the
-		 * post has any non-empty post_format.
-		 *
-		 * @param bool     $is_short Whether the post should be treated as short-form.
-		 * @param \WP_Post $post     The post being transformed.
+		/*
+		 * Redacted posts return short-form (empty text, no embed) without
+		 * exposing the post to the `atmosphere_is_short_form_post` filter.
+		 * For everyone else the public discriminator decides — including the
+		 * length gate that routes an overflowing titleless post to long-form.
 		 */
-		$is_short = true;
-		if ( ! $redacted ) {
-			$is_short = \wp_validate_boolean(
-				\apply_filters(
-					'atmosphere_is_short_form_post',
-					$this->is_short_form( $this->object ),
-					$this->object
-				)
-			);
-		}
+		$is_short = $redacted ? true : $this->is_short_form_post();
 
 		$text  = $redacted ? '' : ( $is_short ? $this->build_short_form_text() : '' );
 		$embed = null;
@@ -336,8 +334,17 @@ class Post extends Base {
 			if ( $is_short ) {
 				$embed = $this->build_images_embed();
 				if ( '' === $text && null === $embed ) {
-					$text  = $this->build_text();
-					$embed = $this->build_embed();
+					/*
+					 * Empty body and no images: there is nothing to publish
+					 * natively, so fall back to the link-card composition. This
+					 * is a link-card record, so flip $is_short to false — the
+					 * embed-filter strategy label and the
+					 * atmosphere_transform_bsky_post context below must report
+					 * `link-card`, not `short-form`.
+					 */
+					$is_short = false;
+					$text     = $this->build_text();
+					$embed    = $this->build_embed();
 				}
 			} else {
 				$text  = $this->build_text();
@@ -486,18 +493,18 @@ class Post extends Base {
 		$parts = \array_filter( array( $title, $excerpt, $permalink ) );
 		$text  = \implode( "\n\n", $parts );
 
-		if ( \mb_strlen( $text ) <= 300 ) {
+		if ( \mb_strlen( $text ) <= self::BLUESKY_MAX_GRAPHEMES ) {
 			return $text;
 		}
 
 		// Reserve space for permalink + separators.
 		$reserved  = \mb_strlen( $permalink ) + 4;
-		$available = 300 - $reserved;
+		$available = self::BLUESKY_MAX_GRAPHEMES - $reserved;
 
 		if ( $available <= 0 ) {
 			$prose = \trim( $title . ( ! empty( $excerpt ) ? "\n\n" . $excerpt : '' ) );
 
-			return '' !== $prose ? truncate_text( $prose, 300 ) : truncate_text( $permalink, 300 );
+			return '' !== $prose ? truncate_text( $prose, self::BLUESKY_MAX_GRAPHEMES ) : truncate_text( $permalink, self::BLUESKY_MAX_GRAPHEMES );
 		}
 
 		$prose = $title;
@@ -1316,22 +1323,44 @@ class Post extends Base {
 	/**
 	 * Whether the post should be treated as short-form for Bluesky.
 	 *
-	 * Mirrors the ActivityPub plugin's Post::get_type() discriminator so
-	 * a post federated as a Mastodon Note also goes to Bluesky as a
-	 * native post instead of a link-card teaser. Short-form when:
+	 * Starts from the ActivityPub plugin's Post::get_type() discriminator so
+	 * a post federated as a Mastodon Note also goes to Bluesky as a native
+	 * post instead of a link-card teaser. Categorically short-form when:
 	 * - the post type does not support titles, OR
 	 * - the post has an empty title, OR
 	 * - the post has any non-empty post_format.
+	 *
+	 * A categorically short-form post is still treated as long-form when its
+	 * body overflows Bluesky's 300-character native cap *and* it has no
+	 * in-body images: short-form ships the body verbatim, so a body that
+	 * cannot fit is not really "short", and routing it to the long-form
+	 * composition (excerpt + permalink + external card) gives the reader a
+	 * teaser plus a route back to the original instead of a sentence fragment
+	 * with no link home. The overflow length is measured with `mb_strlen` to
+	 * match `build_short_form_text()`'s own `truncate_text()` cap, so the gate
+	 * and the truncation it avoids agree.
+	 *
+	 * An overflowing post that *does* carry in-body images stays short-form:
+	 * the long-form link card can only show the featured thumbnail, so
+	 * converting would silently drop the post's native `app.bsky.embed.images`
+	 * gallery. A photo post with a long caption keeps its images and accepts
+	 * the caption truncation; only the text-only link-blog case converts.
 	 *
 	 * @param \WP_Post $post Post being transformed.
 	 * @return bool
 	 */
 	private function is_short_form( \WP_Post $post ): bool {
-		if ( ! \post_type_supports( $post->post_type, 'title' ) || empty( $post->post_title ) ) {
+		if ( \post_type_supports( $post->post_type, 'title' ) && ! empty( $post->post_title ) && ! \get_post_format( $post ) ) {
+			return false;
+		}
+
+		if ( \mb_strlen( $this->render_post_content_plain( $post ) ) <= self::BLUESKY_MAX_GRAPHEMES ) {
 			return true;
 		}
 
-		return (bool) \get_post_format( $post );
+		// Overflowing: only convert to long-form when there are no in-body
+		// images to preserve as a native gallery.
+		return ! empty( $this->collect_image_attachment_ids() );
 	}
 
 	/**
@@ -1349,16 +1378,16 @@ class Post extends Base {
 			return '';
 		}
 
-		return truncate_text( $this->render_post_content_plain( $this->object ), 300 );
+		return truncate_text( $this->render_post_content_plain( $this->object ), self::BLUESKY_MAX_GRAPHEMES );
 	}
 
 	/**
 	 * Whether this post should be treated as short-form for Bluesky.
 	 *
-	 * Thin public wrapper around the private discriminator plus the
-	 * `atmosphere_is_short_form_post` filter. Callers such as
-	 * Publisher branch on short vs. long without reaching into the
-	 * transformer's private state.
+	 * Exposes the private type/title/format-plus-length discriminator (see
+	 * {@see self::is_short_form()}) through the `atmosphere_is_short_form_post`
+	 * filter. Callers such as Publisher branch on short vs. long without
+	 * reaching into the transformer's private state.
 	 *
 	 * Redacted posts return true without invoking the filter so direct
 	 * transformer callers do not expose protected post objects to
@@ -1371,13 +1400,36 @@ class Post extends Base {
 			return true;
 		}
 
-		return \wp_validate_boolean(
+		if ( null !== $this->short_form_verdict ) {
+			return $this->short_form_verdict;
+		}
+
+		/**
+		 * Filters whether the post should be treated as short-form for Bluesky.
+		 *
+		 * Short-form posts publish natively (post body as text, no external
+		 * embed card). Long-form posts use the teaser composition (title +
+		 * excerpt + permalink) with an external card linking back to
+		 * WordPress. The default discriminator mirrors the ActivityPub
+		 * plugin's Post::get_type() logic — short-form when the post type
+		 * does not support titles, the post has an empty title, or the post
+		 * has any non-empty post_format — but additionally treats a post
+		 * whose body overflows the 300-character native cap as long-form, so
+		 * a long, titleless link-blog post links back to the original
+		 * instead of being truncated.
+		 *
+		 * @param bool     $is_short Whether the post should be treated as short-form.
+		 * @param \WP_Post $post     The post being transformed.
+		 */
+		$this->short_form_verdict = \wp_validate_boolean(
 			\apply_filters(
 				'atmosphere_is_short_form_post',
 				$this->is_short_form( $this->object ),
 				$this->object
 			)
 		);
+
+		return $this->short_form_verdict;
 	}
 
 	/**
@@ -1646,7 +1698,7 @@ class Post extends Base {
 	 * @return bool
 	 */
 	private function requires_link_card_for_long_permalink(): bool {
-		return \mb_strlen( \get_permalink( $this->object ) ) >= 300;
+		return \mb_strlen( \get_permalink( $this->object ) ) >= self::BLUESKY_MAX_GRAPHEMES;
 	}
 
 	/**
@@ -1662,7 +1714,7 @@ class Post extends Base {
 	 * @return bool
 	 */
 	private function requires_link_card_for_teaser_thread(): bool {
-		return \mb_strlen( $this->teaser_thread_cta_text() ) > 300;
+		return \mb_strlen( $this->teaser_thread_cta_text() ) > self::BLUESKY_MAX_GRAPHEMES;
 	}
 
 	/**
@@ -1693,7 +1745,7 @@ class Post extends Base {
 	 * @return string
 	 */
 	private function build_truncate_link_text(): string {
-		$max_length = 300;
+		$max_length = self::BLUESKY_MAX_GRAPHEMES;
 		$separator  = "\n\n";
 		$permalink  = \get_permalink( $this->object );
 		$plain      = $this->render_post_content_plain( $this->object );
@@ -1804,7 +1856,7 @@ class Post extends Base {
 			if ( \is_string( $entry ) ) {
 				$entry = sanitize_text( $entry );
 				if ( '' !== $entry ) {
-					$texts[] = $this->truncate_to_budget( $entry, 300, false );
+					$texts[] = $this->truncate_to_budget( $entry, self::BLUESKY_MAX_GRAPHEMES, false );
 				}
 			}
 		}
@@ -1888,7 +1940,7 @@ class Post extends Base {
 		$plain   = $this->render_post_content_plain( $this->object );
 
 		if ( \mb_strlen( $excerpt ) >= 10 ) {
-			$hook         = $this->truncate_to_budget( $excerpt, 300, false );
+			$hook         = $this->truncate_to_budget( $excerpt, self::BLUESKY_MAX_GRAPHEMES, false );
 			$chunk_source = $plain;
 		} else {
 			$hook = $this->truncate_to_budget( $plain, 280, true );

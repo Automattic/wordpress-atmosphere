@@ -23,6 +23,19 @@ use function Atmosphere\to_iso8601;
 abstract class Base {
 
 	/**
+	 * Maximum length of an `app.bsky.feed.post` `text` field.
+	 *
+	 * The `app.bsky.feed.post` lexicon caps `text` at 300 graphemes. The
+	 * transformers approximate that with `mb_strlen` (code points) — every
+	 * grapheme is at least one code point, so a code-point cap never exceeds
+	 * the grapheme limit. Shared by the post and comment transformers, which
+	 * both emit Bluesky records bounded by this cap.
+	 *
+	 * @var int
+	 */
+	public const BLUESKY_MAX_GRAPHEMES = 300;
+
+	/**
 	 * The WordPress object being transformed.
 	 *
 	 * @var mixed
