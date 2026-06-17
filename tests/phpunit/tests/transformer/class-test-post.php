@@ -1973,6 +1973,58 @@ class Test_Post extends WP_UnitTestCase {
 	}
 
 	/**
+	 * The blob-forget set covers in-body images beyond the Bluesky cap.
+	 *
+	 * A blob-backed document content format uploads a blob for every
+	 * `core/image` block, not just the first four the images embed uses,
+	 * so `forget_post_image_blobs()` must clear the cached refs for all of
+	 * them — otherwise a stale ref on the fifth-or-later image defeats the
+	 * self-heal retry.
+	 *
+	 * @covers ::embedded_image_attachment_ids
+	 * @covers ::forget_post_image_blobs
+	 */
+	public function test_forget_post_image_blobs_covers_images_beyond_the_embed_cap() {
+		$attachment_ids = array();
+		$blocks         = '';
+		for ( $i = 0; $i < 5; $i++ ) {
+			$attachment_id    = self::factory()->attachment->create_object(
+				array(
+					'file'           => "inline-{$i}.jpg",
+					'post_mime_type' => 'image/jpeg',
+				),
+				0,
+				array( 'post_title' => "Inline {$i}" )
+			);
+			$attachment_ids[] = $attachment_id;
+			$blocks          .= \sprintf( '<!-- wp:image {"id":%1$d} --><figure class="wp-block-image"><img class="wp-image-%1$d"/></figure><!-- /wp:image -->', $attachment_id );
+
+			\update_post_meta( $attachment_id, '_atmosphere_blob_ref', array( 'ref' => array( '$link' => "bafstale{$i}" ) ) );
+		}
+
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_status'  => 'publish',
+				'post_content' => $blocks,
+			)
+		);
+
+		// The fifth image is past the four-image Bluesky embed cap.
+		$embedded = ( new Post( $post ) )->embedded_image_attachment_ids();
+		$this->assertContains( $attachment_ids[4], $embedded, 'The fifth in-body image must be in the forget set.' );
+
+		$this->assertTrue( Post::forget_post_image_blobs( $post ) );
+
+		foreach ( $attachment_ids as $attachment_id ) {
+			$this->assertSame(
+				'',
+				\get_post_meta( $attachment_id, '_atmosphere_blob_ref', true ),
+				"Cached blob ref for attachment {$attachment_id} should be forgotten."
+			);
+		}
+	}
+
+	/**
 	 * On offloaded-media hosts (WordPress.com / Atomic), intermediate
 	 * image sizes are virtual — their files never land on local disk —
 	 * so the local path is unreadable. `upload_image_blob()` must fall

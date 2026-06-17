@@ -757,19 +757,27 @@ class Post extends Base {
 	}
 
 	/**
-	 * Attachment IDs whose blobs a publish of this post would upload.
+	 * Attachment IDs whose blobs a publish of this post may upload.
 	 *
-	 * The union of the in-body `core/image` attachments (capped to the
-	 * same four the images embed uploads) and the featured image, which
-	 * the document cover and link-card thumbnail always use. Deduplicated
-	 * so an image used both in-body and as the thumbnail is listed once.
+	 * The union of every in-body `core/image` attachment and the featured
+	 * image (which the document cover and link-card thumbnail always use),
+	 * deduplicated so an image used both in-body and as the thumbnail is
+	 * listed once.
+	 *
+	 * Intended for cache invalidation, so it deliberately over-approximates
+	 * rather than mirroring any single embed: the Bluesky images embed caps
+	 * at four, but a blob-backed document content format (Leaflet, pckt)
+	 * uploads a blob for every in-body image. Forgetting the cache entry of
+	 * an attachment that wasn't actually uploaded is a harmless no-op, while
+	 * missing one leaves a stale ref that defeats the self-heal. The list is
+	 * still bounded by `collect_image_attachment_ids()`'s 32-image ceiling.
 	 *
 	 * @since unreleased
 	 *
 	 * @return int[]
 	 */
 	public function embedded_image_attachment_ids(): array {
-		$attachment_ids = \array_slice( $this->collect_image_attachment_ids(), 0, 4 );
+		$attachment_ids = $this->collect_image_attachment_ids();
 
 		$thumb_id = \get_post_thumbnail_id( $this->object );
 		if ( $thumb_id ) {
