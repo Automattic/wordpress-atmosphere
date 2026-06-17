@@ -280,8 +280,8 @@ class Publisher {
 			return false;
 		}
 
-		$status = $result->get_error_data()['status'] ?? 0;
-		if ( 400 !== $status ) {
+		$data = $result->get_error_data();
+		if ( ! \is_array( $data ) || 400 !== ( $data['status'] ?? 0 ) ) {
 			return false;
 		}
 
