@@ -20,6 +20,8 @@ use Atmosphere\Transformer\Document;
 use Atmosphere\Transformer\Post;
 use Atmosphere\Transformer\Publication;
 use Atmosphere\Integrations\Load;
+use Atmosphere\Rest\Admin\Pre_Publish_Controller;
+use Atmosphere\Rest\Client_Metadata_Controller;
 use Atmosphere\WP_Admin\Admin;
 use Atmosphere\WP_Admin\Settings_Fields;
 
@@ -121,8 +123,32 @@ class Atmosphere {
 		 */
 		\add_filter( 'atmosphere_long_form_composition', array( self::class, 'seed_long_form_composition' ), 1 );
 
-		// REST route (always active for client-metadata).
-		\add_action( 'rest_api_init', array( Admin::class, 'register_rest_routes' ) );
+		// Register every REST controller in one place.
+		\add_action( 'rest_api_init', array( $this, 'register_rest_controllers' ) );
+
+		/*
+		 * Block-editor pre-publish panel. REST data and editor asset are
+		 * deliberately separate concerns: the controller serves the
+		 * projection on the admin `atmosphere/1.0` namespace, Block_Editor
+		 * only enqueues the script.
+		 */
+		Block_Editor::register();
+
+		// Per-post "share to Bluesky" toggle meta (REST-exposed for the editor panel).
+		\add_action( 'init', array( $this, 'register_share_meta' ) );
+
+		/*
+		 * Reconcile when the share toggle itself changes. `transition_post_status`
+		 * alone is fragile here: the editor writes the meta *after* the post
+		 * update fires the transition, and a meta-only save fires no transition
+		 * at all — so react to the committed meta write directly.
+		 */
+		\add_action( 'added_post_meta', array( $this, 'on_share_meta_changed' ), 10, 3 );
+		\add_action( 'updated_post_meta', array( $this, 'on_share_meta_changed' ), 10, 3 );
+		\add_action( 'deleted_post_meta', array( $this, 'on_share_meta_changed' ), 10, 3 );
+
+		// Read-only REST field exposing the published post's Bluesky URL.
+		\add_action( 'rest_api_init', array( $this, 'register_share_status_field' ) );
 
 		// Frontend verification headers.
 		\add_action( 'wp_head', array( $this, 'output_document_link' ) );
@@ -1277,6 +1303,129 @@ class Atmosphere {
 		}
 
 		return $strategy;
+	}
+
+	/**
+	 * Register every REST controller on `rest_api_init`.
+	 *
+	 * Public controllers live in `Atmosphere\Rest`; admin-only ones in
+	 * `Atmosphere\Rest\Admin`. Mirrors the wordpress-activitypub plugin's
+	 * `rest_init()`.
+	 */
+	public function register_rest_controllers(): void {
+		( new Client_Metadata_Controller() )->register_routes();
+		( new Pre_Publish_Controller() )->register_routes();
+	}
+
+	/**
+	 * React to the per-post share toggle being changed.
+	 *
+	 * Fires on `added_/updated_/deleted_post_meta`, after the value is
+	 * committed, so the reconcile runs against fresh meta. It schedules the
+	 * standard `atmosphere_update_post` reconciliation, which re-checks
+	 * {@see is_post_publishable()} at fire time and either publishes, updates,
+	 * or deletes the remote records accordingly — turning the toggle off on an
+	 * already-shared post removes it from Bluesky.
+	 *
+	 * This is the robust counterpart to the `transition_post_status` path:
+	 * it covers a meta-only save (no status transition) and the race where a
+	 * transition-scheduled cron fires before the meta write commits.
+	 *
+	 * @param int|int[] $meta_id  Meta row ID(s); unused (signatures differ
+	 *                            across the three hooks).
+	 * @param int       $post_id  Object the meta belongs to.
+	 * @param string    $meta_key Meta key that changed.
+	 */
+	public function on_share_meta_changed( $meta_id, $post_id, $meta_key ): void {
+		if ( ATMOSPHERE_META_DISABLED !== $meta_key ) {
+			return;
+		}
+
+		if ( ! is_connected() || '1' !== \get_option( 'atmosphere_auto_publish', '1' ) ) {
+			return;
+		}
+
+		if ( ! \get_post( (int) $post_id ) instanceof \WP_Post ) {
+			return;
+		}
+
+		if ( ! \wp_next_scheduled( 'atmosphere_update_post', array( (int) $post_id ) ) ) {
+			\wp_schedule_single_event( \time(), 'atmosphere_update_post', array( (int) $post_id ) );
+		}
+	}
+
+	/**
+	 * Register the per-post "share to Bluesky" toggle meta.
+	 *
+	 * Registered for every supported post type with `show_in_rest` so the
+	 * block-editor document panel can bind a toggle to it via the core
+	 * entity store. Writing it requires `edit_post` on the post.
+	 */
+	public function register_share_meta(): void {
+		foreach ( get_supported_post_types() as $post_type ) {
+			\register_post_meta(
+				$post_type,
+				ATMOSPHERE_META_DISABLED,
+				array(
+					'type'              => 'boolean',
+					'single'            => true,
+					'default'           => false,
+					'show_in_rest'      => true,
+					'sanitize_callback' => 'rest_sanitize_boolean',
+					'auth_callback'     => static function ( $allowed, $meta_key, $post_id ) {
+						// Respect any prior denial rather than widening access.
+						return $allowed && \current_user_can( 'edit_post', $post_id );
+					},
+				)
+			);
+		}
+	}
+
+	/**
+	 * Register a read-only REST field with the published post's Bluesky URL.
+	 *
+	 * Lets the block-editor panel show a "View on Bluesky" link once the
+	 * post has been shared, without exposing internal AT-URI meta keys.
+	 * Empty until the post has a Bluesky record.
+	 */
+	public function register_share_status_field(): void {
+		foreach ( get_supported_post_types() as $post_type ) {
+			\register_rest_field(
+				$post_type,
+				'atmosphere_url',
+				array(
+					'get_callback'    => static function ( $post_arr ) {
+						$uri = (string) \get_post_meta( (int) $post_arr['id'], Post::META_URI, true );
+
+						return '' === $uri ? '' : self::bsky_web_url_from_uri( $uri );
+					},
+					'update_callback' => null,
+					'schema'          => array(
+						'type'        => 'string',
+						'description' => \__( 'The Bluesky web URL for this post, empty until it is shared.', 'atmosphere' ),
+						'context'     => array( 'edit' ),
+					),
+				)
+			);
+		}
+	}
+
+	/**
+	 * Build the bsky.app web URL for one of our own post AT-URIs.
+	 *
+	 * `at://<did>/app.bsky.feed.post/<rkey>` →
+	 * `https://bsky.app/profile/<did>/post/<rkey>`. bsky.app resolves the
+	 * DID form, so no handle lookup is needed.
+	 *
+	 * @param string $uri AT-URI from `Post::META_URI`.
+	 * @return string Web URL, or '' when the URI shape is unexpected.
+	 */
+	private static function bsky_web_url_from_uri( string $uri ): string {
+		if ( ! \preg_match( '#^at://(?P<did>[^/]+)/app\.bsky\.feed\.post/(?P<rkey>[^/]+)$#', $uri, $matches ) ) {
+			return '';
+		}
+
+		return \esc_url_raw( 'https://bsky.app/profile/' . $matches['did'] . '/post/' . $matches['rkey'] );
 	}
 
 	/**
