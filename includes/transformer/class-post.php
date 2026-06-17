@@ -1327,8 +1327,13 @@ class Post extends Base {
 		$anchors = array();
 		$index   = 0;
 
+		/*
+		 * `\shref=` requires whitespace before `href` so the value of another
+		 * attribute (e.g. `data-href="…"`) is never mistaken for the link
+		 * target — `\bhref=` would match after the hyphen.
+		 */
 		$marked_html = \preg_replace_callback(
-			'#<a\b[^>]*\bhref=(["\'])(.*?)\1[^>]*>(.*?)</a>#is',
+			'#<a\b[^>]*\shref=(["\'])(.*?)\1[^>]*>(.*?)</a>#is',
 			function ( $matches ) use ( &$anchors, &$index ) {
 				$raw_href    = \trim( \html_entity_decode( $matches[2], \ENT_QUOTES, 'UTF-8' ) );
 				$anchor_text = sanitize_text( $matches[3] );
@@ -1358,7 +1363,18 @@ class Post extends Base {
 				);
 				++$index;
 
-				return $marker;
+				/*
+				 * Keep any whitespace that sat just inside the anchor tags
+				 * (e.g. `Click<a> here</a>`): sanitize_text() trims the facet
+				 * text, so without re-emitting that boundary space around the
+				 * marker the words would fuse into `Clickhere`. A single space
+				 * matches what sanitize_text() would have collapsed it to.
+				 */
+				$inner = (string) \preg_replace( '/<[^>]*>/', '', \html_entity_decode( $matches[3], \ENT_QUOTES, 'UTF-8' ) );
+				$lead  = \preg_match( '/^\s/u', $inner ) ? ' ' : '';
+				$trail = \preg_match( '/\s$/u', $inner ) ? ' ' : '';
+
+				return $lead . $marker . $trail;
 			},
 			$html
 		);

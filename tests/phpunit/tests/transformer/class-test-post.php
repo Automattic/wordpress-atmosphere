@@ -263,14 +263,8 @@ class Test_Post extends WP_UnitTestCase {
 		$record = ( new Post( $post ) )->transform();
 
 		$this->assertLessThanOrEqual( 300, \mb_strlen( $record['text'] ) );
-
-		foreach ( $record['facets'] ?? array() as $facet ) {
-			$this->assertLessThanOrEqual(
-				\strlen( $record['text'] ),
-				$facet['index']['byteEnd'],
-				'No facet may reference a byte offset past the truncated text.'
-			);
-		}
+		$this->assertNotContains( 'https://example.com/late', $this->facet_link_uris( $record ), 'The past-cut link must be dropped.' );
+		$this->assertFacetsWithinText( $record );
 	}
 
 	/**
@@ -293,12 +287,81 @@ class Test_Post extends WP_UnitTestCase {
 		$record = ( new Post( $post ) )->transform();
 
 		$this->assertLessThanOrEqual( 300, \mb_strlen( $record['text'] ) );
+		$this->assertNotContains( 'https://example.com/x', $this->facet_link_uris( $record ), 'The straddling link must be dropped, not clipped.' );
+		$this->assertFacetsWithinText( $record );
+	}
 
+	/**
+	 * An `href`-like attribute on another key (e.g. `data-href`) is not
+	 * treated as the link target, so non-link markup never becomes a facet.
+	 *
+	 * @covers ::transform
+	 */
+	public function test_short_form_data_href_is_not_faceted() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => '',
+				'post_content' => 'See <a data-href="https://example.com/tracked">the widget</a> below.',
+			)
+		);
+
+		$record = ( new Post( $post ) )->transform();
+
+		$this->assertStringContainsString( 'the widget', $record['text'] );
+		$this->assertNotContains( 'https://example.com/tracked', $this->facet_link_uris( $record ) );
+	}
+
+	/**
+	 * Whitespace that sits just inside the anchor tags is preserved, so the
+	 * words around the link don't fuse together.
+	 *
+	 * @covers ::transform
+	 */
+	public function test_short_form_preserves_whitespace_inside_link() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => '',
+				'post_content' => 'Click<a href="https://example.com/here"> here</a> now.',
+			)
+		);
+
+		$record = ( new Post( $post ) )->transform();
+
+		$this->assertStringContainsString( 'Click here now', $record['text'] );
+		$this->assertStringNotContainsString( 'Clickhere', $record['text'] );
+	}
+
+	/**
+	 * Collect every link-facet URI from a record.
+	 *
+	 * @param array $record Bsky post record.
+	 * @return string[]
+	 */
+	private function facet_link_uris( array $record ): array {
+		$uris = array();
 		foreach ( $record['facets'] ?? array() as $facet ) {
+			foreach ( $facet['features'] as $feature ) {
+				if ( 'app.bsky.richtext.facet#link' === $feature['$type'] ) {
+					$uris[] = $feature['uri'];
+				}
+			}
+		}
+		return $uris;
+	}
+
+	/**
+	 * Assert no facet references a byte offset past the record text.
+	 *
+	 * @param array $record Bsky post record.
+	 */
+	private function assertFacetsWithinText( array $record ): void {
+		$length = \strlen( $record['text'] );
+		foreach ( $record['facets'] ?? array() as $facet ) {
+			$this->assertGreaterThanOrEqual( 0, $facet['index']['byteStart'] );
 			$this->assertLessThanOrEqual(
-				\strlen( $record['text'] ),
+				$length,
 				$facet['index']['byteEnd'],
-				'A straddling link facet must be dropped, not clipped.'
+				'A facet byteEnd must not exceed the text length.'
 			);
 		}
 	}
