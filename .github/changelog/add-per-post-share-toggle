@@ -1,0 +1,4 @@
+Significance: minor
+Type: added
+
+The editor's Bluesky panel now has a switch to turn sharing on or off for an individual post; switching it off after a post was shared removes it from Bluesky.

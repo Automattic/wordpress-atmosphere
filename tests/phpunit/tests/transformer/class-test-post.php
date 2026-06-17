@@ -3417,4 +3417,141 @@ class Test_Post extends WP_UnitTestCase {
 		\delete_option( Publication::OPTION_TID );
 		\delete_option( Publication::OPTION_CID );
 	}
+
+	/**
+	 * A short-form post projects as one short-form record whose grapheme
+	 * count reflects the post body.
+	 *
+	 * @covers ::project
+	 */
+	public function test_project_short_form_post() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => '',
+				'post_content' => 'A quick untitled thought.',
+			)
+		);
+
+		$projection = ( new Post( $post ) )->project();
+
+		$this->assertTrue( $projection['is_short_form'] );
+		$this->assertSame( 'short-form', $projection['strategy'] );
+		$this->assertSame( 300, $projection['limit'] );
+		$this->assertCount( 1, $projection['records'] );
+		$this->assertSame( 25, $projection['records'][0]['characters'] );
+		$this->assertFalse( $projection['records'][0]['over_limit'] );
+	}
+
+	/**
+	 * A short-form body longer than the limit projects as over-limit even
+	 * though the published record is clamped — the panel must show the
+	 * author's real length, not the truncated one.
+	 *
+	 * @covers ::project
+	 */
+	public function test_project_short_form_over_limit_reports_untruncated_count() {
+		$long_body = \str_repeat( 'word ', 100 ); // 500 characters.
+		$post      = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => '',
+				'post_content' => $long_body,
+			)
+		);
+
+		$projection = ( new Post( $post ) )->project();
+
+		$this->assertTrue( $projection['is_short_form'] );
+		$this->assertCount( 1, $projection['records'] );
+		$this->assertGreaterThan( 300, $projection['records'][0]['characters'] );
+		$this->assertTrue( $projection['records'][0]['over_limit'] );
+	}
+
+	/**
+	 * A titled post with no format and the default composition projects as
+	 * a single link-card record.
+	 *
+	 * @covers ::project
+	 */
+	public function test_project_long_form_link_card() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'A Titled Post',
+				'post_content' => 'Body.',
+				'post_excerpt' => 'Teaser excerpt.',
+			)
+		);
+
+		$projection = ( new Post( $post ) )->project();
+
+		$this->assertFalse( $projection['is_short_form'] );
+		$this->assertSame( 'link-card', $projection['strategy'] );
+		$this->assertCount( 1, $projection['records'] );
+		$this->assertLessThanOrEqual( 300, $projection['records'][0]['characters'] );
+	}
+
+	/**
+	 * A teaser-thread composition projects as multiple records and reports
+	 * the teaser-thread strategy.
+	 *
+	 * @covers ::project
+	 */
+	public function test_project_teaser_thread() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'A Titled Post',
+				'post_content' => 'Body sentence one. Body sentence two. Body sentence three.',
+			)
+		);
+
+		\add_filter( 'atmosphere_long_form_composition', fn() => 'teaser-thread' );
+
+		$projection = ( new Post( $post ) )->project();
+
+		$this->assertFalse( $projection['is_short_form'] );
+		$this->assertSame( 'teaser-thread', $projection['strategy'] );
+		$this->assertGreaterThan( 1, \count( $projection['records'] ) );
+		foreach ( $projection['records'] as $record ) {
+			$this->assertLessThanOrEqual( 300, $record['characters'] );
+		}
+	}
+
+	/**
+	 * Projection mode never uploads a blob: a short-form post with a
+	 * featured image keeps its body text and does not cache a blob ref.
+	 *
+	 * @covers ::project
+	 */
+	public function test_project_does_not_upload_blobs() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => '',
+				'post_content' => 'Body with an image attached.',
+			)
+		);
+
+		$attachment_id = self::factory()->attachment->create_object(
+			array(
+				'file'           => 'image.jpg',
+				'post_parent'    => $post->ID,
+				'post_mime_type' => 'image/jpeg',
+			)
+		);
+		\set_post_thumbnail( $post->ID, $attachment_id );
+
+		$http_calls = 0;
+		$counter    = static function ( $pre ) use ( &$http_calls ) {
+			++$http_calls;
+			return $pre;
+		};
+		\add_filter( 'pre_http_request', $counter );
+
+		$projection = ( new Post( $post ) )->project();
+
+		\remove_filter( 'pre_http_request', $counter );
+
+		$this->assertTrue( $projection['is_short_form'] );
+		$this->assertSame( 'short-form', $projection['strategy'] );
+		$this->assertSame( 0, $http_calls, 'Projection must not make HTTP requests.' );
+		$this->assertSame( '', \get_post_meta( $attachment_id, '_atmosphere_blob_ref', true ) );
+	}
 }

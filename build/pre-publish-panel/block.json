@@ -1,0 +1,11 @@
+{
+  "$schema": "https://schemas.wp.org/trunk/block.json",
+  "apiVersion": 3,
+  "name": "atmosphere/pre-publish-panel",
+  "title": "ATmosphere Pre-Publish Panel",
+  "category": "widgets",
+  "description": "Shows whether a post will publish to Bluesky, the strategy, and the character count before publishing.",
+  "icon": "share",
+  "textdomain": "atmosphere",
+  "editorScript": "file:./plugin.js"
+}

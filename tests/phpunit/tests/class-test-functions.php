@@ -14,6 +14,7 @@ use function Atmosphere\truncate_text;
 use function Atmosphere\truncate_graphemes;
 use function Atmosphere\to_iso8601;
 use function Atmosphere\is_post_publishable;
+use function Atmosphere\is_sharing_enabled;
 use function Atmosphere\get_connection;
 use function Atmosphere\debug_log;
 
@@ -264,6 +265,30 @@ class Test_Functions extends \WP_UnitTestCase {
 		$this->assertFalse( is_post_publishable( $protected ) );
 		$this->assertFalse( is_post_publishable( $zero_string_password ) );
 		$this->assertFalse( is_post_publishable( $page ) );
+	}
+
+	/**
+	 * Sharing is opt-out: enabled by default, and switching it off makes
+	 * the post non-publishable so it is not shared (and an already-shared
+	 * post routes through the cleanup path).
+	 */
+	public function test_per_post_disable_gates_publishing() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_status' => 'publish',
+				'post_type'   => 'post',
+			)
+		);
+
+		// Default: sharing on, post publishable.
+		$this->assertTrue( is_sharing_enabled( $post ) );
+		$this->assertTrue( is_post_publishable( $post ) );
+
+		// Author switches sharing off for this post.
+		\update_post_meta( $post->ID, ATMOSPHERE_META_DISABLED, '1' );
+
+		$this->assertFalse( is_sharing_enabled( $post ) );
+		$this->assertFalse( is_post_publishable( $post ) );
 	}
 
 	/**

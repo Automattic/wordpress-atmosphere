@@ -1,6 +1,6 @@
 <?php
 /**
- * Admin settings page, meta box, and hook wiring.
+ * Admin settings page and hook wiring.
  *
  * @package Atmosphere
  */
@@ -14,10 +14,7 @@ use Atmosphere\Handle;
 use Atmosphere\OAuth\Client;
 use Atmosphere\Publisher;
 use function Atmosphere\get_connection;
-use function Atmosphere\get_supported_post_types;
-use function Atmosphere\is_connected;
 use function Atmosphere\needs_reauth;
-use function Atmosphere\sanitize_text;
 
 /**
  * Admin class.
@@ -33,7 +30,7 @@ class Admin {
 	 * ActivityPub plugin's layout); both self-register their hooks
 	 * from `Atmosphere::init()`. Admin only wires the admin-only
 	 * surfaces here: menu page, OAuth callback handler, asset enqueue,
-	 * reauth notice, admin-post handlers, and the post meta box.
+	 * reauth notice, and admin-post handlers.
 	 */
 	public static function register(): void {
 		\add_action( 'admin_menu', array( self::class, 'add_menu' ) );
@@ -43,15 +40,6 @@ class Admin {
 		\add_action( 'admin_notices', array( self::class, 'maybe_render_reauth_notice' ) );
 
 		\add_action( 'admin_post_atmosphere_disconnect', array( self::class, 'handle_disconnect' ) );
-
-		// Meta box on syncable post types.
-		\add_action( 'add_meta_boxes', array( self::class, 'add_meta_box' ) );
-
-		/*
-		 * REST route for client metadata is registered globally from
-		 * Atmosphere::init() — rest_api_init does not fire on admin
-		 * requests, so wiring it up here is redundant.
-		 */
 	}
 
 	/**
@@ -223,38 +211,6 @@ class Admin {
 	}
 
 	/**
-	 * Add the ATmosphere meta box to syncable post types.
-	 */
-	public static function add_meta_box(): void {
-		if ( ! is_connected() ) {
-			return;
-		}
-
-		foreach ( get_supported_post_types() as $post_type ) {
-			\add_meta_box(
-				'atmosphere',
-				\__( 'ATmosphere', 'atmosphere' ),
-				array( self::class, 'render_meta_box' ),
-				$post_type,
-				'side'
-			);
-		}
-	}
-
-	/**
-	 * Render the meta box content.
-	 *
-	 * @param \WP_Post $post Current post.
-	 */
-	public static function render_meta_box( \WP_Post $post ): void {
-		\load_template(
-			ATMOSPHERE_PLUGIN_DIR . 'templates/meta-box.php',
-			false,
-			array( 'post' => $post )
-		);
-	}
-
-	/**
 	 * Render a global admin notice when the OAuth session needs reauth.
 	 *
 	 * Surfaced on every admin screen (gated on `manage_options`) because
@@ -319,176 +275,5 @@ class Admin {
 			</p>
 		</div>
 		<?php
-	}
-
-	/**
-	 * Register the client-metadata REST endpoint.
-	 */
-	public static function register_rest_routes(): void {
-		\register_rest_route(
-			'atmosphere/v1',
-			'/client-metadata',
-			array(
-				'methods'             => 'GET',
-				'callback'            => array( self::class, 'serve_client_metadata' ),
-				'permission_callback' => '__return_true',
-			)
-		);
-	}
-
-	/**
-	 * Serve the OAuth client metadata JSON.
-	 *
-	 * This endpoint URL IS the client_id per AT Protocol OAuth spec.
-	 *
-	 * @return \WP_REST_Response
-	 */
-	public static function serve_client_metadata(): \WP_REST_Response {
-		$metadata = array(
-			'client_id'                  => Client::client_id(),
-			'client_name'                => sanitize_text( \get_bloginfo( 'name' ) ) . ' (ATmosphere)',
-			'client_uri'                 => \home_url( '/' ),
-			'redirect_uris'              => array( Client::redirect_uri() ),
-			'grant_types'                => array( 'authorization_code', 'refresh_token' ),
-			'response_types'             => array( 'code' ),
-			'token_endpoint_auth_method' => 'none',
-
-			/*
-			 * MUST match the scope string requested by
-			 * Client::authorize(). The auth server validates the
-			 * request scope against the metadata; a drift here
-			 * silently downgrades to the smaller of the two.
-			 */
-			'scope'                      => 'atproto transition:generic identity:handle',
-			'dpop_bound_access_tokens'   => true,
-			'application_type'           => 'web',
-		);
-
-		/**
-		 * Filters the OAuth client metadata served at the REST endpoint.
-		 *
-		 * Filters MUST return an array containing:
-		 *
-		 *  - `client_id`: non-empty string (advertised as the OAuth client
-		 *    identifier; should match `Client::client_id()`).
-		 *  - `redirect_uris`: non-empty list of non-empty strings, where
-		 *    every entry is rooted at this site's admin over HTTPS
-		 *    (`admin_url('', 'https')` prefix). Off-site / empty /
-		 *    non-string / HTTP-scheme / nested-array entries cause the
-		 *    entire filter result to be rejected.
-		 *
-		 * Anything else falls back to the unfiltered metadata. The
-		 * metadata endpoint is public and the document advertises
-		 * `token_endpoint_auth_method: 'none'` (public client), so an
-		 * attacker-supplied `redirect_uris` entry would let them drive
-		 * this site's `client_id` with their own redirect target. Gate
-		 * entries individually, matching the validation
-		 * {@see \Atmosphere\OAuth\Client::redirect_uri()} applies to
-		 * the inbound `atmosphere_oauth_redirect_uri` filter.
-		 *
-		 * @param array $metadata Client metadata.
-		 */
-		$filtered = \apply_filters( 'atmosphere_client_metadata', $metadata );
-
-		if ( self::client_metadata_filter_is_valid( $filtered ) ) {
-			$metadata = $filtered;
-		} elseif ( $filtered !== $metadata ) {
-			/*
-			 * Surface only when the filter actually fired and returned
-			 * something that failed validation — without this guard
-			 * every page load on a site with no filter would trip the
-			 * notice because the equality check above is the cheap
-			 * shorthand for "nothing changed".
-			 */
-			\_doing_it_wrong(
-				__METHOD__,
-				\esc_html__( 'atmosphere_client_metadata must return an array with a non-empty string client_id and a redirect_uris list of admin URLs; falling back to the unfiltered metadata.', 'atmosphere' ),
-				'1.0.0'
-			);
-		}
-
-		$response = new \WP_REST_Response( $metadata, 200 );
-
-		// Cap intermediate-cache TTL well under the AT Protocol auth
-		// server's own metadata cache (10 min in Bluesky's reference impl),
-		// so that when the metadata document changes — e.g. a new OAuth
-		// scope is added in an Atmosphere release — every layer between
-		// us and the auth server has refreshed before the auth server
-		// itself does its next refresh. Without an explicit header,
-		// hosted environments like wp.com Atomic apply their own (much
-		// longer) heuristic-based edge cache and can serve a stale scope
-		// to every auth server that asks, surfacing as "Scope X is not
-		// declared in the client metadata" on every authorization attempt.
-		// 5 minutes gives the auth-server cache cycle plenty of room
-		// without flat-out disabling cheap caching of an otherwise
-		// rarely-changing document.
-		$response->header( 'Cache-Control', 'public, max-age=300' );
-
-		return $response;
-	}
-
-	/**
-	 * Validate the return value of the `atmosphere_client_metadata` filter.
-	 *
-	 * Container shape:
-	 *
-	 *  - Must be an array.
-	 *  - `client_id` present, non-empty string.
-	 *  - `redirect_uris` present, non-empty array (list of strings).
-	 *
-	 * Per-entry `redirect_uris` rules:
-	 *
-	 *  - Each entry is a non-empty string.
-	 *  - Each entry begins with this site's HTTPS admin URL prefix
-	 *    (`admin_url('', 'https')`), the same gate
-	 *    {@see \Atmosphere\OAuth\Client::redirect_uri()} applies to
-	 *    the inbound filter. An off-site / HTTP-scheme /
-	 *    scheme-mismatched / empty entry disqualifies the entire
-	 *    filter result.
-	 *
-	 * Returns true only if every check passes; the caller falls back
-	 * to the unfiltered metadata on false.
-	 *
-	 * @param mixed $filtered Filter return value.
-	 * @return bool
-	 */
-	private static function client_metadata_filter_is_valid( $filtered ): bool {
-		if ( ! \is_array( $filtered ) ) {
-			return false;
-		}
-
-		if ( ! isset( $filtered['client_id'] )
-			|| ! \is_string( $filtered['client_id'] )
-			|| '' === $filtered['client_id']
-		) {
-			return false;
-		}
-
-		if ( ! isset( $filtered['redirect_uris'] )
-			|| ! \is_array( $filtered['redirect_uris'] )
-			|| array() === $filtered['redirect_uris']
-		) {
-			return false;
-		}
-
-		/*
-		 * Match the HTTPS scheme `Client::redirect_uri()` produces. The
-		 * OAuth code is delivered to the browser via this URL and must
-		 * not travel in cleartext, even if `admin_url()` itself defaults
-		 * to HTTP on the host.
-		 */
-		$admin_prefix = \admin_url( '', 'https' );
-
-		foreach ( $filtered['redirect_uris'] as $uri ) {
-			if ( ! \is_string( $uri )
-				|| '' === $uri
-				|| ! \str_starts_with( $uri, 'https://' )
-				|| ! \str_starts_with( $uri, $admin_prefix )
-			) {
-				return false;
-			}
-		}
-
-		return true;
 	}
 }

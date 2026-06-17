@@ -311,7 +311,7 @@ class Backfill_Command extends \WP_CLI_Command {
 				\WP_CLI::warning(
 					\sprintf(
 						/* translators: %d: post ID. */
-						\__( 'Skipping post %d: not eligible for sync (draft, password-protected, or unsupported post type).', 'atmosphere' ),
+						\__( 'Skipping post %d: not eligible for sync (not published, password-protected, sharing turned off, or unsupported post type).', 'atmosphere' ),
 						$post_id
 					)
 				);
