@@ -1,0 +1,11 @@
+{
+  "$schema": "https://schemas.wp.org/trunk/block.json",
+  "apiVersion": 3,
+  "name": "atmosphere/editor-plugin",
+  "title": "ATmosphere Editor Panel",
+  "category": "widgets",
+  "description": "Document sidebar panel to control whether a post is shared to Bluesky.",
+  "icon": "share",
+  "textdomain": "atmosphere",
+  "editorScript": "file:./plugin.js"
+}
