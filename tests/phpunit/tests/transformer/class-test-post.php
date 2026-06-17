@@ -168,11 +168,15 @@ class Test_Post extends WP_UnitTestCase {
 	}
 
 	/**
-	 * Short-form text over 300 graphemes is truncated.
+	 * A titleless post whose body overflows the 300-char native cap is not
+	 * really short-form: it falls back to the long-form link-card so the
+	 * reader gets a teaser plus a route back to the original, instead of a
+	 * sentence fragment with no link home.
 	 *
 	 * @covers ::transform
+	 * @covers ::is_short_form_post
 	 */
-	public function test_short_form_truncates_over_cap() {
+	public function test_long_titleless_post_falls_back_to_link_card() {
 		$long_body = \str_repeat( 'Lorem ipsum dolor sit amet. ', 50 );
 		$post      = self::factory()->post->create_and_get(
 			array(
@@ -181,10 +185,43 @@ class Test_Post extends WP_UnitTestCase {
 			)
 		);
 
-		$record = ( new Post( $post ) )->transform();
+		$transformer = new Post( $post );
 
-		$this->assertLessThanOrEqual( 300, \mb_strlen( $record['text'] ) );
-		$this->assertStringContainsString( 'Lorem', $record['text'] );
+		$this->assertFalse(
+			$transformer->is_short_form_post(),
+			'An overflowing titleless post should be treated as long-form.'
+		);
+
+		$record = $transformer->transform();
+
+		$this->assertArrayHasKey( 'embed', $record );
+		$this->assertSame( 'app.bsky.embed.external', $record['embed']['$type'] );
+		$this->assertStringContainsString( \get_permalink( $post ), $record['text'] );
+	}
+
+	/**
+	 * A titleless post that fits within the native cap stays short-form:
+	 * the body ships verbatim with no embed and no permalink.
+	 *
+	 * @covers ::transform
+	 * @covers ::is_short_form_post
+	 */
+	public function test_short_titleless_post_stays_short_form() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => '',
+				'post_content' => 'A quick untitled thought that fits.',
+			)
+		);
+
+		$transformer = new Post( $post );
+
+		$this->assertTrue( $transformer->is_short_form_post() );
+
+		$record = $transformer->transform();
+
+		$this->assertSame( 'A quick untitled thought that fits.', $record['text'] );
+		$this->assertArrayNotHasKey( 'embed', $record );
 	}
 
 	/**
