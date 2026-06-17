@@ -155,6 +155,21 @@ class Post extends Base {
 	private ?array $document_strong_ref = null;
 
 	/**
+	 * Memoized short-form verdict for this post.
+	 *
+	 * {@see self::is_short_form_post()} is evaluated more than once per
+	 * publish (Publisher's document-strongRef precompute and the short/long
+	 * routing, plus {@see self::transform()}), and the
+	 * `atmosphere_is_short_form_post` filter fires on every call. Caching the
+	 * verdict on the instance keeps every caller in agreement even when a
+	 * subscriber's filter is stateful, so the embed-strategy label, the
+	 * document-strongRef precompute, and the published record cannot disagree.
+	 *
+	 * @var bool|null
+	 */
+	private ?bool $short_form_verdict = null;
+
+	/**
 	 * Whether the transformer is running in projection mode.
 	 *
 	 * Projection mode ({@see self::project()}) reproduces the exact text
@@ -1385,6 +1400,10 @@ class Post extends Base {
 			return true;
 		}
 
+		if ( null !== $this->short_form_verdict ) {
+			return $this->short_form_verdict;
+		}
+
 		/**
 		 * Filters whether the post should be treated as short-form for Bluesky.
 		 *
@@ -1402,13 +1421,15 @@ class Post extends Base {
 		 * @param bool     $is_short Whether the post should be treated as short-form.
 		 * @param \WP_Post $post     The post being transformed.
 		 */
-		return \wp_validate_boolean(
+		$this->short_form_verdict = \wp_validate_boolean(
 			\apply_filters(
 				'atmosphere_is_short_form_post',
 				$this->is_short_form( $this->object ),
 				$this->object
 			)
 		);
+
+		return $this->short_form_verdict;
 	}
 
 	/**

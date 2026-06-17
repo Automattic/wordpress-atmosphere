@@ -305,6 +305,45 @@ class Test_Post extends WP_UnitTestCase {
 	}
 
 	/**
+	 * The short-form verdict is memoized per transformer instance, so a
+	 * stateful `atmosphere_is_short_form_post` filter is consulted exactly
+	 * once. Publisher evaluates the verdict several times per publish (the
+	 * document-strongRef precompute, the short/long routing, and transform());
+	 * without memoization a filter that returns a different value across those
+	 * calls could precompute for short-form and then publish a link card.
+	 *
+	 * @covers ::is_short_form_post
+	 */
+	public function test_short_form_verdict_is_memoized() {
+		$calls  = 0;
+		$filter = function () use ( &$calls ) {
+			++$calls;
+			// Flip the answer after the first call to simulate a stateful
+			// subscriber that would otherwise split the publish decision.
+			return 1 === $calls;
+		};
+		\add_filter( 'atmosphere_is_short_form_post', $filter );
+
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => '',
+				'post_content' => 'A short untitled thought.',
+			)
+		);
+
+		$transformer = new Post( $post );
+
+		$first  = $transformer->is_short_form_post();
+		$second = $transformer->is_short_form_post();
+
+		\remove_filter( 'atmosphere_is_short_form_post', $filter );
+
+		$this->assertTrue( $first, 'First call should reflect the filter result.' );
+		$this->assertSame( $first, $second, 'Repeated calls must return the cached verdict.' );
+		$this->assertSame( 1, $calls, 'The filter must be consulted only once per instance.' );
+	}
+
+	/**
 	 * The atmosphere_is_short_form_post filter can force short-form on a
 	 * titled-no-format post that would otherwise be long-form.
 	 *
