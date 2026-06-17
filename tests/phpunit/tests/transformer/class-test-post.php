@@ -274,6 +274,36 @@ class Test_Post extends WP_UnitTestCase {
 	}
 
 	/**
+	 * A link that straddles the truncation boundary — its anchor text starts
+	 * before the cut but runs past it — is dropped entirely rather than
+	 * emitting a facet whose range extends beyond the text.
+	 *
+	 * @covers ::transform
+	 */
+	public function test_short_form_drops_link_facet_straddling_truncation() {
+		// ~295 chars of filler, then a long-anchor link that crosses 300.
+		$filler = \str_repeat( 'word ', 59 );
+		$post   = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => '',
+				'post_content' => $filler . '<a href="https://example.com/x">' . \str_repeat( 'long', 10 ) . '</a> tail.',
+			)
+		);
+
+		$record = ( new Post( $post ) )->transform();
+
+		$this->assertLessThanOrEqual( 300, \mb_strlen( $record['text'] ) );
+
+		foreach ( $record['facets'] ?? array() as $facet ) {
+			$this->assertLessThanOrEqual(
+				\strlen( $record['text'] ),
+				$facet['index']['byteEnd'],
+				'A straddling link facet must be dropped, not clipped.'
+			);
+		}
+	}
+
+	/**
 	 * A titled post with post_format=status is short-form.
 	 *
 	 * @covers ::transform

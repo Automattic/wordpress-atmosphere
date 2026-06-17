@@ -140,6 +140,12 @@ class Post extends Base {
 	 * @var string
 	 */
 	private const LINK_MARKER_PREFIX = 'atmxinlinexlinkx';
+
+	/**
+	 * Trailing token for the inline-link placeholder. See {@see self::LINK_MARKER_PREFIX}.
+	 *
+	 * @var string
+	 */
 	private const LINK_MARKER_SUFFIX = 'xendxinlinexlink';
 
 	/**
@@ -1269,15 +1275,18 @@ class Post extends Base {
 
 		list( $full_text, $facets ) = $this->resolve_inline_link_facets( $html );
 
-		$text = truncate_text( $full_text, 300 );
+		$ellipsis = '...';
+		$text     = truncate_text( $full_text, 300, $ellipsis );
 
 		/*
 		 * Drop facets that fall past the truncation point. `truncate_text()`
-		 * appends a 3-byte `...` marker when it cuts, so the surviving body
-		 * is everything before that marker.
+		 * appends the ellipsis marker when it cuts, so the surviving body is
+		 * everything before that marker. A facet that merely straddles the
+		 * cut (starts inside, ends past it) is dropped too — a half-range
+		 * would mislink in Bluesky's renderer.
 		 */
 		if ( $text !== $full_text ) {
-			$body_bytes = \strlen( $text ) - 3;
+			$body_bytes = \strlen( $text ) - \strlen( $ellipsis );
 			$facets     = \array_values(
 				\array_filter(
 					$facets,
