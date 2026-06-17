@@ -129,6 +129,20 @@ class Post extends Base {
 	private const MAX_BLOB_BYTES = 1_000_000;
 
 	/**
+	 * Bracketing tokens for the inline-link placeholder.
+	 *
+	 * An `<a>` is swapped for `PREFIX{n}SUFFIX` while the post text is
+	 * normalized, then substituted back so the link facet lands on the exact
+	 * anchor-text byte range. The tokens are alphanumeric (so whitespace
+	 * collapse can't split them) and deliberately unlikely to appear in real
+	 * content, since a collision would misplace a facet.
+	 *
+	 * @var string
+	 */
+	private const LINK_MARKER_PREFIX = 'atmxinlinexlinkx';
+	private const LINK_MARKER_SUFFIX = 'xendxinlinexlink';
+
+	/**
 	 * Document strongRef the Publisher pre-computed for the initial
 	 * atomic `applyWrites#create`.
 	 *
@@ -211,15 +225,26 @@ class Post extends Base {
 			);
 		}
 
-		$text  = $redacted ? '' : ( $is_short ? $this->build_short_form_text() : '' );
-		$embed = null;
+		$text        = '';
+		$embed       = null;
+		$link_facets = array();
 
 		if ( ! $redacted ) {
 			if ( $is_short ) {
+				$short       = $this->build_short_form_text();
+				$text        = $short['text'];
+				$link_facets = $short['facets'];
+
 				$embed = $this->build_images_embed();
 				if ( '' === $text && null === $embed ) {
-					$text  = $this->build_text();
-					$embed = $this->build_embed();
+					/*
+					 * Empty body and no images: fall back to the link-card
+					 * teaser. The short-form anchor facets no longer apply —
+					 * the text is now the excerpt, not the post body.
+					 */
+					$text        = $this->build_text();
+					$embed       = $this->build_embed();
+					$link_facets = array();
 				}
 			} else {
 				$text  = $this->build_text();
@@ -238,7 +263,7 @@ class Post extends Base {
 			'langs'     => $this->get_langs(),
 		);
 
-		$facets = Facet::extract( $text );
+		$facets = $this->merge_link_facets( $link_facets, Facet::extract( $text ) );
 		if ( ! empty( $facets ) ) {
 			$record['facets'] = $facets;
 		}
@@ -1207,21 +1232,215 @@ class Post extends Base {
 	}
 
 	/**
-	 * Build the bsky.app post text for a short-form post.
+	 * Build the bsky.app post text and link facets for a short-form post.
 	 *
-	 * The post body becomes the Bluesky text directly, with no title
-	 * prefix or trailing permalink. Defensively clamped to 300
-	 * characters; a composer UI is expected to enforce the cap before
-	 * publish.
+	 * The post body becomes the Bluesky text directly, with no title prefix
+	 * or trailing permalink, clamped to 300 characters. Inline links are
+	 * preserved as `app.bsky.richtext.facet#link` facets over their
+	 * human-readable anchor text, so a link-blog note keeps its links
+	 * clickable on Bluesky instead of having the URLs silently stripped by
+	 * `sanitize_text()` before facet extraction.
 	 *
-	 * @return string
+	 * @return array{text:string,facets:array} Text and its inline-link facets.
 	 */
-	private function build_short_form_text(): string {
+	private function build_short_form_text(): array {
 		if ( $this->is_redacted() ) {
-			return '';
+			return array(
+				'text'   => '',
+				'facets' => array(),
+			);
 		}
 
-		return truncate_text( $this->render_post_content_plain( $this->object ), 300 );
+		$html = \apply_filters( 'the_content', $this->object->post_content ); // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Core WordPress filter.
+
+		/*
+		 * Fast path: no anchors, so the plain render is the whole story.
+		 * Match `<a ` / `<a>` only, not `<article>` / `<aside>`. Sanitize the
+		 * already-rendered $html rather than calling render_post_content_plain(),
+		 * which would run `the_content` a second time — doubling any shortcode
+		 * or filter side effect and risking text that differs from $html.
+		 */
+		if ( ! \preg_match( '/<a[\s>]/i', $html ) ) {
+			return array(
+				'text'   => truncate_text( sanitize_text( $html ), 300 ),
+				'facets' => array(),
+			);
+		}
+
+		list( $full_text, $facets ) = $this->resolve_inline_link_facets( $html );
+
+		$text = truncate_text( $full_text, 300 );
+
+		/*
+		 * Drop facets that fall past the truncation point. `truncate_text()`
+		 * appends a 3-byte `...` marker when it cuts, so the surviving body
+		 * is everything before that marker.
+		 */
+		if ( $text !== $full_text ) {
+			$body_bytes = \strlen( $text ) - 3;
+			$facets     = \array_values(
+				\array_filter(
+					$facets,
+					static fn( $facet ) => $facet['index']['byteEnd'] <= $body_bytes
+				)
+			);
+		}
+
+		return array(
+			'text'   => $text,
+			'facets' => $facets,
+		);
+	}
+
+	/**
+	 * Render content to plain text, preserving inline links as facets.
+	 *
+	 * Anchor text would otherwise be flattened by `sanitize_text()` before
+	 * `Facet::extract()` runs, dropping the link. To keep both the readable
+	 * anchor text and a precise link facet, each `<a>` is swapped for a
+	 * unique synthetic marker before the text is normalized, then the marker
+	 * is substituted back with the byte offsets recorded. Searching for a
+	 * unique marker — rather than the anchor text itself — keeps the offsets
+	 * correct even when the same word is linked twice, or appears as plain
+	 * text elsewhere in the post.
+	 *
+	 * The anchor regex mirrors `Content_Parser\Markpub`'s link handling;
+	 * `WP_HTML_Tag_Processor` reads attributes but not the text between an
+	 * element's open and close tags, so it cannot recover the anchor text.
+	 *
+	 * Only `http(s)` anchors with non-empty text become facets; other hrefs
+	 * (relative, `mailto:`, fragments) keep their text but carry no link.
+	 *
+	 * @param string $html Rendered post HTML (`the_content` output).
+	 * @return array{0:string,1:array} `[ $text, $facets ]`.
+	 */
+	private function resolve_inline_link_facets( string $html ): array {
+		$anchors = array();
+		$index   = 0;
+
+		$marked_html = \preg_replace_callback(
+			'#<a\b[^>]*\bhref=(["\'])(.*?)\1[^>]*>(.*?)</a>#is',
+			function ( $matches ) use ( &$anchors, &$index ) {
+				$raw_href    = \trim( \html_entity_decode( $matches[2], \ENT_QUOTES, 'UTF-8' ) );
+				$anchor_text = sanitize_text( $matches[3] );
+
+				/*
+				 * Require an explicit http(s) scheme on the *raw* href before
+				 * normalizing. esc_url_raw() prepends `http://` to a
+				 * scheme-less value (`relative/page` -> `http://relative/page`),
+				 * so checking after sanitizing would turn a relative link into
+				 * a bogus external facet. Non-http and text-less anchors are
+				 * left in place; sanitize_text() then strips the tag and keeps
+				 * any inner text, without a facet.
+				 */
+				if ( ! \preg_match( '#^https?://#i', $raw_href ) || '' === $anchor_text ) {
+					return $matches[0];
+				}
+
+				$href = \esc_url_raw( $raw_href );
+				if ( '' === $href ) {
+					return $matches[0];
+				}
+
+				$marker             = self::LINK_MARKER_PREFIX . $index . self::LINK_MARKER_SUFFIX;
+				$anchors[ $marker ] = array(
+					'text' => $anchor_text,
+					'uri'  => $href,
+				);
+				++$index;
+
+				return $marker;
+			},
+			$html
+		);
+
+		/*
+		 * preg_replace_callback returns null on PCRE failure (e.g. a
+		 * backtrack-limit blowout on pathological input); fall back to the
+		 * sanitized HTML with no link facets rather than emitting a broken
+		 * record. Reuse $html so `the_content` is not run a second time.
+		 */
+		if ( null === $marked_html ) {
+			return array( sanitize_text( $html ), array() );
+		}
+
+		$marked = sanitize_text( $marked_html );
+
+		$text   = '';
+		$facets = array();
+		$cursor = 0;
+		foreach ( $anchors as $marker => $anchor ) {
+			$pos = \strpos( $marked, $marker, $cursor );
+			if ( false === $pos ) {
+				continue;
+			}
+
+			$text      .= \substr( $marked, $cursor, $pos - $cursor );
+			$byte_start = \strlen( $text );
+			$text      .= $anchor['text'];
+			$facets[]   = array(
+				'index'    => array(
+					'byteStart' => $byte_start,
+					'byteEnd'   => \strlen( $text ),
+				),
+				'features' => array(
+					array(
+						'$type' => 'app.bsky.richtext.facet#link',
+						'uri'   => $anchor['uri'],
+					),
+				),
+			);
+			$cursor     = $pos + \strlen( $marker );
+		}
+		$text .= \substr( $marked, $cursor );
+
+		return array( $text, $facets );
+	}
+
+	/**
+	 * Merge inline-link facets with the extracted mention/hashtag/URL facets.
+	 *
+	 * Inline-link facets win on overlap: an extracted facet whose byte range
+	 * intersects an inline link is dropped (e.g. a bare URL or hashtag that
+	 * happens to sit inside the anchor's visible text), so a single range
+	 * never carries two features. The result is sorted by `byteStart`, the
+	 * order `Facet::extract()` itself guarantees.
+	 *
+	 * @param array $link_facets      Inline-link facets from the anchor pass.
+	 * @param array $extracted_facets Facets from `Facet::extract()`.
+	 * @return array
+	 */
+	private function merge_link_facets( array $link_facets, array $extracted_facets ): array {
+		if ( empty( $link_facets ) ) {
+			return $extracted_facets;
+		}
+
+		$kept = array();
+		foreach ( $extracted_facets as $facet ) {
+			$start = $facet['index']['byteStart'];
+			$end   = $facet['index']['byteEnd'];
+
+			$overlaps = false;
+			foreach ( $link_facets as $link ) {
+				if ( $start < $link['index']['byteEnd'] && $link['index']['byteStart'] < $end ) {
+					$overlaps = true;
+					break;
+				}
+			}
+
+			if ( ! $overlaps ) {
+				$kept[] = $facet;
+			}
+		}
+
+		$merged = \array_merge( $link_facets, $kept );
+
+		\usort(
+			$merged,
+			static fn( $a, $b ) => $a['index']['byteStart'] <=> $b['index']['byteStart']
+		);
+
+		return $merged;
 	}
 
 	/**
