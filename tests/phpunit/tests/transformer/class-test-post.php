@@ -196,7 +196,35 @@ class Test_Post extends WP_UnitTestCase {
 
 		$this->assertArrayHasKey( 'embed', $record );
 		$this->assertSame( 'app.bsky.embed.external', $record['embed']['$type'] );
+		$this->assertSame( \get_permalink( $post ), $record['embed']['external']['uri'] );
 		$this->assertStringContainsString( \get_permalink( $post ), $record['text'] );
+	}
+
+	/**
+	 * The overflow gate also applies to post-format posts, not just
+	 * empty-title ones: a titled `aside` whose body exceeds the cap falls
+	 * back to the long-form link-card.
+	 *
+	 * @covers ::transform
+	 * @covers ::is_short_form_post
+	 */
+	public function test_long_format_post_falls_back_to_link_card() {
+		$post_id = self::factory()->post->create(
+			array(
+				'post_title'   => 'Has a title but also an aside format',
+				'post_content' => \str_repeat( 'Lorem ipsum dolor sit amet. ', 50 ),
+			)
+		);
+		\set_post_format( $post_id, 'aside' );
+		$post = \get_post( $post_id );
+
+		$transformer = new Post( $post );
+
+		$this->assertFalse( $transformer->is_short_form_post() );
+
+		$record = $transformer->transform();
+
+		$this->assertSame( 'app.bsky.embed.external', $record['embed']['$type'] );
 	}
 
 	/**
