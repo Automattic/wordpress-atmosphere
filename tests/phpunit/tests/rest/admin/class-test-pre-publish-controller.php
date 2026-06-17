@@ -149,6 +149,11 @@ class Test_Pre_Publish_Controller extends WP_UnitTestCase {
 	 * @covers ::get_preview
 	 */
 	public function test_preview_uses_unsaved_content() {
+		// Keep the over-limit body short-form so the panel still reports the
+		// over-limit warning; by default an overflowing titleless body is now
+		// reclassified to long-form.
+		\add_filter( 'atmosphere_is_short_form_post', '__return_true' );
+
 		$post = self::factory()->post->create_and_get(
 			array(
 				'post_title'   => '',
@@ -159,6 +164,8 @@ class Test_Pre_Publish_Controller extends WP_UnitTestCase {
 		$data = $this->controller->get_preview(
 			$this->make_request( $post->ID, array( 'content' => \str_repeat( 'word ', 100 ) ) )
 		)->get_data();
+
+		\remove_filter( 'atmosphere_is_short_form_post', '__return_true' );
 
 		$this->assertGreaterThan( 300, $data['records'][0]['characters'] );
 		$this->assertTrue( $data['records'][0]['over_limit'] );
