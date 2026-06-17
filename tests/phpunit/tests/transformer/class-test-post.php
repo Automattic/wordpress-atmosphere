@@ -253,6 +253,58 @@ class Test_Post extends WP_UnitTestCase {
 	}
 
 	/**
+	 * The overflow gate is at exactly 300 characters: a 300-char titleless
+	 * body stays short-form, a 301-char one becomes long-form.
+	 *
+	 * @covers ::is_short_form_post
+	 */
+	public function test_short_form_overflow_boundary() {
+		$at_limit = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => '',
+				'post_content' => \str_repeat( 'a', 300 ),
+			)
+		);
+		$this->assertTrue(
+			( new Post( $at_limit ) )->is_short_form_post(),
+			'A 300-character body is at the cap and stays short-form.'
+		);
+
+		$over_limit = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => '',
+				'post_content' => \str_repeat( 'a', 301 ),
+			)
+		);
+		$this->assertFalse(
+			( new Post( $over_limit ) )->is_short_form_post(),
+			'A 301-character body overflows and becomes long-form.'
+		);
+	}
+
+	/**
+	 * `build_short_form_text()` still defensively clamps to the cap when the
+	 * filter forces an overflowing body to stay short-form.
+	 *
+	 * @covers ::transform
+	 */
+	public function test_forced_short_form_over_limit_is_clamped() {
+		\add_filter( 'atmosphere_is_short_form_post', '__return_true' );
+
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => '',
+				'post_content' => \str_repeat( 'word ', 100 ), // 500 characters.
+			)
+		);
+
+		$record = ( new Post( $post ) )->transform();
+
+		$this->assertArrayNotHasKey( 'embed', $record, 'Forced short-form must not attach a link card.' );
+		$this->assertLessThanOrEqual( 300, \mb_strlen( $record['text'] ) );
+	}
+
+	/**
 	 * The atmosphere_is_short_form_post filter can force short-form on a
 	 * titled-no-format post that would otherwise be long-form.
 	 *
@@ -3512,9 +3564,16 @@ class Test_Post extends WP_UnitTestCase {
 	 * though the published record is clamped — the panel must show the
 	 * author's real length, not the truncated one.
 	 *
+	 * By default an overflowing titleless post is now reclassified to
+	 * long-form, so this exercises a post kept short-form via the
+	 * `atmosphere_is_short_form_post` filter — the path where the panel's
+	 * over-limit warning still matters.
+	 *
 	 * @covers ::project
 	 */
 	public function test_project_short_form_over_limit_reports_untruncated_count() {
+		\add_filter( 'atmosphere_is_short_form_post', '__return_true' );
+
 		$long_body = \str_repeat( 'word ', 100 ); // 500 characters.
 		$post      = self::factory()->post->create_and_get(
 			array(
@@ -3529,6 +3588,37 @@ class Test_Post extends WP_UnitTestCase {
 		$this->assertCount( 1, $projection['records'] );
 		$this->assertGreaterThan( 300, $projection['records'][0]['characters'] );
 		$this->assertTrue( $projection['records'][0]['over_limit'] );
+	}
+
+	/**
+	 * An overflowing post that carries in-body images stays short-form, so
+	 * its native image gallery is not silently dropped for a link card.
+	 *
+	 * @covers ::is_short_form_post
+	 * @covers ::transform
+	 */
+	public function test_overflowing_post_with_inbody_images_stays_short_form() {
+		$attachment_id = self::factory()->attachment->create_object(
+			array(
+				'file'           => 'inbody.jpg',
+				'post_mime_type' => 'image/jpeg',
+			),
+			0,
+			array( 'post_title' => 'In-body image' )
+		);
+
+		$long_body = \str_repeat( 'word ', 100 ); // 500 characters.
+		$post      = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => '',
+				'post_content' => $long_body . \sprintf( '<!-- wp:image {"id":%1$d} --><figure class="wp-block-image"><img class="wp-image-%1$d"/></figure><!-- /wp:image -->', $attachment_id ),
+			)
+		);
+
+		$this->assertTrue(
+			( new Post( $post ) )->is_short_form_post(),
+			'An overflowing post with in-body images must stay short-form.'
+		);
 	}
 
 	/**

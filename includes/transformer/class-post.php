@@ -319,8 +319,17 @@ class Post extends Base {
 			if ( $is_short ) {
 				$embed = $this->build_images_embed();
 				if ( '' === $text && null === $embed ) {
-					$text  = $this->build_text();
-					$embed = $this->build_embed();
+					/*
+					 * Empty body and no images: there is nothing to publish
+					 * natively, so fall back to the link-card composition. This
+					 * is a link-card record, so flip $is_short to false — the
+					 * embed-filter strategy label and the
+					 * atmosphere_transform_bsky_post context below must report
+					 * `link-card`, not `short-form`.
+					 */
+					$is_short = false;
+					$text     = $this->build_text();
+					$embed    = $this->build_embed();
 				}
 			} else {
 				$text  = $this->build_text();
@@ -1307,13 +1316,20 @@ class Post extends Base {
 	 * - the post has any non-empty post_format.
 	 *
 	 * A categorically short-form post is still treated as long-form when its
-	 * body overflows Bluesky's 300-character native cap: short-form ships the
-	 * body verbatim, so a body that cannot fit is not really "short". Routing
-	 * it to the long-form composition (excerpt + permalink + external card)
-	 * gives the reader a teaser plus a route back to the original instead of
-	 * a sentence fragment with no link home. The overflow length is measured
-	 * with `mb_strlen` to match `build_short_form_text()`'s own
-	 * `truncate_text()` cap, so the gate and the truncation it avoids agree.
+	 * body overflows Bluesky's 300-character native cap *and* it has no
+	 * in-body images: short-form ships the body verbatim, so a body that
+	 * cannot fit is not really "short", and routing it to the long-form
+	 * composition (excerpt + permalink + external card) gives the reader a
+	 * teaser plus a route back to the original instead of a sentence fragment
+	 * with no link home. The overflow length is measured with `mb_strlen` to
+	 * match `build_short_form_text()`'s own `truncate_text()` cap, so the gate
+	 * and the truncation it avoids agree.
+	 *
+	 * An overflowing post that *does* carry in-body images stays short-form:
+	 * the long-form link card can only show the featured thumbnail, so
+	 * converting would silently drop the post's native `app.bsky.embed.images`
+	 * gallery. A photo post with a long caption keeps its images and accepts
+	 * the caption truncation; only the text-only link-blog case converts.
 	 *
 	 * @param \WP_Post $post Post being transformed.
 	 * @return bool
@@ -1323,7 +1339,13 @@ class Post extends Base {
 			return false;
 		}
 
-		return \mb_strlen( $this->render_post_content_plain( $post ) ) <= self::BLUESKY_MAX_GRAPHEMES;
+		if ( \mb_strlen( $this->render_post_content_plain( $post ) ) <= self::BLUESKY_MAX_GRAPHEMES ) {
+			return true;
+		}
+
+		// Overflowing: only convert to long-form when there are no in-body
+		// images to preserve as a native gallery.
+		return ! empty( $this->collect_image_attachment_ids() );
 	}
 
 	/**
