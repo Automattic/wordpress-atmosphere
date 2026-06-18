@@ -24,30 +24,6 @@ createModalStore( 'atmosphere/reactions' );
  */
 
 const { callbacks, state } = store( 'atmosphere/reactions', {
-	actions: {
-		/**
-		 * Fetch reactions for the post from the REST API.
-		 */
-		async fetchReactions() {
-			const context = getContext();
-
-			if ( ! context.postId ) {
-				return;
-			}
-
-			const { namespace } = getConfig();
-			const { apiFetch } = window.wp;
-
-			try {
-				context.reactions = await apiFetch( {
-					path: `/${ namespace }/posts/${ context.postId }/reactions`,
-				} );
-			} catch ( error ) {
-				// eslint-disable-next-line no-console -- Log error for debugging.
-				console.error( 'Error fetching reactions:', error );
-			}
-		},
-	},
 	callbacks: {
 		/**
 		 * Initialize the block: observe each group to recalc avatar count.
@@ -85,7 +61,8 @@ const { callbacks, state } = store( 'atmosphere/reactions', {
 
 			reactionTypes.forEach( ( reactionType ) => {
 				if (
-					! state.reactions?.[ postId ][ reactionType ]?.items?.length
+					! state.reactions?.[ postId ]?.[ reactionType ]?.items
+						?.length
 				) {
 					return;
 				}
@@ -151,7 +128,8 @@ const { callbacks, state } = store( 'atmosphere/reactions', {
 			if ( context.modal.isCompact ) {
 				const reactionType = getElement().ref.dataset.reactionType;
 				context.modal.items =
-					state.reactions[ context.postId ][ reactionType ].items;
+					state.reactions?.[ context.postId ]?.[ reactionType ]
+						?.items || [];
 			}
 		},
 
