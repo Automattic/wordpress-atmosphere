@@ -2,6 +2,11 @@ import { useState, useRef } from '@wordpress/element';
 import { Popover, Button } from '@wordpress/components';
 import { useOptions } from '../shared/use-options';
 
+// Neutral gray fallback when an avatar image fails to load and no default is
+// localized (mirrors the server-side default in render.php).
+const FALLBACK_AVATAR =
+	"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ccircle cx='32' cy='32' r='32' fill='%23cfcfcf'/%3E%3C/svg%3E";
+
 /**
  * A row of reactor avatars for a set of reactions.
  *
@@ -11,7 +16,7 @@ import { useOptions } from '../shared/use-options';
  * @return {Element|null} The avatar row, or null in compact mode.
  */
 const FacepileRow = ( { reactions, displayStyle } ) => {
-	const { defaultAvatarUrl } = useOptions();
+	const { defaultAvatarUrl = FALLBACK_AVATAR } = useOptions();
 
 	if ( displayStyle === 'compact' ) {
 		return null;
@@ -56,7 +61,7 @@ const FacepileRow = ( { reactions, displayStyle } ) => {
  * @return {Element} The reactions list.
  */
 const ReactionList = ( { reactions, displayStyle } ) => {
-	const { defaultAvatarUrl } = useOptions();
+	const { defaultAvatarUrl = FALLBACK_AVATAR } = useOptions();
 
 	return (
 		<ul className="reactions-list">

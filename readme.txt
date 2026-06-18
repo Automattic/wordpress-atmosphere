@@ -1,7 +1,7 @@
 === ATmosphere ===
 Contributors: automattic, pfefferle, kraftbj, jeherve, ryanc413
 Tags: at-protocol, bluesky, fediverse, atproto, crossposting
-Requires at least: 6.2
+Requires at least: 6.5
 Tested up to: 7.0
 Requires PHP: 8.2
 Stable tag: 1.2.0

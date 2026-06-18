@@ -90,7 +90,9 @@ class Test_Reactions_Controller extends WP_UnitTestCase {
 		$this->assertSame( 1, $data['repost']['count'] );
 		$this->assertSame( '2 likes', $data['like']['label'] );
 		$this->assertCount( 2, $data['like']['items'] );
-		$this->assertSame( 'Alice', $data['like']['items'][0]['name'] );
+		$names = \wp_list_pluck( $data['like']['items'], 'name' );
+		$this->assertContains( 'Alice', $names );
+		$this->assertContains( 'Bob', $names );
 		$this->assertArrayHasKey( 'avatar', $data['like']['items'][0] );
 	}
 

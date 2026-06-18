@@ -93,7 +93,7 @@ class Blocks {
 			data-wp-bind--hidden="!context.modal.isOpen"
 			data-wp-watch="callbacks.handleModalEffects"
 			role="dialog"
-			aria-modal="true"
+			aria-modal="<?php echo \esc_attr( $args['is_compact'] ? 'false' : 'true' ); ?>"
 			hidden
 		>
 			<div class="atmosphere-modal__frame">

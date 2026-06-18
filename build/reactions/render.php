@@ -75,21 +75,28 @@ if ( false !== strpos( $atmosphere_class, 'is-style-compact' ) ) {
 // Fetch reactions, one entry per type.
 $atmosphere_reactions = array();
 
+/*
+ * Cap the reactor list embedded in the page. The count is queried
+ * separately so the label stays accurate even when there are more reactors
+ * than we render.
+ */
+$atmosphere_max_items = (int) apply_filters( 'atmosphere_reactions_max_items', 50 );
+
 foreach ( array( 'like', 'repost' ) as $atmosphere_type ) {
-	$atmosphere_comments = get_comments(
-		array(
-			'post_id' => $atmosphere_post_id,
-			'type'    => $atmosphere_type,
-			'status'  => 'approve',
-			'parent'  => 0,
-		)
+	$atmosphere_query = array(
+		'post_id' => $atmosphere_post_id,
+		'type'    => $atmosphere_type,
+		'status'  => 'approve',
+		'parent'  => 0,
 	);
 
-	if ( empty( $atmosphere_comments ) ) {
+	$atmosphere_count = (int) get_comments( array_merge( $atmosphere_query, array( 'count' => true ) ) );
+
+	if ( 0 === $atmosphere_count ) {
 		continue;
 	}
 
-	$atmosphere_count = count( $atmosphere_comments );
+	$atmosphere_comments = get_comments( array_merge( $atmosphere_query, array( 'number' => $atmosphere_max_items ) ) );
 
 	if ( 'like' === $atmosphere_type ) {
 		/* translators: %s: number of likes. */
@@ -106,8 +113,8 @@ foreach ( array( 'like', 'repost' ) as $atmosphere_type ) {
 			static function ( $comment ) {
 				return array(
 					'name'   => html_entity_decode( $comment->comment_author, ENT_QUOTES, 'UTF-8' ),
-					'url'    => $comment->comment_author_url,
-					'avatar' => get_avatar_url( $comment ),
+					'url'    => esc_url_raw( (string) $comment->comment_author_url ),
+					'avatar' => esc_url_raw( (string) get_avatar_url( $comment ) ),
 				);
 			},
 			$atmosphere_comments
@@ -116,7 +123,6 @@ foreach ( array( 'like', 'repost' ) as $atmosphere_type ) {
 }
 
 if ( empty( $atmosphere_reactions ) ) {
-	echo '<!-- Reactions block: No reactions found. -->';
 	return;
 }
 

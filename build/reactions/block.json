@@ -11,7 +11,7 @@
     "likes",
     "reposts"
   ],
-  "description": "Display the Bluesky likes and reposts your post received.",
+  "description": "Display the Bluesky likes and reposts that your posts have received.",
   "example": {
     "attributes": {
       "className": "is-style-facepile"

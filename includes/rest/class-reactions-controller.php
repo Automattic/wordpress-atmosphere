@@ -93,21 +93,25 @@ class Reactions_Controller extends \WP_REST_Controller {
 
 		$reactions = array();
 
+		// Cap the reactor list; the count is queried separately so it stays
+		// accurate even when there are more reactors than we return.
+		$max_items = (int) \apply_filters( 'atmosphere_reactions_max_items', 50 );
+
 		foreach ( array( 'like', 'repost' ) as $type ) {
-			$comments = \get_comments(
-				array(
-					'post_id' => $post_id,
-					'type'    => $type,
-					'status'  => 'approve',
-					'parent'  => 0,
-				)
+			$query = array(
+				'post_id' => $post_id,
+				'type'    => $type,
+				'status'  => 'approve',
+				'parent'  => 0,
 			);
 
-			if ( empty( $comments ) ) {
+			$count = (int) \get_comments( \array_merge( $query, array( 'count' => true ) ) );
+
+			if ( 0 === $count ) {
 				continue;
 			}
 
-			$count = \count( $comments );
+			$comments = \get_comments( \array_merge( $query, array( 'number' => $max_items ) ) );
 
 			if ( 'like' === $type ) {
 				/* translators: %s: number of likes. */
@@ -124,8 +128,8 @@ class Reactions_Controller extends \WP_REST_Controller {
 					static function ( $comment ) {
 						return array(
 							'name'   => \html_entity_decode( $comment->comment_author, \ENT_QUOTES, 'UTF-8' ),
-							'url'    => $comment->comment_author_url,
-							'avatar' => \get_avatar_url( $comment ),
+							'url'    => \esc_url_raw( (string) $comment->comment_author_url ),
+							'avatar' => \esc_url_raw( (string) \get_avatar_url( $comment ) ),
 						);
 					},
 					$comments

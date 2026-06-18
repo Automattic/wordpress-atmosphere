@@ -293,7 +293,16 @@ export function createModalStore( namespace ) {
 					firstFocusableElement.focus();
 				}
 
-				element.addEventListener( 'keydown', function ( event ) {
+				// Replace any handler from a previous open so listeners don't
+				// accumulate across reopenings.
+				if ( element._atmTrapFocus ) {
+					element.removeEventListener(
+						'keydown',
+						element._atmTrapFocus
+					);
+				}
+
+				element._atmTrapFocus = function ( event ) {
 					if (
 						event.key !== 'Tab' &&
 						event.keyCode !== 9 /* KEYCODE_TAB */
@@ -311,7 +320,9 @@ export function createModalStore( namespace ) {
 						firstFocusableElement.focus();
 						event.preventDefault();
 					}
-				} );
+				};
+
+				element.addEventListener( 'keydown', element._atmTrapFocus );
 			},
 		},
 	} );
