@@ -126,6 +126,247 @@ class Test_Post extends WP_UnitTestCase {
 	}
 
 	/**
+	 * A short-form post's inline links survive as Bluesky link facets,
+	 * keeping the human-readable anchor text (not the raw URL) in the post
+	 * text. Without this, `sanitize_text()` strips the `<a>` tags before
+	 * facet extraction and the links are silently dropped.
+	 *
+	 * @covers ::transform
+	 */
+	public function test_short_form_preserves_inline_link_as_facet() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => '',
+				'post_content' => 'Read the linked article from <a href="https://example.com/page">the source</a> now.',
+			)
+		);
+
+		$record = ( new Post( $post ) )->transform();
+
+		// The anchor text stays visible; the raw URL does not leak into text.
+		$this->assertStringContainsString( 'the source', $record['text'] );
+		$this->assertStringNotContainsString( 'https://example.com/page', $record['text'] );
+
+		$this->assertArrayHasKey( 'facets', $record );
+
+		$link_facet = null;
+		foreach ( $record['facets'] as $facet ) {
+			foreach ( $facet['features'] as $feature ) {
+				if ( 'app.bsky.richtext.facet#link' === $feature['$type'] ) {
+					$link_facet = $facet;
+				}
+			}
+		}
+
+		$this->assertNotNull( $link_facet, 'A link facet should be emitted for the inline link.' );
+		$this->assertSame( 'https://example.com/page', $link_facet['features'][0]['uri'] );
+
+		// The facet's byte range covers exactly the anchor text.
+		$slice = \substr(
+			$record['text'],
+			$link_facet['index']['byteStart'],
+			$link_facet['index']['byteEnd'] - $link_facet['index']['byteStart']
+		);
+		$this->assertSame( 'the source', $slice );
+	}
+
+	/**
+	 * The same anchor text linked twice produces two distinct facets, each
+	 * pointing at its own URL — the marker swap keeps the byte ranges from
+	 * collapsing onto the first occurrence.
+	 *
+	 * @covers ::transform
+	 */
+	public function test_short_form_same_word_linked_twice_keeps_distinct_facets() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => '',
+				'post_content' => 'Read the announcement <a href="https://example.org/">here</a>, or grab the source <a href="https://example.com/">here</a>.',
+			)
+		);
+
+		$record = ( new Post( $post ) )->transform();
+
+		$links = array();
+		foreach ( $record['facets'] as $facet ) {
+			foreach ( $facet['features'] as $feature ) {
+				if ( 'app.bsky.richtext.facet#link' === $feature['$type'] ) {
+					$links[] = array(
+						'uri'   => $feature['uri'],
+						'slice' => \substr(
+							$record['text'],
+							$facet['index']['byteStart'],
+							$facet['index']['byteEnd'] - $facet['index']['byteStart']
+						),
+					);
+				}
+			}
+		}
+
+		$this->assertCount( 2, $links, 'Both links should produce facets.' );
+		$this->assertSame( 'here', $links[0]['slice'] );
+		$this->assertSame( 'here', $links[1]['slice'] );
+		$this->assertSame( 'https://example.org/', $links[0]['uri'] );
+		$this->assertSame( 'https://example.com/', $links[1]['uri'] );
+		// The two facets cover different byte ranges (first vs. second word).
+		$this->assertNotSame(
+			$record['facets'][0]['index']['byteStart'],
+			$record['facets'][1]['index']['byteStart']
+		);
+	}
+
+	/**
+	 * A relative anchor href does not become a link facet: it has no
+	 * explicit http(s) scheme, so the anchor text is kept but no (bogus,
+	 * `http://`-prefixed) external link is emitted.
+	 *
+	 * @covers ::transform
+	 */
+	public function test_short_form_relative_link_is_not_faceted() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => '',
+				'post_content' => 'See the <a href="relative/page">other page</a> for details.',
+			)
+		);
+
+		$record = ( new Post( $post ) )->transform();
+
+		$this->assertStringContainsString( 'other page', $record['text'] );
+
+		foreach ( $record['facets'] ?? array() as $facet ) {
+			foreach ( $facet['features'] as $feature ) {
+				$this->assertNotSame(
+					'app.bsky.richtext.facet#link',
+					$feature['$type'],
+					'A relative link must not produce a link facet.'
+				);
+			}
+		}
+	}
+
+	/**
+	 * A link whose anchor text falls past the 300-character truncation point
+	 * is dropped rather than emitting a facet with an out-of-range offset.
+	 *
+	 * @covers ::transform
+	 */
+	public function test_short_form_drops_link_facet_past_truncation() {
+		$filler = \str_repeat( 'word ', 70 ); // ~350 chars before the link.
+		$post   = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => '',
+				'post_content' => $filler . ' <a href="https://example.com/late">late link</a>.',
+			)
+		);
+
+		$record = ( new Post( $post ) )->transform();
+
+		$this->assertLessThanOrEqual( 300, \mb_strlen( $record['text'] ) );
+		$this->assertNotContains( 'https://example.com/late', $this->facet_link_uris( $record ), 'The past-cut link must be dropped.' );
+		$this->assertFacetsWithinText( $record );
+	}
+
+	/**
+	 * A link that straddles the truncation boundary — its anchor text starts
+	 * before the cut but runs past it — is dropped entirely rather than
+	 * emitting a facet whose range extends beyond the text.
+	 *
+	 * @covers ::transform
+	 */
+	public function test_short_form_drops_link_facet_straddling_truncation() {
+		// ~295 chars of filler, then a long-anchor link that crosses 300.
+		$filler = \str_repeat( 'word ', 59 );
+		$post   = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => '',
+				'post_content' => $filler . '<a href="https://example.com/x">' . \str_repeat( 'long', 10 ) . '</a> tail.',
+			)
+		);
+
+		$record = ( new Post( $post ) )->transform();
+
+		$this->assertLessThanOrEqual( 300, \mb_strlen( $record['text'] ) );
+		$this->assertNotContains( 'https://example.com/x', $this->facet_link_uris( $record ), 'The straddling link must be dropped, not clipped.' );
+		$this->assertFacetsWithinText( $record );
+	}
+
+	/**
+	 * An `href`-like attribute on another key (e.g. `data-href`) is not
+	 * treated as the link target, so non-link markup never becomes a facet.
+	 *
+	 * @covers ::transform
+	 */
+	public function test_short_form_data_href_is_not_faceted() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => '',
+				'post_content' => 'See <a data-href="https://example.com/tracked">the widget</a> below.',
+			)
+		);
+
+		$record = ( new Post( $post ) )->transform();
+
+		$this->assertStringContainsString( 'the widget', $record['text'] );
+		$this->assertNotContains( 'https://example.com/tracked', $this->facet_link_uris( $record ) );
+	}
+
+	/**
+	 * Whitespace that sits just inside the anchor tags is preserved, so the
+	 * words around the link don't fuse together.
+	 *
+	 * @covers ::transform
+	 */
+	public function test_short_form_preserves_whitespace_inside_link() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => '',
+				'post_content' => 'Click<a href="https://example.com/here"> here</a> now.',
+			)
+		);
+
+		$record = ( new Post( $post ) )->transform();
+
+		$this->assertStringContainsString( 'Click here now', $record['text'] );
+		$this->assertStringNotContainsString( 'Clickhere', $record['text'] );
+	}
+
+	/**
+	 * Collect every link-facet URI from a record.
+	 *
+	 * @param array $record Bsky post record.
+	 * @return string[]
+	 */
+	private function facet_link_uris( array $record ): array {
+		$uris = array();
+		foreach ( $record['facets'] ?? array() as $facet ) {
+			foreach ( $facet['features'] as $feature ) {
+				if ( 'app.bsky.richtext.facet#link' === $feature['$type'] ) {
+					$uris[] = $feature['uri'];
+				}
+			}
+		}
+		return $uris;
+	}
+
+	/**
+	 * Assert no facet references a byte offset past the record text.
+	 *
+	 * @param array $record Bsky post record.
+	 */
+	private function assertFacetsWithinText( array $record ): void {
+		$length = \strlen( $record['text'] );
+		foreach ( $record['facets'] ?? array() as $facet ) {
+			$this->assertGreaterThanOrEqual( 0, $facet['index']['byteStart'] );
+			$this->assertLessThanOrEqual(
+				$length,
+				$facet['index']['byteEnd'],
+				'A facet byteEnd must not exceed the text length.'
+			);
+		}
+	}
+
+	/**
 	 * A titled post with post_format=status is short-form.
 	 *
 	 * @covers ::transform
@@ -168,11 +409,15 @@ class Test_Post extends WP_UnitTestCase {
 	}
 
 	/**
-	 * Short-form text over 300 graphemes is truncated.
+	 * A titleless post whose body overflows the 300-char native cap is not
+	 * really short-form: it falls back to the long-form link-card so the
+	 * reader gets a teaser plus a route back to the original, instead of a
+	 * sentence fragment with no link home.
 	 *
 	 * @covers ::transform
+	 * @covers ::is_short_form_post
 	 */
-	public function test_short_form_truncates_over_cap() {
+	public function test_long_titleless_post_falls_back_to_link_card() {
 		$long_body = \str_repeat( 'Lorem ipsum dolor sit amet. ', 50 );
 		$post      = self::factory()->post->create_and_get(
 			array(
@@ -181,10 +426,162 @@ class Test_Post extends WP_UnitTestCase {
 			)
 		);
 
+		$transformer = new Post( $post );
+
+		$this->assertFalse(
+			$transformer->is_short_form_post(),
+			'An overflowing titleless post should be treated as long-form.'
+		);
+
+		$record = $transformer->transform();
+
+		$this->assertArrayHasKey( 'embed', $record );
+		$this->assertSame( 'app.bsky.embed.external', $record['embed']['$type'] );
+		$this->assertSame( \get_permalink( $post ), $record['embed']['external']['uri'] );
+		$this->assertStringContainsString( \get_permalink( $post ), $record['text'] );
+	}
+
+	/**
+	 * The overflow gate also applies to post-format posts, not just
+	 * empty-title ones: a titled `aside` whose body exceeds the cap falls
+	 * back to the long-form link-card.
+	 *
+	 * @covers ::transform
+	 * @covers ::is_short_form_post
+	 */
+	public function test_long_format_post_falls_back_to_link_card() {
+		$post_id = self::factory()->post->create(
+			array(
+				'post_title'   => 'Has a title but also an aside format',
+				'post_content' => \str_repeat( 'Lorem ipsum dolor sit amet. ', 50 ),
+			)
+		);
+		\set_post_format( $post_id, 'aside' );
+		$post = \get_post( $post_id );
+
+		$transformer = new Post( $post );
+
+		$this->assertFalse( $transformer->is_short_form_post() );
+
+		$record = $transformer->transform();
+
+		$this->assertSame( 'app.bsky.embed.external', $record['embed']['$type'] );
+	}
+
+	/**
+	 * A titleless post that fits within the native cap stays short-form:
+	 * the body ships verbatim with no embed and no permalink.
+	 *
+	 * @covers ::transform
+	 * @covers ::is_short_form_post
+	 */
+	public function test_short_titleless_post_stays_short_form() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => '',
+				'post_content' => 'A quick untitled thought that fits.',
+			)
+		);
+
+		$transformer = new Post( $post );
+
+		$this->assertTrue( $transformer->is_short_form_post() );
+
+		$record = $transformer->transform();
+
+		$this->assertSame( 'A quick untitled thought that fits.', $record['text'] );
+		$this->assertArrayNotHasKey( 'embed', $record );
+	}
+
+	/**
+	 * The overflow gate is at exactly 300 characters: a 300-char titleless
+	 * body stays short-form, a 301-char one becomes long-form.
+	 *
+	 * @covers ::is_short_form_post
+	 */
+	public function test_short_form_overflow_boundary() {
+		$at_limit = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => '',
+				'post_content' => \str_repeat( 'a', 300 ),
+			)
+		);
+		$this->assertTrue(
+			( new Post( $at_limit ) )->is_short_form_post(),
+			'A 300-character body is at the cap and stays short-form.'
+		);
+
+		$over_limit = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => '',
+				'post_content' => \str_repeat( 'a', 301 ),
+			)
+		);
+		$this->assertFalse(
+			( new Post( $over_limit ) )->is_short_form_post(),
+			'A 301-character body overflows and becomes long-form.'
+		);
+	}
+
+	/**
+	 * `build_short_form_text()` still defensively clamps to the cap when the
+	 * filter forces an overflowing body to stay short-form.
+	 *
+	 * @covers ::transform
+	 */
+	public function test_forced_short_form_over_limit_is_clamped() {
+		\add_filter( 'atmosphere_is_short_form_post', '__return_true' );
+
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => '',
+				'post_content' => \str_repeat( 'word ', 100 ), // 500 characters.
+			)
+		);
+
 		$record = ( new Post( $post ) )->transform();
 
+		$this->assertArrayNotHasKey( 'embed', $record, 'Forced short-form must not attach a link card.' );
 		$this->assertLessThanOrEqual( 300, \mb_strlen( $record['text'] ) );
-		$this->assertStringContainsString( 'Lorem', $record['text'] );
+	}
+
+	/**
+	 * The short-form verdict is memoized per transformer instance, so a
+	 * stateful `atmosphere_is_short_form_post` filter is consulted exactly
+	 * once. Publisher evaluates the verdict several times per publish (the
+	 * document-strongRef precompute, the short/long routing, and transform());
+	 * without memoization a filter that returns a different value across those
+	 * calls could precompute for short-form and then publish a link card.
+	 *
+	 * @covers ::is_short_form_post
+	 */
+	public function test_short_form_verdict_is_memoized() {
+		$calls  = 0;
+		$filter = function () use ( &$calls ) {
+			++$calls;
+			// Flip the answer after the first call to simulate a stateful
+			// subscriber that would otherwise split the publish decision.
+			return 1 === $calls;
+		};
+		\add_filter( 'atmosphere_is_short_form_post', $filter );
+
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => '',
+				'post_content' => 'A short untitled thought.',
+			)
+		);
+
+		$transformer = new Post( $post );
+
+		$first  = $transformer->is_short_form_post();
+		$second = $transformer->is_short_form_post();
+
+		\remove_filter( 'atmosphere_is_short_form_post', $filter );
+
+		$this->assertTrue( $first, 'First call should reflect the filter result.' );
+		$this->assertSame( $first, $second, 'Repeated calls must return the cached verdict.' );
+		$this->assertSame( 1, $calls, 'The filter must be consulted only once per instance.' );
 	}
 
 	/**
@@ -3499,9 +3896,16 @@ class Test_Post extends WP_UnitTestCase {
 	 * though the published record is clamped — the panel must show the
 	 * author's real length, not the truncated one.
 	 *
+	 * By default an overflowing titleless post is now reclassified to
+	 * long-form, so this exercises a post kept short-form via the
+	 * `atmosphere_is_short_form_post` filter — the path where the panel's
+	 * over-limit warning still matters.
+	 *
 	 * @covers ::project
 	 */
 	public function test_project_short_form_over_limit_reports_untruncated_count() {
+		\add_filter( 'atmosphere_is_short_form_post', '__return_true' );
+
 		$long_body = \str_repeat( 'word ', 100 ); // 500 characters.
 		$post      = self::factory()->post->create_and_get(
 			array(
@@ -3516,6 +3920,37 @@ class Test_Post extends WP_UnitTestCase {
 		$this->assertCount( 1, $projection['records'] );
 		$this->assertGreaterThan( 300, $projection['records'][0]['characters'] );
 		$this->assertTrue( $projection['records'][0]['over_limit'] );
+	}
+
+	/**
+	 * An overflowing post that carries in-body images stays short-form, so
+	 * its native image gallery is not silently dropped for a link card.
+	 *
+	 * @covers ::is_short_form_post
+	 * @covers ::transform
+	 */
+	public function test_overflowing_post_with_inbody_images_stays_short_form() {
+		$attachment_id = self::factory()->attachment->create_object(
+			array(
+				'file'           => 'inbody.jpg',
+				'post_mime_type' => 'image/jpeg',
+			),
+			0,
+			array( 'post_title' => 'In-body image' )
+		);
+
+		$long_body = \str_repeat( 'word ', 100 ); // 500 characters.
+		$post      = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => '',
+				'post_content' => $long_body . \sprintf( '<!-- wp:image {"id":%1$d} --><figure class="wp-block-image"><img class="wp-image-%1$d"/></figure><!-- /wp:image -->', $attachment_id ),
+			)
+		);
+
+		$this->assertTrue(
+			( new Post( $post ) )->is_short_form_post(),
+			'An overflowing post with in-body images must stay short-form.'
+		);
 	}
 
 	/**

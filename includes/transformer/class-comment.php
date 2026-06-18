@@ -87,7 +87,7 @@ class Comment extends Base {
 			);
 		}
 
-		$text = truncate_text( sanitize_text( (string) $comment->comment_content ), 300 );
+		$text = truncate_text( sanitize_text( (string) $comment->comment_content ), self::BLUESKY_MAX_GRAPHEMES );
 
 		$record = array(
 			'$type'     => 'app.bsky.feed.post',

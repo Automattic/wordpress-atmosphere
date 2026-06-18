@@ -1,0 +1,4 @@
+Significance: patch
+Type: fixed
+
+Long posts without a title are now shared to Bluesky as a summary with a link back to the original, instead of being cut off mid-sentence with no way to reach the full post.

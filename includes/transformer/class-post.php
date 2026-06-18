@@ -129,6 +129,26 @@ class Post extends Base {
 	private const MAX_BLOB_BYTES = 1_000_000;
 
 	/**
+	 * Bracketing tokens for the inline-link placeholder.
+	 *
+	 * An `<a>` is swapped for `PREFIX{n}SUFFIX` while the post text is
+	 * normalized, then substituted back so the link facet lands on the exact
+	 * anchor-text byte range. The tokens are alphanumeric (so whitespace
+	 * collapse can't split them) and deliberately unlikely to appear in real
+	 * content, since a collision would misplace a facet.
+	 *
+	 * @var string
+	 */
+	private const LINK_MARKER_PREFIX = 'atmxinlinexlinkx';
+
+	/**
+	 * Trailing token for the inline-link placeholder. See {@see self::LINK_MARKER_PREFIX}.
+	 *
+	 * @var string
+	 */
+	private const LINK_MARKER_SUFFIX = 'xendxinlinexlink';
+
+	/**
 	 * Document strongRef the Publisher pre-computed for the initial
 	 * atomic `applyWrites#create`.
 	 *
@@ -153,6 +173,21 @@ class Post extends Base {
 	 * @var array{$type: string, uri: string, cid: string}|null
 	 */
 	private ?array $document_strong_ref = null;
+
+	/**
+	 * Memoized short-form verdict for this post.
+	 *
+	 * {@see self::is_short_form_post()} is evaluated more than once per
+	 * publish (Publisher's document-strongRef precompute and the short/long
+	 * routing, plus {@see self::transform()}), and the
+	 * `atmosphere_is_short_form_post` filter fires on every call. Caching the
+	 * verdict on the instance keeps every caller in agreement even when a
+	 * subscriber's filter is stateful, so the embed-strategy label, the
+	 * document-strongRef precompute, and the published record cannot disagree.
+	 *
+	 * @var bool|null
+	 */
+	private ?bool $short_form_verdict = null;
 
 	/**
 	 * Whether the transformer is running in projection mode.
@@ -304,40 +339,40 @@ class Post extends Base {
 	public function transform(): array {
 		$redacted = $this->is_redacted();
 
-		/**
-		 * Filters whether the post should be treated as short-form for Bluesky.
-		 *
-		 * Short-form posts publish natively (post body as text, no external
-		 * embed card). Long-form posts use the teaser composition (title +
-		 * excerpt + permalink) with an external card linking back to
-		 * WordPress. The default discriminator mirrors the ActivityPub
-		 * plugin's Post::get_type() logic: short-form when the post type
-		 * does not support titles, the post has an empty title, or the
-		 * post has any non-empty post_format.
-		 *
-		 * @param bool     $is_short Whether the post should be treated as short-form.
-		 * @param \WP_Post $post     The post being transformed.
+		/*
+		 * Redacted posts return short-form (empty text, no embed) without
+		 * exposing the post to the `atmosphere_is_short_form_post` filter.
+		 * For everyone else the public discriminator decides — including the
+		 * length gate that routes an overflowing titleless post to long-form.
 		 */
-		$is_short = true;
-		if ( ! $redacted ) {
-			$is_short = \wp_validate_boolean(
-				\apply_filters(
-					'atmosphere_is_short_form_post',
-					$this->is_short_form( $this->object ),
-					$this->object
-				)
-			);
-		}
+		$is_short = $redacted ? true : $this->is_short_form_post();
 
-		$text  = $redacted ? '' : ( $is_short ? $this->build_short_form_text() : '' );
-		$embed = null;
+		$text        = '';
+		$embed       = null;
+		$link_facets = array();
 
 		if ( ! $redacted ) {
 			if ( $is_short ) {
+				$short       = $this->build_short_form_text();
+				$text        = $short['text'];
+				$link_facets = $short['facets'];
+
 				$embed = $this->build_images_embed();
 				if ( '' === $text && null === $embed ) {
-					$text  = $this->build_text();
-					$embed = $this->build_embed();
+					/*
+					 * Empty body and no images: there is nothing to publish
+					 * natively, so fall back to the link-card composition. This
+					 * is a link-card record, so flip $is_short to false (the
+					 * embed-filter strategy label and the
+					 * atmosphere_transform_bsky_post context below must report
+					 * `link-card`, not `short-form`), and the short-form anchor
+					 * facets no longer apply — the text is now the excerpt, not
+					 * the post body.
+					 */
+					$is_short    = false;
+					$text        = $this->build_text();
+					$embed       = $this->build_embed();
+					$link_facets = array();
 				}
 			} else {
 				$text  = $this->build_text();
@@ -356,8 +391,12 @@ class Post extends Base {
 			'langs'     => $this->get_langs(),
 		);
 
-		// Skip DNS-resolving facet extraction in projection mode (see $projecting).
-		$facets = $this->projecting ? array() : Facet::extract( $text );
+		if ( $this->projecting ) {
+			// Skip DNS-resolving facet extraction in projection mode (see $projecting).
+			$facets = array();
+		} else {
+			$facets = $this->merge_link_facets( $link_facets, Facet::extract( $text ) );
+		}
 		if ( ! empty( $facets ) ) {
 			$record['facets'] = $facets;
 		}
@@ -486,18 +525,18 @@ class Post extends Base {
 		$parts = \array_filter( array( $title, $excerpt, $permalink ) );
 		$text  = \implode( "\n\n", $parts );
 
-		if ( \mb_strlen( $text ) <= 300 ) {
+		if ( \mb_strlen( $text ) <= self::BLUESKY_MAX_GRAPHEMES ) {
 			return $text;
 		}
 
 		// Reserve space for permalink + separators.
 		$reserved  = \mb_strlen( $permalink ) + 4;
-		$available = 300 - $reserved;
+		$available = self::BLUESKY_MAX_GRAPHEMES - $reserved;
 
 		if ( $available <= 0 ) {
 			$prose = \trim( $title . ( ! empty( $excerpt ) ? "\n\n" . $excerpt : '' ) );
 
-			return '' !== $prose ? truncate_text( $prose, 300 ) : truncate_text( $permalink, 300 );
+			return '' !== $prose ? truncate_text( $prose, self::BLUESKY_MAX_GRAPHEMES ) : truncate_text( $permalink, self::BLUESKY_MAX_GRAPHEMES );
 		}
 
 		$prose = $title;
@@ -1392,49 +1431,284 @@ class Post extends Base {
 	/**
 	 * Whether the post should be treated as short-form for Bluesky.
 	 *
-	 * Mirrors the ActivityPub plugin's Post::get_type() discriminator so
-	 * a post federated as a Mastodon Note also goes to Bluesky as a
-	 * native post instead of a link-card teaser. Short-form when:
+	 * Starts from the ActivityPub plugin's Post::get_type() discriminator so
+	 * a post federated as a Mastodon Note also goes to Bluesky as a native
+	 * post instead of a link-card teaser. Categorically short-form when:
 	 * - the post type does not support titles, OR
 	 * - the post has an empty title, OR
 	 * - the post has any non-empty post_format.
+	 *
+	 * A categorically short-form post is still treated as long-form when its
+	 * body overflows Bluesky's 300-character native cap *and* it has no
+	 * in-body images: short-form ships the body verbatim, so a body that
+	 * cannot fit is not really "short", and routing it to the long-form
+	 * composition (excerpt + permalink + external card) gives the reader a
+	 * teaser plus a route back to the original instead of a sentence fragment
+	 * with no link home. The overflow length is measured with `mb_strlen` to
+	 * match `build_short_form_text()`'s own `truncate_text()` cap, so the gate
+	 * and the truncation it avoids agree.
+	 *
+	 * An overflowing post that *does* carry in-body images stays short-form:
+	 * the long-form link card can only show the featured thumbnail, so
+	 * converting would silently drop the post's native `app.bsky.embed.images`
+	 * gallery. A photo post with a long caption keeps its images and accepts
+	 * the caption truncation; only the text-only link-blog case converts.
 	 *
 	 * @param \WP_Post $post Post being transformed.
 	 * @return bool
 	 */
 	private function is_short_form( \WP_Post $post ): bool {
-		if ( ! \post_type_supports( $post->post_type, 'title' ) || empty( $post->post_title ) ) {
+		if ( \post_type_supports( $post->post_type, 'title' ) && ! empty( $post->post_title ) && ! \get_post_format( $post ) ) {
+			return false;
+		}
+
+		if ( \mb_strlen( $this->render_post_content_plain( $post ) ) <= self::BLUESKY_MAX_GRAPHEMES ) {
 			return true;
 		}
 
-		return (bool) \get_post_format( $post );
+		// Overflowing: only convert to long-form when there are no in-body
+		// images to preserve as a native gallery.
+		return ! empty( $this->collect_image_attachment_ids() );
 	}
 
 	/**
-	 * Build the bsky.app post text for a short-form post.
+	 * Build the bsky.app post text and link facets for a short-form post.
 	 *
-	 * The post body becomes the Bluesky text directly, with no title
-	 * prefix or trailing permalink. Defensively clamped to 300
-	 * characters; a composer UI is expected to enforce the cap before
-	 * publish.
+	 * The post body becomes the Bluesky text directly, with no title prefix
+	 * or trailing permalink, clamped to 300 characters. Inline links are
+	 * preserved as `app.bsky.richtext.facet#link` facets over their
+	 * human-readable anchor text, so a link-blog note keeps its links
+	 * clickable on Bluesky instead of having the URLs silently stripped by
+	 * `sanitize_text()` before facet extraction.
 	 *
-	 * @return string
+	 * @return array{text:string,facets:array} Text and its inline-link facets.
 	 */
-	private function build_short_form_text(): string {
+	private function build_short_form_text(): array {
 		if ( $this->is_redacted() ) {
-			return '';
+			return array(
+				'text'   => '',
+				'facets' => array(),
+			);
 		}
 
-		return truncate_text( $this->render_post_content_plain( $this->object ), 300 );
+		$html = \apply_filters( 'the_content', $this->object->post_content ); // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Core WordPress filter.
+
+		/*
+		 * Fast path: no anchors, so the plain render is the whole story.
+		 * Match `<a ` / `<a>` only, not `<article>` / `<aside>`. Sanitize the
+		 * already-rendered $html rather than calling render_post_content_plain(),
+		 * which would run `the_content` a second time — doubling any shortcode
+		 * or filter side effect and risking text that differs from $html.
+		 */
+		if ( ! \preg_match( '/<a[\s>]/i', $html ) ) {
+			return array(
+				'text'   => truncate_text( sanitize_text( $html ), self::BLUESKY_MAX_GRAPHEMES ),
+				'facets' => array(),
+			);
+		}
+
+		list( $full_text, $facets ) = $this->resolve_inline_link_facets( $html );
+
+		$ellipsis = '...';
+		$text     = truncate_text( $full_text, self::BLUESKY_MAX_GRAPHEMES, $ellipsis );
+
+		/*
+		 * Drop facets that fall past the truncation point. `truncate_text()`
+		 * appends the ellipsis marker when it cuts, so the surviving body is
+		 * everything before that marker. A facet that merely straddles the
+		 * cut (starts inside, ends past it) is dropped too — a half-range
+		 * would mislink in Bluesky's renderer.
+		 */
+		if ( $text !== $full_text ) {
+			$body_bytes = \strlen( $text ) - \strlen( $ellipsis );
+			$facets     = \array_values(
+				\array_filter(
+					$facets,
+					static fn( $facet ) => $facet['index']['byteEnd'] <= $body_bytes
+				)
+			);
+		}
+
+		return array(
+			'text'   => $text,
+			'facets' => $facets,
+		);
+	}
+
+	/**
+	 * Render content to plain text, preserving inline links as facets.
+	 *
+	 * Anchor text would otherwise be flattened by `sanitize_text()` before
+	 * `Facet::extract()` runs, dropping the link. To keep both the readable
+	 * anchor text and a precise link facet, each `<a>` is swapped for a
+	 * unique synthetic marker before the text is normalized, then the marker
+	 * is substituted back with the byte offsets recorded. Searching for a
+	 * unique marker — rather than the anchor text itself — keeps the offsets
+	 * correct even when the same word is linked twice, or appears as plain
+	 * text elsewhere in the post.
+	 *
+	 * The anchor regex mirrors `Content_Parser\Markpub`'s link handling;
+	 * `WP_HTML_Tag_Processor` reads attributes but not the text between an
+	 * element's open and close tags, so it cannot recover the anchor text.
+	 *
+	 * Only `http(s)` anchors with non-empty text become facets; other hrefs
+	 * (relative, `mailto:`, fragments) keep their text but carry no link.
+	 *
+	 * @param string $html Rendered post HTML (`the_content` output).
+	 * @return array{0:string,1:array} `[ $text, $facets ]`.
+	 */
+	private function resolve_inline_link_facets( string $html ): array {
+		$anchors = array();
+		$index   = 0;
+
+		/*
+		 * `\shref=` requires whitespace before `href` so the value of another
+		 * attribute (e.g. `data-href="…"`) is never mistaken for the link
+		 * target — `\bhref=` would match after the hyphen.
+		 */
+		$marked_html = \preg_replace_callback(
+			'#<a\b[^>]*\shref=(["\'])(.*?)\1[^>]*>(.*?)</a>#is',
+			function ( $matches ) use ( &$anchors, &$index ) {
+				$raw_href    = \trim( \html_entity_decode( $matches[2], \ENT_QUOTES, 'UTF-8' ) );
+				$anchor_text = sanitize_text( $matches[3] );
+
+				/*
+				 * Require an explicit http(s) scheme on the *raw* href before
+				 * normalizing. esc_url_raw() prepends `http://` to a
+				 * scheme-less value (`relative/page` -> `http://relative/page`),
+				 * so checking after sanitizing would turn a relative link into
+				 * a bogus external facet. Non-http and text-less anchors are
+				 * left in place; sanitize_text() then strips the tag and keeps
+				 * any inner text, without a facet.
+				 */
+				if ( ! \preg_match( '#^https?://#i', $raw_href ) || '' === $anchor_text ) {
+					return $matches[0];
+				}
+
+				$href = \esc_url_raw( $raw_href );
+				if ( '' === $href ) {
+					return $matches[0];
+				}
+
+				$marker             = self::LINK_MARKER_PREFIX . $index . self::LINK_MARKER_SUFFIX;
+				$anchors[ $marker ] = array(
+					'text' => $anchor_text,
+					'uri'  => $href,
+				);
+				++$index;
+
+				/*
+				 * Keep any whitespace that sat just inside the anchor tags
+				 * (e.g. `Click<a> here</a>`): sanitize_text() trims the facet
+				 * text, so without re-emitting that boundary space around the
+				 * marker the words would fuse into `Clickhere`. A single space
+				 * matches what sanitize_text() would have collapsed it to.
+				 */
+				$inner = (string) \preg_replace( '/<[^>]*>/', '', \html_entity_decode( $matches[3], \ENT_QUOTES, 'UTF-8' ) );
+				$lead  = \preg_match( '/^\s/u', $inner ) ? ' ' : '';
+				$trail = \preg_match( '/\s$/u', $inner ) ? ' ' : '';
+
+				return $lead . $marker . $trail;
+			},
+			$html
+		);
+
+		/*
+		 * preg_replace_callback returns null on PCRE failure (e.g. a
+		 * backtrack-limit blowout on pathological input); fall back to the
+		 * sanitized HTML with no link facets rather than emitting a broken
+		 * record. Reuse $html so `the_content` is not run a second time.
+		 */
+		if ( null === $marked_html ) {
+			return array( sanitize_text( $html ), array() );
+		}
+
+		$marked = sanitize_text( $marked_html );
+
+		$text   = '';
+		$facets = array();
+		$cursor = 0;
+		foreach ( $anchors as $marker => $anchor ) {
+			$pos = \strpos( $marked, $marker, $cursor );
+			if ( false === $pos ) {
+				continue;
+			}
+
+			$text      .= \substr( $marked, $cursor, $pos - $cursor );
+			$byte_start = \strlen( $text );
+			$text      .= $anchor['text'];
+			$facets[]   = array(
+				'index'    => array(
+					'byteStart' => $byte_start,
+					'byteEnd'   => \strlen( $text ),
+				),
+				'features' => array(
+					array(
+						'$type' => 'app.bsky.richtext.facet#link',
+						'uri'   => $anchor['uri'],
+					),
+				),
+			);
+			$cursor     = $pos + \strlen( $marker );
+		}
+		$text .= \substr( $marked, $cursor );
+
+		return array( $text, $facets );
+	}
+
+	/**
+	 * Merge inline-link facets with the extracted mention/hashtag/URL facets.
+	 *
+	 * Inline-link facets win on overlap: an extracted facet whose byte range
+	 * intersects an inline link is dropped (e.g. a bare URL or hashtag that
+	 * happens to sit inside the anchor's visible text), so a single range
+	 * never carries two features. The result is sorted by `byteStart`, the
+	 * order `Facet::extract()` itself guarantees.
+	 *
+	 * @param array $link_facets      Inline-link facets from the anchor pass.
+	 * @param array $extracted_facets Facets from `Facet::extract()`.
+	 * @return array
+	 */
+	private function merge_link_facets( array $link_facets, array $extracted_facets ): array {
+		if ( empty( $link_facets ) ) {
+			return $extracted_facets;
+		}
+
+		$kept = array();
+		foreach ( $extracted_facets as $facet ) {
+			$start = $facet['index']['byteStart'];
+			$end   = $facet['index']['byteEnd'];
+
+			$overlaps = false;
+			foreach ( $link_facets as $link ) {
+				if ( $start < $link['index']['byteEnd'] && $link['index']['byteStart'] < $end ) {
+					$overlaps = true;
+					break;
+				}
+			}
+
+			if ( ! $overlaps ) {
+				$kept[] = $facet;
+			}
+		}
+
+		$merged = \array_merge( $link_facets, $kept );
+
+		\usort(
+			$merged,
+			static fn( $a, $b ) => $a['index']['byteStart'] <=> $b['index']['byteStart']
+		);
+
+		return $merged;
 	}
 
 	/**
 	 * Whether this post should be treated as short-form for Bluesky.
 	 *
-	 * Thin public wrapper around the private discriminator plus the
-	 * `atmosphere_is_short_form_post` filter. Callers such as
-	 * Publisher branch on short vs. long without reaching into the
-	 * transformer's private state.
+	 * Exposes the private type/title/format-plus-length discriminator (see
+	 * {@see self::is_short_form()}) through the `atmosphere_is_short_form_post`
+	 * filter. Callers such as Publisher branch on short vs. long without
+	 * reaching into the transformer's private state.
 	 *
 	 * Redacted posts return true without invoking the filter so direct
 	 * transformer callers do not expose protected post objects to
@@ -1447,13 +1721,36 @@ class Post extends Base {
 			return true;
 		}
 
-		return \wp_validate_boolean(
+		if ( null !== $this->short_form_verdict ) {
+			return $this->short_form_verdict;
+		}
+
+		/**
+		 * Filters whether the post should be treated as short-form for Bluesky.
+		 *
+		 * Short-form posts publish natively (post body as text, no external
+		 * embed card). Long-form posts use the teaser composition (title +
+		 * excerpt + permalink) with an external card linking back to
+		 * WordPress. The default discriminator mirrors the ActivityPub
+		 * plugin's Post::get_type() logic — short-form when the post type
+		 * does not support titles, the post has an empty title, or the post
+		 * has any non-empty post_format — but additionally treats a post
+		 * whose body overflows the 300-character native cap as long-form, so
+		 * a long, titleless link-blog post links back to the original
+		 * instead of being truncated.
+		 *
+		 * @param bool     $is_short Whether the post should be treated as short-form.
+		 * @param \WP_Post $post     The post being transformed.
+		 */
+		$this->short_form_verdict = \wp_validate_boolean(
 			\apply_filters(
 				'atmosphere_is_short_form_post',
 				$this->is_short_form( $this->object ),
 				$this->object
 			)
 		);
+
+		return $this->short_form_verdict;
 	}
 
 	/**
@@ -1722,7 +2019,7 @@ class Post extends Base {
 	 * @return bool
 	 */
 	private function requires_link_card_for_long_permalink(): bool {
-		return \mb_strlen( \get_permalink( $this->object ) ) >= 300;
+		return \mb_strlen( \get_permalink( $this->object ) ) >= self::BLUESKY_MAX_GRAPHEMES;
 	}
 
 	/**
@@ -1738,7 +2035,7 @@ class Post extends Base {
 	 * @return bool
 	 */
 	private function requires_link_card_for_teaser_thread(): bool {
-		return \mb_strlen( $this->teaser_thread_cta_text() ) > 300;
+		return \mb_strlen( $this->teaser_thread_cta_text() ) > self::BLUESKY_MAX_GRAPHEMES;
 	}
 
 	/**
@@ -1769,7 +2066,7 @@ class Post extends Base {
 	 * @return string
 	 */
 	private function build_truncate_link_text(): string {
-		$max_length = 300;
+		$max_length = self::BLUESKY_MAX_GRAPHEMES;
 		$separator  = "\n\n";
 		$permalink  = \get_permalink( $this->object );
 		$plain      = $this->render_post_content_plain( $this->object );
@@ -1880,7 +2177,7 @@ class Post extends Base {
 			if ( \is_string( $entry ) ) {
 				$entry = sanitize_text( $entry );
 				if ( '' !== $entry ) {
-					$texts[] = $this->truncate_to_budget( $entry, 300, false );
+					$texts[] = $this->truncate_to_budget( $entry, self::BLUESKY_MAX_GRAPHEMES, false );
 				}
 			}
 		}
@@ -1964,7 +2261,7 @@ class Post extends Base {
 		$plain   = $this->render_post_content_plain( $this->object );
 
 		if ( \mb_strlen( $excerpt ) >= 10 ) {
-			$hook         = $this->truncate_to_budget( $excerpt, 300, false );
+			$hook         = $this->truncate_to_budget( $excerpt, self::BLUESKY_MAX_GRAPHEMES, false );
 			$chunk_source = $plain;
 		} else {
 			$hook = $this->truncate_to_budget( $plain, 280, true );
