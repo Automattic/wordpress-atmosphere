@@ -22,6 +22,7 @@ use Atmosphere\Transformer\Publication;
 use Atmosphere\Integrations\Load;
 use Atmosphere\Rest\Admin\Pre_Publish_Controller;
 use Atmosphere\Rest\Client_Metadata_Controller;
+use Atmosphere\Rest\Reactions_Controller;
 use Atmosphere\WP_Admin\Admin;
 use Atmosphere\WP_Admin\Settings_Fields;
 
@@ -133,6 +134,10 @@ class Atmosphere {
 		 * only enqueues the script.
 		 */
 		Block_Editor::register();
+
+		// Front-end blocks (e.g. the Bluesky reactions facepile). Self-gates
+		// off when the ActivityPub plugin is active.
+		Blocks::register();
 
 		// Per-post "share to Bluesky" toggle meta (REST-exposed for the editor panel).
 		\add_action( 'init', array( $this, 'register_share_meta' ) );
@@ -1315,6 +1320,7 @@ class Atmosphere {
 	public function register_rest_controllers(): void {
 		( new Client_Metadata_Controller() )->register_routes();
 		( new Pre_Publish_Controller() )->register_routes();
+		( new Reactions_Controller() )->register_routes();
 	}
 
 	/**

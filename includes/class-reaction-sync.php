@@ -112,6 +112,94 @@ class Reaction_Sync {
 	public static function register(): void {
 		\add_filter( 'get_avatar_comment_types', array( self::class, 'avatar_comment_types' ) );
 		\add_filter( 'pre_get_avatar_data', array( self::class, 'filter_avatar_data' ), 10, 2 );
+
+		/*
+		 * Keep synced likes and reposts out of the post's comment list and
+		 * count — they're surfaced via the reactions block instead. Replies
+		 * (comment_type `comment`) stay, as they are genuine comments.
+		 *
+		 * Skipped when the ActivityPub plugin is active: it already excludes
+		 * these comment types (they share its shape), so running our own
+		 * filters too would double up.
+		 */
+		if ( ! is_activitypub_active() ) {
+			\add_action( 'pre_get_comments', array( self::class, 'exclude_reactions_from_comments' ) );
+			\add_filter( 'pre_wp_update_comment_count_now', array( self::class, 'exclude_reactions_from_count' ), 5, 3 );
+		}
+	}
+
+	/**
+	 * The comment types surfaced via the reactions block, not the comment list.
+	 *
+	 * @return string[]
+	 */
+	private static function reaction_comment_types(): array {
+		return array( 'like', 'repost' );
+	}
+
+	/**
+	 * Exclude likes and reposts from front-end comment queries.
+	 *
+	 * Bails for admin, REST, and non-singular contexts, and for any query
+	 * that already constrains comment types, so only the default front-end
+	 * comment list on a single post is filtered.
+	 *
+	 * @param \WP_Comment_Query $query The comment query.
+	 * @return void
+	 */
+	public static function exclude_reactions_from_comments( $query ): void {
+		if ( ! $query instanceof \WP_Comment_Query ) {
+			return;
+		}
+
+		if ( \is_admin() || ( \defined( 'REST_REQUEST' ) && \REST_REQUEST ) ) {
+			return;
+		}
+
+		if ( ! \is_singular() ) {
+			return;
+		}
+
+		if ( ! empty( $query->query_vars['type'] )
+			|| ! empty( $query->query_vars['type__in'] )
+			|| ! empty( $query->query_vars['type__not_in'] )
+		) {
+			return;
+		}
+
+		$query->query_vars['type__not_in'] = self::reaction_comment_types();
+	}
+
+	/**
+	 * Exclude likes and reposts from a post's comment count.
+	 *
+	 * Hooked early on `pre_wp_update_comment_count_now`; recomputes the count
+	 * over everything except the reaction comment types so the "N comments"
+	 * total reflects replies only.
+	 *
+	 * @param int|null $new_count The new count, or null to use the default.
+	 * @param int      $old_count The old count.
+	 * @param int      $post_id   The post ID.
+	 * @return int The comment count excluding reactions.
+	 */
+	public static function exclude_reactions_from_count( $new_count, $old_count, $post_id ) {
+		if ( null !== $new_count ) {
+			return $new_count;
+		}
+
+		$excluded     = self::reaction_comment_types();
+		$placeholders = \implode( ', ', \array_fill( 0, \count( $excluded ), '%s' ) );
+
+		global $wpdb;
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		return (int) $wpdb->get_var(
+			$wpdb->prepare(
+				// phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+				"SELECT COUNT(*) FROM {$wpdb->comments} WHERE comment_post_ID = %d AND comment_approved = '1' AND comment_type NOT IN ( {$placeholders} )",
+				\array_merge( array( $post_id ), $excluded )
+			)
+		);
 	}
 
 	/**
