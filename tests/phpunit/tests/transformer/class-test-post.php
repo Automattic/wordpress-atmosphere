@@ -126,6 +126,247 @@ class Test_Post extends WP_UnitTestCase {
 	}
 
 	/**
+	 * A short-form post's inline links survive as Bluesky link facets,
+	 * keeping the human-readable anchor text (not the raw URL) in the post
+	 * text. Without this, `sanitize_text()` strips the `<a>` tags before
+	 * facet extraction and the links are silently dropped.
+	 *
+	 * @covers ::transform
+	 */
+	public function test_short_form_preserves_inline_link_as_facet() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => '',
+				'post_content' => 'Read the linked article from <a href="https://example.com/page">the source</a> now.',
+			)
+		);
+
+		$record = ( new Post( $post ) )->transform();
+
+		// The anchor text stays visible; the raw URL does not leak into text.
+		$this->assertStringContainsString( 'the source', $record['text'] );
+		$this->assertStringNotContainsString( 'https://example.com/page', $record['text'] );
+
+		$this->assertArrayHasKey( 'facets', $record );
+
+		$link_facet = null;
+		foreach ( $record['facets'] as $facet ) {
+			foreach ( $facet['features'] as $feature ) {
+				if ( 'app.bsky.richtext.facet#link' === $feature['$type'] ) {
+					$link_facet = $facet;
+				}
+			}
+		}
+
+		$this->assertNotNull( $link_facet, 'A link facet should be emitted for the inline link.' );
+		$this->assertSame( 'https://example.com/page', $link_facet['features'][0]['uri'] );
+
+		// The facet's byte range covers exactly the anchor text.
+		$slice = \substr(
+			$record['text'],
+			$link_facet['index']['byteStart'],
+			$link_facet['index']['byteEnd'] - $link_facet['index']['byteStart']
+		);
+		$this->assertSame( 'the source', $slice );
+	}
+
+	/**
+	 * The same anchor text linked twice produces two distinct facets, each
+	 * pointing at its own URL — the marker swap keeps the byte ranges from
+	 * collapsing onto the first occurrence.
+	 *
+	 * @covers ::transform
+	 */
+	public function test_short_form_same_word_linked_twice_keeps_distinct_facets() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => '',
+				'post_content' => 'Read the announcement <a href="https://example.org/">here</a>, or grab the source <a href="https://example.com/">here</a>.',
+			)
+		);
+
+		$record = ( new Post( $post ) )->transform();
+
+		$links = array();
+		foreach ( $record['facets'] as $facet ) {
+			foreach ( $facet['features'] as $feature ) {
+				if ( 'app.bsky.richtext.facet#link' === $feature['$type'] ) {
+					$links[] = array(
+						'uri'   => $feature['uri'],
+						'slice' => \substr(
+							$record['text'],
+							$facet['index']['byteStart'],
+							$facet['index']['byteEnd'] - $facet['index']['byteStart']
+						),
+					);
+				}
+			}
+		}
+
+		$this->assertCount( 2, $links, 'Both links should produce facets.' );
+		$this->assertSame( 'here', $links[0]['slice'] );
+		$this->assertSame( 'here', $links[1]['slice'] );
+		$this->assertSame( 'https://example.org/', $links[0]['uri'] );
+		$this->assertSame( 'https://example.com/', $links[1]['uri'] );
+		// The two facets cover different byte ranges (first vs. second word).
+		$this->assertNotSame(
+			$record['facets'][0]['index']['byteStart'],
+			$record['facets'][1]['index']['byteStart']
+		);
+	}
+
+	/**
+	 * A relative anchor href does not become a link facet: it has no
+	 * explicit http(s) scheme, so the anchor text is kept but no (bogus,
+	 * `http://`-prefixed) external link is emitted.
+	 *
+	 * @covers ::transform
+	 */
+	public function test_short_form_relative_link_is_not_faceted() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => '',
+				'post_content' => 'See the <a href="relative/page">other page</a> for details.',
+			)
+		);
+
+		$record = ( new Post( $post ) )->transform();
+
+		$this->assertStringContainsString( 'other page', $record['text'] );
+
+		foreach ( $record['facets'] ?? array() as $facet ) {
+			foreach ( $facet['features'] as $feature ) {
+				$this->assertNotSame(
+					'app.bsky.richtext.facet#link',
+					$feature['$type'],
+					'A relative link must not produce a link facet.'
+				);
+			}
+		}
+	}
+
+	/**
+	 * A link whose anchor text falls past the 300-character truncation point
+	 * is dropped rather than emitting a facet with an out-of-range offset.
+	 *
+	 * @covers ::transform
+	 */
+	public function test_short_form_drops_link_facet_past_truncation() {
+		$filler = \str_repeat( 'word ', 70 ); // ~350 chars before the link.
+		$post   = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => '',
+				'post_content' => $filler . ' <a href="https://example.com/late">late link</a>.',
+			)
+		);
+
+		$record = ( new Post( $post ) )->transform();
+
+		$this->assertLessThanOrEqual( 300, \mb_strlen( $record['text'] ) );
+		$this->assertNotContains( 'https://example.com/late', $this->facet_link_uris( $record ), 'The past-cut link must be dropped.' );
+		$this->assertFacetsWithinText( $record );
+	}
+
+	/**
+	 * A link that straddles the truncation boundary — its anchor text starts
+	 * before the cut but runs past it — is dropped entirely rather than
+	 * emitting a facet whose range extends beyond the text.
+	 *
+	 * @covers ::transform
+	 */
+	public function test_short_form_drops_link_facet_straddling_truncation() {
+		// ~295 chars of filler, then a long-anchor link that crosses 300.
+		$filler = \str_repeat( 'word ', 59 );
+		$post   = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => '',
+				'post_content' => $filler . '<a href="https://example.com/x">' . \str_repeat( 'long', 10 ) . '</a> tail.',
+			)
+		);
+
+		$record = ( new Post( $post ) )->transform();
+
+		$this->assertLessThanOrEqual( 300, \mb_strlen( $record['text'] ) );
+		$this->assertNotContains( 'https://example.com/x', $this->facet_link_uris( $record ), 'The straddling link must be dropped, not clipped.' );
+		$this->assertFacetsWithinText( $record );
+	}
+
+	/**
+	 * An `href`-like attribute on another key (e.g. `data-href`) is not
+	 * treated as the link target, so non-link markup never becomes a facet.
+	 *
+	 * @covers ::transform
+	 */
+	public function test_short_form_data_href_is_not_faceted() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => '',
+				'post_content' => 'See <a data-href="https://example.com/tracked">the widget</a> below.',
+			)
+		);
+
+		$record = ( new Post( $post ) )->transform();
+
+		$this->assertStringContainsString( 'the widget', $record['text'] );
+		$this->assertNotContains( 'https://example.com/tracked', $this->facet_link_uris( $record ) );
+	}
+
+	/**
+	 * Whitespace that sits just inside the anchor tags is preserved, so the
+	 * words around the link don't fuse together.
+	 *
+	 * @covers ::transform
+	 */
+	public function test_short_form_preserves_whitespace_inside_link() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => '',
+				'post_content' => 'Click<a href="https://example.com/here"> here</a> now.',
+			)
+		);
+
+		$record = ( new Post( $post ) )->transform();
+
+		$this->assertStringContainsString( 'Click here now', $record['text'] );
+		$this->assertStringNotContainsString( 'Clickhere', $record['text'] );
+	}
+
+	/**
+	 * Collect every link-facet URI from a record.
+	 *
+	 * @param array $record Bsky post record.
+	 * @return string[]
+	 */
+	private function facet_link_uris( array $record ): array {
+		$uris = array();
+		foreach ( $record['facets'] ?? array() as $facet ) {
+			foreach ( $facet['features'] as $feature ) {
+				if ( 'app.bsky.richtext.facet#link' === $feature['$type'] ) {
+					$uris[] = $feature['uri'];
+				}
+			}
+		}
+		return $uris;
+	}
+
+	/**
+	 * Assert no facet references a byte offset past the record text.
+	 *
+	 * @param array $record Bsky post record.
+	 */
+	private function assertFacetsWithinText( array $record ): void {
+		$length = \strlen( $record['text'] );
+		foreach ( $record['facets'] ?? array() as $facet ) {
+			$this->assertGreaterThanOrEqual( 0, $facet['index']['byteStart'] );
+			$this->assertLessThanOrEqual(
+				$length,
+				$facet['index']['byteEnd'],
+				'A facet byteEnd must not exceed the text length.'
+			);
+		}
+	}
+
+	/**
 	 * A titled post with post_format=status is short-form.
 	 *
 	 * @covers ::transform

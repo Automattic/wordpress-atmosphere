@@ -1,0 +1,4 @@
+Significance: patch
+Type: fixed
+
+Links inside short posts shared to Bluesky now stay clickable, instead of being flattened to plain text with the link dropped.
