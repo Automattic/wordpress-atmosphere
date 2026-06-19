@@ -25,10 +25,10 @@ class Test_Reactions_Controller extends WP_UnitTestCase {
 	public function set_up(): void {
 		parent::set_up();
 
-		add_filter( 'rest_url', '__return_empty_string', 0 );
+		\add_filter( 'rest_url', '__return_empty_string', 0 );
 		global $wp_rest_server;
 		$wp_rest_server = new \WP_REST_Server();
-		do_action( 'rest_api_init', $wp_rest_server );
+		\do_action( 'rest_api_init', $wp_rest_server );
 		( new Reactions_Controller() )->register_routes();
 	}
 
