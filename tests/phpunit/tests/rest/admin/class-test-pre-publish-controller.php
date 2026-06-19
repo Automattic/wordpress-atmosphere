@@ -117,6 +117,32 @@ class Test_Pre_Publish_Controller extends WP_UnitTestCase {
 	}
 
 	/**
+	 * A projection that throws (e.g. malformed block markup tripping a
+	 * content filter) is caught and reported as a structured error, not an
+	 * opaque fatal.
+	 *
+	 * @covers ::get_preview
+	 */
+	public function test_preview_returns_error_when_projection_throws() {
+		$post = self::factory()->post->create_and_get( array( 'post_title' => '' ) );
+
+		$thrower = static function () {
+			throw new \RuntimeException( 'boom' );
+		};
+		\add_filter( 'the_content', $thrower, 9 );
+
+		$result = $this->controller->get_preview(
+			$this->make_request( $post->ID, array( 'content' => 'A quick note.' ) )
+		);
+
+		\remove_filter( 'the_content', $thrower, 9 );
+
+		$this->assertInstanceOf( \WP_Error::class, $result );
+		$this->assertSame( 'atmosphere_projection_failed', $result->get_error_code() );
+		$this->assertSame( 500, $result->get_error_data()['status'] );
+	}
+
+	/**
 	 * A draft (not yet published) reports the real character count, not a
 	 * redacted zero. The transformer redacts non-published posts, so the
 	 * controller must project the draft as if it were published — this is

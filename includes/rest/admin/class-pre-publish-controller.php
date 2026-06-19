@@ -20,6 +20,7 @@ use WP_Post;
 use WP_REST_Request;
 use WP_REST_Response;
 use WP_REST_Server;
+use function Atmosphere\debug_log;
 use function Atmosphere\is_connected;
 use function Atmosphere\is_supported_post_type;
 
@@ -228,6 +229,27 @@ class Pre_Publish_Controller extends \WP_REST_Controller {
 
 		try {
 			$projection = ( new Post( $draft ) )->project();
+		} catch ( \Throwable $e ) {
+			/*
+			 * `project()` runs the_content over raw, unsaved editor markup,
+			 * so a malformed block or a misbehaving content/shortcode filter
+			 * can throw. Return a structured error (and log the post ID for
+			 * support) instead of letting the keystroke-driven endpoint fatal
+			 * into an opaque 500.
+			 */
+			debug_log(
+				\sprintf(
+					'pre-publish projection failed for post %d: %s',
+					$draft->ID,
+					$e->getMessage()
+				)
+			);
+
+			return new \WP_Error(
+				'atmosphere_projection_failed',
+				\__( 'The Bluesky preview could not be generated.', 'atmosphere' ),
+				array( 'status' => 500 )
+			);
 		} finally {
 			\remove_filter( 'pre_http_request', $block_http, 0 );
 		}

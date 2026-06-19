@@ -45,7 +45,7 @@ function PrePublishPanel() {
 
 	const [ preview, setPreview ] = useState( null );
 	const [ loading, setLoading ] = useState( true );
-	const [ error, setError ] = useState( false );
+	const [ error, setError ] = useState( null );
 	const debounce = useRef( null );
 
 	useEffect( () => {
@@ -54,7 +54,7 @@ function PrePublishPanel() {
 		}
 
 		setLoading( true );
-		setError( false );
+		setError( null );
 
 		// Debounce so each keystroke doesn't fire a projector request.
 		clearTimeout( debounce.current );
@@ -76,8 +76,16 @@ function PrePublishPanel() {
 					setPreview( result );
 					setLoading( false );
 				} )
-				.catch( () => {
-					setError( true );
+				.catch( ( err ) => {
+					// Keep the error so the message can distinguish a
+					// permission failure from a transient one, and log it so
+					// a support report has something to go on.
+					// eslint-disable-next-line no-console -- Aid debugging.
+					console.error(
+						'ATmosphere pre-publish preview failed:',
+						err
+					);
+					setError( err );
 					setLoading( false );
 				} );
 		}, 400 );
@@ -89,7 +97,29 @@ function PrePublishPanel() {
 		return <Spinner />;
 	}
 
-	if ( error || ! preview ) {
+	if ( error ) {
+		const errorStatus = error?.data?.status;
+		const isAuth =
+			401 === errorStatus ||
+			403 === errorStatus ||
+			'rest_forbidden' === error?.code;
+
+		return (
+			<p>
+				{ isAuth
+					? __(
+							'You don’t have permission to preview this post.',
+							'atmosphere'
+					  )
+					: __(
+							'Could not load the Bluesky preview. Please try again.',
+							'atmosphere'
+					  ) }
+			</p>
+		);
+	}
+
+	if ( ! preview ) {
 		return (
 			<p>{ __( 'Could not load the Bluesky preview.', 'atmosphere' ) }</p>
 		);
