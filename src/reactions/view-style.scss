@@ -1,0 +1,10 @@
+// Frontend-only styles for the reactions block.
+// Loaded via viewStyle — not applied in the block editor.
+
+.wp-block-atmosphere-reactions {
+
+	.atmosphere-modal__overlay.compact .atmosphere-modal__frame {
+		min-width: 250px;
+		max-width: 100%;
+	}
+}
