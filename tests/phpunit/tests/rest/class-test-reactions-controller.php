@@ -38,7 +38,7 @@ class Test_Reactions_Controller extends WP_UnitTestCase {
 	public function tear_down(): void {
 		global $wp_rest_server;
 		$wp_rest_server = null;
-		remove_filter( 'rest_url', '__return_empty_string', 0 );
+		\remove_filter( 'rest_url', '__return_empty_string', 0 );
 		parent::tear_down();
 	}
 
