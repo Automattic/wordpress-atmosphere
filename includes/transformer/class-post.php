@@ -254,7 +254,7 @@ class Post extends Base {
 			$this->projecting = false;
 		}
 
-		$limit     = 300;
+		$limit     = self::BLUESKY_MAX_GRAPHEMES;
 		$projected = array();
 
 		foreach ( $records as $index => $record ) {

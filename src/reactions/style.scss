@@ -1,0 +1,170 @@
+@use "../shared/modal/style";
+
+.wp-block-atmosphere-reactions {
+	box-sizing: border-box;
+	position: relative;
+
+	// Main container for reactions.
+	.atmosphere-reactions {
+		display: flex;
+		flex-direction: column;
+		flex-wrap: wrap;
+	}
+
+	// Reaction group for each type (likes, reposts).
+	.reaction-group {
+		display: flex;
+		align-items: center;
+		margin: 0.5em 0;
+		position: relative;
+		width: 100%;
+		gap: 0.75rem;
+		justify-content: flex-start;
+
+		// Container for avatar images.
+		.reaction-avatars {
+			display: flex;
+			flex-direction: row;
+			align-items: center;
+			list-style: none;
+			margin: 0 !important;
+			padding: 0;
+
+			li {
+				padding: 0;
+				margin: 0 -10px 0 0;
+				transition: transform 0.2s ease;
+
+				// Remove margin on the last visible avatar.
+				&:not([hidden]):not(:has(~ li:not([hidden]))) {
+					margin-right: 0;
+				}
+
+				/* stylelint-disable-next-line no-descending-specificity */
+				&:hover {
+					z-index: 2;
+					transform: translateY(-2px);
+				}
+
+				a {
+					box-shadow: none;
+					border-radius: 50%;
+					display: block;
+					line-height: 1;
+					text-decoration: none;
+				}
+			}
+		}
+
+		.reaction-avatar {
+			max-width: 32px;
+			max-height: 32px;
+			overflow: hidden;
+			-moz-force-broken-image-icon: 1;
+			border-radius: 50%;
+			border: 0.5px solid var(--wp--preset--color--contrast, rgba(255, 255, 255, 0.8));
+			box-shadow:
+				0 0 0 0.5px rgba(255, 255, 255, 0.8),
+				0 1px 3px rgba(0, 0, 0, 0.2);
+			transition: transform 0.6s cubic-bezier(0.34, 1.56, 0.64, 1);
+			will-change: transform;
+
+			&:hover,
+			&:focus-visible {
+				z-index: 1;
+				position: relative;
+				transform: translateY(-5px);
+			}
+		}
+
+		// Count label, styled as a plain link/button.
+		.reaction-label {
+			background: none;
+			border: none;
+			font: inherit;
+			display: flex;
+			align-items: center;
+			gap: 0.25rem;
+			flex: 0 0 auto;
+			padding: 0.25rem 0;
+			font-size: var(--wp--preset--font-size--small, 0.875rem);
+			color: currentcolor;
+			white-space: nowrap;
+			text-decoration: none;
+			cursor: pointer;
+
+			&:hover {
+				text-decoration: underline;
+				color: currentcolor;
+			}
+
+			&:focus {
+				box-shadow: none;
+				outline: none;
+			}
+
+			&:focus-visible {
+				outline: 1px solid currentcolor;
+				outline-offset: 2px;
+			}
+		}
+	}
+}
+
+/* Reactions list (popover / modal contents). */
+.reactions-list {
+	list-style: none;
+	margin: 0 !important;
+	padding: 0.5rem;
+
+	.components-popover__content > & {
+		padding: 0;
+	}
+
+	.reaction-item {
+		margin: 0 0 0.5rem 0;
+
+		&:last-child {
+			margin-bottom: 0;
+		}
+
+		/* stylelint-disable no-descending-specificity */
+		a {
+			box-shadow: none;
+			display: flex;
+			align-items: center;
+			gap: 0.75rem;
+			text-decoration: none;
+			color: inherit;
+			transition: background-color 0.2s ease;
+			padding: 0.5rem;
+			border-radius: 4px;
+
+			&:hover {
+				background-color: rgba(0, 0, 0, 0.05);
+			}
+
+			img {
+				width: 32px;
+				height: 32px;
+				border-radius: 50%;
+				flex: 0 0 auto;
+			}
+		}
+		/* stylelint-enable no-descending-specificity */
+
+		.reaction-name {
+			font-size: var(--wp--preset--font-size--small, 0.875rem);
+		}
+	}
+}
+
+/* Editor popover (the count opens the reactor list). */
+.atmosphere-popover .components-popover__content {
+	width: auto;
+	max-width: min-content;
+	min-width: 250px;
+	max-height: 300px;
+	box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+	padding: 0.5rem;
+}

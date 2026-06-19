@@ -1,0 +1,55 @@
+{
+	"$schema": "https://schemas.wp.org/trunk/block.json",
+	"apiVersion": 3,
+	"name": "atmosphere/reactions",
+	"title": "ATmosphere Reactions",
+	"category": "widgets",
+	"icon": "heart",
+	"keywords": [ "bluesky", "atproto", "likes", "reposts" ],
+	"description": "Display the Bluesky likes and reposts that your posts have received.",
+	"example": {
+		"attributes": {
+			"className": "is-style-facepile"
+		}
+	},
+	"styles": [
+		{ "name": "facepile", "label": "Facepile", "isDefault": true },
+		{ "name": "compact", "label": "Compact" }
+	],
+	"attributes": {
+		"displayStyle": {
+			"type": "string",
+			"default": "facepile"
+		}
+	},
+	"supports": {
+		"align": [ "wide", "full" ],
+		"color": {
+			"gradients": true
+		},
+		"__experimentalBorder": {
+			"radius": true,
+			"width": true,
+			"color": true,
+			"style": true
+		},
+		"html": false,
+		"interactivity": true,
+		"shadow": true,
+		"typography": {
+			"fontSize": true,
+			"__experimentalDefaultControls": {
+				"fontSize": true
+			}
+		}
+	},
+	"blockHooks": {
+		"core/post-content": "after"
+	},
+	"textdomain": "atmosphere",
+	"editorScript": "file:./index.js",
+	"style": "file:./style-index.css",
+	"viewStyle": "file:./view.css",
+	"viewScriptModule": "file:./view.js",
+	"render": "file:./render.php"
+}
