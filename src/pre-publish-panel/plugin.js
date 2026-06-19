@@ -98,11 +98,15 @@ function PrePublishPanel() {
 	}
 
 	if ( error ) {
+		const errorCode = error?.code;
 		const errorStatus = error?.data?.status;
+		// An expired/invalid nonce is a 403 too, but it's transient (a
+		// reload fixes it), so it must not read as a permission failure.
 		const isAuth =
-			401 === errorStatus ||
-			403 === errorStatus ||
-			'rest_forbidden' === error?.code;
+			'rest_cookie_invalid_nonce' !== errorCode &&
+			( 'rest_forbidden' === errorCode ||
+				401 === errorStatus ||
+				403 === errorStatus );
 
 		return (
 			<p>
