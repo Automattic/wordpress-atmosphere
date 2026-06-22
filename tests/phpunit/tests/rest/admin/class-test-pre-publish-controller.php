@@ -74,6 +74,7 @@ class Test_Pre_Publish_Controller extends WP_UnitTestCase {
 		$request->set_param( 'status', $overrides['status'] ?? 'publish' );
 		$request->set_param( 'password', $overrides['password'] ?? '' );
 		$request->set_param( 'disabled', $overrides['disabled'] ?? false );
+		$request->set_param( 'customText', $overrides['customText'] ?? '' );
 
 		return $request;
 	}
@@ -169,6 +170,36 @@ class Test_Pre_Publish_Controller extends WP_UnitTestCase {
 
 		$this->assertGreaterThan( 300, $data['records'][0]['characters'] );
 		$this->assertTrue( $data['records'][0]['over_limit'] );
+	}
+
+	/**
+	 * Unsaved custom text drives the preview: the projector reports the
+	 * `custom-text` strategy and counts the typed text, not the saved body.
+	 *
+	 * @covers ::get_preview
+	 */
+	public function test_preview_uses_unsaved_custom_text() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'A Titled Post',
+				'post_content' => 'The saved body.',
+			)
+		);
+
+		$data = $this->controller->get_preview(
+			$this->make_request(
+				$post->ID,
+				array(
+					'content'    => 'The saved body.',
+					'customText' => 'My own Bluesky words.',
+				)
+			)
+		)->get_data();
+
+		$this->assertTrue( $data['will_publish'] );
+		$this->assertSame( 'custom-text', $data['strategy'] );
+		$this->assertCount( 1, $data['records'] );
+		$this->assertSame( 21, $data['records'][0]['characters'] );
 	}
 
 	/**

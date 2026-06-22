@@ -85,13 +85,13 @@ class Pre_Publish_Controller extends \WP_REST_Controller {
 					'permission_callback' => array( $this, 'check_permission' ),
 					'show_in_index'       => false,
 					'args'                => array(
-						'id'       => array(
+						'id'         => array(
 							'description'       => \__( 'The ID of the post being edited.', 'atmosphere' ),
 							'type'              => 'integer',
 							'required'          => true,
 							'sanitize_callback' => 'absint',
 						),
-						'title'    => array(
+						'title'      => array(
 							'description'       => \__( 'The unsaved post title.', 'atmosphere' ),
 							'type'              => 'string',
 							'default'           => '',
@@ -106,32 +106,49 @@ class Pre_Publish_Controller extends \WP_REST_Controller {
 						 * strip the `<!-- wp:* -->` block delimiters and
 						 * corrupt the projection.
 						 */
-						'content'  => array(
+						'content'    => array(
 							'description' => \__( 'The unsaved post content.', 'atmosphere' ),
 							'type'        => 'string',
 							'default'     => '',
 						),
-						'excerpt'  => array(
+						'excerpt'    => array(
 							'description'       => \__( 'The unsaved post excerpt.', 'atmosphere' ),
 							'type'              => 'string',
 							'default'           => '',
 							'sanitize_callback' => 'sanitize_text_field',
 						),
-						'status'   => array(
+						'status'     => array(
 							'description'       => \__( 'The intended post status / visibility.', 'atmosphere' ),
 							'type'              => 'string',
 							'default'           => 'publish',
 							'sanitize_callback' => 'sanitize_key',
 						),
-						'password' => array(
+						'password'   => array(
 							'description' => \__( 'The intended post password (empty when not protected).', 'atmosphere' ),
 							'type'        => 'string',
 							'default'     => '',
 						),
-						'disabled' => array(
+						'disabled'   => array(
 							'description' => \__( 'Whether sharing is switched off for this post.', 'atmosphere' ),
 							'type'        => 'boolean',
 							'default'     => false,
+						),
+
+						/*
+						 * `customText` mirrors the saved custom-text meta but as
+						 * the *unsaved* editor value, so the preview reflects what
+						 * the author is typing. `sanitize_textarea_field` keeps
+						 * line breaks while stripping tags, matching the meta's
+						 * registered sanitizer.
+						 */
+						'customText' => array(
+							'description'       => \__( 'The unsaved custom Bluesky text (empty to use the default composition).', 'atmosphere' ),
+							'type'              => 'string',
+							'default'           => '',
+							// Bounds the per-keystroke projection work; the text
+							// is clamped to 300 graphemes when published anyway.
+							'maxLength'         => 2000,
+							'sanitize_callback' => 'sanitize_textarea_field',
 						),
 					),
 				),
@@ -227,7 +244,11 @@ class Pre_Publish_Controller extends \WP_REST_Controller {
 		\add_filter( 'pre_http_request', $block_http, 0 );
 
 		try {
-			$projection = ( new Post( $draft ) )->project();
+			$transformer = new Post( $draft );
+			// Project against the *unsaved* custom text, not the saved meta,
+			// so the preview tracks the textarea as the author types.
+			$transformer->set_custom_text_override( (string) $request['customText'] );
+			$projection = $transformer->project();
 		} finally {
 			\remove_filter( 'pre_http_request', $block_http, 0 );
 		}

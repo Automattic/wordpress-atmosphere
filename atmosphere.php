@@ -33,6 +33,18 @@ namespace Atmosphere;
  */
 \define( 'ATMOSPHERE_META_DISABLED', 'atmosphere_disabled' );
 
+/**
+ * Post meta key: per-post custom text for the Bluesky post.
+ *
+ * Stored as a registered, REST-exposed string so the block-editor panel
+ * can bind a textarea to it. When set, this exact text is posted to
+ * Bluesky (with a link card back to the post) instead of the text the
+ * normal short-form / long-form composition would generate — the
+ * Bluesky equivalent of the post excerpt. Empty means the default
+ * composition runs unchanged.
+ */
+\define( 'ATMOSPHERE_META_CUSTOM_TEXT', 'atmosphere_custom_text' );
+
 /*
  * Custom autoloader for Atmosphere classes — maps the Atmosphere
  * namespace to includes/ using WordPress filename conventions.

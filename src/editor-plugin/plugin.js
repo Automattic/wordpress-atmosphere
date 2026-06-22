@@ -13,11 +13,16 @@ import {
 } from '@wordpress/editor';
 import { PluginDocumentSettingPanel as DocumentSettingPanel } from '@wordpress/edit-post';
 import { registerPlugin } from '@wordpress/plugins';
-import { ToggleControl, ExternalLink, Notice } from '@wordpress/components';
+import {
+	ToggleControl,
+	TextareaControl,
+	ExternalLink,
+	Notice,
+} from '@wordpress/components';
 import { useSelect } from '@wordpress/data';
 import { useEntityProp } from '@wordpress/core-data';
 import { __ } from '@wordpress/i18n';
-import { META_KEY } from '../config';
+import { DISABLED_META_KEY, CUSTOM_TEXT_META_KEY } from '../config';
 import { isSharingEnabled } from './utils';
 
 /**
@@ -42,6 +47,7 @@ const EditorPlugin = () => {
 	}
 
 	const enabled = isSharingEnabled( meta );
+	const customText = ( meta && meta[ CUSTOM_TEXT_META_KEY ] ) || '';
 
 	// `PluginDocumentSettingPanel` moved from edit-post to editor; support both.
 	const SettingsPanel = PluginDocumentSettingPanel || DocumentSettingPanel;
@@ -56,7 +62,7 @@ const EditorPlugin = () => {
 				label={ __( 'Share this post to Bluesky', 'atmosphere' ) }
 				checked={ enabled }
 				onChange={ ( value ) =>
-					setMeta( { ...meta, [ META_KEY ]: ! value } )
+					setMeta( { ...meta, [ DISABLED_META_KEY ]: ! value } )
 				}
 				help={
 					enabled
@@ -70,6 +76,21 @@ const EditorPlugin = () => {
 						  )
 				}
 			/>
+
+			{ enabled && (
+				<TextareaControl
+					__nextHasNoMarginBottom
+					label={ __( 'Custom Bluesky text', 'atmosphere' ) }
+					value={ customText }
+					onChange={ ( value ) =>
+						setMeta( { ...meta, [ CUSTOM_TEXT_META_KEY ]: value } )
+					}
+					help={ __(
+						'Leave empty to use your normal sharing style. When set, this exact text is posted to Bluesky with a link back to this post.',
+						'atmosphere'
+					) }
+				/>
+			) }
 
 			{ sharedUrl && enabled && (
 				<p>
