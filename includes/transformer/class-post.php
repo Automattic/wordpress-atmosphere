@@ -430,20 +430,30 @@ class Post extends Base {
 	public function transform(): array {
 		$redacted = $this->is_redacted();
 
+		$custom = ! $redacted && $this->has_custom_text();
+
 		/*
 		 * Redacted posts return short-form (empty text, no embed) without
-		 * exposing the post to the `atmosphere_is_short_form_post` filter.
+		 * exposing the post to the `atmosphere_is_short_form_post` filter. A
+		 * custom-text post is always a single link-card record, so it skips
+		 * the short/long discriminator (and its body-length work) entirely.
 		 * For everyone else the public discriminator decides — including the
 		 * length gate that routes an overflowing titleless post to long-form.
 		 */
-		$is_short = $redacted ? true : $this->is_short_form_post();
+		if ( $redacted ) {
+			$is_short = true;
+		} elseif ( $custom ) {
+			$is_short = false;
+		} else {
+			$is_short = $this->is_short_form_post();
+		}
 
 		$text        = '';
 		$embed       = null;
 		$link_facets = array();
 
 		if ( ! $redacted ) {
-			if ( $this->has_custom_text() ) {
+			if ( $custom ) {
 				/*
 				 * Author-supplied text wins over the automatic composition.
 				 * Post exactly what they wrote, with an external link card
@@ -560,7 +570,7 @@ class Post extends Base {
 				'strategy'        => $is_short ? 'short-form' : 'link-card',
 				'thread_index'    => 0,
 				'is_thread_reply' => false,
-				'is_custom_text'  => $this->has_custom_text(),
+				'is_custom_text'  => $custom,
 			)
 		);
 
