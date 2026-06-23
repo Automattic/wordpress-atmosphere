@@ -57,8 +57,10 @@ const EditorPlugin = () => {
 			name="atmosphere"
 			title={ __( 'Bluesky', 'atmosphere' ) }
 		>
+			{ /* The toggle keeps its default bottom margin (no
+			     `__nextHasNoMarginBottom`) so the custom-text field below has
+			     room to breathe. */ }
 			<ToggleControl
-				__nextHasNoMarginBottom
 				label={ __( 'Share this post to Bluesky', 'atmosphere' ) }
 				checked={ enabled }
 				onChange={ ( value ) =>
@@ -86,7 +88,7 @@ const EditorPlugin = () => {
 						setMeta( { ...meta, [ CUSTOM_TEXT_META_KEY ]: value } )
 					}
 					help={ __(
-						'Leave empty to use your normal sharing style. When set, this exact text is posted to Bluesky with a link back to this post.',
+						'Leave empty to use the default message, or write your own. It’s shared with a link back to this post, and you can mention other Bluesky users.',
 						'atmosphere'
 					) }
 				/>
