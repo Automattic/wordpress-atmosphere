@@ -197,7 +197,8 @@ class Publication extends Base {
 	 *
 	 * Pure transformation — accepts the WP-resolved inputs as arguments
 	 * so the unit tests can drive it without standing up a real
-	 * theme.json merge.
+	 * theme.json merge. The record carries the `site.standard.theme.basic`
+	 * `$type` discriminator so it passes lexicon validation.
 	 *
 	 * @param array                $styles  Output of `wp_get_global_styles()`.
 	 * @param array<string,string> $palette Slug => hex map from the theme palette.
@@ -228,6 +229,7 @@ class Publication extends Base {
 		}
 
 		return array(
+			'$type'            => 'site.standard.theme.basic',
 			'background'       => self::color_object( $background ),
 			'foreground'       => self::color_object( $foreground ),
 			'accent'           => self::color_object( $accent ),
