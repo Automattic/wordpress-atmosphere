@@ -24,7 +24,6 @@ import { useEntityProp } from '@wordpress/core-data';
 import { __ } from '@wordpress/i18n';
 import { DISABLED_META_KEY, CUSTOM_TEXT_META_KEY } from '../config';
 import { isSharingEnabled } from './utils';
-import './style.scss';
 
 /**
  * The ATmosphere document settings panel.
@@ -79,7 +78,6 @@ const EditorPlugin = () => {
 
 			{ enabled && (
 				<TextareaControl
-					className="atmosphere-custom-text"
 					label={ __( 'Custom Bluesky text', 'atmosphere' ) }
 					value={ customText }
 					onChange={ ( value ) =>

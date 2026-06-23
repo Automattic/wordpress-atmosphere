@@ -80,17 +80,6 @@ class Block_Editor {
 
 		// Single source of truth for values the JS shares with PHP.
 		\wp_localize_script( $handle, 'atmosphereEditor', self::script_data() );
-
-		// Enqueue the extracted stylesheet when the script ships one.
-		$style_path = ATMOSPHERE_PLUGIN_DIR . 'build/' . $name . '/style-plugin.css';
-		if ( \file_exists( $style_path ) ) {
-			\wp_enqueue_style(
-				$handle,
-				ATMOSPHERE_PLUGIN_URL . 'build/' . $name . '/style-plugin.css',
-				array(),
-				$asset['version']
-			);
-		}
 	}
 
 	/**
