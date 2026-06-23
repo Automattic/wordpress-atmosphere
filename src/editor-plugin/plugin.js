@@ -24,6 +24,7 @@ import { useEntityProp } from '@wordpress/core-data';
 import { __ } from '@wordpress/i18n';
 import { DISABLED_META_KEY, CUSTOM_TEXT_META_KEY } from '../config';
 import { isSharingEnabled } from './utils';
+import './style.scss';
 
 /**
  * The ATmosphere document settings panel.
@@ -57,9 +58,6 @@ const EditorPlugin = () => {
 			name="atmosphere"
 			title={ __( 'Bluesky', 'atmosphere' ) }
 		>
-			{ /* The toggle keeps its default bottom margin (no
-			     `__nextHasNoMarginBottom`) so the custom-text field below has
-			     room to breathe. */ }
 			<ToggleControl
 				label={ __( 'Share this post to Bluesky', 'atmosphere' ) }
 				checked={ enabled }
@@ -81,7 +79,7 @@ const EditorPlugin = () => {
 
 			{ enabled && (
 				<TextareaControl
-					__nextHasNoMarginBottom
+					className="atmosphere-custom-text"
 					label={ __( 'Custom Bluesky text', 'atmosphere' ) }
 					value={ customText }
 					onChange={ ( value ) =>

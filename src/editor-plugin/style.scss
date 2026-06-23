@@ -1,0 +1,10 @@
+/**
+ * ATmosphere document settings panel styles.
+ *
+ * Give the custom-text field a little space above it so it doesn't sit flush
+ * against the share toggle.
+ */
+
+.atmosphere-custom-text {
+	margin-block-start: 16px;
+}
