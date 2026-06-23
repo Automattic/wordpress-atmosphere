@@ -290,7 +290,7 @@ class Post extends Base {
 			 * so their own record text is the right thing to measure.
 			 */
 			if ( $custom && 0 === $index ) {
-				$measured = $this->get_custom_text();
+				$measured = $this->custom_text_body();
 			} elseif ( $is_short && 0 === $index && ! $this->is_redacted() ) {
 				$measured = $this->render_post_content_plain( $this->object );
 			} else {
@@ -402,24 +402,36 @@ class Post extends Base {
 	}
 
 	/**
+	 * The author's custom text decoded to its literal, human-readable form.
+	 *
+	 * Decodes HTML entities back to the characters the author typed and keeps
+	 * their line breaks (a Bluesky post can span lines). It deliberately does
+	 * NOT strip tags: the meta is already tag-sanitized on save
+	 * (`sanitize_textarea_field` removes real tags and escapes a stray `<` to
+	 * `&lt;`), so there are no live tags left — and stripping after decoding
+	 * would eat a literal `<3` (PHP `strip_tags()` reads `<3 ...` as an
+	 * unclosed tag and drops the rest). Bluesky renders post text as plain
+	 * UTF-8, so the decoded `<` is shown literally, never as markup.
+	 *
+	 * Not truncated — callers that build a record clamp it; the projector
+	 * measures this length to surface the real (untruncated) character count.
+	 *
+	 * @return string
+	 */
+	private function custom_text_body(): string {
+		return \trim( \html_entity_decode( $this->get_custom_text(), ENT_QUOTES, 'UTF-8' ) );
+	}
+
+	/**
 	 * The custom text shaped into a Bluesky post body.
 	 *
-	 * Decodes entities and strips any tags (defensive — the meta is already
-	 * sanitized on save) but keeps the author's line breaks, since a Bluesky
-	 * post can span multiple lines. Hard-clamped to the 300-grapheme limit so
-	 * an over-long custom text is shortened rather than rejected, matching the
-	 * short-form path.
+	 * Hard-clamped to the 300-grapheme limit so an over-long custom text is
+	 * shortened rather than rejected, matching the short-form path.
 	 *
 	 * @return string
 	 */
 	private function prepare_custom_text(): string {
-		// Decode before stripping so entity-encoded tags are removed too
-		// (see sanitize_text() for the ordering rationale). `wp_strip_all_tags()`
-		// preserves newlines by default, unlike sanitize_text().
-		$text = \html_entity_decode( $this->get_custom_text(), ENT_QUOTES, 'UTF-8' );
-		$text = \wp_strip_all_tags( $text );
-
-		return truncate_text( \trim( $text ), self::BLUESKY_MAX_GRAPHEMES );
+		return truncate_text( $this->custom_text_body(), self::BLUESKY_MAX_GRAPHEMES );
 	}
 
 	/**
@@ -1767,6 +1779,18 @@ class Post extends Base {
 	public function is_short_form_post(): bool {
 		if ( $this->is_redacted() ) {
 			return true;
+		}
+
+		/*
+		 * Custom text always publishes as a single external link card, which
+		 * is the long-form publish path — that is what makes Publisher run the
+		 * document-CID precompute and attach the standard.site associatedRef
+		 * to the card at create time (Bluesky only indexes it then). So a
+		 * custom-text post is long-form regardless of its body length, and
+		 * this supersedes the short/long heuristic and its filter.
+		 */
+		if ( $this->has_custom_text() ) {
+			return false;
 		}
 
 		if ( null !== $this->short_form_verdict ) {

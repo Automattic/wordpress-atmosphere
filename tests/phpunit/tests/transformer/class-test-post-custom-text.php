@@ -189,6 +189,51 @@ class Test_Post_Custom_Text extends WP_UnitTestCase {
 	}
 
 	/**
+	 * A literal "<" in the custom text survives to the record. The meta
+	 * sanitizer escapes a stray "<" to "&lt;" on save; the transformer must
+	 * decode it back to the author's text rather than running strip_tags (which
+	 * would treat "<3 ..." as an unclosed tag and drop the rest).
+	 *
+	 * @covers ::transform
+	 */
+	public function test_custom_text_preserves_literal_less_than() {
+		$post = self::factory()->post->create_and_get( array( 'post_title' => 'Titled' ) );
+		// Mirrors what sanitize_textarea_field stores for "I <3 WordPress & cats".
+		\update_post_meta( $post->ID, ATMOSPHERE_META_CUSTOM_TEXT, 'I &lt;3 WordPress &amp; cats' );
+
+		$record = ( new Post( $post ) )->transform();
+
+		$this->assertSame( 'I <3 WordPress & cats', $record['text'] );
+	}
+
+	/**
+	 * A custom-text post is treated as long-form by the publish-routing
+	 * discriminator, even when its body would otherwise be short-form. This
+	 * puts it on the path that precomputes the standard.site document and
+	 * attaches the associatedRef to the link card at create time.
+	 *
+	 * @covers ::is_short_form_post
+	 */
+	public function test_custom_text_post_is_not_short_form() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => '',
+				'post_content' => 'A quick untitled thought.',
+			)
+		);
+
+		$transformer = new Post( $post );
+		$this->assertTrue( $transformer->is_short_form_post(), 'Untitled short note is short-form without custom text.' );
+
+		\update_post_meta( $post->ID, ATMOSPHERE_META_CUSTOM_TEXT, 'My words.' );
+
+		$this->assertFalse(
+			( new Post( $post ) )->is_short_form_post(),
+			'A post with custom text routes through the long-form publish path.'
+		);
+	}
+
+	/**
 	 * A redacted (password-protected) post never leaks author-written custom
 	 * text into a record.
 	 *
