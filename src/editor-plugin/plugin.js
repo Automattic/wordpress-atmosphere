@@ -55,6 +55,7 @@ const EditorPlugin = () => {
 	return (
 		<SettingsPanel
 			name="atmosphere"
+			className="block-editor-block-inspector"
 			title={ __( 'Bluesky', 'atmosphere' ) }
 		>
 			<ToggleControl
