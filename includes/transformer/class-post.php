@@ -425,8 +425,10 @@ class Post extends Base {
 	/**
 	 * The custom text shaped into a Bluesky post body.
 	 *
-	 * Hard-clamped to the 300-grapheme limit so an over-long custom text is
-	 * shortened rather than rejected, matching the short-form path.
+	 * Hard-clamped toward Bluesky's 300-grapheme limit via `truncate_text()`,
+	 * which clamps by `mb_strlen()` code points (conservative — every grapheme
+	 * is at least one code point), the same clamp the short-form path uses, so
+	 * an over-long custom text is shortened rather than rejected.
 	 *
 	 * @return string
 	 */

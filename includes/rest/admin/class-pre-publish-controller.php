@@ -146,7 +146,8 @@ class Pre_Publish_Controller extends \WP_REST_Controller {
 							'type'              => 'string',
 							'default'           => '',
 							// Bounds the per-keystroke projection work; the text
-							// is clamped to 300 graphemes when published anyway.
+							// is clamped to Bluesky's 300-character limit when
+							// published anyway.
 							'maxLength'         => 2000,
 							'sanitize_callback' => 'sanitize_textarea_field',
 						),
@@ -245,9 +246,17 @@ class Pre_Publish_Controller extends \WP_REST_Controller {
 
 		try {
 			$transformer = new Post( $draft );
-			// Project against the *unsaved* custom text, not the saved meta,
-			// so the preview tracks the textarea as the author types.
-			$transformer->set_custom_text_override( (string) $request['customText'] );
+
+			/*
+			 * Project against the *unsaved* custom text so the preview tracks
+			 * the textarea as the author types. Only override when the param is
+			 * actually present: an older/cached editor that doesn't send it must
+			 * fall back to the saved meta, not be forced to the default
+			 * composition by a cast-from-missing empty string.
+			 */
+			if ( $request->has_param( 'customText' ) ) {
+				$transformer->set_custom_text_override( (string) $request['customText'] );
+			}
 			$projection = $transformer->project();
 		} finally {
 			\remove_filter( 'pre_http_request', $block_http, 0 );

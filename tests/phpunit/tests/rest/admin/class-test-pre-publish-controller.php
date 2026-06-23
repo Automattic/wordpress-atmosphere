@@ -203,6 +203,35 @@ class Test_Pre_Publish_Controller extends WP_UnitTestCase {
 	}
 
 	/**
+	 * When the request omits `customText` (e.g. an older/cached editor that
+	 * predates the field), the projector falls back to the saved meta rather
+	 * than forcing the default composition with a cast-from-missing empty
+	 * string — so a post with saved custom text still previews as custom text.
+	 *
+	 * @covers ::get_preview
+	 */
+	public function test_preview_without_custom_text_param_reads_saved_meta() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'A Titled Post',
+				'post_content' => 'Body.',
+			)
+		);
+		\update_post_meta( $post->ID, ATMOSPHERE_META_CUSTOM_TEXT, 'Saved custom words.' );
+
+		// Build a request that deliberately omits the customText param.
+		$request = new WP_REST_Request( 'POST', '/atmosphere/1.0/admin/pre-publish-preview' );
+		$request->set_param( 'id', $post->ID );
+		$request->set_param( 'title', 'A Titled Post' );
+		$request->set_param( 'content', 'Body.' );
+		$request->set_param( 'status', 'publish' );
+
+		$data = $this->controller->get_preview( $request )->get_data();
+
+		$this->assertSame( 'custom-text', $data['strategy'] );
+	}
+
+	/**
 	 * A disconnected site reports will_publish=false with a reason and still
 	 * returns a projection.
 	 *
