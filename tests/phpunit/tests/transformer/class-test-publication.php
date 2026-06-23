@@ -235,7 +235,8 @@ class Test_Publication extends \WP_UnitTestCase {
 	/**
 	 * `build_basic_theme()` produces the spec-shaped record with all
 	 * four required colours when background/foreground/accent are
-	 * resolvable from the supplied styles. Each colour carries the
+	 * resolvable from the supplied styles. The record carries the
+	 * `site.standard.theme.basic` `$type`, and each colour carries the
 	 * `site.standard.theme.color#rgb` union discriminator.
 	 */
 	public function test_build_basic_theme_returns_spec_shape_with_all_four_colors() {
@@ -260,12 +261,22 @@ class Test_Publication extends \WP_UnitTestCase {
 		 * required fields in a different `transform()` insertion order.
 		 */
 		$this->assertEqualsCanonicalizing(
-			array( 'background', 'foreground', 'accent', 'accentForeground' ),
+			array( '$type', 'background', 'foreground', 'accent', 'accentForeground' ),
 			\array_keys( $record ),
-			'basicTheme must carry all four required colours.'
+			'basicTheme must carry its `$type` plus all four required colours.'
+		);
+
+		$this->assertSame(
+			'site.standard.theme.basic',
+			$record['$type'],
+			'basicTheme must carry the `site.standard.theme.basic` `$type` so it passes lexicon validation.'
 		);
 
 		foreach ( $record as $key => $color ) {
+			if ( '$type' === $key ) {
+				continue;
+			}
+
 			$this->assertSame(
 				'site.standard.theme.color#rgb',
 				$color['$type'],
