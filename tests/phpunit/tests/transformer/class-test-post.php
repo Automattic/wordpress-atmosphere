@@ -11,6 +11,7 @@ namespace Atmosphere\Tests\Transformer;
 
 use WP_UnitTestCase;
 use Atmosphere\Transformer\Document;
+use Atmosphere\Transformer\Facet;
 use Atmosphere\Transformer\Post;
 use Atmosphere\Transformer\Publication;
 
@@ -31,7 +32,45 @@ class Test_Post extends WP_UnitTestCase {
 		\remove_all_filters( 'atmosphere_transform_bsky_post' );
 		\remove_all_filters( 'atmosphere_post_embed' );
 		\remove_all_actions( 'atmosphere_long_form_strategy_downgraded' );
+
+		// Mention resolution memoizes into a static; clear it between tests.
+		$cache = new \ReflectionProperty( Facet::class, 'resolution_cache' );
+		$cache->setAccessible( true );
+		$cache->setValue( null, array() );
+
 		parent::tear_down();
+	}
+
+	/**
+	 * Stub AT Protocol handle resolution over the HTTPS well-known
+	 * endpoint so mention tests stay offline and deterministic.
+	 *
+	 * Mirrors the helper in the Facet test: handles resolve via
+	 * `_atproto.<handle>` DNS first (empty for these fixtures) and then
+	 * `https://<handle>/.well-known/atproto-did`, which this short-circuits.
+	 *
+	 * @param array<string,string> $map Handle => DID to return.
+	 */
+	private function mock_handle_resolution( array $map ) {
+		\add_filter(
+			'pre_http_request',
+			static function ( $pre, $args, $url ) use ( $map ) {
+				foreach ( $map as $handle => $did ) {
+					if ( 'https://' . $handle . '/.well-known/atproto-did' === $url ) {
+						return array(
+							'body'     => $did,
+							'response' => array(
+								'code'    => 200,
+								'message' => 'OK',
+							),
+						);
+					}
+				}
+				return $pre;
+			},
+			10,
+			3
+		);
 	}
 
 	/**
@@ -3996,6 +4035,8 @@ class Test_Post extends WP_UnitTestCase {
 	 * facet so the account is notified.
 	 */
 	public function test_link_card_carries_body_mention_before_permalink() {
+		$this->mock_handle_resolution( array( 'alice.bsky.social' => 'did:plc:alice' ) );
+
 		$post = self::factory()->post->create_and_get(
 			array(
 				'post_title'   => 'A normal long-form title',
@@ -4024,6 +4065,8 @@ class Test_Post extends WP_UnitTestCase {
 	 * duplicated by the carry-over.
 	 */
 	public function test_link_card_does_not_duplicate_visible_mention() {
+		$this->mock_handle_resolution( array( 'alice.bsky.social' => 'did:plc:alice' ) );
+
 		$post = self::factory()->post->create_and_get(
 			array(
 				'post_title'   => 'Thanks @alice.bsky.social for the help',
@@ -4060,6 +4103,8 @@ class Test_Post extends WP_UnitTestCase {
 	 * the terminal CTA entry, before the permalink, producing a #mention facet.
 	 */
 	public function test_teaser_thread_carries_body_mention_into_cta() {
+		$this->mock_handle_resolution( array( 'alice.bsky.social' => 'did:plc:alice' ) );
+
 		\add_filter( 'atmosphere_long_form_composition', static fn() => 'teaser-thread' );
 
 		$post = self::factory()->post->create_and_get(
@@ -4092,6 +4137,8 @@ class Test_Post extends WP_UnitTestCase {
 	 * Bluesky-text builders are guarded against it.
 	 */
 	public function test_short_form_mention_stays_mention_facet_with_linkifier_active() {
+		$this->mock_handle_resolution( array( 'alice.bsky.social' => 'did:plc:alice' ) );
+
 		\Atmosphere\Mention::init();
 
 		$post = self::factory()->post->create_and_get(

@@ -12,6 +12,8 @@ namespace Atmosphere\Transformer;
 
 \defined( 'ABSPATH' ) || exit;
 
+use Atmosphere\OAuth\Resolver;
+
 use function Atmosphere\get_connection;
 
 /**
@@ -36,8 +38,9 @@ class Facet {
 	 * Broadening mention collection to the full post body resolves the same
 	 * handle more than once per publish (the carry-over detection pass and
 	 * the final {@see self::extract()} on the composed text). Memoizing the
-	 * DNS/`did:web` result keeps that to one lookup per distinct handle per
-	 * request, bounding duplicate DNS egress. Keyed by lowercased handle.
+	 * resolved DID (or the empty-string miss) keeps that to one lookup per
+	 * distinct handle per request, bounding duplicate DNS/HTTP egress. Keyed
+	 * by lowercased handle.
 	 *
 	 * The self-handle short-circuit is intentionally evaluated outside this
 	 * cache, since it depends on the live connection option.
@@ -415,25 +418,31 @@ class Facet {
 	/**
 	 * Resolve a handle to a DID for mention facets.
 	 *
-	 * Falls back to `did:web` if DNS resolution fails. The
-	 * `is_valid_handle()` gate below ensures only DNS-syntactically
-	 * valid handles reach `dns_get_record()` — that closes the
-	 * "malformed handle as DNS query smuggling" angle (e.g. control
-	 * characters or percent-encoded segments injected through a
-	 * regex relaxation), it does NOT block lookups against
-	 * attacker-controlled but well-formed domains.
+	 * Resolution uses the full AT Protocol handle-resolution chain (DNS
+	 * TXT, then the HTTPS `.well-known/atproto-did` fallback) via
+	 * {@see Resolver::handle_to_did()}. A handle that cannot be resolved
+	 * yields an empty string, so the mention is left as plain text rather
+	 * than fabricating a `did:web:<handle>` — the vast majority of handles
+	 * (anything `*.bsky.social`, for one) resolve over the well-known
+	 * endpoint, not DNS, so a `did:web` guess is almost always wrong and
+	 * produces a record that links to a non-existent profile.
 	 *
-	 * That broader exposure is by design: mention resolution requires
-	 * a DNS lookup against the mentioned handle's authoritative server,
-	 * and any user (commenter included) can mention any well-formed
-	 * domain. If that DNS-egress surface becomes a concern, the right
-	 * fix is at the threat-model layer (skip mention resolution on
-	 * the commenter path, allowlist mention authorities, or move to
-	 * DoH with a hard timeout) rather than tightening the syntactic
-	 * gate further.
+	 * The `is_valid_handle()` gate ensures only DNS-syntactically valid
+	 * handles reach resolution — that closes the "malformed handle as DNS
+	 * query smuggling" angle (e.g. control characters or percent-encoded
+	 * segments injected through a regex relaxation). It does NOT block
+	 * lookups against attacker-controlled but well-formed domains; that
+	 * broader DNS/HTTP egress is by design, since mention resolution must
+	 * reach the mentioned handle's authoritative server (the HTTP fallback
+	 * uses `wp_safe_remote_get()`, which rejects internal hosts). If that
+	 * egress surface becomes a concern, the right fix is at the
+	 * threat-model layer (skip mention resolution on the commenter path,
+	 * allowlist mention authorities, or move to DoH with a hard timeout)
+	 * rather than tightening the syntactic gate further.
 	 *
 	 * @param string $handle AT Protocol handle.
-	 * @return string DID string, or empty string if the handle is malformed.
+	 * @return string DID string, or empty string if the handle is malformed
+	 *                or cannot be resolved.
 	 */
 	private static function resolve_mention( string $handle ): string {
 		$conn = get_connection();
@@ -450,36 +459,14 @@ class Facet {
 			return self::$resolution_cache[ $key ];
 		}
 
-		$did = self::resolve_handle_via_dns( $handle );
+		$did = Resolver::handle_to_did( $handle );
+		if ( \is_wp_error( $did ) ) {
+			$did = '';
+		}
 
 		self::$resolution_cache[ $key ] = $did;
 
 		return $did;
-	}
-
-	/**
-	 * Resolve a syntactically-valid handle to a DID over DNS.
-	 *
-	 * Looks up the `_atproto.<handle>` TXT record and falls back to
-	 * `did:web:<handle>` when no `did=` record is found. Split out of
-	 * {@see self::resolve_mention()} so the self-handle short-circuit and the
-	 * syntactic gate stay outside the resolution memo.
-	 *
-	 * @param string $handle Valid AT Protocol handle.
-	 * @return string DID string.
-	 */
-	private static function resolve_handle_via_dns( string $handle ): string {
-		$records = @\dns_get_record( '_atproto.' . $handle, DNS_TXT ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
-
-		if ( \is_array( $records ) ) {
-			foreach ( $records as $record ) {
-				if ( ! empty( $record['txt'] ) && \str_starts_with( $record['txt'], 'did=' ) ) {
-					return \substr( $record['txt'], 4 );
-				}
-			}
-		}
-
-		return 'did:web:' . $handle;
 	}
 
 	/**
