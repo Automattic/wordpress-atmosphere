@@ -725,7 +725,15 @@ class Reaction_Sync {
 			'comment_post_ID'      => $post_id,
 			'comment_parent'       => $comment_parent,
 			'comment_author'       => $author_name,
-			'comment_author_url'   => \esc_url_raw( 'https://bsky.app/profile/' . \rawurlencode( $author_handle ) ),
+			'comment_author_url'   => \esc_url_raw(
+				appview_url(
+					'profile/' . \rawurlencode( $author_handle ),
+					array(
+						'type'   => 'profile',
+						'handle' => $author_handle,
+					)
+				)
+			),
 			'comment_author_email' => '',
 			'comment_author_IP'    => '',
 			'comment_content'      => \wp_kses_post( $content ),
@@ -894,7 +902,16 @@ class Reaction_Sync {
 			return '';
 		}
 
-		return \esc_url_raw( 'https://bsky.app/profile/' . \rawurlencode( $handle ) . '/post/' . $rkey );
+		return \esc_url_raw(
+			appview_url(
+				'profile/' . \rawurlencode( $handle ) . '/post/' . $rkey,
+				array(
+					'type'   => 'post',
+					'handle' => $handle,
+					'rkey'   => $rkey,
+				)
+			)
+		);
 	}
 
 	/**

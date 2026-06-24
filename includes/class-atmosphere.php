@@ -1448,7 +1448,16 @@ class Atmosphere {
 			return '';
 		}
 
-		return \esc_url_raw( 'https://bsky.app/profile/' . $matches['did'] . '/post/' . $matches['rkey'] );
+		return \esc_url_raw(
+			appview_url(
+				'profile/' . $matches['did'] . '/post/' . $matches['rkey'],
+				array(
+					'type' => 'post',
+					'did'  => $matches['did'],
+					'rkey' => $matches['rkey'],
+				)
+			)
+		);
 	}
 
 	/**
