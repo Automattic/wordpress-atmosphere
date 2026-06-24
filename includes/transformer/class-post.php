@@ -802,6 +802,60 @@ class Post extends Base {
 	}
 
 	/**
+	 * Prepend resolvable body @mentions absent from a teaser thread into its
+	 * terminal CTA entry, before the permalink.
+	 *
+	 * A mention already shipping in any thread entry (hook or body chunk)
+	 * already notifies, so only handles absent from every entry are carried.
+	 * They are prepended to the CTA (the entry that holds the permalink),
+	 * dropping any that don't fit the 300-grapheme cap; the CTA text is never
+	 * trimmed. No-op when the post has no resolvable body mentions.
+	 *
+	 * @param string[] $texts Thread entry texts, in order (CTA last).
+	 * @return string[]
+	 */
+	private function carry_mentions_into_teaser( array $texts ): array {
+		$handles = $this->body_mentions();
+		if ( empty( $handles ) || \count( $texts ) < 1 ) {
+			return $texts;
+		}
+
+		$shipped = \implode( "\n", $texts );
+
+		$missing = array();
+		foreach ( $handles as $handle => $did ) {
+			if ( false === \mb_stripos( $shipped, '@' . $handle ) ) {
+				$missing[] = '@' . $handle;
+			}
+		}
+		if ( empty( $missing ) ) {
+			return $texts;
+		}
+
+		$last = \count( $texts ) - 1;
+		$cta  = $texts[ $last ];
+		$sep  = "\n\n";
+		$room = self::BLUESKY_MAX_GRAPHEMES - \mb_strlen( $cta ) - \mb_strlen( $sep );
+
+		$kept = '';
+		foreach ( $missing as $mention ) {
+			$candidate = '' === $kept ? $mention : $kept . ' ' . $mention;
+			if ( \mb_strlen( $candidate ) > $room ) {
+				break;
+			}
+			$kept = $candidate;
+		}
+
+		if ( '' === $kept ) {
+			return $texts;
+		}
+
+		$texts[ $last ] = $kept . $sep . $cta;
+
+		return $texts;
+	}
+
+	/**
 	 * Build an `app.bsky.embed.images` record from the post's images.
 	 *
 	 * Source priority:
@@ -2101,6 +2155,7 @@ class Post extends Base {
 				}
 
 				$texts   = $this->build_teaser_thread( $default_texts );
+				$texts   = $this->carry_mentions_into_teaser( $texts );
 				$records = array();
 				$last    = \count( $texts ) - 1;
 				// Attach an `app.bsky.embed.external` link card to the

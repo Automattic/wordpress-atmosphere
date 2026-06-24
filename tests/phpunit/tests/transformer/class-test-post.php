@@ -4054,4 +4054,35 @@ class Test_Post extends WP_UnitTestCase {
 
 		$this->assertSame( "Plain title\n\nPlain excerpt.\n\n" . $permalink, $record['text'] );
 	}
+
+	/**
+	 * A teaser-thread carries a body mention (absent from hook and chunk) into
+	 * the terminal CTA entry, before the permalink, producing a #mention facet.
+	 */
+	public function test_teaser_thread_carries_body_mention_into_cta() {
+		\add_filter( 'atmosphere_long_form_composition', static fn() => 'teaser-thread' );
+
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'A long teaser-thread post',
+				'post_excerpt' => 'Curated excerpt that becomes the hook.',
+				'post_content' => 'Opening body paragraph.' . \str_repeat( ' more body', 80 ) . ' Final shout-out to @alice.bsky.social here.',
+			)
+		);
+
+		$records = ( new Post( $post ) )->build_long_form_records();
+
+		\remove_all_filters( 'atmosphere_long_form_composition' );
+
+		$cta = \end( $records );
+		$this->assertStringContainsString( '@alice.bsky.social', $cta['text'] );
+		$this->assertStringContainsString( 'Continue reading', $cta['text'] );
+		$this->assertLessThanOrEqual( 300, \mb_strlen( $cta['text'] ) );
+
+		$mention_facets = \array_filter(
+			$cta['facets'] ?? array(),
+			static fn( $facet ) => 'app.bsky.richtext.facet#mention' === ( $facet['features'][0]['$type'] ?? '' )
+		);
+		$this->assertCount( 1, $mention_facets );
+	}
 }
