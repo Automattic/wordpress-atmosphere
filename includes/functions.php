@@ -167,6 +167,21 @@ function grapheme_length( string $text ): int {
  * @return string
  */
 function truncate_text( string $text, int $limit = 300, string $marker = '...' ): string {
+	if ( $limit <= 0 ) {
+		return '';
+	}
+
+	/*
+	 * No room for the marker (e.g. a 1-grapheme budget with a "..." marker):
+	 * hard-clamp to the limit without one. Skipping this guard would leave
+	 * the cut length below negative, and `grapheme_substr()` / `mb_substr()`
+	 * read a negative length as "drop the last N" — returning almost the
+	 * whole string and overshooting the limit.
+	 */
+	if ( $limit <= grapheme_length( $marker ) ) {
+		return truncate_graphemes( $text, $limit );
+	}
+
 	if ( \function_exists( 'grapheme_strlen' ) ) {
 		$length = \grapheme_strlen( $text );
 

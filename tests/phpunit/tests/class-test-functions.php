@@ -255,6 +255,17 @@ class Test_Functions extends \WP_UnitTestCase {
 	}
 
 	/**
+	 * A budget too small to hold the marker hard-clamps to the limit
+	 * without one, rather than letting a negative cut length return nearly
+	 * the whole string and overshoot the limit.
+	 */
+	public function test_truncate_text_budget_smaller_than_marker() {
+		$this->assertSame( '', truncate_text( 'Hello world', 0 ) );
+		$this->assertSame( 'H', truncate_text( 'Hello world', 1 ) );
+		$this->assertSame( 'He', truncate_text( 'Hello world', 2 ) );
+	}
+
+	/**
 	 * The grapheme_length() helper counts a ZWJ family emoji as one, where
 	 * mb_strlen would report its five code points.
 	 */
