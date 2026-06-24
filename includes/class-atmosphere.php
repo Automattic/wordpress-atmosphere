@@ -139,14 +139,15 @@ class Atmosphere {
 		// off when the ActivityPub plugin is active.
 		Blocks::register();
 
-		// Per-post "share to Bluesky" toggle meta (REST-exposed for the editor panel).
+		// Per-post "share to Bluesky" toggle + custom-text meta (REST-exposed for the editor panel).
 		\add_action( 'init', array( $this, 'register_share_meta' ) );
 
 		/*
-		 * Reconcile when the share toggle itself changes. `transition_post_status`
-		 * alone is fragile here: the editor writes the meta *after* the post
-		 * update fires the transition, and a meta-only save fires no transition
-		 * at all — so react to the committed meta write directly.
+		 * Reconcile when the share toggle or custom text changes.
+		 * `transition_post_status` alone is fragile here: the editor writes the
+		 * meta *after* the post update fires the transition, and a meta-only
+		 * save fires no transition at all — so react to the committed meta
+		 * write directly.
 		 */
 		\add_action( 'added_post_meta', array( $this, 'on_share_meta_changed' ), 10, 3 );
 		\add_action( 'updated_post_meta', array( $this, 'on_share_meta_changed' ), 10, 3 );
@@ -1324,7 +1325,7 @@ class Atmosphere {
 	}
 
 	/**
-	 * React to the per-post share toggle being changed.
+	 * React to the per-post share toggle or custom text being changed.
 	 *
 	 * Fires on `added_/updated_/deleted_post_meta`, after the value is
 	 * committed, so the reconcile runs against fresh meta. It schedules the
@@ -1343,7 +1344,7 @@ class Atmosphere {
 	 * @param string    $meta_key Meta key that changed.
 	 */
 	public function on_share_meta_changed( $meta_id, $post_id, $meta_key ): void {
-		if ( ATMOSPHERE_META_DISABLED !== $meta_key ) {
+		if ( ! \in_array( $meta_key, array( ATMOSPHERE_META_DISABLED, ATMOSPHERE_META_CUSTOM_TEXT ), true ) ) {
 			return;
 		}
 
@@ -1361,13 +1362,19 @@ class Atmosphere {
 	}
 
 	/**
-	 * Register the per-post "share to Bluesky" toggle meta.
+	 * Register the per-post "share to Bluesky" toggle and custom-text meta.
 	 *
 	 * Registered for every supported post type with `show_in_rest` so the
-	 * block-editor document panel can bind a toggle to it via the core
-	 * entity store. Writing it requires `edit_post` on the post.
+	 * block-editor document panel can bind a toggle and a textarea to them
+	 * via the core entity store. Writing either requires `edit_post` on the
+	 * post.
 	 */
 	public function register_share_meta(): void {
+		$auth_callback = static function ( $allowed, $meta_key, $post_id ) {
+			// Respect any prior denial rather than widening access.
+			return $allowed && \current_user_can( 'edit_post', $post_id );
+		};
+
 		foreach ( get_supported_post_types() as $post_type ) {
 			\register_post_meta(
 				$post_type,
@@ -1378,10 +1385,20 @@ class Atmosphere {
 					'default'           => false,
 					'show_in_rest'      => true,
 					'sanitize_callback' => 'rest_sanitize_boolean',
-					'auth_callback'     => static function ( $allowed, $meta_key, $post_id ) {
-						// Respect any prior denial rather than widening access.
-						return $allowed && \current_user_can( 'edit_post', $post_id );
-					},
+					'auth_callback'     => $auth_callback,
+				)
+			);
+
+			\register_post_meta(
+				$post_type,
+				ATMOSPHERE_META_CUSTOM_TEXT,
+				array(
+					'type'              => 'string',
+					'single'            => true,
+					'default'           => '',
+					'show_in_rest'      => true,
+					'sanitize_callback' => 'sanitize_textarea_field',
+					'auth_callback'     => $auth_callback,
 				)
 			);
 		}

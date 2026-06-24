@@ -258,6 +258,25 @@ class Test_Atmosphere extends WP_UnitTestCase {
 	}
 
 	/**
+	 * Changing the custom Bluesky text schedules a reconcile too, so an
+	 * already-shared post's Bluesky record is updated to the new text.
+	 */
+	public function test_custom_text_change_schedules_reconcile() {
+		$post = self::factory()->post->create_and_get( array( 'post_status' => 'publish' ) );
+		\wp_clear_scheduled_hook( 'atmosphere_update_post', array( $post->ID ) );
+
+		\update_post_meta( $post->ID, Post::META_TID, 'bsky-tid-123' );
+		\update_post_meta( $post->ID, ATMOSPHERE_META_CUSTOM_TEXT, 'My new Bluesky words.' );
+
+		$this->atmosphere->on_share_meta_changed( 0, $post->ID, ATMOSPHERE_META_CUSTOM_TEXT );
+
+		$this->assertNotFalse(
+			\wp_next_scheduled( 'atmosphere_update_post', array( $post->ID ) ),
+			'Changing the custom Bluesky text must schedule a reconcile.'
+		);
+	}
+
+	/**
 	 * An unrelated meta key change does not schedule a reconcile.
 	 */
 	public function test_unrelated_meta_change_does_not_schedule_reconcile() {

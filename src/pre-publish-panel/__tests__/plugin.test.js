@@ -5,6 +5,7 @@ describe( 'strategyLabel', () => {
 		expect( strategyLabel( 'short-form' ) ).toBe( 'Short note' );
 		expect( strategyLabel( 'truncate-link' ) ).toBe( 'Text with link' );
 		expect( strategyLabel( 'teaser-thread' ) ).toBe( 'Teaser thread' );
+		expect( strategyLabel( 'custom-text' ) ).toBe( 'Custom text' );
 		expect( strategyLabel( 'link-card' ) ).toBe( 'Link card' );
 	} );
 

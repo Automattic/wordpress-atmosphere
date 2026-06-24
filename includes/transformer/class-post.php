@@ -190,6 +190,19 @@ class Post extends Base {
 	private ?bool $short_form_verdict = null;
 
 	/**
+	 * Custom Bluesky text to use instead of the post's saved meta value.
+	 *
+	 * Null means "read the saved {@see ATMOSPHERE_META_CUSTOM_TEXT} meta"
+	 * (the publish path). The pre-publish projector sets this to the
+	 * *unsaved* textarea value so the preview reflects what the author is
+	 * typing before they save. An empty string is a meaningful override
+	 * here — it forces the default composition even when meta is non-empty.
+	 *
+	 * @var string|null
+	 */
+	private ?string $custom_text_override = null;
+
+	/**
 	 * Whether the transformer is running in projection mode.
 	 *
 	 * Projection mode ({@see self::project()}) reproduces the exact text
@@ -239,16 +252,25 @@ class Post extends Base {
 	 */
 	public function project(): array {
 		$this->projecting = true;
+		$custom           = $this->has_custom_text();
 
 		try {
-			$is_short = $this->is_short_form_post();
-
-			if ( $is_short ) {
+			if ( $custom ) {
+				// Author-supplied text: one link-card record, its own strategy
+				// label so the panel shows the composition setting is skipped.
 				$records  = array( $this->transform() );
-				$strategy = $this->is_redacted() ? 'redacted' : 'short-form';
+				$strategy = 'custom-text';
+				$is_short = false;
 			} else {
-				$records  = $this->build_long_form_records();
-				$strategy = $this->projected_long_form_strategy( \count( $records ) );
+				$is_short = $this->is_short_form_post();
+
+				if ( $is_short ) {
+					$records  = array( $this->transform() );
+					$strategy = $this->is_redacted() ? 'redacted' : 'short-form';
+				} else {
+					$records  = $this->build_long_form_records();
+					$strategy = $this->projected_long_form_strategy( \count( $records ) );
+				}
 			}
 		} finally {
 			$this->projecting = false;
@@ -259,16 +281,21 @@ class Post extends Base {
 
 		foreach ( $records as $index => $record ) {
 			/*
-			 * For the primary short-form record, count the untruncated
-			 * post body — `build_short_form_text()` has already clamped the
-			 * record to the limit, so reading the record text back would
-			 * never report an over-limit post. Composed records (link card,
-			 * teaser chunks) are bounded at build time, so their own text
-			 * is the right thing to measure.
+			 * Measure the author's untruncated text where the publish path
+			 * clamps it, so the panel surfaces the real length (e.g. "340 /
+			 * 300") instead of the already-shortened record:
+			 *  - custom text: the typed value (transform() clamps to 300);
+			 *  - the primary short-form record: the rendered post body.
+			 * Composed records (link card, teaser chunks) are built to fit,
+			 * so their own record text is the right thing to measure.
 			 */
-			$measured = ( $is_short && 0 === $index && ! $this->is_redacted() )
-				? $this->render_post_content_plain( $this->object )
-				: (string) ( $record['text'] ?? '' );
+			if ( $custom && 0 === $index ) {
+				$measured = $this->custom_text_body();
+			} elseif ( $is_short && 0 === $index && ! $this->is_redacted() ) {
+				$measured = $this->render_post_content_plain( $this->object );
+			} else {
+				$measured = (string) ( $record['text'] ?? '' );
+			}
 
 			$characters  = \mb_strlen( $measured );
 			$projected[] = array(
@@ -332,6 +359,84 @@ class Post extends Base {
 	}
 
 	/**
+	 * Override the custom Bluesky text for this transformer instance.
+	 *
+	 * Used by the pre-publish projector so the preview reflects the
+	 * *unsaved* textarea value rather than the last-saved meta. Pass `null`
+	 * to fall back to the saved {@see ATMOSPHERE_META_CUSTOM_TEXT} meta.
+	 *
+	 * @param string|null $text Custom text, or null to read saved meta.
+	 */
+	public function set_custom_text_override( ?string $text ): void {
+		$this->custom_text_override = null === $text ? null : (string) $text;
+	}
+
+	/**
+	 * The custom Bluesky text for this post, trimmed.
+	 *
+	 * Returns the override when one is set (projection), otherwise the
+	 * saved {@see ATMOSPHERE_META_CUSTOM_TEXT} meta. An empty string means
+	 * "no custom text — run the default composition".
+	 *
+	 * @return string
+	 */
+	private function get_custom_text(): string {
+		$text = null !== $this->custom_text_override
+			? $this->custom_text_override
+			: (string) \get_post_meta( $this->object->ID, ATMOSPHERE_META_CUSTOM_TEXT, true );
+
+		return \trim( $text );
+	}
+
+	/**
+	 * Whether this post has custom Bluesky text that overrides composition.
+	 *
+	 * Redacted posts never expose custom text — a non-published or
+	 * password-protected post must not leak author-written copy into a PDS
+	 * record, exactly as its body is suppressed.
+	 *
+	 * @return bool
+	 */
+	private function has_custom_text(): bool {
+		return ! $this->is_redacted() && '' !== $this->get_custom_text();
+	}
+
+	/**
+	 * The author's custom text decoded to its literal, human-readable form.
+	 *
+	 * Decodes HTML entities back to the characters the author typed and keeps
+	 * their line breaks (a Bluesky post can span lines). It deliberately does
+	 * NOT strip tags: the meta is already tag-sanitized on save
+	 * (`sanitize_textarea_field` removes real tags and escapes a stray `<` to
+	 * `&lt;`), so there are no live tags left — and stripping after decoding
+	 * would eat a literal `<3` (PHP `strip_tags()` reads `<3 ...` as an
+	 * unclosed tag and drops the rest). Bluesky renders post text as plain
+	 * UTF-8, so the decoded `<` is shown literally, never as markup.
+	 *
+	 * Not truncated — callers that build a record clamp it; the projector
+	 * measures this length to surface the real (untruncated) character count.
+	 *
+	 * @return string
+	 */
+	private function custom_text_body(): string {
+		return \trim( \html_entity_decode( $this->get_custom_text(), ENT_QUOTES, 'UTF-8' ) );
+	}
+
+	/**
+	 * The custom text shaped into a Bluesky post body.
+	 *
+	 * Hard-clamped toward Bluesky's 300-grapheme limit via `truncate_text()`,
+	 * which clamps by `mb_strlen()` code points (conservative — every grapheme
+	 * is at least one code point), the same clamp the short-form path uses, so
+	 * an over-long custom text is shortened rather than rejected.
+	 *
+	 * @return string
+	 */
+	private function prepare_custom_text(): string {
+		return truncate_text( $this->custom_text_body(), self::BLUESKY_MAX_GRAPHEMES );
+	}
+
+	/**
 	 * Transform the post.
 	 *
 	 * @return array app.bsky.feed.post record.
@@ -339,20 +444,44 @@ class Post extends Base {
 	public function transform(): array {
 		$redacted = $this->is_redacted();
 
+		$custom = ! $redacted && $this->has_custom_text();
+
 		/*
 		 * Redacted posts return short-form (empty text, no embed) without
-		 * exposing the post to the `atmosphere_is_short_form_post` filter.
+		 * exposing the post to the `atmosphere_is_short_form_post` filter. A
+		 * custom-text post is always a single link-card record, so it skips
+		 * the short/long discriminator (and its body-length work) entirely.
 		 * For everyone else the public discriminator decides — including the
 		 * length gate that routes an overflowing titleless post to long-form.
 		 */
-		$is_short = $redacted ? true : $this->is_short_form_post();
+		if ( $redacted ) {
+			$is_short = true;
+		} elseif ( $custom ) {
+			$is_short = false;
+		} else {
+			$is_short = $this->is_short_form_post();
+		}
 
 		$text        = '';
 		$embed       = null;
 		$link_facets = array();
 
 		if ( ! $redacted ) {
-			if ( $is_short ) {
+			if ( $custom ) {
+				/*
+				 * Author-supplied text wins over the automatic composition.
+				 * Post exactly what they wrote, with an external link card
+				 * back to the WordPress post so the Bluesky note still
+				 * connects to the blog entry — the link-card strategy with
+				 * the prose replaced by the custom text. Reported as
+				 * `link-card` to the filter/embed strategy below (it is a
+				 * single link-card record); the pre-publish projector labels
+				 * it `custom-text` for the author.
+				 */
+				$is_short = false;
+				$text     = $this->prepare_custom_text();
+				$embed    = $this->build_embed();
+			} elseif ( $is_short ) {
 				$short       = $this->build_short_form_text();
 				$text        = $short['text'];
 				$link_facets = $short['facets'];
@@ -435,9 +564,17 @@ class Post extends Base {
 		 * record — protects the applyWrites batch from a misbehaving
 		 * listener.
 		 *
-		 * @param array    $record Bsky post record.
-		 * @param \WP_Post $post   WordPress post.
-		 * @param array    $context Additional composition context.
+		 * A custom-text record reports `strategy => 'link-card'` (it is
+		 * structurally a single link-card record) but also sets
+		 * `is_custom_text => true`, so listeners can tell author-supplied
+		 * text apart from the automatically composed link card.
+		 *
+		 * @param array    $record  Bsky post record.
+		 * @param \WP_Post $post    WordPress post.
+		 * @param array    $context Additional composition context. Keys:
+		 *                          `strategy` (string), `thread_index` (int),
+		 *                          `is_thread_reply` (bool),
+		 *                          `is_custom_text` (bool).
 		 */
 		$filtered = \apply_filters(
 			'atmosphere_transform_bsky_post',
@@ -447,6 +584,7 @@ class Post extends Base {
 				'strategy'        => $is_short ? 'short-form' : 'link-card',
 				'thread_index'    => 0,
 				'is_thread_reply' => false,
+				'is_custom_text'  => $custom,
 			)
 		);
 
@@ -1645,6 +1783,18 @@ class Post extends Base {
 			return true;
 		}
 
+		/*
+		 * Custom text always publishes as a single external link card, which
+		 * is the long-form publish path — that is what makes Publisher run the
+		 * document-CID precompute and attach the standard.site associatedRef
+		 * to the card at create time (Bluesky only indexes it then). So a
+		 * custom-text post is long-form regardless of its body length, and
+		 * this supersedes the short/long heuristic and its filter.
+		 */
+		if ( $this->has_custom_text() ) {
+			return false;
+		}
+
 		if ( null !== $this->short_form_verdict ) {
 			return $this->short_form_verdict;
 		}
@@ -1741,6 +1891,15 @@ class Post extends Base {
 					)
 				),
 			);
+		}
+
+		/*
+		 * Custom text overrides the composition strategy entirely: post the
+		 * author's text as a single link-card record (see transform()), no
+		 * thread, regardless of the `atmosphere_long_form_composition` setting.
+		 */
+		if ( $this->has_custom_text() ) {
+			return array( $this->transform() );
 		}
 
 		/**
@@ -2326,6 +2485,7 @@ class Post extends Base {
 				'strategy'        => 'teaser-thread',
 				'thread_index'    => 0,
 				'is_thread_reply' => ! $is_root,
+				'is_custom_text'  => false,
 			)
 		);
 
@@ -2403,6 +2563,7 @@ class Post extends Base {
 				'strategy'        => 'link-card',
 				'thread_index'    => 0,
 				'is_thread_reply' => false,
+				'is_custom_text'  => false,
 			)
 		);
 

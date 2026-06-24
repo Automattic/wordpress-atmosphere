@@ -17,7 +17,11 @@ import { useState, useEffect, useRef } from '@wordpress/element';
 import { __, sprintf } from '@wordpress/i18n';
 import apiFetch from '@wordpress/api-fetch';
 import { Notice, Spinner } from '@wordpress/components';
-import { META_KEY, PREVIEW_PATH } from '../config';
+import {
+	DISABLED_META_KEY,
+	CUSTOM_TEXT_META_KEY,
+	PREVIEW_PATH,
+} from '../config';
 import { strategyLabel, hasOverLimit } from './utils';
 
 /**
@@ -41,7 +45,8 @@ function PrePublishPanel() {
 		}, [] );
 
 	const [ meta ] = useEntityProp( 'postType', postType, 'meta' );
-	const disabled = !! ( meta && meta[ META_KEY ] );
+	const disabled = !! ( meta && meta[ DISABLED_META_KEY ] );
+	const customText = ( meta && meta[ CUSTOM_TEXT_META_KEY ] ) || '';
 
 	const [ preview, setPreview ] = useState( null );
 	const [ loading, setLoading ] = useState( true );
@@ -70,6 +75,7 @@ function PrePublishPanel() {
 					status,
 					password,
 					disabled,
+					customText,
 				},
 			} )
 				.then( ( result ) => {
@@ -83,7 +89,16 @@ function PrePublishPanel() {
 		}, 400 );
 
 		return () => clearTimeout( debounce.current );
-	}, [ postId, title, content, excerpt, status, password, disabled ] );
+	}, [
+		postId,
+		title,
+		content,
+		excerpt,
+		status,
+		password,
+		disabled,
+		customText,
+	] );
 
 	if ( loading ) {
 		return <Spinner />;

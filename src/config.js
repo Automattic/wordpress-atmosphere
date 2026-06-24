@@ -15,7 +15,16 @@ const options =
  *
  * @type {string}
  */
-export const META_KEY = options.metaKey || 'atmosphere_disabled';
+export const DISABLED_META_KEY =
+	options.disabledMetaKey || 'atmosphere_disabled';
+
+/**
+ * Post meta key for the per-post custom Bluesky text.
+ *
+ * @type {string}
+ */
+export const CUSTOM_TEXT_META_KEY =
+	options.customTextMetaKey || 'atmosphere_custom_text';
 
 /**
  * REST path for the pre-publish preview endpoint.
