@@ -664,7 +664,7 @@ class Post extends Base {
 		$text  = \implode( "\n\n", $parts );
 
 		if ( \mb_strlen( $text ) <= self::BLUESKY_MAX_GRAPHEMES ) {
-			return $text;
+			return $this->carry_body_mentions( $text, $permalink );
 		}
 
 		// Reserve space for permalink + separators.
@@ -684,7 +684,121 @@ class Post extends Base {
 
 		$prose = truncate_text( $prose, $available );
 
-		return $prose . "\n\n" . $permalink;
+		return $this->carry_body_mentions( $prose . "\n\n" . $permalink, $permalink );
+	}
+
+	/**
+	 * Resolvable `@handle.tld` mentions found in the full post body.
+	 *
+	 * Returns a map of handle => DID, first-appearance order. Empty for
+	 * redacted posts and in projection mode (the preview must not resolve
+	 * mentions over DNS — see {@see self::$projecting}).
+	 *
+	 * @return array<string,string>
+	 */
+	private function body_mentions(): array {
+		if ( $this->is_redacted() || $this->projecting ) {
+			return array();
+		}
+
+		return Facet::resolve_handles( $this->render_post_content_plain( $this->object ) );
+	}
+
+	/**
+	 * Carry resolvable body @mentions into a long-form post text.
+	 *
+	 * No-op when the post has no resolvable body mentions, so a mention-free
+	 * record composes byte-identically to the un-carried text. Otherwise the
+	 * resolvable body handles not already present in the text are appended as
+	 * a single space-separated line placed immediately before the trailing
+	 * permalink, so {@see Facet::extract()} attaches a `#mention` facet and
+	 * Bluesky notifies the mentioned accounts even when the mention lived deep
+	 * in the post body.
+	 *
+	 * The permalink is preserved in full (it is the load-bearing link); as
+	 * many handles as fit are kept; the prose shrinks last to stay within the
+	 * 300-grapheme cap. Handles that still don't fit are dropped and logged.
+	 *
+	 * @param string $text      Composed post text (may end with `\n\n$permalink`).
+	 * @param string $permalink Post permalink, or '' when the text carries no
+	 *                          trailing link.
+	 * @return string
+	 */
+	private function carry_body_mentions( string $text, string $permalink ): string {
+		$handles = $this->body_mentions();
+		if ( empty( $handles ) ) {
+			return $text;
+		}
+
+		$sep = "\n\n";
+		$max = self::BLUESKY_MAX_GRAPHEMES;
+
+		// Peel a trailing permalink off the prose so the mention line lands
+		// before it.
+		$suffix = '';
+		$prose  = $text;
+		if ( '' !== $permalink && \str_ends_with( $text, $sep . $permalink ) ) {
+			$suffix = $sep . $permalink;
+			$prose  = \substr( $text, 0, \strlen( $text ) - \strlen( $suffix ) );
+		} elseif ( '' !== $permalink && $text === $permalink ) {
+			$suffix = $permalink;
+			$prose  = '';
+		}
+
+		// Handles not already visible in the prose, in order.
+		$missing = array();
+		foreach ( $handles as $handle => $did ) {
+			if ( false === \mb_stripos( $prose, '@' . $handle ) ) {
+				$missing[] = '@' . $handle;
+			}
+		}
+		if ( empty( $missing ) ) {
+			return $text;
+		}
+
+		// Greedily fit handles into the room left after the permalink. A
+		// handle that cannot fit even against an empty prose is dropped.
+		$suffix_len = \mb_strlen( $suffix );
+		$kept       = '';
+		$dropped    = 0;
+		foreach ( $missing as $mention ) {
+			$candidate = '' === $kept ? $mention : $kept . ' ' . $mention;
+			// Worst case needs a separator before the line; reserve one.
+			if ( \mb_strlen( $candidate ) + \mb_strlen( $sep ) + $suffix_len > $max ) {
+				++$dropped;
+				continue;
+			}
+			$kept = $candidate;
+		}
+
+		if ( '' === $kept ) {
+			return $text;
+		}
+
+		if ( $dropped > 0 ) {
+			debug_log(
+				\sprintf(
+					'post %d: %d body mention(s) dropped from the Bluesky post — no room within the %d-character limit',
+					$this->object->ID,
+					$dropped,
+					$max
+				)
+			);
+		}
+
+		// Shrink the prose to fit the chosen line + permalink.
+		$line_sep     = '' !== $prose ? \mb_strlen( $sep ) : 0;
+		$prose_budget = $max - \mb_strlen( $kept ) - $line_sep - $suffix_len;
+
+		if ( $prose_budget <= 0 ) {
+			$prose = '';
+		} elseif ( \mb_strlen( $prose ) > $prose_budget ) {
+			$prose = truncate_text( $prose, $prose_budget );
+		}
+
+		$head = '' !== $prose ? $prose . $sep : '';
+
+		return $head . $kept . $suffix;
 	}
 
 	/**
@@ -2166,7 +2280,7 @@ class Post extends Base {
 
 		$body = $this->truncate_to_budget( $plain, $budget - \mb_strlen( $separator ), false );
 
-		return $body . $separator . $permalink;
+		return $this->carry_body_mentions( $body . $separator . $permalink, $permalink );
 	}
 
 	/**

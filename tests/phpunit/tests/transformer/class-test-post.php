@@ -3989,4 +3989,69 @@ class Test_Post extends WP_UnitTestCase {
 		$this->assertSame( 0, $http_calls, 'Projection must not make HTTP requests.' );
 		$this->assertSame( '', \get_post_meta( $attachment_id, '_atmosphere_blob_ref', true ) );
 	}
+
+	/**
+	 * A @mention deep in the body of a long-form (link-card) post is carried
+	 * into the Bluesky post text before the permalink, producing a #mention
+	 * facet so the account is notified.
+	 */
+	public function test_link_card_carries_body_mention_before_permalink() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'A normal long-form title',
+				'post_excerpt' => 'A short teaser excerpt.',
+				'post_content' => 'Intro paragraph with no handle.' . \str_repeat( ' filler', 60 ) . ' Shout-out to @alice.bsky.social near the end.',
+			)
+		);
+
+		$record    = ( new Post( $post ) )->transform();
+		$permalink = \get_permalink( $post );
+
+		$this->assertStringContainsString( '@alice.bsky.social', $record['text'] );
+		$this->assertStringEndsWith( "\n\n" . $permalink, $record['text'] );
+		$this->assertStringContainsString( "@alice.bsky.social\n\n" . $permalink, $record['text'] );
+		$this->assertLessThanOrEqual( 300, \mb_strlen( $record['text'] ) );
+
+		$mention_facets = \array_filter(
+			$record['facets'] ?? array(),
+			static fn( $facet ) => 'app.bsky.richtext.facet#mention' === ( $facet['features'][0]['$type'] ?? '' )
+		);
+		$this->assertCount( 1, $mention_facets );
+	}
+
+	/**
+	 * A mention already visible in the composed text (title/excerpt) is not
+	 * duplicated by the carry-over.
+	 */
+	public function test_link_card_does_not_duplicate_visible_mention() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'Thanks @alice.bsky.social for the help',
+				'post_content' => 'Body that also names @alice.bsky.social again.',
+			)
+		);
+
+		$record = ( new Post( $post ) )->transform();
+
+		$this->assertSame( 1, \substr_count( $record['text'], '@alice.bsky.social' ) );
+	}
+
+	/**
+	 * A post with no body mentions composes byte-identically to before
+	 * (carry-over is a no-op).
+	 */
+	public function test_link_card_without_mentions_is_unchanged() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'Plain title',
+				'post_excerpt' => 'Plain excerpt.',
+				'post_content' => 'Body with no handles at all.',
+			)
+		);
+
+		$record    = ( new Post( $post ) )->transform();
+		$permalink = \get_permalink( $post );
+
+		$this->assertSame( "Plain title\n\nPlain excerpt.\n\n" . $permalink, $record['text'] );
+	}
 }
