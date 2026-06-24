@@ -175,7 +175,7 @@ function truncate_text( string $text, int $limit = 300, string $marker = '...' )
 				return $text;
 			}
 
-			$cut = \grapheme_substr( $text, 0, $limit - \grapheme_strlen( $marker ) );
+			$cut = \grapheme_substr( $text, 0, $limit - grapheme_length( $marker ) );
 
 			if ( \is_string( $cut ) ) {
 				$last_word = \grapheme_strrpos( $cut, ' ' );

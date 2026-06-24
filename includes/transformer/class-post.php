@@ -2424,9 +2424,10 @@ class Post extends Base {
 
 		// Confirm the hook IS the whole body, not a truncated prefix.
 		// 280 mirrors `compute_default_teaser_thread()`'s body-as-hook
-		// budget; for a body at or below that length the hook
-		// equals the body verbatim and `chunk_source` is empty.
-		return \mb_strlen( $this->render_post_content_plain( $this->object ) ) <= 280;
+		// budget, which `truncate_to_budget()` measures in graphemes; for a
+		// body at or below that length the hook equals the body verbatim and
+		// `chunk_source` is empty.
+		return grapheme_length( $this->render_post_content_plain( $this->object ) ) <= 280;
 	}
 
 	/**

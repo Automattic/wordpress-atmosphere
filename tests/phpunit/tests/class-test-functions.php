@@ -267,6 +267,10 @@ class Test_Functions extends \WP_UnitTestCase {
 
 		$this->assertSame( 1, grapheme_length( $family ) );
 		$this->assertSame( 3, grapheme_length( 'abc' ) );
+
+		// Other multi-code-point clusters Bluesky also counts as one.
+		$this->assertSame( 1, grapheme_length( "\u{1F44D}\u{1F3FB}" ) ); // Thumbs-up + skin tone.
+		$this->assertSame( 1, grapheme_length( "\u{1F1FA}\u{1F1F8}" ) ); // Flag: US.
 	}
 
 	/**

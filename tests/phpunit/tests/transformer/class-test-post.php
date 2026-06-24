@@ -972,6 +972,26 @@ class Test_Post extends WP_UnitTestCase {
 		$this->assertNotSame( '', $cut );
 	}
 
+	/**
+	 * The hard-cap path measures in graphemes: an unbroken run of ZWJ family
+	 * emoji past the budget is clamped to whole clusters plus an ellipsis,
+	 * never split into mojibake.
+	 */
+	public function test_truncate_to_budget_hard_cap_counts_graphemes() {
+		if ( ! \function_exists( 'grapheme_strlen' ) ) {
+			$this->markTestSkipped( 'intl extension required for grapheme counting.' );
+		}
+
+		// A single unbroken token (no spaces): 50 family emoji, 250 code points.
+		$family = "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}";
+		$cut    = $this->truncate( \str_repeat( $family, 50 ), 10, true );
+
+		// 9 family clusters + the ellipsis: 10 graphemes, no split cluster.
+		$this->assertSame( 10, \grapheme_strlen( $cut ) );
+		$this->assertSame( '…', \mb_substr( $cut, -1 ) );
+		$this->assertSame( \str_repeat( $family, 9 ) . '…', $cut );
+	}
+
 	/*
 	 * -----------------------------------------------------------------
 	 * build_long_form_records() — strategy branches.
@@ -1581,6 +1601,40 @@ class Test_Post extends WP_UnitTestCase {
 		$this->assertArrayHasKey( 'embed', $records[0] );
 		$this->assertSame( 'app.bsky.embed.external', $records[0]['embed']['$type'] );
 		$this->assertSame( \get_permalink( $post ), $records[0]['embed']['external']['uri'] );
+	}
+
+	/**
+	 * An emoji-only body within the 280-grapheme hook budget — but well over
+	 * it in code points — still collapses to a single record. The hook is the
+	 * whole body, so the redundancy gate, which measures in graphemes, fires
+	 * just as it does for an equivalent ASCII body.
+	 *
+	 * @covers ::build_long_form_records
+	 */
+	public function test_build_long_form_records_teaser_thread_emoji_body_collapses_to_single_record() {
+		if ( ! \function_exists( 'grapheme_strlen' ) ) {
+			$this->markTestSkipped( 'intl extension required for grapheme counting.' );
+		}
+
+		// 200 family emoji: 200 graphemes (under the 280 hook budget) but
+		// 1,000 code points (over it). Counting code points here would read
+		// the hook as a truncated prefix and ship a needless 2-entry thread.
+		$family = "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}";
+		$post   = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'Titled',
+				'post_content' => \str_repeat( $family, 200 ),
+				'post_excerpt' => '',
+			)
+		);
+
+		\add_filter( 'atmosphere_long_form_composition', fn() => 'teaser-thread' );
+
+		$records = ( new Post( $post ) )->build_long_form_records();
+
+		$this->assertCount( 1, $records );
+		$this->assertSame( 200, \grapheme_strlen( $records[0]['text'] ) );
+		$this->assertSame( 'app.bsky.embed.external', $records[0]['embed']['$type'] );
 	}
 
 	/**
