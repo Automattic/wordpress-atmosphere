@@ -40,11 +40,25 @@ ATmosphere exposes a small set of filters and actions for plugins to extend beha
 | `atmosphere_should_sync_reply` | filter | Customise which inbound Bluesky replies become WordPress comments. |
 | `atmosphere_transform_bsky_post` | filter | Mutate the Bluesky post record before write. |
 | `atmosphere_transform_document` | filter | Mutate the document record before write. |
+| `atmosphere_appview_host` | filter | Point Bluesky web links at an alternative AT Protocol appview. |
 | `atmosphere_publish_post_result` | action | React to a post-publish outcome (success or `WP_Error`). |
 | `atmosphere_publish_comment_result` | action | React to a comment-publish outcome. |
 | `atmosphere_reaction_synced` | action | React when a Bluesky reaction is stored as a WordPress comment. |
 
 When adding a new public hook, mark its `@since` tag as `unreleased` — the release script rewrites it (see [Release Process → Marking Unreleased Code](release-process.md#marking-unreleased-code)).
+
+### Pointing Bluesky links at another appview
+
+Rendered links to Bluesky (profiles, hashtags, mentions, posts) default to the `bsky.app` web appview. The `atmosphere_appview_host` filter swaps that host for any AT Protocol appview. Callbacks receive three arguments and must return a bare host (no scheme, no trailing slash):
+
+- `$host` — the default host, `'bsky.app'`.
+- `$path` — the path being built, e.g. `profile/<did>` or `hashtag/<tag>`.
+- `$context` — array with the available parts: `type`, `did`, `handle`, `rkey`, `tag`.
+
+```php
+// Point Bluesky web links at an alternative appview.
+add_filter( 'atmosphere_appview_host', fn() => 'deer.social' );
+```
 
 ## Extending Content Formats
 

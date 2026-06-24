@@ -1,0 +1,4 @@
+Significance: minor
+Type: added
+
+Add a filter so links to Bluesky can point at an alternative AT Protocol appview.
