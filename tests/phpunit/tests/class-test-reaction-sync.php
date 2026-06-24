@@ -249,6 +249,334 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 	}
 
 	/**
+	 * A reply that quotes another post carries the quoted post's AT-URI in
+	 * the record's `embed` (app.bsky.embed.record), not in `text`. The
+	 * imported comment must surface it as a linked blockquote pointing at
+	 * the quoted post's bsky.app page. Regression test for issue #133.
+	 */
+	public function test_process_reply_appends_quote_post_embed() {
+		$post_id  = self::factory()->post->create();
+		$post_uri = 'at://did:plc:me/app.bsky.feed.post/mypost';
+
+		\update_post_meta( $post_id, BskyPost::META_URI, $post_uri );
+
+		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_reply' );
+
+		$notification = array(
+			'uri'    => 'at://did:plc:replier/app.bsky.feed.post/quotereply',
+			'cid'    => 'bafyreiquote',
+			'record' => array(
+				'text'      => 'Look at this!',
+				'createdAt' => '2026-06-20T12:00:00.000Z',
+				'embed'     => array(
+					'$type'  => 'app.bsky.embed.record',
+					'record' => array(
+						'cid' => 'bafyreifz7yief4dwg7wgyotql3zkknx4nolwcl2ukio6jdld4ejn7wclfm',
+						'uri' => 'at://did:plc:quoted/app.bsky.feed.post/3mnzu7nvcss2e',
+					),
+				),
+				'reply'     => array(
+					'parent' => array( 'uri' => $post_uri ),
+					'root'   => array( 'uri' => $post_uri ),
+				),
+			),
+			'author' => array(
+				'did'    => 'did:plc:replier',
+				'handle' => 'replier.bsky.social',
+			),
+		);
+
+		$comment_id = $method->invoke( null, $notification );
+
+		$this->assertIsInt( $comment_id );
+
+		$comment = \get_comment( $comment_id );
+
+		// The original reply text survives.
+		$this->assertStringContainsString( 'Look at this!', $comment->comment_content );
+		// A blockquote links to the quoted post on bsky.app (DID form).
+		$this->assertStringContainsString( '<blockquote', $comment->comment_content );
+		$this->assertStringContainsString(
+			'href="https://bsky.app/profile/did:plc:quoted/post/3mnzu7nvcss2e"',
+			$comment->comment_content
+		);
+	}
+
+	/**
+	 * A quote that also carries media uses app.bsky.embed.recordWithMedia,
+	 * which nests the quoted record one level deeper. The quoted post must
+	 * still be surfaced. Regression test for issue #133.
+	 */
+	public function test_process_reply_appends_quote_from_record_with_media() {
+		$post_id  = self::factory()->post->create();
+		$post_uri = 'at://did:plc:me/app.bsky.feed.post/mypost';
+
+		\update_post_meta( $post_id, BskyPost::META_URI, $post_uri );
+
+		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_reply' );
+
+		$notification = array(
+			'uri'    => 'at://did:plc:replier/app.bsky.feed.post/quotemedia',
+			'cid'    => 'bafyreiquotemedia',
+			'record' => array(
+				'text'      => 'Quote with an image.',
+				'createdAt' => '2026-06-20T12:00:00.000Z',
+				'embed'     => array(
+					'$type'  => 'app.bsky.embed.recordWithMedia',
+					'record' => array(
+						'$type'  => 'app.bsky.embed.record',
+						'record' => array(
+							'cid' => 'bafyreinested',
+							'uri' => 'at://did:plc:quoted/app.bsky.feed.post/withmedia',
+						),
+					),
+					'media'  => array(
+						'$type'  => 'app.bsky.embed.images',
+						'images' => array(),
+					),
+				),
+				'reply'     => array(
+					'parent' => array( 'uri' => $post_uri ),
+					'root'   => array( 'uri' => $post_uri ),
+				),
+			),
+			'author' => array(
+				'did'    => 'did:plc:replier',
+				'handle' => 'replier.bsky.social',
+			),
+		);
+
+		$comment_id = $method->invoke( null, $notification );
+
+		$this->assertIsInt( $comment_id );
+
+		$comment = \get_comment( $comment_id );
+
+		$this->assertStringContainsString( 'Quote with an image.', $comment->comment_content );
+		$this->assertStringContainsString(
+			'href="https://bsky.app/profile/did:plc:quoted/post/withmedia"',
+			$comment->comment_content
+		);
+	}
+
+	/**
+	 * A reply that is *only* a quote (empty text) must still import as a
+	 * comment carrying the quote blockquote, rather than being dropped by
+	 * the empty-text gate. Regression test for issue #133.
+	 */
+	public function test_process_reply_imports_quote_only_reply() {
+		$post_id  = self::factory()->post->create();
+		$post_uri = 'at://did:plc:me/app.bsky.feed.post/mypost';
+
+		\update_post_meta( $post_id, BskyPost::META_URI, $post_uri );
+
+		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_reply' );
+
+		$notification = array(
+			'uri'    => 'at://did:plc:replier/app.bsky.feed.post/quoteonly',
+			'cid'    => 'bafyreiquoteonly',
+			'record' => array(
+				'text'      => '',
+				'createdAt' => '2026-06-20T12:00:00.000Z',
+				'embed'     => array(
+					'$type'  => 'app.bsky.embed.record',
+					'record' => array(
+						'uri' => 'at://did:plc:quoted/app.bsky.feed.post/onlyquote',
+					),
+				),
+				'reply'     => array(
+					'parent' => array( 'uri' => $post_uri ),
+					'root'   => array( 'uri' => $post_uri ),
+				),
+			),
+			'author' => array(
+				'did'    => 'did:plc:replier',
+				'handle' => 'replier.bsky.social',
+			),
+		);
+
+		$comment_id = $method->invoke( null, $notification );
+
+		$this->assertIsInt( $comment_id );
+
+		$comment = \get_comment( $comment_id );
+
+		$this->assertStringContainsString(
+			'href="https://bsky.app/profile/did:plc:quoted/post/onlyquote"',
+			$comment->comment_content
+		);
+	}
+
+	/**
+	 * Only quoted `app.bsky.feed.post` records get a bsky.app post link;
+	 * a quoted record of another collection (e.g. a feed generator or
+	 * list) has no post page, so no blockquote is added — but the reply
+	 * text still imports normally.
+	 */
+	public function test_process_reply_ignores_non_post_quote_embed() {
+		$post_id  = self::factory()->post->create();
+		$post_uri = 'at://did:plc:me/app.bsky.feed.post/mypost';
+
+		\update_post_meta( $post_id, BskyPost::META_URI, $post_uri );
+
+		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_reply' );
+
+		$notification = array(
+			'uri'    => 'at://did:plc:replier/app.bsky.feed.post/quotelist',
+			'cid'    => 'bafyreiquotelist',
+			'record' => array(
+				'text'      => 'Quoting a list.',
+				'createdAt' => '2026-06-20T12:00:00.000Z',
+				'embed'     => array(
+					'$type'  => 'app.bsky.embed.record',
+					'record' => array(
+						'uri' => 'at://did:plc:quoted/app.bsky.graph.list/somelist',
+					),
+				),
+				'reply'     => array(
+					'parent' => array( 'uri' => $post_uri ),
+					'root'   => array( 'uri' => $post_uri ),
+				),
+			),
+			'author' => array(
+				'did'    => 'did:plc:replier',
+				'handle' => 'replier.bsky.social',
+			),
+		);
+
+		$comment_id = $method->invoke( null, $notification );
+
+		$this->assertIsInt( $comment_id );
+
+		$comment = \get_comment( $comment_id );
+
+		$this->assertSame( 'Quoting a list.', $comment->comment_content );
+		$this->assertStringNotContainsString( '<blockquote', $comment->comment_content );
+	}
+
+	/**
+	 * The hydrated `app.bsky.embed.record#view` shape (returned by feed /
+	 * thread views) carries the quoted post's URI at the same `record.uri`
+	 * path as the raw record form, and the `$type` prefix match must accept
+	 * it. Locks in the documented `#view` support.
+	 */
+	public function test_process_reply_appends_quote_from_record_view() {
+		$post_id  = self::factory()->post->create();
+		$post_uri = 'at://did:plc:me/app.bsky.feed.post/mypost';
+
+		\update_post_meta( $post_id, BskyPost::META_URI, $post_uri );
+
+		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_reply' );
+
+		$notification = array(
+			'uri'    => 'at://did:plc:replier/app.bsky.feed.post/quoteview',
+			'cid'    => 'bafyreiquoteview',
+			'record' => array(
+				'text'      => 'Quoting from a view.',
+				'createdAt' => '2026-06-20T12:00:00.000Z',
+				'embed'     => array(
+					'$type'  => 'app.bsky.embed.record#view',
+					'record' => array(
+						'$type' => 'app.bsky.embed.record#viewRecord',
+						'uri'   => 'at://did:plc:quoted/app.bsky.feed.post/viewquote',
+					),
+				),
+				'reply'     => array(
+					'parent' => array( 'uri' => $post_uri ),
+					'root'   => array( 'uri' => $post_uri ),
+				),
+			),
+			'author' => array(
+				'did'    => 'did:plc:replier',
+				'handle' => 'replier.bsky.social',
+			),
+		);
+
+		$comment_id = $method->invoke( null, $notification );
+
+		$this->assertIsInt( $comment_id );
+
+		$comment = \get_comment( $comment_id );
+
+		$this->assertStringContainsString(
+			'href="https://bsky.app/profile/did:plc:quoted/post/viewquote"',
+			$comment->comment_content
+		);
+	}
+
+	/**
+	 * A malformed `embed` value (untrusted PDS JSON) must not fatal the
+	 * cron sync; the reply still imports as a plain comment without a
+	 * blockquote. Covers a scalar embed and a record whose `uri` is the
+	 * wrong type — pinning the `is_array`/`is_string` guards.
+	 *
+	 * @dataProvider data_malformed_embeds
+	 * @param mixed $embed Malformed embed value.
+	 */
+	public function test_process_reply_tolerates_malformed_embed( $embed ) {
+		$post_id  = self::factory()->post->create();
+		$post_uri = 'at://did:plc:me/app.bsky.feed.post/mypost';
+
+		\update_post_meta( $post_id, BskyPost::META_URI, $post_uri );
+
+		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_reply' );
+
+		$notification = array(
+			'uri'    => 'at://did:plc:replier/app.bsky.feed.post/badembed-' . \uniqid(),
+			'cid'    => 'bafyreibadembed',
+			'record' => array(
+				'text'      => 'Plain reply with a broken embed.',
+				'createdAt' => '2026-06-20T12:00:00.000Z',
+				'embed'     => $embed,
+				'reply'     => array(
+					'parent' => array( 'uri' => $post_uri ),
+					'root'   => array( 'uri' => $post_uri ),
+				),
+			),
+			'author' => array(
+				'did'    => 'did:plc:replier',
+				'handle' => 'replier.bsky.social',
+			),
+		);
+
+		$comment_id = $method->invoke( null, $notification );
+
+		$this->assertIsInt( $comment_id );
+		$comment = \get_comment( $comment_id );
+		$this->assertSame( 'Plain reply with a broken embed.', $comment->comment_content );
+		$this->assertStringNotContainsString( '<blockquote', $comment->comment_content );
+	}
+
+	/**
+	 * Data provider for malformed `embed` shapes.
+	 *
+	 * @return array<string, array{0: mixed}>
+	 */
+	public function data_malformed_embeds(): array {
+		return array(
+			'scalar embed'       => array( 'not-an-array' ),
+			'non-array record'   => array(
+				array(
+					'$type'  => 'app.bsky.embed.record',
+					'record' => 'nope',
+				),
+			),
+			'non-string uri'     => array(
+				array(
+					'$type'  => 'app.bsky.embed.record',
+					'record' => array( 'uri' => array() ),
+				),
+			),
+			'unknown embed type' => array(
+				array(
+					'$type'  => 'app.bsky.embed.images',
+					'images' => array(),
+				),
+			),
+		);
+	}
+
+	/**
 	 * A reply whose record carries a malformed `facets` value (untrusted
 	 * PDS JSON) must still import as a plain comment rather than fataling
 	 * the cron sync with a TypeError. Regression test for PR #134.
