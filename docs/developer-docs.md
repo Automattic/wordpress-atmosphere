@@ -60,6 +60,8 @@ Rendered links to Bluesky (profiles, hashtags, mentions, posts) default to the `
 add_filter( 'atmosphere_appview_host', fn() => 'deer.social' );
 ```
 
+Of note: links rendered on the fly (facet mentions, hashtags, and the "View on Bluesky" link) pick up the filter on every render, so changing it updates them immediately. The author and source links stored on synced reaction comments are resolved once at sync time, so they keep whichever host was in effect when the comment was synced.
+
 ## Extending Content Formats
 
 The `site.standard.document` record's `content` field is a singular open union of typed content objects (see [`docs/content-formats.md`](content-formats.md)). ATmosphere ships built-in parsers for HTML, Markpub, Leaflet, and pckt formats, and integrations can register additional parsers.
