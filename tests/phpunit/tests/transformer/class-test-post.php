@@ -4085,4 +4085,35 @@ class Test_Post extends WP_UnitTestCase {
 		);
 		$this->assertCount( 1, $mention_facets );
 	}
+
+	/**
+	 * A short-form post with a body @mention still produces a #mention facet
+	 * (not a #link facet) even though the display linkifier is active — the
+	 * Bluesky-text builders are guarded against it.
+	 */
+	public function test_short_form_mention_stays_mention_facet_with_linkifier_active() {
+		\Atmosphere\Mention::init();
+
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => '',
+				'post_content' => 'Quick note to @alice.bsky.social about the plan.',
+			)
+		);
+
+		$record = ( new Post( $post ) )->transform();
+
+		$mention_facets = \array_filter(
+			$record['facets'] ?? array(),
+			static fn( $facet ) => 'app.bsky.richtext.facet#mention' === ( $facet['features'][0]['$type'] ?? '' )
+		);
+		$link_facets    = \array_filter(
+			$record['facets'] ?? array(),
+			static fn( $facet ) => 'app.bsky.richtext.facet#link' === ( $facet['features'][0]['$type'] ?? '' )
+		);
+
+		$this->assertCount( 1, $mention_facets, 'Body mention must remain a #mention facet.' );
+		$this->assertCount( 0, $link_facets, 'Body mention must not become a #link facet.' );
+		$this->assertStringNotContainsString( '<a', $record['text'] );
+	}
 }

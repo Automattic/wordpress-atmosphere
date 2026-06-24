@@ -75,4 +75,18 @@ class Test_Mention extends WP_UnitTestCase {
 
 		$this->assertStringNotContainsString( '<a', $out );
 	}
+
+	/**
+	 * The guard is scoped: a normal the_content render (front-end / document
+	 * content parser) still linkifies after a guarded transformer render.
+	 */
+	public function test_guard_is_scoped_to_callback() {
+		// Inside the guard, the linkifier is suppressed.
+		$inside = Mention::without_links( static fn() => Mention::the_content( '<p>@alice.bsky.social</p>' ) );
+		$this->assertStringNotContainsString( '<a', $inside );
+
+		// Outside the guard, linking resumes.
+		$outside = Mention::the_content( '<p>@alice.bsky.social</p>' );
+		$this->assertStringContainsString( '<a class="atmosphere-mention"', $outside );
+	}
 }

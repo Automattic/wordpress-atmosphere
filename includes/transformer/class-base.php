@@ -12,6 +12,7 @@ namespace Atmosphere\Transformer;
 
 \defined( 'ABSPATH' ) || exit;
 
+use Atmosphere\Mention;
 use function Atmosphere\build_at_uri;
 use function Atmosphere\get_did;
 use function Atmosphere\sanitize_text;
@@ -196,7 +197,9 @@ abstract class Base {
 			return $this->plain_content_cache[ $post->ID ];
 		}
 
-		$content = \apply_filters( 'the_content', $post->post_content ); // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Core WordPress filter.
+		$content = Mention::without_links(
+			static fn() => \apply_filters( 'the_content', $post->post_content ) // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Core WordPress filter.
+		);
 		$plain   = sanitize_text( $content );
 
 		$this->plain_content_cache[ $post->ID ] = $plain;

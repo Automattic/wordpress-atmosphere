@@ -14,6 +14,7 @@ namespace Atmosphere\Transformer;
 \defined( 'ABSPATH' ) || exit;
 
 use Atmosphere\API;
+use Atmosphere\Mention;
 use function Atmosphere\debug_log;
 use function Atmosphere\sanitize_text;
 use function Atmosphere\truncate_text;
@@ -1721,7 +1722,9 @@ class Post extends Base {
 			);
 		}
 
-		$html = \apply_filters( 'the_content', $this->object->post_content ); // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Core WordPress filter.
+		$html = Mention::without_links(
+			fn() => \apply_filters( 'the_content', $this->object->post_content ) // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Core WordPress filter.
+		);
 
 		/*
 		 * Fast path: no anchors, so the plain render is the whole story.
