@@ -20,6 +20,33 @@ use function Atmosphere\get_connection;
 class Facet {
 
 	/**
+	 * Regex matching an AT Protocol `@handle.tld` mention.
+	 *
+	 * Capture group 1 is the bare handle (no leading `@`). Requires at
+	 * least two dot-separated labels, mirroring DNS-name handle syntax.
+	 * Shared by {@see self::mentions()} and {@see self::resolve_handles()}.
+	 *
+	 * @var string
+	 */
+	private const MENTION_PATTERN = '/@([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+)/u';
+
+	/**
+	 * Request-scoped memo of handle => DID resolutions.
+	 *
+	 * Broadening mention collection to the full post body resolves the same
+	 * handle more than once per publish (the carry-over detection pass and
+	 * the final {@see self::extract()} on the composed text). Memoizing the
+	 * DNS/`did:web` result keeps that to one lookup per distinct handle per
+	 * request, bounding duplicate DNS egress. Keyed by lowercased handle.
+	 *
+	 * The self-handle short-circuit is intentionally evaluated outside this
+	 * cache, since it depends on the live connection option.
+	 *
+	 * @var array<string,string>
+	 */
+	private static array $resolution_cache = array();
+
+	/**
 	 * Extract all facet types from a piece of text.
 	 *
 	 * @param string $text Plain text.
@@ -271,7 +298,7 @@ class Facet {
 	 */
 	private static function mentions( string $text ): array {
 		$facets  = array();
-		$pattern = '/@([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+)/u';
+		$pattern = self::MENTION_PATTERN;
 
 		if ( ! \preg_match_all( $pattern, $text, $matches, PREG_OFFSET_CAPTURE ) ) {
 			return $facets;
@@ -309,6 +336,44 @@ class Facet {
 		}
 
 		return $facets;
+	}
+
+	/**
+	 * Find resolvable `@handle.tld` mentions in a piece of text.
+	 *
+	 * Returns a map of handle => DID for every distinct, resolvable mention,
+	 * in first-appearance order. Handles that fail resolution (malformed, or
+	 * not a valid DNS name) are omitted, so a handle present in the result is
+	 * guaranteed to produce a `#mention` facet when it reaches a record's
+	 * `text`. Shares the regex and resolver used to build mention facets.
+	 *
+	 * @param string $text Plain text.
+	 * @return array<string,string> Map of handle => DID.
+	 */
+	public static function resolve_handles( string $text ): array {
+		if ( ! \preg_match_all( self::MENTION_PATTERN, $text, $matches ) ) {
+			return array();
+		}
+
+		$handles = array();
+		$seen    = array();
+
+		foreach ( $matches[1] as $handle ) {
+			$key = \strtolower( $handle );
+			if ( isset( $seen[ $key ] ) ) {
+				continue;
+			}
+			$seen[ $key ] = true;
+
+			$did = self::resolve_mention( $handle );
+			if ( '' === $did ) {
+				continue;
+			}
+
+			$handles[ $handle ] = $did;
+		}
+
+		return $handles;
 	}
 
 	/**
@@ -380,6 +445,30 @@ class Facet {
 			return '';
 		}
 
+		$key = \strtolower( $handle );
+		if ( \array_key_exists( $key, self::$resolution_cache ) ) {
+			return self::$resolution_cache[ $key ];
+		}
+
+		$did = self::resolve_handle_via_dns( $handle );
+
+		self::$resolution_cache[ $key ] = $did;
+
+		return $did;
+	}
+
+	/**
+	 * Resolve a syntactically-valid handle to a DID over DNS.
+	 *
+	 * Looks up the `_atproto.<handle>` TXT record and falls back to
+	 * `did:web:<handle>` when no `did=` record is found. Split out of
+	 * {@see self::resolve_mention()} so the self-handle short-circuit and the
+	 * syntactic gate stay outside the resolution memo.
+	 *
+	 * @param string $handle Valid AT Protocol handle.
+	 * @return string DID string.
+	 */
+	private static function resolve_handle_via_dns( string $handle ): string {
 		$records = @\dns_get_record( '_atproto.' . $handle, DNS_TXT ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
 
 		if ( \is_array( $records ) ) {

@@ -71,6 +71,41 @@ class Test_Facet extends WP_UnitTestCase {
 	}
 
 	/**
+	 * The resolve_handles() method returns resolvable body mentions as handle => DID.
+	 */
+	public function test_resolve_handles_returns_resolvable_mentions() {
+		$handles = Facet::resolve_handles( 'Hi @alice.bsky.social and @bob.example!' );
+
+		$this->assertArrayHasKey( 'alice.bsky.social', $handles );
+		$this->assertArrayHasKey( 'bob.example', $handles );
+		$this->assertNotSame( '', $handles['alice.bsky.social'] );
+	}
+
+	/**
+	 * A single-label `@bareword` is not a handle and is not returned.
+	 */
+	public function test_resolve_handles_skips_single_label() {
+		$handles = Facet::resolve_handles( 'Hey @notadomain over there' );
+
+		$this->assertArrayNotHasKey( 'notadomain', $handles );
+	}
+
+	/**
+	 * The same handle mentioned twice appears once.
+	 */
+	public function test_resolve_handles_deduplicates() {
+		$handles = Facet::resolve_handles( '@alice.bsky.social then @alice.bsky.social again' );
+
+		$count = 0;
+		foreach ( \array_keys( $handles ) as $key ) {
+			if ( 'alice.bsky.social' === \strtolower( $key ) ) {
+				++$count;
+			}
+		}
+		$this->assertSame( 1, $count );
+	}
+
+	/**
 	 * Test that trailing punctuation is stripped from URLs.
 	 */
 	public function test_link_strips_trailing_punctuation() {
