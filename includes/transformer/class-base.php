@@ -197,6 +197,10 @@ abstract class Base {
 			return $this->plain_content_cache[ $post->ID ];
 		}
 
+		// Suppress mention linkification on this shared plain-render path (not just Bluesky): this plain
+		// text feeds the Bluesky post-text composition, where an `@handle` rendered as an `<a>` would be
+		// recorded as a `#link` facet (no notification) instead of a `#mention` facet (which notifies).
+		// The rich document / front-end render uses a separate, un-guarded `the_content` call and keeps links.
 		$content = Mention::without_links(
 			static fn() => \apply_filters( 'the_content', $post->post_content ) // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Core WordPress filter.
 		);
