@@ -199,8 +199,8 @@ class Facet {
 			case 'app.bsky.richtext.facet#mention':
 				/*
 				 * The mention facet only carries the DID, so link by DID.
-				 * bsky.app/profile/{did} resolves the same as the handle
-				 * form used elsewhere in Reaction_Sync.
+				 * The appview's /profile/{did} resolves the same as the
+				 * handle form used elsewhere in Reaction_Sync.
 				 */
 				$did  = $feature['did'] ?? '';
 				$href = '' === $did

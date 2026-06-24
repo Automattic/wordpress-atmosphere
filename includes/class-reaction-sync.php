@@ -881,10 +881,11 @@ class Reaction_Sync {
 	}
 
 	/**
-	 * Build the https://bsky.app/... web URL for a given AT-URI + handle.
+	 * Build the appview web URL for a given AT-URI + handle.
 	 *
-	 * Only app.bsky.feed.post records have a corresponding bsky.app
-	 * web page; like and repost rkeys don't, so those return ''.
+	 * Only app.bsky.feed.post records have a corresponding appview web
+	 * page; like and repost rkeys don't, so those return ''. The host
+	 * defaults to `bsky.app` and is filterable via `atmosphere_appview_host`.
 	 *
 	 * @param string $at_uri AT-URI.
 	 * @param string $handle Bluesky handle.

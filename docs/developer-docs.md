@@ -49,7 +49,7 @@ When adding a new public hook, mark its `@since` tag as `unreleased` — the rel
 
 ### Pointing Bluesky links at another appview
 
-Rendered links to Bluesky (profiles, hashtags, mentions, posts) default to the `bsky.app` web appview. The `atmosphere_appview_host` filter swaps that host for any AT Protocol appview. Callbacks receive three arguments and must return a bare host (no scheme, no trailing slash):
+Rendered links to Bluesky (profiles, hashtags, mentions, posts) default to the `bsky.app` web appview. The `atmosphere_appview_host` filter swaps that host for any AT Protocol appview. A callback must return a bare host (no scheme, no trailing slash). The filter passes up to three arguments; as with any WordPress filter, register with `$accepted_args = 3` if your callback needs `$path` and `$context`:
 
 - `$host` — the default host, `'bsky.app'`.
 - `$path` — the path being built, e.g. `profile/<did>` or `hashtag/<tag>`.
@@ -58,6 +58,16 @@ Rendered links to Bluesky (profiles, hashtags, mentions, posts) default to the `
 ```php
 // Point Bluesky web links at an alternative appview.
 add_filter( 'atmosphere_appview_host', fn() => 'deer.social' );
+
+// Route by context: send profiles elsewhere, keep hashtags on bsky.app.
+add_filter(
+	'atmosphere_appview_host',
+	function ( $host, $path, $context ) {
+		return 'hashtag' === ( $context['type'] ?? '' ) ? $host : 'deer.social';
+	},
+	10,
+	3
+);
 ```
 
 Of note: links rendered on the fly (facet mentions, hashtags, and the "View on Bluesky" link) pick up the filter on every render, so changing it updates them immediately. The author and source links stored on synced reaction comments are resolved once at sync time, so they keep whichever host was in effect when the comment was synced.

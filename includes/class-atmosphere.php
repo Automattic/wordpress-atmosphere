@@ -1434,11 +1434,12 @@ class Atmosphere {
 	}
 
 	/**
-	 * Build the bsky.app web URL for one of our own post AT-URIs.
+	 * Build the appview web URL for one of our own post AT-URIs.
 	 *
 	 * `at://<did>/app.bsky.feed.post/<rkey>` →
-	 * `https://bsky.app/profile/<did>/post/<rkey>`. bsky.app resolves the
-	 * DID form, so no handle lookup is needed.
+	 * `https://<appview-host>/profile/<did>/post/<rkey>`. The appview resolves
+	 * the DID form, so no handle lookup is needed. The host defaults to
+	 * `bsky.app` and is filterable via `atmosphere_appview_host`.
 	 *
 	 * @param string $uri AT-URI from `Post::META_URI`.
 	 * @return string Web URL, or '' when the URI shape is unexpected.
