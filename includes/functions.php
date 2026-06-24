@@ -67,6 +67,8 @@ function appview_url( string $path, array $context = array() ): string {
 	 * Return a bare host with no scheme or trailing slash (e.g. 'deer.social').
 	 * Defaults to 'bsky.app', the Bluesky appview.
 	 *
+	 * @since unreleased
+	 *
 	 * @param string $host    Default appview host ('bsky.app').
 	 * @param string $path    Path being built, e.g. 'profile/<did>'.
 	 * @param array  $context Available parts: type, did, handle, rkey, tag.
