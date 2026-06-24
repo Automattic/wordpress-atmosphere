@@ -670,8 +670,12 @@ class Post extends Base {
 			return $text;
 		}
 
-		// Reserve space for permalink + separators.
-		$reserved  = grapheme_length( $permalink ) + 4;
+		/*
+		 * Reserve space for the permalink plus the one "\n\n" separator that
+		 * joins it to the prose below (the title/excerpt separator is already
+		 * inside $prose).
+		 */
+		$reserved  = grapheme_length( $permalink ) + 2;
 		$available = self::BLUESKY_MAX_GRAPHEMES - $reserved;
 
 		if ( $available <= 0 ) {

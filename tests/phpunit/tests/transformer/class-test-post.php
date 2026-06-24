@@ -107,6 +107,30 @@ class Test_Post extends WP_UnitTestCase {
 	}
 
 	/**
+	 * When the composed title + excerpt + permalink overflows 300 characters,
+	 * the link-card text is truncated to fit and still ends with the full
+	 * permalink. Exercises `build_text()`'s overflow/reservation branch.
+	 *
+	 * @covers ::transform
+	 */
+	public function test_long_form_link_card_text_truncates_within_limit() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => \str_repeat( 'word ', 80 ), // ~400 chars, overflows on its own.
+				'post_content' => '',
+				'post_excerpt' => '',
+			)
+		);
+
+		$record    = ( new Post( $post ) )->transform();
+		$permalink = \get_permalink( $post );
+
+		// ASCII body, so code points and graphemes coincide.
+		$this->assertLessThanOrEqual( 300, \mb_strlen( $record['text'] ) );
+		$this->assertStringEndsWith( $permalink, $record['text'] );
+	}
+
+	/**
 	 * An untitled post is short-form: body becomes the text, no embed.
 	 *
 	 * @covers ::transform
