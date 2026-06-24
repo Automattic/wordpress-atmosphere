@@ -292,6 +292,89 @@ class Test_Post extends WP_UnitTestCase {
 	}
 
 	/**
+	 * An emoji-heavy short-form body whose code-point count exceeds 300 but
+	 * whose grapheme count stays under it is published whole — Bluesky's cap
+	 * is 300 graphemes, so a ZWJ family emoji counts as one, not five.
+	 *
+	 * @covers ::transform
+	 */
+	public function test_short_form_keeps_emoji_body_within_grapheme_limit() {
+		if ( ! \function_exists( 'grapheme_strlen' ) ) {
+			$this->markTestSkipped( 'intl extension required for grapheme counting.' );
+		}
+
+		// 70 family emoji: 70 graphemes, but 350 code points.
+		$family = "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}";
+		$post   = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => '',
+				'post_content' => \str_repeat( $family, 70 ),
+			)
+		);
+
+		$record = ( new Post( $post ) )->transform();
+
+		// Whole body survives: 70 graphemes, no ellipsis, no cluster split.
+		$this->assertSame( 70, \grapheme_strlen( $record['text'] ) );
+		$this->assertStringNotContainsString( '...', $record['text'] );
+	}
+
+	/**
+	 * An inline link preceded by enough emoji to push the code-point count
+	 * past 300 — but not the grapheme count — keeps its facet. Counting code
+	 * points here would truncate the body and drop the link.
+	 *
+	 * @covers ::transform
+	 */
+	public function test_short_form_keeps_link_facet_after_emoji_overflow() {
+		if ( ! \function_exists( 'grapheme_strlen' ) ) {
+			$this->markTestSkipped( 'intl extension required for grapheme counting.' );
+		}
+
+		// 70 family emoji (350 code points / 70 graphemes), then a link.
+		$family = "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}";
+		$post   = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => '',
+				'post_content' => \str_repeat( $family, 70 ) . ' Read <a href="https://example.com/page">the source</a>.',
+			)
+		);
+
+		$record = ( new Post( $post ) )->transform();
+
+		$this->assertLessThanOrEqual( 300, \grapheme_strlen( $record['text'] ) );
+		$this->assertContains( 'https://example.com/page', $this->facet_link_uris( $record ), 'The link must survive emoji overflow.' );
+		$this->assertFacetsWithinText( $record );
+	}
+
+	/**
+	 * The pre-publish projection counts graphemes, so its "X / 300" matches
+	 * the number Bluesky's own composer shows — a family emoji is one, not
+	 * five code points.
+	 *
+	 * @covers ::project
+	 */
+	public function test_project_counts_emoji_body_as_graphemes() {
+		if ( ! \function_exists( 'grapheme_strlen' ) ) {
+			$this->markTestSkipped( 'intl extension required for grapheme counting.' );
+		}
+
+		// 50 family emoji: 50 graphemes, 250 code points.
+		$family = "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}";
+		$post   = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => '',
+				'post_content' => \str_repeat( $family, 50 ),
+			)
+		);
+
+		$projection = ( new Post( $post ) )->project();
+
+		$this->assertSame( 50, $projection['records'][0]['characters'] );
+		$this->assertFalse( $projection['records'][0]['over_limit'] );
+	}
+
+	/**
 	 * An `href`-like attribute on another key (e.g. `data-href`) is not
 	 * treated as the link target, so non-link markup never becomes a facet.
 	 *
