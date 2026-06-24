@@ -46,6 +46,37 @@ function build_at_uri( string $did, string $collection, string $rkey ): string {
 }
 
 /**
+ * Build a web URL pointing at an AT Protocol appview.
+ *
+ * Returns an UNESCAPED URL. Callers MUST escape at the point of use
+ * (\esc_url() for HTML output, \esc_url_raw() for storage/redirects), as
+ * late as possible and in the right context.
+ *
+ * @param string $path    Path after the host, with no leading slash, e.g.
+ *                        'profile/<did>/post/<rkey>' or 'hashtag/<tag>'.
+ *                        Callers are responsible for encoding path segments.
+ * @param array  $context Optional parts the caller has on hand. Recognised
+ *                        keys: 'type' (profile|post|mention|hashtag), 'did',
+ *                        'handle', 'rkey', 'tag'.
+ * @return string Unescaped URL, e.g. 'https://bsky.app/profile/<did>'.
+ */
+function appview_url( string $path, array $context = array() ): string {
+	/**
+	 * Filters the host used for AT Protocol appview web links.
+	 *
+	 * Return a bare host with no scheme or trailing slash (e.g. 'deer.social').
+	 * Defaults to 'bsky.app', the Bluesky appview.
+	 *
+	 * @param string $host    Default appview host ('bsky.app').
+	 * @param string $path    Path being built, e.g. 'profile/<did>'.
+	 * @param array  $context Available parts: type, did, handle, rkey, tag.
+	 */
+	$host = \apply_filters( 'atmosphere_appview_host', 'bsky.app', $path, $context );
+
+	return 'https://' . $host . '/' . $path;
+}
+
+/**
  * Decode entities, strip HTML, normalise whitespace.
  *
  * @param string $text Raw text.
