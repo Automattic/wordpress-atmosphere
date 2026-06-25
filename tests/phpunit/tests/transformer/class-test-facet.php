@@ -185,7 +185,11 @@ class Test_Facet extends WP_UnitTestCase {
 
 		$this->assertCount( 0, $mention_facets( 'Mail me at bob@example.com today' ) );
 		$this->assertCount( 0, $mention_facets( 'Hi @pfefferle@notiz.blog there' ) );
+		// A WebFinger handle whose user half is domain-shaped: the leading
+		// `@notiz.blog` must not be read as a standalone Bluesky handle.
+		$this->assertCount( 0, $mention_facets( 'Follow @notiz.blog@notiz.blog please' ) );
 		$this->assertSame( array(), Facet::resolve_handles( 'bob@example.com and @pfefferle@notiz.blog' ) );
+		$this->assertSame( array(), Facet::resolve_handles( 'Follow @notiz.blog@notiz.blog please' ) );
 	}
 
 	/**

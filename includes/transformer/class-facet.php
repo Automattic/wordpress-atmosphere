@@ -27,17 +27,24 @@ class Facet {
 	 *
 	 * Capture group 1 is the bare handle (no leading `@`). Requires at
 	 * least two dot-separated labels, mirroring DNS-name handle syntax.
-	 * Shared by {@see self::mentions()} and {@see self::resolve_handles()}.
+	 * This is the single source of truth for "what is a Bluesky mention":
+	 * {@see self::mentions()}, {@see self::resolve_handles()}, and the
+	 * display-side {@see \Atmosphere\Mention::linkify()} all share it so the
+	 * publish path and the front-end linkifier can never drift apart.
 	 *
-	 * The leading `(?<![\w@.])` boundary (matching the display-side
-	 * {@see \Atmosphere\Mention::linkify()}) skips the domain half of an
-	 * email address (`bob@example.com`) or an ActivityPub `@user@domain.tld`
-	 * handle. Without it those false positives would now drive real DNS/HTTP
-	 * resolution and could even mint a bogus `#mention` facet.
+	 * The leading `(?<![\w@.])` boundary skips the domain half of an email
+	 * address (`bob@example.com`) or an ActivityPub `@user@domain.tld`
+	 * handle. The trailing `(?![\w@])` boundary rejects a WebFinger handle
+	 * whose user half is itself domain-shaped (`@notiz.blog@notiz.blog`):
+	 * without it the first `@notiz.blog` would be mistaken for a standalone
+	 * Bluesky handle. Both boundaries keep these false positives from driving
+	 * real DNS/HTTP resolution or minting a bogus `#mention` facet. A `.` is
+	 * deliberately left out of the trailing class so a handle ending a
+	 * sentence (`@bsky.app.`) still matches.
 	 *
 	 * @var string
 	 */
-	private const MENTION_PATTERN = '/(?<![\w@.])@([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+)/u';
+	public const MENTION_PATTERN = '/(?<![\w@.])@([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+)(?![\w@])/u';
 
 	/**
 	 * Request-scoped memo of handle => DID resolutions.

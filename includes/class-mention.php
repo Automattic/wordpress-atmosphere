@@ -9,6 +9,8 @@ declare( strict_types = 1 );
 
 namespace Atmosphere;
 
+use Atmosphere\Transformer\Facet;
+
 \defined( 'ABSPATH' ) || exit;
 
 /**
@@ -140,22 +142,46 @@ class Mention {
 	 * No DNS: the handle goes straight into the appview `profile/<handle>`
 	 * URL (via {@see appview_url()}, so self-hosted appviews configured
 	 * through the `atmosphere_appview_host` filter are honoured), which
-	 * resolves the handle itself. A negative lookbehind on the `@` skips the
-	 * domain half of an ActivityPub `@user@domain.tld` handle (and ordinary
-	 * email addresses) — a preceding word char, `@`, or `.` disqualifies the
-	 * match.
+	 * resolves the handle itself. The shared {@see Facet::MENTION_PATTERN}
+	 * skips the domain half of an ActivityPub `@user@domain.tld` handle (and
+	 * ordinary email addresses) and rejects a domain-shaped WebFinger user
+	 * half (`@notiz.blog@notiz.blog`).
+	 *
+	 * Existence is intentionally not checked here: a per-render lookup would
+	 * turn every front-end page view into an outbound DNS/HTTP request to
+	 * each mentioned domain. The publish path already gates `#mention` facets
+	 * on real resolution ({@see Facet::resolve_mention()}), so a non-existent
+	 * `@example.com` never notifies anyone; the display link merely points at
+	 * the appview, which renders an unknown handle gracefully. A site that
+	 * wants stricter display links can veto a handle through the
+	 * `atmosphere_link_mention` filter.
 	 *
 	 * @param string $text Plain-text chunk (no tags).
 	 * @return string
 	 */
 	private static function linkify( string $text ): string {
-		$pattern = '/(?<![\w@.])@([a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+)/u';
-
 		$replaced = \preg_replace_callback(
-			$pattern,
+			Facet::MENTION_PATTERN,
 			static function ( array $m ): string {
 				$handle = $m[1];
-				$url    = appview_url(
+
+				/**
+				 * Filters whether a bare `@handle` in rendered content is linked.
+				 *
+				 * The display linkifier does no network lookup, so by default
+				 * every syntactically valid handle is linked and the appview
+				 * resolves it. Return false to leave a specific handle as plain
+				 * text — e.g. to gate on a cached existence check or an
+				 * allowlist of known accounts.
+				 *
+				 * @param bool   $should_link Whether to link the handle. Default true.
+				 * @param string $handle      The bare handle (no leading `@`).
+				 */
+				if ( ! \apply_filters( 'atmosphere_link_mention', true, $handle ) ) {
+					return $m[0];
+				}
+
+				$url = appview_url(
 					'profile/' . $handle,
 					array(
 						'type'   => 'mention',

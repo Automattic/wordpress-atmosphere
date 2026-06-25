@@ -87,6 +87,41 @@ class Test_Mention extends WP_UnitTestCase {
 	}
 
 	/**
+	 * A WebFinger handle whose user half is itself domain-shaped
+	 * (`@notiz.blog@notiz.blog`) must not have its first half mistaken for a
+	 * standalone Bluesky handle. Pins the trailing boundary on the shared
+	 * mention pattern.
+	 */
+	public function test_skips_webfinger_with_domain_shaped_username() {
+		$out = Mention::the_content( '<p>Follow @notiz.blog@notiz.blog please</p>' );
+
+		$this->assertStringNotContainsString( '<a', $out );
+	}
+
+	/**
+	 * The `atmosphere_link_mention` filter can veto a specific handle so it
+	 * renders as plain text rather than a profile link — the seam a site uses
+	 * to gate display links on a cached existence check or an allowlist.
+	 */
+	public function test_filter_can_veto_a_handle_link() {
+		$filter = static fn( $link, $handle ) => 'ghost.example' === $handle ? false : $link;
+		\add_filter( 'atmosphere_link_mention', $filter, 10, 2 );
+
+		$out = Mention::the_content( '<p>Hi @ghost.example and @alice.bsky.social</p>' );
+
+		\remove_filter( 'atmosphere_link_mention', $filter, 10 );
+
+		// The vetoed handle stays as plain text...
+		$this->assertStringContainsString( '@ghost.example', $out );
+		$this->assertStringNotContainsString( 'profile/ghost.example', $out );
+		// ...while a handle the filter leaves alone is still linked.
+		$this->assertStringContainsString(
+			'<a class="atmosphere-mention" href="https://bsky.app/profile/alice.bsky.social">@alice.bsky.social</a>',
+			$out
+		);
+	}
+
+	/**
 	 * An email address is not linkified.
 	 */
 	public function test_skips_email() {
