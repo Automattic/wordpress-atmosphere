@@ -98,6 +98,8 @@ class Test_Post extends WP_UnitTestCase {
 		$encoder( $image );
 		$bytes = (string) \ob_get_clean();
 
+		\imagedestroy( $image );
+
 		return $bytes;
 	}
 
