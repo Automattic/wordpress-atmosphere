@@ -505,6 +505,61 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 	}
 
 	/**
+	 * The quote link is built through `appview_url()`, so a site that swaps
+	 * its appview host via `atmosphere_appview_host` gets the quote link
+	 * pointed at that host too — it must not be the lone hardcoded `bsky.app`.
+	 */
+	public function test_process_reply_quote_honors_appview_host_filter() {
+		$post_id  = self::factory()->post->create();
+		$post_uri = 'at://did:plc:me/app.bsky.feed.post/mypost';
+
+		\update_post_meta( $post_id, BskyPost::META_URI, $post_uri );
+
+		$filter = static fn() => 'deer.social';
+		\add_filter( 'atmosphere_appview_host', $filter );
+
+		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_reply' );
+
+		$notification = array(
+			'uri'    => 'at://did:plc:replier/app.bsky.feed.post/quotefiltered',
+			'cid'    => 'bafyreiquotefiltered',
+			'record' => array(
+				'text'      => 'Quoting on a custom appview.',
+				'createdAt' => '2026-06-20T12:00:00.000Z',
+				'embed'     => array(
+					'$type'  => 'app.bsky.embed.record',
+					'record' => array(
+						'cid' => 'bafyreifiltered',
+						'uri' => 'at://did:plc:quoted/app.bsky.feed.post/filteredpost',
+					),
+				),
+				'reply'     => array(
+					'parent' => array( 'uri' => $post_uri ),
+					'root'   => array( 'uri' => $post_uri ),
+				),
+			),
+			'author' => array(
+				'did'    => 'did:plc:replier',
+				'handle' => 'replier.bsky.social',
+			),
+		);
+
+		$comment_id = $method->invoke( null, $notification );
+
+		\remove_filter( 'atmosphere_appview_host', $filter );
+
+		$this->assertIsInt( $comment_id );
+
+		$comment = \get_comment( $comment_id );
+
+		$this->assertStringContainsString(
+			'href="https://deer.social/profile/did:plc:quoted/post/filteredpost"',
+			$comment->comment_content
+		);
+		$this->assertStringNotContainsString( 'bsky.app', $comment->comment_content );
+	}
+
+	/**
 	 * A malformed `embed` value (untrusted PDS JSON) must not fatal the
 	 * cron sync; the reply still imports as a plain comment without a
 	 * blockquote. Covers a scalar embed and a record whose `uri` is the

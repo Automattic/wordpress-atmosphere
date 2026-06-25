@@ -1014,34 +1014,39 @@ class Reaction_Sync {
 	}
 
 	/**
-	 * Convert a quoted post's AT-URI to its bsky.app web URL.
+	 * Convert a quoted post's AT-URI to its appview web URL.
 	 *
-	 * Builds the DID form (`bsky.app/profile/<did>/post/<rkey>`), which
-	 * resolves without a handle lookup. Only `app.bsky.feed.post` records
-	 * have a bsky.app post page, so any other collection — or a malformed
-	 * URI — returns ''.
+	 * Builds the DID form (`profile/<did>/post/<rkey>`), which resolves
+	 * without a handle lookup. The host defaults to `bsky.app` and is
+	 * filterable via `atmosphere_appview_host`. Only `app.bsky.feed.post`
+	 * records have an appview post page, so any other collection — or a
+	 * malformed URI — returns ''.
 	 *
 	 * @param string $at_uri Quoted post AT-URI.
-	 * @return string The bsky.app URL, or '' when not a linkable post.
+	 * @return string The appview URL, or '' when not a linkable post.
 	 */
 	private static function quoted_post_web_url( string $at_uri ): string {
-		if ( ! \str_starts_with( $at_uri, 'at://' ) ) {
+		$parts = parse_at_uri( $at_uri );
+
+		if ( false === $parts ) {
 			return '';
 		}
 
-		$parts = \explode( '/', \substr( $at_uri, \strlen( 'at://' ) ) );
-
-		if ( 3 !== \count( $parts ) ) {
+		if ( 'app.bsky.feed.post' !== $parts['collection'] || '' === $parts['did'] || '' === $parts['rkey'] ) {
 			return '';
 		}
 
-		list( $repo, $collection, $rkey ) = $parts;
-
-		if ( 'app.bsky.feed.post' !== $collection || '' === $repo || '' === $rkey ) {
-			return '';
-		}
-
-		return 'https://bsky.app/profile/' . $repo . '/post/' . $rkey;
+		// The DID is passed raw, matching the other profile/<did>/post/<rkey>
+		// builders (Atmosphere::* and Facet); its colons are valid path chars
+		// the appview expects unencoded. Handles, by contrast, are rawurlencode()d.
+		return appview_url(
+			'profile/' . $parts['did'] . '/post/' . $parts['rkey'],
+			array(
+				'type' => 'post',
+				'did'  => $parts['did'],
+				'rkey' => $parts['rkey'],
+			)
+		);
 	}
 
 	/**
