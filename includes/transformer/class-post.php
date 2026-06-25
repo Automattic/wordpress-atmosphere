@@ -772,10 +772,6 @@ class Post extends Base {
 			$kept = $candidate;
 		}
 
-		if ( '' === $kept ) {
-			return $text;
-		}
-
 		if ( $dropped > 0 ) {
 			debug_log(
 				\sprintf(
@@ -785,6 +781,10 @@ class Post extends Base {
 					$max
 				)
 			);
+		}
+
+		if ( '' === $kept ) {
+			return $text;
 		}
 
 		// Shrink the prose to fit the chosen line + permalink.
