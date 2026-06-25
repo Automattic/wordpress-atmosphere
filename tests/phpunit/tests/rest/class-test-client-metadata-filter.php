@@ -15,6 +15,7 @@
 namespace Atmosphere\Tests\Rest;
 
 use WP_UnitTestCase;
+use Atmosphere\OAuth\Client;
 use Atmosphere\Rest\Client_Metadata_Controller;
 
 /**
@@ -44,6 +45,8 @@ class Test_Client_Metadata_Filter extends WP_UnitTestCase {
 		$this->assertNotEmpty( $data['client_id'] );
 		$this->assertIsArray( $data['redirect_uris'] );
 		$this->assertNotEmpty( $data['redirect_uris'] );
+		$this->assertSame( Client::scopes(), $data['scope'] );
+		$this->assertStringContainsString( 'include:site.standard.authFull', $data['scope'] );
 	}
 
 	/**

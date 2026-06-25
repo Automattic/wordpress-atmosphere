@@ -31,6 +31,8 @@ class Client {
 	 * App Password-equivalent bucket and explicitly does not include
 	 * identity operations, so it must be paired with `identity:handle`
 	 * for any flow that lets users change their handle through the PDS.
+	 * `include:site.standard.authFull` is the documented Standard.site
+	 * permission set for writing publication and document records.
 	 *
 	 * MUST stay in lockstep with the `scope` value advertised in the
 	 * client-metadata REST endpoint
@@ -40,7 +42,7 @@ class Client {
 	 *
 	 * @var string
 	 */
-	private const SCOPES = 'atproto transition:generic identity:handle';
+	private const SCOPES = 'atproto transition:generic identity:handle include:site.standard.authFull';
 
 	/**
 	 * `wp_options` row name used as the cross-process refresh lock.
@@ -72,6 +74,15 @@ class Client {
 	 */
 	public static function client_id(): string {
 		return \rest_url( 'atmosphere/v1/client-metadata' );
+	}
+
+	/**
+	 * OAuth scopes requested by authorization and advertised in metadata.
+	 *
+	 * @return string
+	 */
+	public static function scopes(): string {
+		return self::SCOPES;
 	}
 
 	/**

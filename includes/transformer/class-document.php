@@ -18,6 +18,7 @@ use Atmosphere\Content_Parser\Registry;
 use function Atmosphere\build_at_uri;
 use function Atmosphere\get_did;
 use function Atmosphere\sanitize_text;
+use function Atmosphere\truncate_graphemes;
 
 /**
  * Standard.site document transformer.
@@ -129,6 +130,65 @@ class Document extends Base {
 				$record['tags'] = $tags;
 			}
 
+			/**
+			 * Filters the site.standard.document links union.
+			 *
+			 * Return an array with a non-empty string `$type` field to add
+			 * the `links` field. Return null or an empty array to omit it.
+			 *
+			 * @since unreleased
+			 *
+			 * @param array|null $links Links union object, or null to omit.
+			 * @param \WP_Post   $post  WordPress post.
+			 */
+			$links = self::validate_open_union(
+				\apply_filters( 'atmosphere_document_links', null, $this->object ),
+				__METHOD__,
+				\__( 'atmosphere_document_links must return an array with a non-empty string $type field; omitting the links field.', 'atmosphere' )
+			);
+			if ( null !== $links ) {
+				$record['links'] = $links;
+			}
+
+			/**
+			 * Filters the site.standard.document self-labels object.
+			 *
+			 * Return a com.atproto.label.defs#selfLabels object to add
+			 * content-warning labels. Return null or an empty array to omit it.
+			 *
+			 * @since unreleased
+			 *
+			 * @param array|null $labels Self-labels object, or null to omit.
+			 * @param \WP_Post   $post   WordPress post.
+			 */
+			$labels = self::validate_self_labels(
+				\apply_filters( 'atmosphere_document_labels', null, $this->object ),
+				__METHOD__
+			);
+			if ( null !== $labels ) {
+				$record['labels'] = $labels;
+			}
+
+			/**
+			 * Filters the site.standard.document contributor list.
+			 *
+			 * Return an array of contributor objects. Each contributor must
+			 * include a DID; optional role and displayName values are
+			 * sanitized and capped to the lexicon's 100-grapheme limit.
+			 * Return null or an empty array to omit the field.
+			 *
+			 * @since unreleased
+			 *
+			 * @param array|null $contributors Contributor list, or null to omit.
+			 * @param \WP_Post   $post         WordPress post.
+			 */
+			$contributors = self::sanitize_contributors(
+				\apply_filters( 'atmosphere_document_contributors', null, $this->object )
+			);
+			if ( null !== $contributors ) {
+				$record['contributors'] = $contributors;
+			}
+
 			// Bluesky cross-reference (populated after initial publish).
 			$bsky_uri = \get_post_meta( $this->object->ID, Post::META_URI, true );
 			$bsky_cid = \get_post_meta( $this->object->ID, Post::META_CID, true );
@@ -170,6 +230,59 @@ class Document extends Base {
 		}
 
 		return $filtered;
+	}
+
+	/**
+	 * Sanitize a document contributor list.
+	 *
+	 * @param mixed $contributors Filter return value.
+	 * @return array|null Contributor list, or null when omitted/invalid.
+	 */
+	private static function sanitize_contributors( $contributors ): ?array {
+		if ( null === $contributors || array() === $contributors ) {
+			return null;
+		}
+
+		if ( ! \is_array( $contributors ) ) {
+			\_doing_it_wrong(
+				__METHOD__,
+				\esc_html__( 'atmosphere_document_contributors must return an array of contributor objects; omitting the contributors field.', 'atmosphere' ),
+				'unreleased'
+			);
+			return null;
+		}
+
+		$sanitized = array();
+		foreach ( $contributors as $contributor ) {
+			if ( ! \is_array( $contributor ) || empty( $contributor['did'] ) || ! \is_string( $contributor['did'] ) || ! \str_starts_with( $contributor['did'], 'did:' ) ) {
+				\_doing_it_wrong(
+					__METHOD__,
+					\esc_html__( 'Document contributors must include a non-empty DID string; omitting the contributors field.', 'atmosphere' ),
+					'unreleased'
+				);
+				return null;
+			}
+
+			$item = array( 'did' => $contributor['did'] );
+
+			if ( isset( $contributor['role'] ) && \is_string( $contributor['role'] ) ) {
+				$role = truncate_graphemes( sanitize_text( $contributor['role'] ), 100 );
+				if ( '' !== $role ) {
+					$item['role'] = $role;
+				}
+			}
+
+			if ( isset( $contributor['displayName'] ) && \is_string( $contributor['displayName'] ) ) {
+				$display_name = truncate_graphemes( sanitize_text( $contributor['displayName'] ), 100 );
+				if ( '' !== $display_name ) {
+					$item['displayName'] = $display_name;
+				}
+			}
+
+			$sanitized[] = $item;
+		}
+
+		return array() === $sanitized ? null : $sanitized;
 	}
 
 	/**

@@ -238,6 +238,11 @@ class Test_Client_Authorize extends WP_UnitTestCase {
 			);
 		}
 
+		$query = array();
+		\parse_str( (string) \wp_parse_url( $result, \PHP_URL_QUERY ), $query );
+		$this->assertSame( Client::scopes(), $query['scope'] );
+		$this->assertStringContainsString( 'include:site.standard.authFull', $query['scope'] );
+
 		$stored = \get_transient( 'atmosphere_oauth_dpop_jwk' );
 
 		$this->assertIsString( $stored, 'authorize() must write the transient as an encrypted string blob.' );
