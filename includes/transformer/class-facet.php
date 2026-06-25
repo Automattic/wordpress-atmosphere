@@ -13,6 +13,7 @@ namespace Atmosphere\Transformer;
 \defined( 'ABSPATH' ) || exit;
 
 use function Atmosphere\get_connection;
+use function Atmosphere\appview_url;
 
 /**
  * Extracts facets from plain text.
@@ -198,16 +199,36 @@ class Facet {
 			case 'app.bsky.richtext.facet#mention':
 				/*
 				 * The mention facet only carries the DID, so link by DID.
-				 * bsky.app/profile/{did} resolves the same as the handle
-				 * form used elsewhere in Reaction_Sync.
+				 * The appview's /profile/{did} resolves the same as the
+				 * handle form used elsewhere in Reaction_Sync.
 				 */
 				$did  = $feature['did'] ?? '';
-				$href = '' === $did ? '' : \esc_url( 'https://bsky.app/profile/' . $did );
+				$href = '' === $did
+					? ''
+					: \esc_url(
+						appview_url(
+							'profile/' . $did,
+							array(
+								'type' => 'mention',
+								'did'  => $did,
+							)
+						)
+					);
 				break;
 
 			case 'app.bsky.richtext.facet#tag':
 				$tag  = $feature['tag'] ?? '';
-				$href = '' === $tag ? '' : \esc_url( 'https://bsky.app/hashtag/' . \rawurlencode( $tag ) );
+				$href = '' === $tag
+					? ''
+					: \esc_url(
+						appview_url(
+							'hashtag/' . \rawurlencode( $tag ),
+							array(
+								'type' => 'hashtag',
+								'tag'  => $tag,
+							)
+						)
+					);
 				break;
 
 			default:
