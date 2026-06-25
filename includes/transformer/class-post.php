@@ -15,7 +15,9 @@ namespace Atmosphere\Transformer;
 
 use Atmosphere\API;
 use function Atmosphere\debug_log;
+use function Atmosphere\grapheme_length;
 use function Atmosphere\sanitize_text;
+use function Atmosphere\truncate_graphemes;
 use function Atmosphere\truncate_text;
 
 /**
@@ -234,9 +236,10 @@ class Post extends Base {
 	 * touched.
 	 *
 	 * Counts are reported in the same unit the publish path clamps on —
-	 * code points (`mb_strlen`), as used by `truncate_text()` — so the
-	 * preview never says "within limit" for text the publisher would
-	 * shorten. They are measured against the user's *untruncated* text: a
+	 * graphemes, as used by `truncate_text()` and Bluesky's own composer — so
+	 * the preview's "X / 300" matches what the author sees on Bluesky and
+	 * never says "within limit" for text the publisher would shorten. They
+	 * are measured against the user's *untruncated* text: a
 	 * short-form post longer than the limit still publishes a clamped
 	 * record, but the panel surfaces the real length (e.g. "340 / 300") so
 	 * the author knows truncation will happen before they publish. Composed
@@ -297,7 +300,7 @@ class Post extends Base {
 				$measured = (string) ( $record['text'] ?? '' );
 			}
 
-			$characters  = \mb_strlen( $measured );
+			$characters  = grapheme_length( $measured );
 			$projected[] = array(
 				'characters' => $characters,
 				'over_limit' => $characters > $limit,
@@ -448,10 +451,10 @@ class Post extends Base {
 	/**
 	 * The custom text shaped into a Bluesky post body.
 	 *
-	 * Hard-clamped toward Bluesky's 300-grapheme limit via `truncate_text()`,
-	 * which clamps by `mb_strlen()` code points (conservative — every grapheme
-	 * is at least one code point), the same clamp the short-form path uses, so
-	 * an over-long custom text is shortened rather than rejected.
+	 * Hard-clamped to Bluesky's 300-grapheme limit via `truncate_text()`,
+	 * which counts graphemes the way Bluesky's composer does — the same clamp
+	 * the short-form path uses, so an over-long custom text is shortened
+	 * rather than rejected.
 	 *
 	 * @return string
 	 */
@@ -686,12 +689,16 @@ class Post extends Base {
 		$parts = \array_filter( array( $title, $excerpt, $permalink ) );
 		$text  = \implode( "\n\n", $parts );
 
-		if ( \mb_strlen( $text ) <= self::BLUESKY_MAX_GRAPHEMES ) {
+		if ( grapheme_length( $text ) <= self::BLUESKY_MAX_GRAPHEMES ) {
 			return $text;
 		}
 
-		// Reserve space for permalink + separators.
-		$reserved  = \mb_strlen( $permalink ) + 4;
+		/*
+		 * Reserve space for the permalink plus the one "\n\n" separator that
+		 * joins it to the prose below (the title/excerpt separator is already
+		 * inside $prose).
+		 */
+		$reserved  = grapheme_length( $permalink ) + 2;
 		$available = self::BLUESKY_MAX_GRAPHEMES - $reserved;
 
 		if ( $available <= 0 ) {
@@ -1529,7 +1536,7 @@ class Post extends Base {
 	 * cannot fit is not really "short", and routing it to the long-form
 	 * composition (excerpt + permalink + external card) gives the reader a
 	 * teaser plus a route back to the original instead of a sentence fragment
-	 * with no link home. The overflow length is measured with `mb_strlen` to
+	 * with no link home. The overflow length is measured in graphemes to
 	 * match `build_short_form_text()`'s own `truncate_text()` cap, so the gate
 	 * and the truncation it avoids agree.
 	 *
@@ -1547,7 +1554,7 @@ class Post extends Base {
 			return false;
 		}
 
-		if ( \mb_strlen( $this->render_post_content_plain( $post ) ) <= self::BLUESKY_MAX_GRAPHEMES ) {
+		if ( grapheme_length( $this->render_post_content_plain( $post ) ) <= self::BLUESKY_MAX_GRAPHEMES ) {
 			return true;
 		}
 
@@ -2068,14 +2075,14 @@ class Post extends Base {
 	 *   3. Hard cap: `$max - 1` chars + trailing ellipsis (a single
 	 *      unbroken token longer than the budget).
 	 *
-	 * Character length uses `mb_strlen`, matching the convention of
-	 * the existing `truncate_text()` helper. Preg offsets are byte
-	 * offsets against the `mb_substr`-clamped string; substr on a
-	 * match's byte-end is UTF-8-safe because matches end on valid
-	 * sequence boundaries.
+	 * Character length is measured in graphemes, matching the convention of
+	 * the `truncate_text()` helper and Bluesky's 300-character cap. Preg
+	 * offsets are byte offsets against the grapheme-clamped string; substr on
+	 * a match's byte-end is UTF-8-safe because matches end on valid sequence
+	 * boundaries.
 	 *
 	 * @param string $text            Input text.
-	 * @param int    $max             Maximum character length (mb_strlen).
+	 * @param int    $max             Maximum length in graphemes.
 	 * @param bool   $prefer_sentence Prefer a sentence boundary over a word boundary.
 	 * @return string
 	 */
@@ -2084,7 +2091,7 @@ class Post extends Base {
 			return '';
 		}
 
-		if ( \mb_strlen( $text ) <= $max ) {
+		if ( grapheme_length( $text ) <= $max ) {
 			return $text;
 		}
 
@@ -2092,7 +2099,7 @@ class Post extends Base {
 			return '…';
 		}
 
-		$clamped = \mb_substr( $text, 0, $max );
+		$clamped = truncate_graphemes( $text, $max );
 
 		if ( $prefer_sentence
 			&& \preg_match_all(
@@ -2112,8 +2119,8 @@ class Post extends Base {
 			return $word_cut;
 		}
 
-		// Hard cap. Reserve one character for the ellipsis.
-		return \mb_substr( $text, 0, \max( 1, $max - 1 ) ) . '…';
+		// Hard cap. Reserve one grapheme for the ellipsis.
+		return truncate_graphemes( $text, \max( 1, $max - 1 ) ) . '…';
 	}
 
 	/**
@@ -2125,7 +2132,7 @@ class Post extends Base {
 	 * @return bool
 	 */
 	private function requires_link_card_for_long_permalink(): bool {
-		return \mb_strlen( \get_permalink( $this->object ) ) >= self::BLUESKY_MAX_GRAPHEMES;
+		return grapheme_length( \get_permalink( $this->object ) ) >= self::BLUESKY_MAX_GRAPHEMES;
 	}
 
 	/**
@@ -2141,7 +2148,7 @@ class Post extends Base {
 	 * @return bool
 	 */
 	private function requires_link_card_for_teaser_thread(): bool {
-		return \mb_strlen( $this->teaser_thread_cta_text() ) > self::BLUESKY_MAX_GRAPHEMES;
+		return grapheme_length( $this->teaser_thread_cta_text() ) > self::BLUESKY_MAX_GRAPHEMES;
 	}
 
 	/**
@@ -2177,17 +2184,17 @@ class Post extends Base {
 		$permalink  = \get_permalink( $this->object );
 		$plain      = $this->render_post_content_plain( $this->object );
 
-		if ( \mb_strlen( $permalink ) >= $max_length ) {
+		if ( grapheme_length( $permalink ) >= $max_length ) {
 			return $this->truncate_to_budget( $permalink, $max_length, false );
 		}
 
-		$budget = $max_length - \mb_strlen( $permalink );
+		$budget = $max_length - grapheme_length( $permalink );
 
-		if ( $budget <= \mb_strlen( $separator ) ) {
+		if ( $budget <= grapheme_length( $separator ) ) {
 			return $permalink;
 		}
 
-		$body = $this->truncate_to_budget( $plain, $budget - \mb_strlen( $separator ), false );
+		$body = $this->truncate_to_budget( $plain, $budget - grapheme_length( $separator ), false );
 
 		return $body . $separator . $permalink;
 	}
@@ -2444,9 +2451,10 @@ class Post extends Base {
 
 		// Confirm the hook IS the whole body, not a truncated prefix.
 		// 280 mirrors `compute_default_teaser_thread()`'s body-as-hook
-		// budget; for a body at or below that length the hook
-		// equals the body verbatim and `chunk_source` is empty.
-		return \mb_strlen( $this->render_post_content_plain( $this->object ) ) <= 280;
+		// budget, which `truncate_to_budget()` measures in graphemes; for a
+		// body at or below that length the hook equals the body verbatim and
+		// `chunk_source` is empty.
+		return grapheme_length( $this->render_post_content_plain( $this->object ) ) <= 280;
 	}
 
 	/**
