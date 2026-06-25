@@ -22,6 +22,9 @@ class Test_Facet extends WP_UnitTestCase {
 	 * cached) in one test would otherwise leak into the next.
 	 */
 	public function tear_down() {
+		// Drop any handle-resolution HTTP stub a test registered.
+		\remove_all_filters( 'pre_http_request' );
+
 		$cache = new \ReflectionProperty( Facet::class, 'resolution_cache' );
 		$cache->setAccessible( true );
 		$cache->setValue( null, array() );
@@ -41,7 +44,7 @@ class Test_Facet extends WP_UnitTestCase {
 	 * @param array<string,string> $map Handle => DID to return.
 	 */
 	private function mock_handle_resolution( array $map ) {
-		add_filter(
+		\add_filter(
 			'pre_http_request',
 			static function ( $pre, $args, $url ) use ( $map ) {
 				foreach ( $map as $handle => $did ) {
@@ -157,6 +160,32 @@ class Test_Facet extends WP_UnitTestCase {
 		);
 
 		$this->assertCount( 0, $mention_facets );
+	}
+
+	/**
+	 * The domain half of an email address or an ActivityPub `@user@domain`
+	 * handle is not a mention, so it neither resolves nor produces a facet —
+	 * and never triggers a resolution lookup. Pins the boundary guard on
+	 * `MENTION_PATTERN`.
+	 */
+	public function test_email_and_webfinger_domain_halves_are_not_mentions() {
+		// A tripwire on pre_http_request: any lookup here is a failure.
+		\add_filter(
+			'pre_http_request',
+			static function () {
+				throw new \RuntimeException( 'Unexpected handle resolution lookup.' );
+			},
+			1
+		);
+
+		$mention_facets = static fn( string $text ) => \array_filter(
+			Facet::extract( $text ),
+			static fn( $facet ) => 'app.bsky.richtext.facet#mention' === ( $facet['features'][0]['$type'] ?? '' )
+		);
+
+		$this->assertCount( 0, $mention_facets( 'Mail me at bob@example.com today' ) );
+		$this->assertCount( 0, $mention_facets( 'Hi @pfefferle@notiz.blog there' ) );
+		$this->assertSame( array(), Facet::resolve_handles( 'bob@example.com and @pfefferle@notiz.blog' ) );
 	}
 
 	/**

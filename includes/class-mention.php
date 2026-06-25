@@ -86,9 +86,17 @@ class Mention {
 			if ( \preg_match( '#^<(/)?([a-z0-9]+)\b[^>]*>$#i', $chunk, $m ) ) {
 				$tag = \strtolower( $m[2] );
 				if ( '/' === $m[1] ) {
-					$i = \array_search( $tag, $tag_stack, true );
-					if ( false !== $i ) {
-						$tag_stack = \array_slice( $tag_stack, 0, $i );
+					/*
+					 * Unwind to the *most recently* opened tag of this name,
+					 * not the first. For well-formed nesting the match is the
+					 * stack top, so only it is popped; with same-name nesting
+					 * (e.g. `<code><code>…</code>…</code>`) popping the first
+					 * match would drop the still-open outer tag and linkify
+					 * text that is in fact still protected.
+					 */
+					$keys = \array_keys( $tag_stack, $tag, true );
+					if ( ! empty( $keys ) ) {
+						$tag_stack = \array_slice( $tag_stack, 0, \end( $keys ) );
 					}
 				} else {
 					$tag_stack[] = $tag;

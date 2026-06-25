@@ -68,6 +68,16 @@ class Test_Mention extends WP_UnitTestCase {
 	}
 
 	/**
+	 * Nested same-name protected tags unwind one level at a time, so a handle
+	 * still inside the outer tag stays unlinked once the inner tag closes.
+	 */
+	public function test_skips_nested_same_name_protected_tags() {
+		$html = '<p><code>a<code>b</code>@alice.bsky.social</code></p>';
+
+		$this->assertSame( $html, Mention::the_content( $html ) );
+	}
+
+	/**
 	 * The domain half of an ActivityPub @user@domain.tld handle is not linked.
 	 */
 	public function test_skips_activitypub_webfinger_form() {

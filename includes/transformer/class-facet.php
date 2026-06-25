@@ -29,9 +29,15 @@ class Facet {
 	 * least two dot-separated labels, mirroring DNS-name handle syntax.
 	 * Shared by {@see self::mentions()} and {@see self::resolve_handles()}.
 	 *
+	 * The leading `(?<![\w@.])` boundary (matching the display-side
+	 * {@see \Atmosphere\Mention::linkify()}) skips the domain half of an
+	 * email address (`bob@example.com`) or an ActivityPub `@user@domain.tld`
+	 * handle. Without it those false positives would now drive real DNS/HTTP
+	 * resolution and could even mint a bogus `#mention` facet.
+	 *
 	 * @var string
 	 */
-	private const MENTION_PATTERN = '/@([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+)/u';
+	private const MENTION_PATTERN = '/(?<![\w@.])@([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+)/u';
 
 	/**
 	 * Request-scoped memo of handle => DID resolutions.

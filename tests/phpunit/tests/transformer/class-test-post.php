@@ -33,6 +33,9 @@ class Test_Post extends WP_UnitTestCase {
 		\remove_all_filters( 'atmosphere_post_embed' );
 		\remove_all_actions( 'atmosphere_long_form_strategy_downgraded' );
 
+		// Drop any handle-resolution HTTP stub mock_handle_resolution() set.
+		\remove_all_filters( 'pre_http_request' );
+
 		// Mention resolution memoizes into a static; clear it between tests.
 		$cache = new \ReflectionProperty( Facet::class, 'resolution_cache' );
 		$cache->setAccessible( true );
@@ -97,8 +100,6 @@ class Test_Post extends WP_UnitTestCase {
 		\ob_start();
 		$encoder( $image );
 		$bytes = (string) \ob_get_clean();
-
-		\imagedestroy( $image );
 
 		return $bytes;
 	}
