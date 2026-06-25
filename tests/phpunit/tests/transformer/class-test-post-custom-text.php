@@ -26,7 +26,42 @@ class Test_Post_Custom_Text extends WP_UnitTestCase {
 		\remove_all_filters( 'atmosphere_long_form_composition' );
 		\remove_all_filters( 'atmosphere_is_short_form_post' );
 		\remove_all_filters( 'atmosphere_transform_bsky_post' );
+		\remove_all_filters( 'pre_http_request' );
+
+		$cache = new \ReflectionProperty( \Atmosphere\Transformer\Facet::class, 'resolution_cache' );
+		$cache->setAccessible( true );
+		$cache->setValue( null, array() );
+
 		parent::tear_down();
+	}
+
+	/**
+	 * Stub AT Protocol handle resolution over the HTTPS well-known endpoint so
+	 * mention tests stay offline and deterministic. A handle absent from the
+	 * map resolves to nothing.
+	 *
+	 * @param array<string,string> $map Handle => DID to return.
+	 */
+	private function mock_handle_resolution( array $map ) {
+		\add_filter(
+			'pre_http_request',
+			static function ( $pre, $args, $url ) use ( $map ) {
+				foreach ( $map as $handle => $did ) {
+					if ( 'https://' . $handle . '/.well-known/atproto-did' === $url ) {
+						return array(
+							'body'     => $did,
+							'response' => array(
+								'code'    => '' === $did ? 404 : 200,
+								'message' => '' === $did ? 'Not Found' : 'OK',
+							),
+						);
+					}
+				}
+				return $pre;
+			},
+			10,
+			3
+		);
 	}
 
 	/**
@@ -300,5 +335,77 @@ class Test_Post_Custom_Text extends WP_UnitTestCase {
 		$blanked = new Post( $post );
 		$blanked->set_custom_text_override( '' );
 		$this->assertSame( 'link-card', $blanked->project()['strategy'] );
+	}
+
+	/**
+	 * Custom text takes precedence over the automatic composition, so a
+	 * mention buried only in the post body is NOT carried into a custom-text
+	 * record. Injecting a handle the author chose to omit would violate the
+	 * "post exactly what I wrote" contract — and the body mention is never
+	 * even resolved (a tripwire on outbound HTTP asserts no lookup happens).
+	 *
+	 * @covers ::transform
+	 */
+	public function test_custom_text_does_not_carry_body_only_mention() {
+		// Any handle-resolution lookup here is a failure: the custom-text path
+		// must not run the body-mention carry-over.
+		\add_filter(
+			'pre_http_request',
+			static function () {
+				throw new \RuntimeException( 'Unexpected handle resolution lookup on the custom-text path.' );
+			},
+			1
+		);
+
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'A Titled Post',
+				'post_content' => 'Body that quietly names @alice.bsky.social deep inside.',
+			)
+		);
+		\update_post_meta( $post->ID, ATMOSPHERE_META_CUSTOM_TEXT, 'My own words, no handles.' );
+
+		$record = ( new Post( $post ) )->transform();
+
+		$this->assertSame( 'My own words, no handles.', $record['text'] );
+		$this->assertStringNotContainsString( '@alice.bsky.social', $record['text'] );
+
+		$mention_facets = \array_filter(
+			$record['facets'] ?? array(),
+			static fn( $facet ) => 'app.bsky.richtext.facet#mention' === ( $facet['features'][0]['$type'] ?? '' )
+		);
+		$this->assertCount( 0, $mention_facets, 'A body-only mention must not be carried into custom text.' );
+	}
+
+	/**
+	 * A mention the author types directly into the custom Bluesky text still
+	 * produces a `#mention` facet and notifies the account: facet extraction
+	 * runs on the final record text whichever branch composed it.
+	 *
+	 * @covers ::transform
+	 */
+	public function test_custom_text_mention_still_produces_facet() {
+		$this->mock_handle_resolution( array( 'alice.bsky.social' => 'did:plc:alice' ) );
+
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'A Titled Post',
+				'post_content' => 'The full blog body.',
+			)
+		);
+		\update_post_meta( $post->ID, ATMOSPHERE_META_CUSTOM_TEXT, 'Big thanks to @alice.bsky.social for this!' );
+
+		$record = ( new Post( $post ) )->transform();
+
+		$this->assertSame( 'Big thanks to @alice.bsky.social for this!', $record['text'] );
+
+		$mention_facets = \array_values(
+			\array_filter(
+				$record['facets'] ?? array(),
+				static fn( $facet ) => 'app.bsky.richtext.facet#mention' === ( $facet['features'][0]['$type'] ?? '' )
+			)
+		);
+		$this->assertCount( 1, $mention_facets, 'A handle typed into custom text must still notify.' );
+		$this->assertSame( 'did:plc:alice', $mention_facets[0]['features'][0]['did'] );
 	}
 }
