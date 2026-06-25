@@ -239,14 +239,84 @@ function truncate_graphemes( string $text, int $max_graphemes ): string {
 }
 
 /**
- * Truncate text to a character limit, breaking at word boundaries.
+ * Count the graphemes in a string the way Bluesky's composer does.
+ *
+ * Bluesky measures its 300-character post cap in graphemes, so a ZWJ
+ * family emoji (`👨‍👩‍👧‍👦`, many code points) counts as one. Falls back to
+ * `mb_strlen()` (code points) when the `intl` extension is missing or the
+ * string is invalid UTF-8 — code points are always >= graphemes, so the
+ * fallback stays conservative and never under-counts a real grapheme.
+ *
+ * @param string $text Text to measure.
+ * @return int Grapheme count.
+ */
+function grapheme_length( string $text ): int {
+	if ( \function_exists( 'grapheme_strlen' ) ) {
+		$length = \grapheme_strlen( $text );
+		if ( \is_int( $length ) ) {
+			return $length;
+		}
+	}
+
+	return \mb_strlen( $text );
+}
+
+/**
+ * Truncate text to a grapheme limit, breaking at word boundaries.
+ *
+ * Counts graphemes (not code points), so the cut matches Bluesky's own
+ * 300-character measurement — a multi-code-point cluster like a ZWJ emoji
+ * costs one against the limit and is never split into mojibake. Falls back
+ * to code-point counting when `intl` is unavailable or the string is
+ * invalid UTF-8.
  *
  * @param string $text   Text to truncate.
- * @param int    $limit  Maximum characters (mb_strlen code points).
+ * @param int    $limit  Maximum length in graphemes.
  * @param string $marker Ellipsis marker.
  * @return string
  */
 function truncate_text( string $text, int $limit = 300, string $marker = '...' ): string {
+	if ( $limit <= 0 ) {
+		return '';
+	}
+
+	/*
+	 * No room for the marker (e.g. a 1-grapheme budget with a "..." marker):
+	 * hard-clamp to the limit without one. Skipping this guard would leave
+	 * the cut length below negative, and `grapheme_substr()` / `mb_substr()`
+	 * read a negative length as "drop the last N" — returning almost the
+	 * whole string and overshooting the limit.
+	 */
+	if ( $limit <= grapheme_length( $marker ) ) {
+		return truncate_graphemes( $text, $limit );
+	}
+
+	if ( \function_exists( 'grapheme_strlen' ) ) {
+		$length = \grapheme_strlen( $text );
+
+		if ( \is_int( $length ) ) {
+			if ( $length <= $limit ) {
+				return $text;
+			}
+
+			$cut = \grapheme_substr( $text, 0, $limit - grapheme_length( $marker ) );
+
+			if ( \is_string( $cut ) ) {
+				$last_word = \grapheme_strrpos( $cut, ' ' );
+
+				if ( false !== $last_word && $last_word > $limit * 0.8 ) {
+					$clipped = \grapheme_substr( $cut, 0, $last_word );
+					if ( \is_string( $clipped ) ) {
+						$cut = $clipped;
+					}
+				}
+
+				return $cut . $marker;
+			}
+		}
+	}
+
+	// Fallback: code-point counting (intl missing or invalid UTF-8).
 	if ( \mb_strlen( $text ) <= $limit ) {
 		return $text;
 	}
