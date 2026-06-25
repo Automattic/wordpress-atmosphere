@@ -595,16 +595,42 @@ class Test_Functions extends \WP_UnitTestCase {
 	}
 
 	/**
-	 * A non-http(s) scheme is clamped to https.
+	 * A non-http(s) scheme is clamped to https — including a javascript:
+	 * scheme, which must never survive into the link host.
 	 */
 	public function test_appview_url_clamps_unsupported_scheme() {
-		$callback = static function () {
+		$ftp = static function () {
 			return 'ftp://example.test';
+		};
+		\add_filter( 'atmosphere_appview_host', $ftp );
+		$this->assertSame(
+			'https://example.test/profile/did:plc:abc123',
+			appview_url( 'profile/did:plc:abc123' )
+		);
+		\remove_filter( 'atmosphere_appview_host', $ftp );
+
+		$js = static function () {
+			return 'javascript://evil.test';
+		};
+		\add_filter( 'atmosphere_appview_host', $js );
+		$url = appview_url( 'profile/did:plc:abc123' );
+		\remove_filter( 'atmosphere_appview_host', $js );
+
+		$this->assertSame( 'https://evil.test/profile/did:plc:abc123', $url );
+		$this->assertStringNotContainsString( 'javascript', $url );
+	}
+
+	/**
+	 * The host is lower-cased so a mixed-case filter return is normalized.
+	 */
+	public function test_appview_url_lowercases_host() {
+		$callback = static function () {
+			return 'Deer.Social/AtBlue';
 		};
 		\add_filter( 'atmosphere_appview_host', $callback );
 
 		$this->assertSame(
-			'https://example.test/profile/did:plc:abc123',
+			'https://deer.social/AtBlue/profile/did:plc:abc123',
 			appview_url( 'profile/did:plc:abc123' )
 		);
 
@@ -612,11 +638,34 @@ class Test_Functions extends \WP_UnitTestCase {
 	}
 
 	/**
-	 * An empty or hostless filtered value falls back to the default appview.
+	 * An empty filtered value falls back to the default appview silently
+	 * (no _doing_it_wrong — an empty return just means "use the default").
 	 */
 	public function test_appview_url_falls_back_on_empty_host() {
+		foreach ( array( '   ', '' ) as $empty ) {
+			$callback = static function () use ( $empty ) {
+				return $empty;
+			};
+			\add_filter( 'atmosphere_appview_host', $callback );
+
+			$this->assertSame(
+				'https://bsky.app/profile/did:plc:abc123',
+				appview_url( 'profile/did:plc:abc123' )
+			);
+
+			\remove_filter( 'atmosphere_appview_host', $callback );
+		}
+	}
+
+	/**
+	 * A non-empty but unparseable filtered value falls back to the default
+	 * appview and flags _doing_it_wrong (the callback returned garbage).
+	 */
+	public function test_appview_url_warns_on_malformed_host() {
+		$this->setExpectedIncorrectUsage( 'Atmosphere\appview_base_url' );
+
 		$callback = static function () {
-			return '   ';
+			return 'https://:80';
 		};
 		\add_filter( 'atmosphere_appview_host', $callback );
 

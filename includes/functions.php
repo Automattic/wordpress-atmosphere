@@ -103,9 +103,17 @@ function appview_url( string $path, array $context = array() ): string {
  * Normalize a filtered appview base into a clean 'scheme://host[:port][/prefix]'.
  *
  * Accepts a bare host, a host with a path prefix, with or without a scheme or
- * trailing slash, and rebuilds it without empty or doubled segments. The scheme
- * is clamped to http/https, and an unparseable or hostless value falls back to
- * the default 'https://bsky.app'.
+ * trailing slash, and rebuilds it without empty or doubled segments. The host is
+ * lower-cased and the scheme is clamped to http/https. An empty value falls back
+ * to 'https://bsky.app' silently; a non-empty value that yields no host falls
+ * back too, but flags `_doing_it_wrong` since the callback returned something
+ * unusable.
+ *
+ * These URLs are display links — rendered for users to click, or stored as
+ * comment author/source links — and are always escaped at the call site. They
+ * are never fetched server-side, so there is no SSRF surface, and IP-literal or
+ * localhost hosts are intentionally allowed for self-hosted appviews. The value
+ * comes from a site-owner filter callback, not from external request input.
  *
  * @param string $base Filtered base value, e.g. 'something.social/atblue/'.
  * @return string Clean base with no trailing slash, e.g. 'https://something.social/atblue'.
@@ -113,15 +121,25 @@ function appview_url( string $path, array $context = array() ): string {
 function appview_base_url( string $base ): string {
 	$base = \trim( $base );
 
+	// An empty value just means "use the default appview" — nothing to flag.
+	if ( '' === $base ) {
+		return 'https://bsky.app';
+	}
+
 	// Ensure a scheme so wp_parse_url splits the host from any path prefix.
 	if ( ! \preg_match( '#^[a-z][a-z0-9+.-]*://#i', $base ) ) {
 		$base = 'https://' . \ltrim( $base, '/' );
 	}
 
 	$parts = \wp_parse_url( $base );
-	$host  = \is_array( $parts ) ? ( $parts['host'] ?? '' ) : '';
+	$host  = \is_array( $parts ) ? \strtolower( $parts['host'] ?? '' ) : '';
 
 	if ( '' === $host ) {
+		\_doing_it_wrong(
+			__FUNCTION__,
+			\esc_html__( 'atmosphere_appview_host must return a host (optionally with a scheme and path prefix); falling back to bsky.app.', 'atmosphere' ),
+			'unreleased'
+		);
 		return 'https://bsky.app';
 	}
 
