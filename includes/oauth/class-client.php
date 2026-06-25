@@ -101,8 +101,10 @@ class Client {
 		'identity:handle',
 
 		/*
-		 * Standard.site's published permission set for document/publication
-		 * integrations.
+		 * Standard.site's published full permission set. It also grants
+		 * social collections, but ATmosphere keeps the documented set for
+		 * Standard.site compatibility while leaving social record writes
+		 * out of its publishing flow.
 		 *
 		 * Permission set: https://standard.site/docs/permissions.
 		 */
