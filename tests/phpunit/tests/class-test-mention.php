@@ -32,6 +32,24 @@ class Test_Mention extends WP_UnitTestCase {
 	}
 
 	/**
+	 * The profile link honours the `atmosphere_appview_host` filter so a
+	 * self-hosted appview rewrites the mention target.
+	 */
+	public function test_links_honour_appview_host_filter() {
+		$filter = static fn() => 'deer.social';
+		\add_filter( 'atmosphere_appview_host', $filter );
+
+		$out = Mention::the_content( '<p>Hello @alice.bsky.social!</p>' );
+
+		\remove_filter( 'atmosphere_appview_host', $filter );
+
+		$this->assertStringContainsString(
+			'<a class="atmosphere-mention" href="https://deer.social/profile/alice.bsky.social">@alice.bsky.social</a>',
+			$out
+		);
+	}
+
+	/**
 	 * A @mention already inside an anchor is left alone (no double-link).
 	 */
 	public function test_skips_existing_anchor() {

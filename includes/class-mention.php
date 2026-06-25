@@ -127,9 +127,11 @@ class Mention {
 	}
 
 	/**
-	 * Replace `@handle.tld` with a link to the Bluesky profile.
+	 * Replace `@handle.tld` with a link to the appview profile.
 	 *
-	 * No DNS: the handle goes straight into the bsky.app profile URL, which
+	 * No DNS: the handle goes straight into the appview `profile/<handle>`
+	 * URL (via {@see appview_url()}, so self-hosted appviews configured
+	 * through the `atmosphere_appview_host` filter are honoured), which
 	 * resolves the handle itself. A negative lookbehind on the `@` skips the
 	 * domain half of an ActivityPub `@user@domain.tld` handle (and ordinary
 	 * email addresses) — a preceding word char, `@`, or `.` disqualifies the
@@ -145,7 +147,13 @@ class Mention {
 			$pattern,
 			static function ( array $m ): string {
 				$handle = $m[1];
-				$url    = 'https://bsky.app/profile/' . $handle;
+				$url    = appview_url(
+					'profile/' . $handle,
+					array(
+						'type'   => 'mention',
+						'handle' => $handle,
+					)
+				);
 
 				return \sprintf(
 					'<a class="atmosphere-mention" href="%s">@%s</a>',
