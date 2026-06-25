@@ -126,4 +126,46 @@ class Test_Settings_Fields extends \WP_UnitTestCase {
 		$this->assertStringNotContainsString( 'href="http://pds.example.com/account"', $html );
 		$this->assertStringContainsString( 'Disconnect', $html );
 	}
+
+	/**
+	 * PDS endpoints with userinfo must not become admin links.
+	 */
+	public function test_connected_section_hides_account_management_link_for_pds_endpoint_with_userinfo(): void {
+		\update_option(
+			'atmosphere_connection',
+			array(
+				'handle'       => 'alice.example.com',
+				'did'          => 'did:plc:alice',
+				'pds_endpoint' => 'https://pds.example.com@evil.example',
+				'access_token' => 'token',
+			)
+		);
+
+		$html = $this->render_connected_section();
+
+		$this->assertStringNotContainsString( 'Manage AT Protocol account', $html );
+		$this->assertStringNotContainsString( 'href="https://evil.example/account"', $html );
+		$this->assertStringContainsString( 'Disconnect', $html );
+	}
+
+	/**
+	 * Valid IPv6 literal PDS hosts can still render account-management links.
+	 */
+	public function test_connected_section_renders_account_management_link_for_ipv6_pds_endpoint(): void {
+		\update_option(
+			'atmosphere_connection',
+			array(
+				'handle'       => 'alice.example.com',
+				'did'          => 'did:plc:alice',
+				'pds_endpoint' => 'https://[2001:db8::1]:8443',
+				'access_token' => 'token',
+			)
+		);
+
+		$html = $this->render_connected_section();
+
+		$this->assertStringContainsString( 'Manage AT Protocol account', $html );
+		$this->assertStringContainsString( 'href="https://[2001:db8::1]:8443/account"', $html );
+		$this->assertStringContainsString( 'Disconnect', $html );
+	}
 }

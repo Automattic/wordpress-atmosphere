@@ -240,11 +240,21 @@ class Settings_Fields {
 
 		$parts = \wp_parse_url( $pds_endpoint );
 
-		if ( ! \is_array( $parts ) || 'https' !== ( $parts['scheme'] ?? '' ) || empty( $parts['host'] ) ) {
+		if (
+			! \is_array( $parts )
+			|| 'https' !== ( $parts['scheme'] ?? '' )
+			|| empty( $parts['host'] )
+			|| isset( $parts['user'] )
+			|| isset( $parts['pass'] )
+		) {
 			return '';
 		}
 
 		$host = $parts['host'];
+		if ( \str_contains( $host, ':' ) && ! \str_starts_with( $host, '[' ) ) {
+			$host = '[' . $host . ']';
+		}
+
 		$port = isset( $parts['port'] ) ? ':' . (int) $parts['port'] : '';
 
 		return "https://{$host}{$port}/account";
