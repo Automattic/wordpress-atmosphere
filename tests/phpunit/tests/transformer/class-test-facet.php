@@ -582,4 +582,37 @@ class Test_Facet extends WP_UnitTestCase {
 
 		$this->assertSame( $text, Facet::apply( $text, $facets ) );
 	}
+
+	/**
+	 * The atmosphere_appview_host filter changes rendered facet links.
+	 */
+	public function test_apply_honours_appview_host_filter() {
+		$callback = static function () {
+			return 'deer.social';
+		};
+		\add_filter( 'atmosphere_appview_host', $callback );
+
+		$text   = 'Love #WordPress here';
+		$facets = array(
+			array(
+				'index'    => array(
+					'byteStart' => 5,
+					'byteEnd'   => 15,
+				),
+				'features' => array(
+					array(
+						'$type' => 'app.bsky.richtext.facet#tag',
+						'tag'   => 'WordPress',
+					),
+				),
+			),
+		);
+
+		$result = Facet::apply( $text, $facets );
+
+		\remove_filter( 'atmosphere_appview_host', $callback );
+
+		$this->assertStringContainsString( 'https://deer.social/hashtag/WordPress', $result );
+		$this->assertStringNotContainsString( 'bsky.app', $result );
+	}
 }

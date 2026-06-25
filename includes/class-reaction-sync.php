@@ -725,7 +725,15 @@ class Reaction_Sync {
 			'comment_post_ID'      => $post_id,
 			'comment_parent'       => $comment_parent,
 			'comment_author'       => $author_name,
-			'comment_author_url'   => \esc_url_raw( 'https://bsky.app/profile/' . \rawurlencode( $author_handle ) ),
+			'comment_author_url'   => \esc_url_raw(
+				appview_url(
+					'profile/' . \rawurlencode( $author_handle ),
+					array(
+						'type'   => 'profile',
+						'handle' => $author_handle,
+					)
+				)
+			),
 			'comment_author_email' => '',
 			'comment_author_IP'    => '',
 			'comment_content'      => \wp_kses_post( $content ),
@@ -873,10 +881,11 @@ class Reaction_Sync {
 	}
 
 	/**
-	 * Build the https://bsky.app/... web URL for a given AT-URI + handle.
+	 * Build the appview web URL for a given AT-URI + handle.
 	 *
-	 * Only app.bsky.feed.post records have a corresponding bsky.app
-	 * web page; like and repost rkeys don't, so those return ''.
+	 * Only app.bsky.feed.post records have a corresponding appview web
+	 * page; like and repost rkeys don't, so those return ''. The host
+	 * defaults to `bsky.app` and is filterable via `atmosphere_appview_host`.
 	 *
 	 * @param string $at_uri AT-URI.
 	 * @param string $handle Bluesky handle.
@@ -894,7 +903,16 @@ class Reaction_Sync {
 			return '';
 		}
 
-		return \esc_url_raw( 'https://bsky.app/profile/' . \rawurlencode( $handle ) . '/post/' . $rkey );
+		return \esc_url_raw(
+			appview_url(
+				'profile/' . \rawurlencode( $handle ) . '/post/' . $rkey,
+				array(
+					'type'   => 'post',
+					'handle' => $handle,
+					'rkey'   => $rkey,
+				)
+			)
+		);
 	}
 
 	/**
