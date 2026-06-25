@@ -27,10 +27,12 @@ class Client {
 	 *
 	 * `identity:handle` is required for `com.atproto.identity.updateHandle`
 	 * — the canonical AT Protocol permission scope per
-	 * https://atproto.com/specs/permission. `transition:generic` is the
-	 * App Password-equivalent bucket and explicitly does not include
-	 * identity operations, so it must be paired with `identity:handle`
-	 * for any flow that lets users change their handle through the PDS.
+	 * https://atproto.com/specs/permission. `repo:*` scopes are deliberately
+	 * limited to the three collections ATmosphere writes instead of asking
+	 * for the App Password-equivalent `transition:generic` bucket.
+	 * `blob:image/*` covers uploaded post images, site icons, and cover
+	 * images, while the `rpc:*` scopes cover the Bluesky AppView reads used
+	 * by reaction sync.
 	 * `include:site.standard.authFull` is the documented Standard.site
 	 * permission set for writing publication and document records.
 	 *
@@ -40,9 +42,19 @@ class Client {
 	 * server validates the requested scope against the metadata; a drift
 	 * silently downgrades every connection to whichever value is smaller.
 	 *
-	 * @var string
+	 * @var string[]
 	 */
-	private const SCOPES = 'atproto transition:generic identity:handle include:site.standard.authFull';
+	private const SCOPES = array(
+		'atproto',
+		'repo:app.bsky.feed.post',
+		'repo:site.standard.document',
+		'repo:site.standard.publication',
+		'blob:image/*',
+		'rpc:app.bsky.actor.getProfile?aud=did:web:api.bsky.app%23bsky_appview',
+		'rpc:app.bsky.notification.listNotifications?aud=did:web:api.bsky.app%23bsky_appview',
+		'identity:handle',
+		'include:site.standard.authFull',
+	);
 
 	/**
 	 * `wp_options` row name used as the cross-process refresh lock.
@@ -82,7 +94,7 @@ class Client {
 	 * @return string
 	 */
 	public static function scopes(): string {
-		return self::SCOPES;
+		return \implode( ' ', self::SCOPES );
 	}
 
 	/**
@@ -237,7 +249,7 @@ class Client {
 			'client_id'             => self::client_id(),
 			'redirect_uri'          => self::redirect_uri(),
 			'response_type'         => 'code',
-			'scope'                 => self::SCOPES,
+			'scope'                 => self::scopes(),
 			'state'                 => $state,
 			'code_challenge'        => $challenge,
 			'code_challenge_method' => 'S256',
@@ -276,7 +288,7 @@ class Client {
 			'client_id'             => self::client_id(),
 			'redirect_uri'          => self::redirect_uri(),
 			'response_type'         => 'code',
-			'scope'                 => self::SCOPES,
+			'scope'                 => self::scopes(),
 			'state'                 => $state,
 			'code_challenge'        => $challenge,
 			'code_challenge_method' => 'S256',
