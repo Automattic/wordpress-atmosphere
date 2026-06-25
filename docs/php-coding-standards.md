@@ -223,6 +223,8 @@ use function Atmosphere\is_connected;
 \apply_filters( 'atmosphere_backfill_query_chunk_size',   500 );
 \apply_filters( 'atmosphere_oauth_redirect_uri',          $uri );
 \apply_filters( 'atmosphere_client_metadata',             $metadata );
+\apply_filters( 'atmosphere_appview_host',                'bsky.app', $path, $context ); // Host/subpath for appview web links; normalized; $context keys: type|did|handle|rkey|tag.
+\apply_filters( 'atmosphere_appview_url',                 $url, $path, $context );        // Whole assembled appview link; rewrite the route from $context.
 ```
 
 **Actions:**

@@ -9,6 +9,7 @@ namespace Atmosphere\Tests;
 
 use function Atmosphere\parse_at_uri;
 use function Atmosphere\build_at_uri;
+use function Atmosphere\appview_url;
 use function Atmosphere\sanitize_text;
 use function Atmosphere\truncate_text;
 use function Atmosphere\truncate_graphemes;
@@ -507,5 +508,305 @@ class Test_Functions extends \WP_UnitTestCase {
 		$this->assertSame( 1, \substr_count( $contents, '[atmosphere] first line' ) );
 		$this->assertStringNotContainsString( "first line\n", $contents );
 		$this->assertStringNotContainsString( "first line\r", $contents );
+	}
+
+	/**
+	 * Default host yields a bsky.app URL.
+	 */
+	public function test_appview_url_default_host() {
+		$this->assertSame(
+			'https://bsky.app/profile/did:plc:abc123',
+			appview_url( 'profile/did:plc:abc123' )
+		);
+	}
+
+	/**
+	 * A filter can override the appview host.
+	 */
+	public function test_appview_url_filter_overrides_host() {
+		$callback = static function () {
+			return 'deer.social';
+		};
+		\add_filter( 'atmosphere_appview_host', $callback );
+
+		$this->assertSame(
+			'https://deer.social/profile/did:plc:abc123',
+			appview_url( 'profile/did:plc:abc123' )
+		);
+
+		\remove_filter( 'atmosphere_appview_host', $callback );
+	}
+
+	/**
+	 * The filter receives the path and context arguments.
+	 */
+	public function test_appview_url_filter_receives_path_and_context() {
+		$seen     = array();
+		$callback = static function ( $host, $path, $context ) use ( &$seen ) {
+			$seen = array(
+				'host'    => $host,
+				'path'    => $path,
+				'context' => $context,
+			);
+			return $host;
+		};
+		\add_filter( 'atmosphere_appview_host', $callback, 10, 3 );
+
+		appview_url(
+			'profile/did:plc:abc123/post/3kabc',
+			array(
+				'type' => 'post',
+				'did'  => 'did:plc:abc123',
+				'rkey' => '3kabc',
+			)
+		);
+
+		\remove_filter( 'atmosphere_appview_host', $callback, 10 );
+
+		$this->assertSame( 'bsky.app', $seen['host'] );
+		$this->assertSame( 'profile/did:plc:abc123/post/3kabc', $seen['path'] );
+		$this->assertSame( 'post', $seen['context']['type'] );
+		$this->assertSame( 'did:plc:abc123', $seen['context']['did'] );
+		$this->assertSame( '3kabc', $seen['context']['rkey'] );
+	}
+
+	/**
+	 * A callback can vary the host by context type.
+	 */
+	public function test_appview_url_host_varies_by_context_type() {
+		$callback = static function ( $host, $path, $context ) {
+			return 'hashtag' === ( $context['type'] ?? '' ) ? 'bsky.app' : 'deer.social';
+		};
+		\add_filter( 'atmosphere_appview_host', $callback, 10, 3 );
+
+		$profile = appview_url( 'profile/did:plc:abc123', array( 'type' => 'profile' ) );
+		$hashtag = appview_url( 'hashtag/WordPress', array( 'type' => 'hashtag' ) );
+
+		\remove_filter( 'atmosphere_appview_host', $callback, 10 );
+
+		$this->assertSame( 'https://deer.social/profile/did:plc:abc123', $profile );
+		$this->assertSame( 'https://bsky.app/hashtag/WordPress', $hashtag );
+	}
+
+	/**
+	 * The helper returns an unescaped URL (callers own escaping).
+	 */
+	public function test_appview_url_returns_unescaped() {
+		// An ampersand in the path is returned verbatim, not entity-encoded.
+		$this->assertSame(
+			'https://bsky.app/profile/a&b',
+			appview_url( 'profile/a&b' )
+		);
+	}
+
+	/**
+	 * A filtered host can include a path prefix (appview on a subpath).
+	 */
+	public function test_appview_url_host_with_path_prefix() {
+		$callback = static function () {
+			return 'something.social/atblue';
+		};
+		\add_filter( 'atmosphere_appview_host', $callback );
+
+		$this->assertSame(
+			'https://something.social/atblue/profile/did:plc:abc123',
+			appview_url( 'profile/did:plc:abc123' )
+		);
+
+		\remove_filter( 'atmosphere_appview_host', $callback );
+	}
+
+	/**
+	 * A filtered host is normalized: a scheme and trailing slash are cleaned
+	 * up so the join never produces doubled or empty segments.
+	 */
+	public function test_appview_url_host_is_normalized() {
+		$callback = static function () {
+			return 'https://sub.deer.social/atblue/';
+		};
+		\add_filter( 'atmosphere_appview_host', $callback );
+
+		$this->assertSame(
+			'https://sub.deer.social/atblue/hashtag/WordPress',
+			appview_url( 'hashtag/WordPress' )
+		);
+
+		\remove_filter( 'atmosphere_appview_host', $callback );
+	}
+
+	/**
+	 * A bare host with a trailing slash does not produce a double slash.
+	 */
+	public function test_appview_url_host_trailing_slash() {
+		$callback = static function () {
+			return 'deer.social/';
+		};
+		\add_filter( 'atmosphere_appview_host', $callback );
+
+		$this->assertSame(
+			'https://deer.social/profile/did:plc:abc123',
+			appview_url( 'profile/did:plc:abc123' )
+		);
+
+		\remove_filter( 'atmosphere_appview_host', $callback );
+	}
+
+	/**
+	 * An http scheme and port are preserved (e.g. for local testing).
+	 */
+	public function test_appview_url_preserves_http_and_port() {
+		$callback = static function () {
+			return 'http://localhost:3000';
+		};
+		\add_filter( 'atmosphere_appview_host', $callback );
+
+		$this->assertSame(
+			'http://localhost:3000/profile/did:plc:abc123',
+			appview_url( 'profile/did:plc:abc123' )
+		);
+
+		\remove_filter( 'atmosphere_appview_host', $callback );
+	}
+
+	/**
+	 * A non-http(s) scheme is clamped to https — including a javascript:
+	 * scheme, which must never survive into the link host.
+	 */
+	public function test_appview_url_clamps_unsupported_scheme() {
+		$ftp = static function () {
+			return 'ftp://example.test';
+		};
+		\add_filter( 'atmosphere_appview_host', $ftp );
+		$this->assertSame(
+			'https://example.test/profile/did:plc:abc123',
+			appview_url( 'profile/did:plc:abc123' )
+		);
+		\remove_filter( 'atmosphere_appview_host', $ftp );
+
+		$js = static function () {
+			return 'javascript://evil.test';
+		};
+		\add_filter( 'atmosphere_appview_host', $js );
+		$url = appview_url( 'profile/did:plc:abc123' );
+		\remove_filter( 'atmosphere_appview_host', $js );
+
+		$this->assertSame( 'https://evil.test/profile/did:plc:abc123', $url );
+		$this->assertStringNotContainsString( 'javascript', $url );
+	}
+
+	/**
+	 * The host is lower-cased so a mixed-case filter return is normalized.
+	 */
+	public function test_appview_url_lowercases_host() {
+		$callback = static function () {
+			return 'Deer.Social/AtBlue';
+		};
+		\add_filter( 'atmosphere_appview_host', $callback );
+
+		$this->assertSame(
+			'https://deer.social/AtBlue/profile/did:plc:abc123',
+			appview_url( 'profile/did:plc:abc123' )
+		);
+
+		\remove_filter( 'atmosphere_appview_host', $callback );
+	}
+
+	/**
+	 * An empty filtered value falls back to the default appview silently
+	 * (no _doing_it_wrong — an empty return just means "use the default").
+	 */
+	public function test_appview_url_falls_back_on_empty_host() {
+		foreach ( array( '   ', '' ) as $empty ) {
+			$callback = static function () use ( $empty ) {
+				return $empty;
+			};
+			\add_filter( 'atmosphere_appview_host', $callback );
+
+			$this->assertSame(
+				'https://bsky.app/profile/did:plc:abc123',
+				appview_url( 'profile/did:plc:abc123' )
+			);
+
+			\remove_filter( 'atmosphere_appview_host', $callback );
+		}
+	}
+
+	/**
+	 * A non-empty but unparseable filtered value falls back to the default
+	 * appview and flags _doing_it_wrong (the callback returned garbage).
+	 */
+	public function test_appview_url_warns_on_malformed_host() {
+		$this->setExpectedIncorrectUsage( 'Atmosphere\appview_base_url' );
+
+		$callback = static function () {
+			return 'https://:80';
+		};
+		\add_filter( 'atmosphere_appview_host', $callback );
+
+		$this->assertSame(
+			'https://bsky.app/profile/did:plc:abc123',
+			appview_url( 'profile/did:plc:abc123' )
+		);
+
+		\remove_filter( 'atmosphere_appview_host', $callback );
+	}
+
+	/**
+	 * The atmosphere_appview_url filter can rewrite the whole URL, including
+	 * the route, from the context (e.g. /account/ instead of /profile/).
+	 */
+	public function test_appview_url_full_url_filter_rewrites_route() {
+		$callback = static function ( $url, $path, $context ) {
+			if ( 'mention' === ( $context['type'] ?? '' ) ) {
+				return 'https://bsky.app/account/' . $context['did'];
+			}
+			return $url;
+		};
+		\add_filter( 'atmosphere_appview_url', $callback, 10, 3 );
+
+		$this->assertSame(
+			'https://bsky.app/account/did:plc:abc123',
+			appview_url(
+				'profile/did:plc:abc123',
+				array(
+					'type' => 'mention',
+					'did'  => 'did:plc:abc123',
+				)
+			)
+		);
+
+		\remove_filter( 'atmosphere_appview_url', $callback, 10 );
+	}
+
+	/**
+	 * The atmosphere_appview_url filter receives the assembled URL, the path,
+	 * and the context.
+	 */
+	public function test_appview_url_full_url_filter_receives_args() {
+		$seen     = array();
+		$callback = static function ( $url, $path, $context ) use ( &$seen ) {
+			$seen = array(
+				'url'     => $url,
+				'path'    => $path,
+				'context' => $context,
+			);
+			return $url;
+		};
+		\add_filter( 'atmosphere_appview_url', $callback, 10, 3 );
+
+		appview_url(
+			'hashtag/WordPress',
+			array(
+				'type' => 'hashtag',
+				'tag'  => 'WordPress',
+			)
+		);
+
+		\remove_filter( 'atmosphere_appview_url', $callback, 10 );
+
+		$this->assertSame( 'https://bsky.app/hashtag/WordPress', $seen['url'] );
+		$this->assertSame( 'hashtag/WordPress', $seen['path'] );
+		$this->assertSame( 'hashtag', $seen['context']['type'] );
+		$this->assertSame( 'WordPress', $seen['context']['tag'] );
 	}
 }

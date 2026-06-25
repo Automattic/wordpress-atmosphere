@@ -46,6 +46,115 @@ function build_at_uri( string $did, string $collection, string $rkey ): string {
 }
 
 /**
+ * Build a web URL pointing at an AT Protocol appview.
+ *
+ * Returns an UNESCAPED URL. Callers MUST escape at the point of use
+ * (\esc_url() for HTML output, \esc_url_raw() for storage/redirects), as
+ * late as possible and in the right context.
+ *
+ * @param string $path    Path after the host, with no leading slash, e.g.
+ *                        'profile/<did>/post/<rkey>' or 'hashtag/<tag>'.
+ *                        Callers are responsible for encoding path segments.
+ * @param array  $context Optional parts the caller has on hand. Recognised
+ *                        keys: 'type' (profile|post|mention|hashtag), 'did',
+ *                        'handle', 'rkey', 'tag'.
+ * @return string Unescaped URL, e.g. 'https://bsky.app/profile/<did>'.
+ */
+function appview_url( string $path, array $context = array() ): string {
+	/**
+	 * Filters the base of AT Protocol appview web links.
+	 *
+	 * The base is everything before the path: scheme, host, and an optional
+	 * path prefix. The returned value may be a bare host ('deer.social'), a
+	 * host with a path prefix ('something.social/atblue'), and may include a
+	 * scheme and/or trailing slash — it is normalized before use, so appviews
+	 * hosted on a subdomain or a subpath work cleanly. Defaults to 'bsky.app',
+	 * the Bluesky appview. To rewrite the path itself (e.g. a custom route),
+	 * use the {@see 'atmosphere_appview_url'} filter instead.
+	 *
+	 * @since unreleased
+	 *
+	 * @param string $host    Default appview host ('bsky.app').
+	 * @param string $path    Path being built, e.g. 'profile/<did>'.
+	 * @param array  $context Available parts: type, did, handle, rkey, tag.
+	 */
+	$base = \apply_filters( 'atmosphere_appview_host', 'bsky.app', $path, $context );
+
+	$url = appview_base_url( $base ) . '/' . \ltrim( $path, '/' );
+
+	/**
+	 * Filters the fully assembled AT Protocol appview web URL.
+	 *
+	 * Use this to rewrite the entire URL — including the route, e.g.
+	 * '/account/<did>' instead of '/profile/<did>', or a custom hashtag
+	 * route — by rebuilding it from the parts in $context. Return a complete
+	 * URL; it is escaped by the caller, not here.
+	 *
+	 * @since unreleased
+	 *
+	 * @param string $url     Assembled URL, e.g. 'https://bsky.app/profile/<did>'.
+	 * @param string $path    Path that was appended, e.g. 'profile/<did>'.
+	 * @param array  $context Available parts: type, did, handle, rkey, tag.
+	 */
+	return \apply_filters( 'atmosphere_appview_url', $url, $path, $context );
+}
+
+/**
+ * Normalize a filtered appview base into a clean 'scheme://host[:port][/prefix]'.
+ *
+ * Accepts a bare host, a host with a path prefix, with or without a scheme or
+ * trailing slash, and rebuilds it without empty or doubled segments. The host is
+ * lower-cased and the scheme is clamped to http/https. An empty value falls back
+ * to 'https://bsky.app' silently; a non-empty value that yields no host falls
+ * back too, but flags `_doing_it_wrong` since the callback returned something
+ * unusable.
+ *
+ * These URLs are display links — rendered for users to click, or stored as
+ * comment author/source links — and are always escaped at the call site. They
+ * are never fetched server-side, so there is no SSRF surface, and IP-literal or
+ * localhost hosts are intentionally allowed for self-hosted appviews. The value
+ * comes from a site-owner filter callback, not from external request input.
+ *
+ * @param string $base Filtered base value, e.g. 'something.social/atblue/'.
+ * @return string Clean base with no trailing slash, e.g. 'https://something.social/atblue'.
+ */
+function appview_base_url( string $base ): string {
+	$base = \trim( $base );
+
+	// An empty value just means "use the default appview" — nothing to flag.
+	if ( '' === $base ) {
+		return 'https://bsky.app';
+	}
+
+	// Ensure a scheme so wp_parse_url splits the host from any path prefix.
+	if ( ! \preg_match( '#^[a-z][a-z0-9+.-]*://#i', $base ) ) {
+		$base = 'https://' . \ltrim( $base, '/' );
+	}
+
+	$parts = \wp_parse_url( $base );
+	$host  = \is_array( $parts ) ? \strtolower( $parts['host'] ?? '' ) : '';
+
+	if ( '' === $host ) {
+		\_doing_it_wrong(
+			__FUNCTION__,
+			\esc_html__( 'atmosphere_appview_host must return a host (optionally with a scheme and path prefix); falling back to bsky.app.', 'atmosphere' ),
+			'unreleased'
+		);
+		return 'https://bsky.app';
+	}
+
+	$scheme = \strtolower( $parts['scheme'] ?? 'https' );
+	if ( 'http' !== $scheme && 'https' !== $scheme ) {
+		$scheme = 'https';
+	}
+
+	$port   = isset( $parts['port'] ) ? ':' . $parts['port'] : '';
+	$prefix = \trim( $parts['path'] ?? '', '/' );
+
+	return $scheme . '://' . $host . $port . ( '' !== $prefix ? '/' . $prefix : '' );
+}
+
+/**
  * Decode entities, strip HTML, normalise whitespace.
  *
  * @param string $text Raw text.
