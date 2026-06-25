@@ -17,6 +17,7 @@ use Atmosphere\Content_Parser\Pckt;
 use Atmosphere\Content_Parser\Registry;
 use Atmosphere\Handle;
 use function Atmosphere\get_connection;
+use function Atmosphere\get_identity;
 use function Atmosphere\get_supported_post_types;
 use function Atmosphere\has_identity;
 use function Atmosphere\is_connected;
@@ -170,6 +171,11 @@ class Settings_Fields {
 	 */
 	public static function render_connected_section(): void {
 		$connection     = get_connection();
+		$identity       = get_identity();
+		$handle         = (string) ( $identity['handle'] ?? $connection['handle'] ?? '' );
+		$did            = (string) ( $identity['did'] ?? $connection['did'] ?? '' );
+		$pds_endpoint   = (string) ( $identity['pds_endpoint'] ?? $connection['pds_endpoint'] ?? '' );
+		$account_url    = self::pds_account_management_url( $pds_endpoint );
 		$disconnect_url = \wp_nonce_url(
 			\admin_url( 'admin-post.php?action=atmosphere_disconnect' ),
 			'atmosphere_disconnect',
@@ -181,27 +187,32 @@ class Settings_Fields {
 			<tr>
 				<th scope="row"><?php \esc_html_e( 'Handle', 'atmosphere' ); ?></th>
 				<td>
-					<strong><?php echo \esc_html( $connection['handle'] ?? '' ); ?></strong>
+					<strong><?php echo \esc_html( $handle ); ?></strong>
 					<p class="description"><?php \esc_html_e( 'Your public AT Protocol identity, similar to a username.', 'atmosphere' ); ?></p>
 				</td>
 			</tr>
 			<tr>
 				<th scope="row"><?php \esc_html_e( 'DID', 'atmosphere' ); ?></th>
 				<td>
-					<code><?php echo \esc_html( $connection['did'] ?? '' ); ?></code>
+					<code><?php echo \esc_html( $did ); ?></code>
 					<p class="description"><?php \esc_html_e( 'Your Decentralized Identifier — a permanent, portable ID that stays the same even if you change your handle.', 'atmosphere' ); ?></p>
 				</td>
 			</tr>
 			<tr>
 				<th scope="row"><?php \esc_html_e( 'PDS', 'atmosphere' ); ?></th>
 				<td>
-					<code><?php echo \esc_html( $connection['pds_endpoint'] ?? '' ); ?></code>
+					<code><?php echo \esc_html( $pds_endpoint ); ?></code>
 					<p class="description"><?php \esc_html_e( 'Your Personal Data Server — where your AT Protocol records are stored and served from.', 'atmosphere' ); ?></p>
 				</td>
 			</tr>
 			<tr>
 				<th scope="row"></th>
 				<td>
+					<?php if ( '' !== $account_url ) : ?>
+						<a href="<?php echo \esc_url( $account_url ); ?>" class="button" target="_blank" rel="noopener noreferrer">
+							<?php \esc_html_e( 'Manage AT Protocol account', 'atmosphere' ); ?>
+						</a>
+					<?php endif; ?>
 					<a href="<?php echo \esc_url( $disconnect_url ); ?>" class="button">
 						<?php \esc_html_e( 'Disconnect', 'atmosphere' ); ?>
 					</a>
@@ -209,6 +220,34 @@ class Settings_Fields {
 			</tr>
 		</table>
 		<?php
+	}
+
+	/**
+	 * Build the account-management URL for a PDS endpoint.
+	 *
+	 * The PDS endpoint is stored from DID resolution, but this render path
+	 * should still fail closed for legacy or hand-edited options. The account
+	 * UI currently lives at the reference PDS host's `/account` path, not at
+	 * an appview host or XRPC endpoint.
+	 *
+	 * @param string $pds_endpoint PDS service endpoint.
+	 * @return string Account-management URL, or empty string when unavailable.
+	 */
+	private static function pds_account_management_url( string $pds_endpoint ): string {
+		if ( '' === $pds_endpoint ) {
+			return '';
+		}
+
+		$parts = \wp_parse_url( $pds_endpoint );
+
+		if ( ! \is_array( $parts ) || 'https' !== ( $parts['scheme'] ?? '' ) || empty( $parts['host'] ) ) {
+			return '';
+		}
+
+		$host = $parts['host'];
+		$port = isset( $parts['port'] ) ? ':' . (int) $parts['port'] : '';
+
+		return "https://{$host}{$port}/account";
 	}
 
 	/**
