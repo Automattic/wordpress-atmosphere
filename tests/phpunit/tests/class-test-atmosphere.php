@@ -1822,6 +1822,25 @@ class Test_Atmosphere extends WP_UnitTestCase {
 	}
 
 	/**
+	 * Create a published post for AT Protocol preview tests.
+	 *
+	 * @param array $overrides Post field overrides.
+	 * @return \WP_Post
+	 */
+	private function make_atproto_preview_post( array $overrides = array() ): \WP_Post {
+		return self::factory()->post->create_and_get(
+			\array_merge(
+				array(
+					'post_status'  => 'publish',
+					'post_title'   => 'Preview post',
+					'post_content' => 'Preview body.',
+				),
+				$overrides
+			)
+		);
+	}
+
+	/**
 	 * Capture what `output_document_link()` prints to stdout.
 	 *
 	 * @return string Output (empty when the method bails before emit).
@@ -1830,6 +1849,82 @@ class Test_Atmosphere extends WP_UnitTestCase {
 		\ob_start();
 		$this->atmosphere->output_document_link();
 		return (string) \ob_get_clean();
+	}
+
+	/**
+	 * Bare `?atproto` keeps returning the standard.site document record.
+	 */
+	public function test_atproto_preview_default_returns_document_record() {
+		$post    = $this->make_atproto_preview_post();
+		$payload = Atmosphere::build_atproto_preview_payload( $post );
+
+		$this->assertIsArray( $payload );
+		$this->assertSame( 'site.standard.document', $payload['$type'] );
+	}
+
+	/**
+	 * The document `$type` is accepted explicitly too.
+	 */
+	public function test_atproto_preview_accepts_document_type() {
+		$post    = $this->make_atproto_preview_post();
+		$payload = Atmosphere::build_atproto_preview_payload( $post, 'site.standard.document' );
+
+		$this->assertIsArray( $payload );
+		$this->assertSame( 'site.standard.document', $payload['$type'] );
+	}
+
+	/**
+	 * The publication `$type` previews the site-level publication record.
+	 */
+	public function test_atproto_preview_accepts_publication_type() {
+		$post    = $this->make_atproto_preview_post();
+		$payload = Atmosphere::build_atproto_preview_payload( $post, 'site.standard.publication' );
+
+		$this->assertIsArray( $payload );
+		$this->assertSame( 'site.standard.publication', $payload['$type'] );
+	}
+
+	/**
+	 * The Bluesky `$type` previews the bsky record family for the post.
+	 */
+	public function test_atproto_preview_accepts_bsky_post_type() {
+		$post    = $this->make_atproto_preview_post(
+			array(
+				'post_title'   => '',
+				'post_content' => 'Short native Bluesky text.',
+			)
+		);
+		$payload = Atmosphere::build_atproto_preview_payload( $post, 'app.bsky.feed.post' );
+
+		$this->assertIsArray( $payload );
+		$this->assertSame( 'app.bsky.feed.post', $payload['$type'] );
+	}
+
+	/**
+	 * `all` is a reserved envelope keyed by real lexicon `$type` values.
+	 */
+	public function test_atproto_preview_all_returns_records_keyed_by_type() {
+		$post    = $this->make_atproto_preview_post();
+		$payload = Atmosphere::build_atproto_preview_payload( $post, 'all' );
+
+		$this->assertIsArray( $payload );
+		$this->assertArrayHasKey( 'site.standard.publication', $payload );
+		$this->assertArrayHasKey( 'site.standard.document', $payload );
+		$this->assertArrayHasKey( 'app.bsky.feed.post', $payload );
+		$this->assertSame( 'site.standard.publication', $payload['site.standard.publication'][0]['$type'] );
+		$this->assertSame( 'site.standard.document', $payload['site.standard.document'][0]['$type'] );
+		$this->assertSame( 'app.bsky.feed.post', $payload['app.bsky.feed.post'][0]['$type'] );
+	}
+
+	/**
+	 * Unknown selectors fail clearly instead of silently falling back.
+	 */
+	public function test_atproto_preview_rejects_unknown_type() {
+		$post    = $this->make_atproto_preview_post();
+		$payload = Atmosphere::build_atproto_preview_payload( $post, 'com.example.unknown' );
+
+		$this->assertTrue( \is_wp_error( $payload ) );
+		$this->assertSame( 'atmosphere_atproto_preview_type', $payload->get_error_code() );
 	}
 
 	/**

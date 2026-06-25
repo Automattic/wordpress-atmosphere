@@ -38,6 +38,16 @@ class Atmosphere {
 	public const LONG_FORM_STRATEGIES = array( 'link-card', 'truncate-link', 'teaser-thread' );
 
 	/**
+	 * AT Protocol record preview selectors.
+	 *
+	 * @var string
+	 */
+	private const ATPROTO_PREVIEW_TYPE_DOCUMENT    = 'site.standard.document';
+	private const ATPROTO_PREVIEW_TYPE_PUBLICATION = 'site.standard.publication';
+	private const ATPROTO_PREVIEW_TYPE_BSKY_POST   = 'app.bsky.feed.post';
+	private const ATPROTO_PREVIEW_TYPE_ALL         = 'all';
+
+	/**
 	 * Comment meta key tracking how many times publish has been
 	 * deferred waiting for a parent comment to publish first.
 	 *
@@ -615,8 +625,10 @@ class Atmosphere {
 	/**
 	 * Serve a JSON preview of the AT Protocol record for a post.
 	 *
-	 * Append ?atproto to a singular post URL to see the document
-	 * record JSON. Requires the edit_posts capability.
+	 * Append `?atproto` to a singular post URL to see the standard.site
+	 * document record JSON, `?atproto={$type}` to select another record
+	 * family, or `?atproto=all` to see every supported family keyed by
+	 * its `$type`. Requires the edit_posts capability.
 	 */
 	public function preview(): void {
 		// phpcs:ignore WordPress.Security.NonceVerification.Recommended
@@ -639,13 +651,168 @@ class Atmosphere {
 			exit;
 		}
 
-		$transformer = new Document( $post );
-		$record      = $transformer->transform();
+		$type = self::get_atproto_preview_type_from_request();
 
-		\status_header( 200 );
+		if ( \is_wp_error( $type ) ) {
+			self::send_atproto_preview_json( $type );
+		}
+
+		self::send_atproto_preview_json( self::build_atproto_preview_payload( $post, $type ) );
+	}
+
+	/**
+	 * Build the requested AT Protocol preview payload for a post.
+	 *
+	 * Empty type keeps the historical `?atproto` behavior and returns a
+	 * single `site.standard.document` record. Exact lexicon `$type` values
+	 * return that record family; `all` returns all families keyed by `$type`.
+	 *
+	 * @param \WP_Post $post Post to preview.
+	 * @param string   $type Requested lexicon `$type`, or `all`.
+	 * @return array|\WP_Error Preview payload or error for unsupported types.
+	 */
+	public static function build_atproto_preview_payload( \WP_Post $post, string $type = '' ): array|\WP_Error {
+		$type = self::normalize_atproto_preview_type( $type );
+
+		if ( self::ATPROTO_PREVIEW_TYPE_ALL === $type ) {
+			return self::build_atproto_preview_records_by_type( $post );
+		}
+
+		if ( ! \in_array( $type, self::get_atproto_preview_types(), true ) ) {
+			return self::invalid_atproto_preview_type_error();
+		}
+
+		$records = self::build_atproto_preview_records_for_type( $post, $type );
+
+		if ( 1 === \count( $records ) ) {
+			return $records[0];
+		}
+
+		return \array_values( $records );
+	}
+
+	/**
+	 * Parse the requested AT Protocol preview selector.
+	 *
+	 * @return string|\WP_Error Requested type, or error for invalid input.
+	 */
+	private static function get_atproto_preview_type_from_request(): string|\WP_Error {
+		// phpcs:ignore WordPress.Security.NonceVerification.Recommended,WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- Sanitized after rejecting array input.
+		$type = \wp_unslash( $_GET['atproto'] ?? '' );
+
+		if ( \is_array( $type ) ) {
+			return self::invalid_atproto_preview_type_error();
+		}
+
+		return \sanitize_text_field( $type );
+	}
+
+	/**
+	 * Build every record family available to the post preview endpoint.
+	 *
+	 * @param \WP_Post $post Post to preview.
+	 * @return array<string,array<int,array>> Records keyed by lexicon `$type`.
+	 */
+	private static function build_atproto_preview_records_by_type( \WP_Post $post ): array {
+		return array(
+			self::ATPROTO_PREVIEW_TYPE_PUBLICATION => self::build_atproto_preview_records_for_type(
+				$post,
+				self::ATPROTO_PREVIEW_TYPE_PUBLICATION
+			),
+			self::ATPROTO_PREVIEW_TYPE_DOCUMENT    => self::build_atproto_preview_records_for_type(
+				$post,
+				self::ATPROTO_PREVIEW_TYPE_DOCUMENT
+			),
+			self::ATPROTO_PREVIEW_TYPE_BSKY_POST   => self::build_atproto_preview_records_for_type(
+				$post,
+				self::ATPROTO_PREVIEW_TYPE_BSKY_POST
+			),
+		);
+	}
+
+	/**
+	 * Build one record family for the post preview endpoint.
+	 *
+	 * @param \WP_Post $post Post to preview.
+	 * @param string   $type Lexicon `$type`.
+	 * @return array<int,array> Records for the requested type.
+	 */
+	private static function build_atproto_preview_records_for_type( \WP_Post $post, string $type ): array {
+		switch ( $type ) {
+			case self::ATPROTO_PREVIEW_TYPE_PUBLICATION:
+				return array( ( new Publication( null ) )->transform() );
+
+			case self::ATPROTO_PREVIEW_TYPE_DOCUMENT:
+				return array( ( new Document( $post ) )->transform() );
+
+			case self::ATPROTO_PREVIEW_TYPE_BSKY_POST:
+				return ( new Post( $post ) )->preview_records();
+		}
+
+		return array();
+	}
+
+	/**
+	 * Normalize an AT Protocol preview selector.
+	 *
+	 * @param string $type Requested type.
+	 * @return string Normalized type.
+	 */
+	private static function normalize_atproto_preview_type( string $type ): string {
+		$type = \trim( $type );
+
+		return '' === $type ? self::ATPROTO_PREVIEW_TYPE_DOCUMENT : $type;
+	}
+
+	/**
+	 * Available AT Protocol preview selectors.
+	 *
+	 * @return string[]
+	 */
+	private static function get_atproto_preview_types(): array {
+		return array(
+			self::ATPROTO_PREVIEW_TYPE_DOCUMENT,
+			self::ATPROTO_PREVIEW_TYPE_PUBLICATION,
+			self::ATPROTO_PREVIEW_TYPE_BSKY_POST,
+			self::ATPROTO_PREVIEW_TYPE_ALL,
+		);
+	}
+
+	/**
+	 * Build a standard error for unsupported preview selectors.
+	 *
+	 * @return \WP_Error Error object.
+	 */
+	private static function invalid_atproto_preview_type_error(): \WP_Error {
+		return new \WP_Error(
+			'atmosphere_atproto_preview_type',
+			\sprintf(
+				/* translators: %s: Comma-separated list of supported AT Protocol preview selectors. */
+				\__( 'Unsupported AT Protocol preview type. Use one of: %s.', 'atmosphere' ),
+				\implode( ', ', self::get_atproto_preview_types() )
+			)
+		);
+	}
+
+	/**
+	 * Send the AT Protocol preview JSON response and end the request.
+	 *
+	 * @param array|\WP_Error $payload Preview payload or error.
+	 */
+	private static function send_atproto_preview_json( array|\WP_Error $payload ): void {
+		if ( \is_wp_error( $payload ) ) {
+			\status_header( 400 );
+			$payload = array(
+				'code'    => $payload->get_error_code(),
+				'message' => $payload->get_error_message(),
+			);
+		} else {
+			\status_header( 200 );
+		}
+
 		\header( 'Content-Type: application/json; charset=utf-8' );
 		// phpcs:ignore WordPress.WP.AlternativeFunctions.json_encode_json_encode
-		echo \wp_json_encode( $record, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE );
+		echo \wp_json_encode( $payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE );
 		exit;
 	}
 

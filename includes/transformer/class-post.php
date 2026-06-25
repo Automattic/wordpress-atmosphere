@@ -313,6 +313,29 @@ class Post extends Base {
 	}
 
 	/**
+	 * Build the Bluesky record(s) that would be published for this post.
+	 *
+	 * Mirrors the publish branch used by Publisher without writing blobs or
+	 * touching post meta. This is used by the `?atproto=app.bsky.feed.post`
+	 * preview endpoint, where a long-form post may project to a thread.
+	 *
+	 * @return array<int,array> Bsky post records, in publish order.
+	 */
+	public function preview_records(): array {
+		$this->projecting = true;
+
+		try {
+			if ( $this->has_custom_text() || $this->is_short_form_post() ) {
+				return array( $this->transform() );
+			}
+
+			return $this->build_long_form_records();
+		} finally {
+			$this->projecting = false;
+		}
+	}
+
+	/**
 	 * Resolve the human-facing strategy label for a long-form projection.
 	 *
 	 * A teaser thread is unambiguous from its record count. A single
