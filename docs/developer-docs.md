@@ -40,6 +40,7 @@ ATmosphere exposes a small set of filters and actions for plugins to extend beha
 | `atmosphere_should_sync_reply` | filter | Customise which inbound Bluesky replies become WordPress comments. |
 | `atmosphere_transform_bsky_post` | filter | Mutate the Bluesky post record before write. |
 | `atmosphere_transform_document` | filter | Mutate the document record before write. |
+| `atmosphere_atproto_preview_records` | filter | Add `?atproto={$type}` preview records for posts, the front page, terms, and archives. |
 | `atmosphere_appview_host` | filter | Point Bluesky web links at an alternative AT Protocol appview (host or subpath). |
 | `atmosphere_appview_url` | filter | Rewrite the whole assembled appview link, including its route. |
 | `atmosphere_publish_post_result` | action | React to a post-publish outcome (success or `WP_Error`). |

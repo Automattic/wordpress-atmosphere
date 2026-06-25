@@ -213,6 +213,7 @@ use function Atmosphere\is_connected;
 \apply_filters( 'atmosphere_document_content',      $content, $post, $parser );
 \apply_filters( 'atmosphere_long_form_composition', $composition, $post );
 \apply_filters( 'atmosphere_teaser_thread_posts',   $max_posts, $post );
+\apply_filters( 'atmosphere_atproto_preview_records', $records_by_type, $context ); // Add context-aware ?atproto={$type} preview records.
 ```
 
 **Behaviour / gating filters:**

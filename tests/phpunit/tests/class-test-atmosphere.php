@@ -66,6 +66,7 @@ class Test_Atmosphere extends WP_UnitTestCase {
 
 		\remove_all_filters( 'atmosphere_should_publish_comment' );
 		\remove_all_filters( 'atmosphere_pre_apply_writes' );
+		\remove_all_filters( 'atmosphere_atproto_preview_records' );
 		\delete_option( 'atmosphere_visibility_cleanup_migrated' );
 
 		parent::tear_down();
@@ -1852,6 +1853,16 @@ class Test_Atmosphere extends WP_UnitTestCase {
 	}
 
 	/**
+	 * Front-end endpoint query vars are registered through WordPress.
+	 */
+	public function test_register_query_vars_adds_atproto_preview_var() {
+		$vars = $this->atmosphere->register_query_vars( array( 'p' ) );
+
+		$this->assertContains( 'atproto', $vars );
+		$this->assertContains( 'atmosphere_wellknown', $vars );
+	}
+
+	/**
 	 * Bare `?atproto` keeps returning the standard.site document record.
 	 */
 	public function test_atproto_preview_default_returns_document_record() {
@@ -1874,14 +1885,192 @@ class Test_Atmosphere extends WP_UnitTestCase {
 	}
 
 	/**
-	 * The publication `$type` previews the site-level publication record.
+	 * The post preview helper keeps publication out of post-scoped types.
 	 */
-	public function test_atproto_preview_accepts_publication_type() {
+	public function test_atproto_preview_rejects_publication_type_for_post() {
 		$post    = $this->make_atproto_preview_post();
 		$payload = Atmosphere::build_atproto_preview_payload( $post, 'site.standard.publication' );
 
+		$this->assertTrue( \is_wp_error( $payload ) );
+		$this->assertSame( 'atmosphere_atproto_preview_type', $payload->get_error_code() );
+	}
+
+	/**
+	 * Preview records are filterable by lexicon `$type` and context.
+	 */
+	public function test_atproto_preview_accepts_filtered_post_type() {
+		\add_filter(
+			'atmosphere_atproto_preview_records',
+			static function ( array $records_by_type, array $context ): array {
+				if ( 'post' !== ( $context['type'] ?? '' ) || ! ( ( $context['object'] ?? null ) instanceof \WP_Post ) ) {
+					return $records_by_type;
+				}
+
+				$preview_post = $context['object'];
+
+				$records_by_type['com.example.postPreview'] = array(
+					'$type'  => 'com.example.postPreview',
+					'postId' => $preview_post->ID,
+				);
+
+				return $records_by_type;
+			},
+			10,
+			2
+		);
+
+		$post    = $this->make_atproto_preview_post();
+		$payload = Atmosphere::build_atproto_preview_payload( $post, 'com.example.postPreview' );
+
+		$this->assertIsArray( $payload );
+		$this->assertSame( 'com.example.postPreview', $payload['$type'] );
+		$this->assertSame( $post->ID, $payload['postId'] );
+
+		$all = Atmosphere::build_atproto_preview_payload( $post, 'all' );
+
+		$this->assertIsArray( $all );
+		$this->assertArrayHasKey( 'com.example.postPreview', $all );
+		$this->assertSame( 'com.example.postPreview', $all['com.example.postPreview'][0]['$type'] );
+	}
+
+	/**
+	 * Bare `?atproto` on the front page previews the publication record.
+	 */
+	public function test_atproto_publication_preview_default_returns_publication_record() {
+		$payload = Atmosphere::build_atproto_publication_preview_payload();
+
 		$this->assertIsArray( $payload );
 		$this->assertSame( 'site.standard.publication', $payload['$type'] );
+	}
+
+	/**
+	 * The publication `$type` previews the site-level publication record.
+	 */
+	public function test_atproto_publication_preview_accepts_publication_type() {
+		$payload = Atmosphere::build_atproto_publication_preview_payload( 'site.standard.publication' );
+
+		$this->assertIsArray( $payload );
+		$this->assertSame( 'site.standard.publication', $payload['$type'] );
+	}
+
+	/**
+	 * Site-level preview records are filterable by lexicon `$type`.
+	 */
+	public function test_atproto_publication_preview_accepts_filtered_site_type() {
+		\add_filter(
+			'atmosphere_atproto_preview_records',
+			static function ( array $records_by_type, array $context ): array {
+				if ( 'site' !== ( $context['type'] ?? '' ) ) {
+					return $records_by_type;
+				}
+
+				$records_by_type['com.example.sitePreview'] = array(
+					'$type' => 'com.example.sitePreview',
+					'name'  => 'Example site preview',
+				);
+
+				return $records_by_type;
+			},
+			10,
+			2
+		);
+
+		$payload = Atmosphere::build_atproto_publication_preview_payload( 'com.example.sitePreview' );
+
+		$this->assertIsArray( $payload );
+		$this->assertSame( 'com.example.sitePreview', $payload['$type'] );
+		$this->assertSame( 'Example site preview', $payload['name'] );
+	}
+
+	/**
+	 * The same preview-record filter supports term archive contexts.
+	 */
+	public function test_atproto_preview_accepts_filtered_term_type() {
+		\add_filter(
+			'atmosphere_atproto_preview_records',
+			static function ( array $records_by_type, array $context ): array {
+				if ( 'term' !== ( $context['type'] ?? '' ) || ! ( ( $context['object'] ?? null ) instanceof \WP_Term ) ) {
+					return $records_by_type;
+				}
+
+				$term = $context['object'];
+
+				$records_by_type['com.example.termPreview'] = array(
+					'$type'  => 'com.example.termPreview',
+					'termId' => $term->term_id,
+					'name'   => $term->name,
+				);
+
+				return $records_by_type;
+			},
+			10,
+			2
+		);
+
+		$term_id = self::factory()->term->create(
+			array(
+				'taxonomy' => 'post_tag',
+				'name'     => 'Preview Tag',
+			)
+		);
+		$term    = \get_term( $term_id );
+		$payload = Atmosphere::build_atproto_preview_payload_for_context(
+			array(
+				'type'   => 'term',
+				'object' => $term,
+			),
+			'com.example.termPreview'
+		);
+
+		$this->assertIsArray( $payload );
+		$this->assertSame( 'com.example.termPreview', $payload['$type'] );
+		$this->assertSame( $term_id, $payload['termId'] );
+		$this->assertSame( 'Preview Tag', $payload['name'] );
+	}
+
+	/**
+	 * The same preview-record filter supports generic archive contexts.
+	 */
+	public function test_atproto_preview_accepts_filtered_archive_type() {
+		\add_filter(
+			'atmosphere_atproto_preview_records',
+			static function ( array $records_by_type, array $context ): array {
+				if ( 'archive' !== ( $context['type'] ?? '' ) ) {
+					return $records_by_type;
+				}
+
+				$records_by_type['com.example.archivePreview'] = array(
+					'$type' => 'com.example.archivePreview',
+					'name'  => 'Archive preview',
+				);
+
+				return $records_by_type;
+			},
+			10,
+			2
+		);
+
+		$payload = Atmosphere::build_atproto_preview_payload_for_context(
+			array(
+				'type'   => 'archive',
+				'object' => null,
+			),
+			'com.example.archivePreview'
+		);
+
+		$this->assertIsArray( $payload );
+		$this->assertSame( 'com.example.archivePreview', $payload['$type'] );
+		$this->assertSame( 'Archive preview', $payload['name'] );
+	}
+
+	/**
+	 * Post-scoped selectors do not apply to the front-page publication preview.
+	 */
+	public function test_atproto_publication_preview_rejects_post_type() {
+		$payload = Atmosphere::build_atproto_publication_preview_payload( 'site.standard.document' );
+
+		$this->assertTrue( \is_wp_error( $payload ) );
+		$this->assertSame( 'atmosphere_atproto_preview_type', $payload->get_error_code() );
 	}
 
 	/**
@@ -1901,17 +2090,16 @@ class Test_Atmosphere extends WP_UnitTestCase {
 	}
 
 	/**
-	 * `all` is a reserved envelope keyed by real lexicon `$type` values.
+	 * `all` is a post-scoped envelope keyed by real lexicon `$type` values.
 	 */
-	public function test_atproto_preview_all_returns_records_keyed_by_type() {
+	public function test_atproto_preview_all_returns_post_records_keyed_by_type() {
 		$post    = $this->make_atproto_preview_post();
 		$payload = Atmosphere::build_atproto_preview_payload( $post, 'all' );
 
 		$this->assertIsArray( $payload );
-		$this->assertArrayHasKey( 'site.standard.publication', $payload );
+		$this->assertArrayNotHasKey( 'site.standard.publication', $payload );
 		$this->assertArrayHasKey( 'site.standard.document', $payload );
 		$this->assertArrayHasKey( 'app.bsky.feed.post', $payload );
-		$this->assertSame( 'site.standard.publication', $payload['site.standard.publication'][0]['$type'] );
 		$this->assertSame( 'site.standard.document', $payload['site.standard.document'][0]['$type'] );
 		$this->assertSame( 'app.bsky.feed.post', $payload['app.bsky.feed.post'][0]['$type'] );
 	}

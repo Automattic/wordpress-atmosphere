@@ -170,8 +170,9 @@ class Atmosphere {
 		\add_action( 'wp_head', array( $this, 'output_document_link' ) );
 		\add_action( 'wp_head', array( $this, 'output_publication_link' ) );
 
-		// Well-known endpoints.
+		// Well-known endpoints and front-end query vars.
 		\add_action( 'init', array( $this, 'register_wellknown_rewrite' ) );
+		\add_filter( 'query_vars', array( $this, 'register_query_vars' ) );
 		\add_action( 'template_redirect', array( $this, 'serve_wellknown_atproto_did' ) );
 		\add_action( 'template_redirect', array( $this, 'serve_wellknown_publication' ) );
 
@@ -444,14 +445,19 @@ class Atmosphere {
 		foreach ( self::WELLKNOWN_REWRITE_PATTERNS as $pattern => $target ) {
 			\add_rewrite_rule( $pattern, $target, 'top' );
 		}
+	}
 
-		\add_filter(
-			'query_vars',
-			static function ( array $vars ): array {
-				$vars[] = 'atmosphere_wellknown';
-				return $vars;
-			}
-		);
+	/**
+	 * Register public query vars used by front-end endpoints.
+	 *
+	 * @param string[] $vars Public query vars.
+	 * @return string[] Public query vars.
+	 */
+	public function register_query_vars( array $vars ): array {
+		$vars[] = 'atmosphere_wellknown';
+		$vars[] = 'atproto';
+
+		return $vars;
 	}
 
 	/**
@@ -627,12 +633,16 @@ class Atmosphere {
 	 *
 	 * Append `?atproto` to a singular post URL to see the standard.site
 	 * document record JSON, `?atproto={$type}` to select another record
-	 * family, or `?atproto=all` to see every supported family keyed by
-	 * its `$type`. Requires the edit_posts capability.
+	 * family, or `?atproto=all` to see every post record family keyed by
+	 * its `$type`. Append `?atproto` or
+	 * `?atproto=site.standard.publication` to the site front page for
+	 * the site-level publication record. Requires the edit_posts
+	 * capability.
 	 */
 	public function preview(): void {
-		// phpcs:ignore WordPress.Security.NonceVerification.Recommended
-		if ( ! isset( $_GET['atproto'] ) || ! \is_singular() ) {
+		$type = \get_query_var( 'atproto', null );
+
+		if ( null === $type || \is_array( $type ) ) {
 			return;
 		}
 
@@ -640,49 +650,99 @@ class Atmosphere {
 			return;
 		}
 
-		$post = \get_queried_object();
+		$type    = \sanitize_text_field( (string) $type );
+		$context = self::get_atproto_preview_context();
 
-		if ( ! $post instanceof \WP_Post ) {
+		if ( null === $context ) {
 			return;
 		}
 
-		if ( ! is_supported_post_type( $post->post_type ) ) {
+		if ( 'post' === $context['type'] && ! is_supported_post_type( $context['object']->post_type ) ) {
 			\status_header( 404 );
 			exit;
 		}
 
-		$type = self::get_atproto_preview_type_from_request();
-
-		if ( \is_wp_error( $type ) ) {
-			self::send_atproto_preview_json( $type );
-		}
-
-		self::send_atproto_preview_json( self::build_atproto_preview_payload( $post, $type ) );
+		self::send_atproto_preview_json( self::build_atproto_preview_payload_for_context( $context, $type ) );
 	}
 
 	/**
-	 * Build the requested AT Protocol preview payload for a post.
+	 * Build the requested post-scoped AT Protocol preview payload.
 	 *
 	 * Empty type keeps the historical `?atproto` behavior and returns a
 	 * single `site.standard.document` record. Exact lexicon `$type` values
-	 * return that record family; `all` returns all families keyed by `$type`.
+	 * return that post record family; `all` returns all post families keyed
+	 * by `$type`.
 	 *
 	 * @param \WP_Post $post Post to preview.
 	 * @param string   $type Requested lexicon `$type`, or `all`.
 	 * @return array|\WP_Error Preview payload or error for unsupported types.
 	 */
 	public static function build_atproto_preview_payload( \WP_Post $post, string $type = '' ): array|\WP_Error {
-		$type = self::normalize_atproto_preview_type( $type );
+		return self::build_atproto_preview_payload_for_context(
+			array(
+				'type'   => 'post',
+				'object' => $post,
+			),
+			$type
+		);
+	}
+
+	/**
+	 * Build the requested site-level AT Protocol preview payload.
+	 *
+	 * Empty type maps to the only front-page preview record:
+	 * `site.standard.publication`.
+	 *
+	 * @param string $type Requested lexicon `$type`.
+	 * @return array|\WP_Error Preview payload or error for unsupported types.
+	 */
+	public static function build_atproto_publication_preview_payload( string $type = '' ): array|\WP_Error {
+		return self::build_atproto_preview_payload_for_context(
+			array(
+				'type'   => 'site',
+				'object' => null,
+			),
+			$type
+		);
+	}
+
+	/**
+	 * Build an AT Protocol preview payload for a query context.
+	 *
+	 * Context shape:
+	 * - `site`: front page / publication context.
+	 * - `post`: singular post context, with `object` as `WP_Post`.
+	 * - `term`: term archive context, with `object` as `WP_Term`.
+	 * - `archive`: non-term archive context.
+	 *
+	 * @param array  $context Preview context.
+	 * @param string $type Requested lexicon `$type`, or `all`.
+	 * @return array|\WP_Error Preview payload or error for unsupported types.
+	 */
+	public static function build_atproto_preview_payload_for_context( array $context, string $type = '' ): array|\WP_Error {
+		$type = \trim( $type );
+		if ( '' === $type ) {
+			$type = self::get_default_atproto_preview_type( $context );
+		}
+
+		$context['requested_type'] = $type;
+		$records_by_type           = self::get_atproto_preview_records( $context );
 
 		if ( self::ATPROTO_PREVIEW_TYPE_ALL === $type ) {
-			return self::build_atproto_preview_records_by_type( $post );
+			return $records_by_type;
 		}
 
-		if ( ! \in_array( $type, self::get_atproto_preview_types(), true ) ) {
-			return self::invalid_atproto_preview_type_error();
+		if ( ! isset( $records_by_type[ $type ] ) ) {
+			$types = \array_keys( $records_by_type );
+
+			if ( ! empty( $types ) ) {
+				$types[] = self::ATPROTO_PREVIEW_TYPE_ALL;
+			}
+
+			return self::invalid_atproto_preview_type_error( $types );
 		}
 
-		$records = self::build_atproto_preview_records_for_type( $post, $type );
+		$records = $records_by_type[ $type ];
 
 		if ( 1 === \count( $records ) ) {
 			return $records[0];
@@ -692,104 +752,229 @@ class Atmosphere {
 	}
 
 	/**
-	 * Parse the requested AT Protocol preview selector.
+	 * Resolve the preview context for the current query.
 	 *
-	 * @return string|\WP_Error Requested type, or error for invalid input.
+	 * @return array{type:string,object:mixed}|null Preview context, or null when unsupported.
 	 */
-	private static function get_atproto_preview_type_from_request(): string|\WP_Error {
-		// phpcs:ignore WordPress.Security.NonceVerification.Recommended,WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- Sanitized after rejecting array input.
-		$type = \wp_unslash( $_GET['atproto'] ?? '' );
-
-		if ( \is_array( $type ) ) {
-			return self::invalid_atproto_preview_type_error();
+	private static function get_atproto_preview_context(): ?array {
+		if ( \is_front_page() ) {
+			return array(
+				'type'   => 'site',
+				'object' => null,
+			);
 		}
 
-		return \sanitize_text_field( $type );
+		$object = \get_queried_object();
+
+		if ( \is_singular() && $object instanceof \WP_Post ) {
+			return array(
+				'type'   => 'post',
+				'object' => $object,
+			);
+		}
+
+		if ( $object instanceof \WP_Term ) {
+			return array(
+				'type'   => 'term',
+				'object' => $object,
+			);
+		}
+
+		if ( \is_archive() ) {
+			return array(
+				'type'   => 'archive',
+				'object' => $object,
+			);
+		}
+
+		return null;
 	}
 
 	/**
-	 * Build every record family available to the post preview endpoint.
+	 * Default preview type for a context.
 	 *
-	 * @param \WP_Post $post Post to preview.
+	 * @param array $context Preview context.
+	 * @return string Default lexicon `$type`, or an empty string when none exists.
+	 */
+	private static function get_default_atproto_preview_type( array $context ): string {
+		if ( 'site' === ( $context['type'] ?? '' ) ) {
+			return self::ATPROTO_PREVIEW_TYPE_PUBLICATION;
+		}
+
+		if ( 'post' === ( $context['type'] ?? '' ) ) {
+			return self::ATPROTO_PREVIEW_TYPE_DOCUMENT;
+		}
+
+		return '';
+	}
+
+	/**
+	 * Build AT Protocol preview records for a context.
+	 *
+	 * @param array $context Preview context.
 	 * @return array<string,array<int,array>> Records keyed by lexicon `$type`.
 	 */
-	private static function build_atproto_preview_records_by_type( \WP_Post $post ): array {
-		return array(
-			self::ATPROTO_PREVIEW_TYPE_PUBLICATION => self::build_atproto_preview_records_for_type(
-				$post,
-				self::ATPROTO_PREVIEW_TYPE_PUBLICATION
-			),
-			self::ATPROTO_PREVIEW_TYPE_DOCUMENT    => self::build_atproto_preview_records_for_type(
-				$post,
-				self::ATPROTO_PREVIEW_TYPE_DOCUMENT
-			),
-			self::ATPROTO_PREVIEW_TYPE_BSKY_POST   => self::build_atproto_preview_records_for_type(
-				$post,
-				self::ATPROTO_PREVIEW_TYPE_BSKY_POST
-			),
-		);
+	private static function get_atproto_preview_records( array $context ): array {
+		$records_by_type = self::get_default_atproto_preview_records( $context );
+
+		/**
+		 * Filters the AT Protocol preview records for the current context.
+		 *
+		 * Records are keyed by lexicon `$type`. Each value may be a single
+		 * record array or a list of record arrays.
+		 *
+		 * The context array includes:
+		 *
+		 * - `type`: `site`, `post`, `term`, or `archive`.
+		 * - `object`: the queried object for the context, when available.
+		 * - `requested_type`: the selected `$type`, or `all`.
+		 *
+		 * @param array<string,array|array<int,array>> $records_by_type Records keyed by lexicon `$type`.
+		 * @param array                                $context Preview context.
+		 */
+		$filtered = \apply_filters( 'atmosphere_atproto_preview_records', $records_by_type, $context );
+
+		if ( ! \is_array( $filtered ) ) {
+			\_doing_it_wrong(
+				__METHOD__,
+				\esc_html__( 'atmosphere_atproto_preview_records must return an array; falling back to the default preview records.', 'atmosphere' ),
+				'unreleased'
+			);
+			return $records_by_type;
+		}
+
+		return self::normalize_atproto_preview_records_by_type( $filtered );
 	}
 
 	/**
-	 * Build one record family for the post preview endpoint.
+	 * Build default AT Protocol preview records for a context.
 	 *
-	 * @param \WP_Post $post Post to preview.
-	 * @param string   $type Lexicon `$type`.
-	 * @return array<int,array> Records for the requested type.
+	 * @param array $context Preview context.
+	 * @return array<string,array<int,array>> Records keyed by lexicon `$type`.
 	 */
-	private static function build_atproto_preview_records_for_type( \WP_Post $post, string $type ): array {
-		switch ( $type ) {
-			case self::ATPROTO_PREVIEW_TYPE_PUBLICATION:
-				return array( ( new Publication( null ) )->transform() );
+	private static function get_default_atproto_preview_records( array $context ): array {
+		if ( 'site' === ( $context['type'] ?? '' ) ) {
+			return array(
+				self::ATPROTO_PREVIEW_TYPE_PUBLICATION => self::build_atproto_publication_preview_records(),
+			);
+		}
 
-			case self::ATPROTO_PREVIEW_TYPE_DOCUMENT:
-				return array( ( new Document( $post ) )->transform() );
+		if ( 'post' === ( $context['type'] ?? '' ) && ( $context['object'] ?? null ) instanceof \WP_Post ) {
+			$post = $context['object'];
 
-			case self::ATPROTO_PREVIEW_TYPE_BSKY_POST:
-				return ( new Post( $post ) )->preview_records();
+			return array(
+				self::ATPROTO_PREVIEW_TYPE_DOCUMENT  => self::build_atproto_document_preview_records( $post ),
+				self::ATPROTO_PREVIEW_TYPE_BSKY_POST => self::build_atproto_bsky_preview_records( $post ),
+			);
 		}
 
 		return array();
 	}
 
 	/**
-	 * Normalize an AT Protocol preview selector.
+	 * Build standard.site document preview records for a post.
 	 *
-	 * @param string $type Requested type.
-	 * @return string Normalized type.
+	 * @param \WP_Post $post Post to preview.
+	 * @return array<int,array> Document preview records.
 	 */
-	private static function normalize_atproto_preview_type( string $type ): string {
-		$type = \trim( $type );
-
-		return '' === $type ? self::ATPROTO_PREVIEW_TYPE_DOCUMENT : $type;
+	private static function build_atproto_document_preview_records( \WP_Post $post ): array {
+		return array( ( new Document( $post ) )->transform() );
 	}
 
 	/**
-	 * Available AT Protocol preview selectors.
+	 * Build Bluesky preview records for a post.
 	 *
-	 * @return string[]
+	 * @param \WP_Post $post Post to preview.
+	 * @return array<int,array> Bluesky preview records.
 	 */
-	private static function get_atproto_preview_types(): array {
-		return array(
-			self::ATPROTO_PREVIEW_TYPE_DOCUMENT,
-			self::ATPROTO_PREVIEW_TYPE_PUBLICATION,
-			self::ATPROTO_PREVIEW_TYPE_BSKY_POST,
-			self::ATPROTO_PREVIEW_TYPE_ALL,
+	private static function build_atproto_bsky_preview_records( \WP_Post $post ): array {
+		return ( new Post( $post ) )->preview_records();
+	}
+
+	/**
+	 * Build standard.site publication preview records.
+	 *
+	 * @return array<int,array> Publication preview records.
+	 */
+	private static function build_atproto_publication_preview_records(): array {
+		return array( ( new Publication( null ) )->transform() );
+	}
+
+	/**
+	 * Normalize preview records by type.
+	 *
+	 * @param array $records_by_type Records keyed by lexicon `$type`.
+	 * @return array<string,array<int,array>> Records keyed by lexicon `$type`.
+	 */
+	private static function normalize_atproto_preview_records_by_type( array $records_by_type ): array {
+		$sanitized = array();
+
+		foreach ( $records_by_type as $type => $records ) {
+			$type = \is_string( $type ) ? \trim( $type ) : '';
+
+			if ( '' === $type || self::ATPROTO_PREVIEW_TYPE_ALL === $type ) {
+				continue;
+			}
+
+			$records = self::normalize_atproto_preview_records( $records );
+
+			if ( ! empty( $records ) ) {
+				$sanitized[ $type ] = $records;
+			}
+		}
+
+		return $sanitized;
+	}
+
+	/**
+	 * Normalize one preview record family into a list of record arrays.
+	 *
+	 * A filter may return either one record array or a list of record arrays.
+	 *
+	 * @param mixed $records Record or list of records.
+	 * @return array<int,array> Normalized record list.
+	 */
+	private static function normalize_atproto_preview_records( mixed $records ): array {
+		if ( ! \is_array( $records ) ) {
+			return array();
+		}
+
+		$records = isset( $records['$type'] ) ? array( $records ) : $records;
+
+		if ( ! \array_is_list( $records ) ) {
+			return array();
+		}
+
+		return \array_values(
+			\array_filter(
+				$records,
+				static function ( $record ): bool {
+					return \is_array( $record ) && ! empty( $record['$type'] ) && \is_string( $record['$type'] );
+				}
+			)
 		);
 	}
 
 	/**
 	 * Build a standard error for unsupported preview selectors.
 	 *
+	 * @param string[] $types Supported selectors.
 	 * @return \WP_Error Error object.
 	 */
-	private static function invalid_atproto_preview_type_error(): \WP_Error {
+	private static function invalid_atproto_preview_type_error( array $types = array() ): \WP_Error {
+		if ( empty( $types ) ) {
+			return new \WP_Error(
+				'atmosphere_atproto_preview_type',
+				\__( 'Unsupported AT Protocol preview type.', 'atmosphere' )
+			);
+		}
+
 		return new \WP_Error(
 			'atmosphere_atproto_preview_type',
 			\sprintf(
 				/* translators: %s: Comma-separated list of supported AT Protocol preview selectors. */
 				\__( 'Unsupported AT Protocol preview type. Use one of: %s.', 'atmosphere' ),
-				\implode( ', ', self::get_atproto_preview_types() )
+				\implode( ', ', $types )
 			)
 		);
 	}
