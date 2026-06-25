@@ -62,10 +62,15 @@ function build_at_uri( string $did, string $collection, string $rkey ): string {
  */
 function appview_url( string $path, array $context = array() ): string {
 	/**
-	 * Filters the host used for AT Protocol appview web links.
+	 * Filters the base of AT Protocol appview web links.
 	 *
-	 * Return a bare host with no scheme or trailing slash (e.g. 'deer.social').
-	 * Defaults to 'bsky.app', the Bluesky appview.
+	 * The base is everything before the path: scheme, host, and an optional
+	 * path prefix. The returned value may be a bare host ('deer.social'), a
+	 * host with a path prefix ('something.social/atblue'), and may include a
+	 * scheme and/or trailing slash — it is normalized before use, so appviews
+	 * hosted on a subdomain or a subpath work cleanly. Defaults to 'bsky.app',
+	 * the Bluesky appview. To rewrite the path itself (e.g. a custom route),
+	 * use the {@see 'atmosphere_appview_url'} filter instead.
 	 *
 	 * @since unreleased
 	 *
@@ -73,9 +78,62 @@ function appview_url( string $path, array $context = array() ): string {
 	 * @param string $path    Path being built, e.g. 'profile/<did>'.
 	 * @param array  $context Available parts: type, did, handle, rkey, tag.
 	 */
-	$host = \apply_filters( 'atmosphere_appview_host', 'bsky.app', $path, $context );
+	$base = \apply_filters( 'atmosphere_appview_host', 'bsky.app', $path, $context );
 
-	return 'https://' . $host . '/' . $path;
+	$url = appview_base_url( $base ) . '/' . \ltrim( $path, '/' );
+
+	/**
+	 * Filters the fully assembled AT Protocol appview web URL.
+	 *
+	 * Use this to rewrite the entire URL — including the route, e.g.
+	 * '/account/<did>' instead of '/profile/<did>', or a custom hashtag
+	 * route — by rebuilding it from the parts in $context. Return a complete
+	 * URL; it is escaped by the caller, not here.
+	 *
+	 * @since unreleased
+	 *
+	 * @param string $url     Assembled URL, e.g. 'https://bsky.app/profile/<did>'.
+	 * @param string $path    Path that was appended, e.g. 'profile/<did>'.
+	 * @param array  $context Available parts: type, did, handle, rkey, tag.
+	 */
+	return \apply_filters( 'atmosphere_appview_url', $url, $path, $context );
+}
+
+/**
+ * Normalize a filtered appview base into a clean 'scheme://host[:port][/prefix]'.
+ *
+ * Accepts a bare host, a host with a path prefix, with or without a scheme or
+ * trailing slash, and rebuilds it without empty or doubled segments. The scheme
+ * is clamped to http/https, and an unparseable or hostless value falls back to
+ * the default 'https://bsky.app'.
+ *
+ * @param string $base Filtered base value, e.g. 'something.social/atblue/'.
+ * @return string Clean base with no trailing slash, e.g. 'https://something.social/atblue'.
+ */
+function appview_base_url( string $base ): string {
+	$base = \trim( $base );
+
+	// Ensure a scheme so wp_parse_url splits the host from any path prefix.
+	if ( ! \preg_match( '#^[a-z][a-z0-9+.-]*://#i', $base ) ) {
+		$base = 'https://' . \ltrim( $base, '/' );
+	}
+
+	$parts = \wp_parse_url( $base );
+	$host  = \is_array( $parts ) ? ( $parts['host'] ?? '' ) : '';
+
+	if ( '' === $host ) {
+		return 'https://bsky.app';
+	}
+
+	$scheme = \strtolower( $parts['scheme'] ?? 'https' );
+	if ( 'http' !== $scheme && 'https' !== $scheme ) {
+		$scheme = 'https';
+	}
+
+	$port   = isset( $parts['port'] ) ? ':' . $parts['port'] : '';
+	$prefix = \trim( $parts['path'] ?? '', '/' );
+
+	return $scheme . '://' . $host . $port . ( '' !== $prefix ? '/' . $prefix : '' );
 }
 
 /**

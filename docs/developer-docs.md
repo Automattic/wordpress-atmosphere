@@ -40,7 +40,8 @@ ATmosphere exposes a small set of filters and actions for plugins to extend beha
 | `atmosphere_should_sync_reply` | filter | Customise which inbound Bluesky replies become WordPress comments. |
 | `atmosphere_transform_bsky_post` | filter | Mutate the Bluesky post record before write. |
 | `atmosphere_transform_document` | filter | Mutate the document record before write. |
-| `atmosphere_appview_host` | filter | Point Bluesky web links at an alternative AT Protocol appview. |
+| `atmosphere_appview_host` | filter | Point Bluesky web links at an alternative AT Protocol appview (host or subpath). |
+| `atmosphere_appview_url` | filter | Rewrite the whole assembled appview link, including its route. |
 | `atmosphere_publish_post_result` | action | React to a post-publish outcome (success or `WP_Error`). |
 | `atmosphere_publish_comment_result` | action | React to a comment-publish outcome. |
 | `atmosphere_reaction_synced` | action | React when a Bluesky reaction is stored as a WordPress comment. |
@@ -49,15 +50,25 @@ When adding a new public hook, mark its `@since` tag as `unreleased` — the rel
 
 ### Pointing Bluesky links at another appview
 
-Rendered links to Bluesky (profiles, hashtags, mentions, posts) default to the `bsky.app` web appview. The `atmosphere_appview_host` filter swaps that host for any AT Protocol appview. A callback must return a bare host (no scheme, no trailing slash). The filter passes up to three arguments; as with any WordPress filter, register with `$accepted_args = 3` if your callback needs `$path` and `$context`:
+Rendered links to Bluesky (profiles, hashtags, mentions, posts) default to the `bsky.app` web appview. Two filters let you redirect them, depending on how much you need to change.
 
-- `$host` — the default host, `'bsky.app'`.
+Both filters pass up to three arguments. As with any WordPress filter, register with `$accepted_args = 3` if your callback needs `$path` and `$context`:
+
 - `$path` — the path being built, e.g. `profile/<did>` or `hashtag/<tag>`.
-- `$context` — array with the available parts: `type`, `did`, `handle`, `rkey`, `tag`.
+- `$context` — array with the available parts: `type` (one of `profile`, `post`, `mention`, `hashtag`), `did`, `handle`, `rkey`, `tag`.
+
+#### `atmosphere_appview_host` — swap the host (or subpath)
+
+Use this when the alternative appview mirrors bsky.app's routes (`/profile/...`, `/hashtag/...`) and you only need to change where they live. The first argument is the default host, `'bsky.app'`.
+
+The returned value can be a bare host, a host on a subdomain, or a host with a path prefix, with or without a scheme or trailing slash — it's normalized before use, so an appview hosted on a subpath works cleanly:
 
 ```php
-// Point Bluesky web links at an alternative appview.
+// Bare host.
 add_filter( 'atmosphere_appview_host', fn() => 'deer.social' );
+
+// Appview living on a subpath: yields https://something.social/atblue/profile/<did>.
+add_filter( 'atmosphere_appview_host', fn() => 'something.social/atblue' );
 
 // Route by context: send profiles elsewhere, keep hashtags on bsky.app.
 add_filter(
@@ -70,7 +81,26 @@ add_filter(
 );
 ```
 
-Of note: links rendered on the fly (facet mentions, hashtags, and the "View on Bluesky" link) pick up the filter on every render, so changing it updates them immediately. The author and source links stored on synced reaction comments are resolved once at sync time, so they keep whichever host was in effect when the comment was synced.
+#### `atmosphere_appview_url` — rewrite the whole link
+
+Use this when the appview's routes differ from bsky.app's — for example `/account/<did>` instead of `/profile/<did>`, or a custom hashtag route. The first argument is the fully assembled URL (after the host filter has run); rebuild it from `$context` and return a complete URL:
+
+```php
+// Custom profile route: /account/<did> instead of /profile/<did>.
+add_filter(
+	'atmosphere_appview_url',
+	function ( $url, $path, $context ) {
+		if ( 'mention' === ( $context['type'] ?? '' ) || 'profile' === ( $context['type'] ?? '' ) ) {
+			return 'https://my.appview/account/' . ( $context['did'] ?? $context['handle'] ?? '' );
+		}
+		return $url;
+	},
+	10,
+	3
+);
+```
+
+Of note: links rendered on the fly (facet mentions, hashtags, and the "View on Bluesky" link) pick up the filters on every render, so changing them updates immediately. The author and source links stored on synced reaction comments are resolved once at sync time, so they keep whichever host was in effect when the comment was synced.
 
 ## Extending Content Formats
 
