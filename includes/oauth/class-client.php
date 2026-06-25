@@ -25,17 +25,6 @@ class Client {
 	/**
 	 * Scopes requested from the auth server.
 	 *
-	 * `identity:handle` is required for `com.atproto.identity.updateHandle`
-	 * — the canonical AT Protocol permission scope per
-	 * https://atproto.com/specs/permission. `repo:*` scopes are deliberately
-	 * limited to the three collections ATmosphere writes instead of asking
-	 * for the App Password-equivalent `transition:generic` bucket.
-	 * `blob:image/*` covers uploaded post images, site icons, and cover
-	 * images, while the `rpc:*` scopes cover the Bluesky AppView reads used
-	 * by reaction sync.
-	 * `include:site.standard.authFull` is the documented Standard.site
-	 * permission set for writing publication and document records.
-	 *
 	 * MUST stay in lockstep with the `scope` value advertised in the
 	 * client-metadata REST endpoint
 	 * ({@see \Atmosphere\Rest\Client_Metadata_Controller::get_metadata()}). The auth
@@ -45,14 +34,78 @@ class Client {
 	 * @var string[]
 	 */
 	private const SCOPES = array(
+
+		/*
+		 * Baseline AT Protocol OAuth session.
+		 * Defined in the OAuth spec:
+		 * https://atproto.com/specs/oauth#authorization-scopes.
+		 */
 		'atproto',
+
+		/*
+		 * Write the Bluesky records ATmosphere publishes: posts, threads,
+		 * and comment replies.
+		 *
+		 * `repo` permissions: https://atproto.com/specs/permission#repo.
+		 */
 		'repo:app.bsky.feed.post',
+
+		/*
+		 * Write one Standard.site document record per synced WordPress post.
+		 *
+		 * `repo` permissions: https://atproto.com/specs/permission#repo.
+		 */
 		'repo:site.standard.document',
+
+		/*
+		 * Write the root Standard.site publication record for the WordPress
+		 * site.
+		 *
+		 * `repo` permissions: https://atproto.com/specs/permission#repo.
+		 */
 		'repo:site.standard.publication',
+
+		/*
+		 * Upload image blobs referenced by posts, document covers, and site
+		 * icons.
+		 *
+		 * `blob` permissions: https://atproto.com/specs/permission#blob.
+		 */
 		'blob:image/*',
+
+		/*
+		 * Resolve actor profile metadata while syncing and rendering inbound
+		 * reactions.
+		 *
+		 * `rpc` permissions: https://atproto.com/specs/permission#rpc.
+		 * Bluesky AppView DID:
+		 * https://docs.bsky.app/docs/advanced-guides/api-directory.
+		 */
 		'rpc:app.bsky.actor.getProfile?aud=did:web:api.bsky.app%23bsky_appview',
+
+		/*
+		 * Read Bluesky notification pages for inbound reply/like/repost sync.
+		 *
+		 * `rpc` permissions: https://atproto.com/specs/permission#rpc.
+		 * Bluesky AppView DID:
+		 * https://docs.bsky.app/docs/advanced-guides/api-directory.
+		 */
 		'rpc:app.bsky.notification.listNotifications?aud=did:web:api.bsky.app%23bsky_appview',
+
+		/*
+		 * Update the PDS-managed handle when a user opts into a domain handle.
+		 *
+		 * `identity` permissions:
+		 * https://atproto.com/specs/permission#identity.
+		 */
 		'identity:handle',
+
+		/*
+		 * Standard.site's published permission set for document/publication
+		 * integrations.
+		 *
+		 * Permission set: https://standard.site/docs/permissions.
+		 */
 		'include:site.standard.authFull',
 	);
 
