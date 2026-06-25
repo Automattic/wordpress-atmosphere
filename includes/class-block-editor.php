@@ -88,12 +88,13 @@ class Block_Editor {
 	 * Keeps the REST route and the share-toggle meta key defined once on the
 	 * PHP side so the JS never hardcodes (and drifts from) them.
 	 *
-	 * @return array{previewPath: string, metaKey: string}
+	 * @return array{previewPath: string, disabledMetaKey: string, customTextMetaKey: string}
 	 */
 	private static function script_data(): array {
 		return array(
-			'previewPath' => Pre_Publish_Controller::full_route(),
-			'metaKey'     => ATMOSPHERE_META_DISABLED,
+			'previewPath'       => Pre_Publish_Controller::full_route(),
+			'disabledMetaKey'   => ATMOSPHERE_META_DISABLED,
+			'customTextMetaKey' => ATMOSPHERE_META_CUSTOM_TEXT,
 		);
 	}
 }

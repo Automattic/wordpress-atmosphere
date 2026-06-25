@@ -1,0 +1,4 @@
+Significance: minor
+Type: added
+
+The editor's Bluesky panel now has a custom text field: write your own message for Bluesky and it is posted with a link back to your post, instead of the automatically composed text.

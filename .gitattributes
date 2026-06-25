@@ -3,6 +3,7 @@
 /.claude         export-ignore
 /.github         export-ignore
 /.wordpress-org  export-ignore
+/branding        export-ignore
 /bin             export-ignore
 /vendor          export-ignore
 /docs            export-ignore

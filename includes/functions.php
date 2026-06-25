@@ -229,6 +229,20 @@ function has_identity(): bool {
 }
 
 /**
+ * Whether the ActivityPub plugin is active.
+ *
+ * Bluesky reactions are stored as the same comment types the ActivityPub
+ * plugin uses, so features that would duplicate its behavior — the reactions
+ * block, and hiding reactions from the post's comment list/count — defer to
+ * it when it is present.
+ *
+ * @return bool
+ */
+function is_activitypub_active(): bool {
+	return \defined( 'ACTIVITYPUB_PLUGIN_VERSION' );
+}
+
+/**
  * Whether the plugin holds a live OAuth session against the PDS.
  *
  * Returns false when the credentials are missing OR the connection

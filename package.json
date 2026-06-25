@@ -6,8 +6,8 @@
 	"license": "GPL-2.0-or-later",
 	"private": true,
 	"scripts": {
-		"build": "wp-scripts build",
-		"start": "wp-scripts start",
+		"build": "wp-scripts build --experimental-modules",
+		"start": "wp-scripts start --experimental-modules",
 		"lint:js": "wp-scripts lint-js src",
 		"format:js": "wp-scripts format src",
 		"test:unit:js": "wp-scripts test-unit-js",
@@ -19,6 +19,8 @@
 	},
 	"devDependencies": {
 		"@wordpress/api-fetch": "^7.48.0",
+		"@wordpress/block-editor": "^15.21.0",
+		"@wordpress/blocks": "^15.21.0",
 		"@wordpress/components": "^35.0.0",
 		"@wordpress/core-data": "^7.48.0",
 		"@wordpress/data": "^10.48.0",
@@ -27,6 +29,7 @@
 		"@wordpress/element": "^8.0.0",
 		"@wordpress/env": "^11.4.0",
 		"@wordpress/i18n": "^6.21.0",
+		"@wordpress/interactivity": "^6.48.0",
 		"@wordpress/plugins": "^7.48.0",
 		"@wordpress/scripts": "^32.4.0"
 	}
