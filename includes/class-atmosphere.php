@@ -663,6 +663,7 @@ class Atmosphere {
 		}
 
 		self::send_atproto_preview_json( self::build_atproto_preview_payload_for_context( $context, $type ) );
+		exit;
 	}
 
 	/**
@@ -980,7 +981,7 @@ class Atmosphere {
 	}
 
 	/**
-	 * Send the AT Protocol preview JSON response and end the request.
+	 * Send the AT Protocol preview JSON response.
 	 *
 	 * @param array|\WP_Error $payload Preview payload or error.
 	 */
@@ -998,7 +999,6 @@ class Atmosphere {
 		\header( 'Content-Type: application/json; charset=utf-8' );
 		// phpcs:ignore WordPress.WP.AlternativeFunctions.json_encode_json_encode
 		echo \wp_json_encode( $payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE );
-		exit;
 	}
 
 	/**

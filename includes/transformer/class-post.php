@@ -328,7 +328,7 @@ class Post extends Base {
 		$this->projecting = true;
 
 		try {
-			if ( $this->has_custom_text() || $this->is_short_form_post() ) {
+			if ( $this->is_short_form_post() ) {
 				return array( $this->transform() );
 			}
 
