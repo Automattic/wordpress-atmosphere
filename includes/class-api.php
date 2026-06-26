@@ -196,7 +196,7 @@ class API {
 			return self::request( $method, $endpoint, $original_args, null, true );
 		}
 
-		if ( 2 !== \intdiv( (int) $status, 100 ) ) {
+		if ( ! is_success_status( $status ) ) {
 			$msg = $body['message'] ?? ( $body['error'] ?? \__( 'PDS request failed.', 'atmosphere' ) );
 			return new \WP_Error( 'atmosphere_pds', $msg, array( 'status' => $status ) );
 		}

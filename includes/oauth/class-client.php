@@ -16,6 +16,7 @@ use Atmosphere\Atmosphere;
 use function Atmosphere\clear_scheduled_hooks;
 use function Atmosphere\debug_log;
 use function Atmosphere\get_connection;
+use function Atmosphere\is_success_status;
 
 /**
  * OAuth client that manages the authorization lifecycle.
@@ -341,9 +342,9 @@ class Client {
 			}
 		}
 
-		if ( 2 !== \intdiv( (int) $status, 100 ) || empty( $data['request_uri'] ) ) {
+		if ( ! is_success_status( $status ) || empty( $data['request_uri'] ) ) {
 			$msg = $data['error_description'] ?? ( $data['error'] ?? \__( 'PAR request failed.', 'atmosphere' ) );
-			return new \WP_Error( 'atmosphere_par', $msg );
+			return new \WP_Error( 'atmosphere_par', $msg, array( 'status' => $status ) );
 		}
 
 		$params = array(
@@ -506,9 +507,9 @@ class Client {
 			}
 		}
 
-		if ( 2 !== \intdiv( (int) $status, 100 ) || empty( $data['access_token'] ) ) {
+		if ( ! is_success_status( $status ) || empty( $data['access_token'] ) ) {
 			$msg = $data['error_description'] ?? ( $data['error'] ?? \__( 'Token exchange failed.', 'atmosphere' ) );
-			return new \WP_Error( 'atmosphere_token', $msg );
+			return new \WP_Error( 'atmosphere_token', $msg, array( 'status' => $status ) );
 		}
 
 		/*
@@ -787,7 +788,7 @@ class Client {
 			}
 		}
 
-		if ( 2 !== \intdiv( (int) $status, 100 ) || empty( $data['access_token'] ) ) {
+		if ( ! is_success_status( $status ) || empty( $data['access_token'] ) ) {
 			$msg = $data['error_description'] ?? ( $data['error'] ?? \__( 'Token refresh failed.', 'atmosphere' ) );
 
 			/*
@@ -835,7 +836,7 @@ class Client {
 				}
 			}
 
-			return new \WP_Error( 'atmosphere_refresh', $msg );
+			return new \WP_Error( 'atmosphere_refresh', $msg, array( 'status' => $status ) );
 		}
 
 		/*
@@ -1454,7 +1455,7 @@ class Client {
 		 * indicates a misconfigured client or a server outage; either
 		 * way disconnect proceeds.
 		 */
-		if ( 2 !== \intdiv( (int) $status, 100 ) ) {
+		if ( ! is_success_status( $status ) ) {
 			debug_log(
 				\sprintf(
 					'refresh-token revocation returned status %d',
