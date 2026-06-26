@@ -4,6 +4,7 @@
 - [Introduction](#introduction)
 - [Where to Start](#where-to-start)
 - [Public Hooks](#public-hooks)
+- [Previewing AT Protocol Records](#previewing-at-protocol-records)
 - [Extending Content Formats](#extending-content-formats)
 - [Custom Post Type Support](#custom-post-type-support)
 - [Templates and Admin UI](#templates-and-admin-ui)
@@ -40,7 +41,7 @@ ATmosphere exposes a small set of filters and actions for plugins to extend beha
 | `atmosphere_should_sync_reply` | filter | Customise which inbound Bluesky replies become WordPress comments. |
 | `atmosphere_transform_bsky_post` | filter | Mutate the Bluesky post record before write. |
 | `atmosphere_transform_document` | filter | Mutate the document record before write. |
-| `atmosphere_atproto_preview_records` | filter | Add `?atproto={$type}` preview records for posts, the front page, terms, and archives. |
+| `atmosphere_atproto_preview_transformers` | filter | Add a transformer to the `?atproto={$type}` preview for posts and the front page. |
 | `atmosphere_appview_host` | filter | Point Bluesky web links at an alternative AT Protocol appview (host or subpath). |
 | `atmosphere_appview_url` | filter | Rewrite the whole assembled appview link, including its route. |
 | `atmosphere_publish_post_result` | action | React to a post-publish outcome (success or `WP_Error`). |
@@ -102,6 +103,62 @@ add_filter(
 ```
 
 Of note: links rendered on the fly (facet mentions, hashtags, and the "View on Bluesky" link) pick up the filters on every render, so changing them updates immediately. The author and source links stored on synced reaction comments are resolved once at sync time, so they keep whichever host was in effect when the comment was synced.
+
+## Previewing AT Protocol Records
+
+Append `?atproto` to a URL while logged in as a user with the `edit_posts` capability to see the JSON records ATmosphere would publish, without writing anything:
+
+| URL | Returns |
+|-----|---------|
+| `?atproto` on a post | The `site.standard.document` record (default). |
+| `?atproto=app.bsky.feed.post` on a post | The Bluesky record(s) — a single post or a thread. |
+| `?atproto` / `?atproto=site.standard.publication` on the front page | The site-level `site.standard.publication` record. |
+| `?atproto=all` | Every record family for that view, keyed by its lexicon `$type`. |
+| `?atproto={unknown}` | A `400` JSON error listing the supported selectors. |
+
+Each selector is the lexicon NSID of a transformer ([`Atmosphere\Transformer\Base`](../includes/transformer/class-base.php)). The preview reuses the same transformers as the publish path, so what you see is what would be written.
+
+### Adding your own lexicon to the preview
+
+The `atmosphere_atproto_preview_transformers` filter receives the transformers offered for the current view and the queried post (`null` on the front page). Append any `Base` subclass; it becomes available under `?atproto={its-collection-nsid}` and in `?atproto=all` automatically — its `get_collection()` NSID is the selector, and `get_preview_records()` (which defaults to a single `transform()`, overridden when a post fans out into multiple records) supplies the JSON.
+
+```php
+add_filter(
+	'atmosphere_atproto_preview_transformers',
+	static function ( array $transformers, ?\WP_Post $post ): array {
+		// Only offer this preview on singular posts.
+		if ( $post instanceof \WP_Post ) {
+			$transformers[] = new My_Plugin\Example_Transformer( $post );
+		}
+
+		return $transformers;
+	},
+	10,
+	2
+);
+```
+
+```php
+class Example_Transformer extends \Atmosphere\Transformer\Base {
+
+	public function transform(): array {
+		return array(
+			'$type'  => 'com.example.document',
+			'postId' => $this->object->ID,
+		);
+	}
+
+	public function get_collection(): string {
+		return 'com.example.document'; // The ?atproto selector.
+	}
+
+	public function get_rkey(): string {
+		return (string) $this->object->ID;
+	}
+}
+```
+
+Entries that are not `Base` instances are ignored, and a filter that returns a non-array falls back to the built-in transformers — so a malformed filter return cannot break the endpoint. A transformer whose `get_collection()` matches a built-in NSID supersedes that built-in for the request, mirroring how `Content_Parser\Registry::register()` lets a registration override a default.
 
 ## Extending Content Formats
 

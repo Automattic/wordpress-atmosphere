@@ -318,13 +318,13 @@ class Post extends Base {
 	/**
 	 * Build the Bluesky record(s) that would be published for this post.
 	 *
-	 * Mirrors the publish branch used by Publisher without writing blobs or
-	 * touching post meta. This is used by the `?atproto=app.bsky.feed.post`
-	 * preview endpoint, where a long-form post may project to a thread.
+	 * Overrides {@see Base::get_preview_records()} to mirror the publish
+	 * branch used by Publisher without writing blobs or touching post meta:
+	 * a long-form post may project to a thread of several records.
 	 *
 	 * @return array<int,array> Bsky post records, in publish order.
 	 */
-	public function preview_records(): array {
+	public function get_preview_records(): array {
 		$this->projecting = true;
 
 		try {
