@@ -1,0 +1,4 @@
+Significance: patch
+Type: fixed
+
+AT Protocol OAuth and API requests now stay on their original endpoints instead of following redirects.

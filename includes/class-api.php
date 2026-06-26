@@ -78,16 +78,18 @@ class API {
 		}
 
 		$defaults = array(
-			'method'  => $method,
-			'headers' => array(
+			'method'      => $method,
+			'headers'     => array(
 				'Authorization' => 'DPoP ' . $access_token,
 				'Content-Type'  => $content_type,
 				'DPoP'          => $dpop_proof,
 			),
-			'timeout' => 30,
+			'timeout'     => 30,
+			'redirection' => 0,
 		);
 
-		$args = \wp_parse_args( $args, $defaults );
+		$args                = \wp_parse_args( $args, $defaults );
+		$args['redirection'] = 0;
 
 		if ( ! empty( $args['body'] ) && \is_array( $args['body'] ) ) {
 			$args['body'] = \wp_json_encode( $args['body'] );
@@ -194,7 +196,7 @@ class API {
 			return self::request( $method, $endpoint, $original_args, null, true );
 		}
 
-		if ( $status >= 400 ) {
+		if ( 2 !== \intdiv( (int) $status, 100 ) ) {
 			$msg = $body['message'] ?? ( $body['error'] ?? \__( 'PDS request failed.', 'atmosphere' ) );
 			return new \WP_Error( 'atmosphere_pds', $msg, array( 'status' => $status ) );
 		}

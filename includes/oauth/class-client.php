@@ -275,12 +275,13 @@ class Client {
 		$response = \wp_safe_remote_post(
 			$par_url,
 			array(
-				'headers' => array(
+				'headers'     => array(
 					'Content-Type' => 'application/x-www-form-urlencoded',
 					'DPoP'         => $dpop_proof,
 				),
-				'body'    => $body,
-				'timeout' => 15,
+				'body'        => $body,
+				'timeout'     => 15,
+				'redirection' => 0,
 			)
 		);
 
@@ -314,12 +315,13 @@ class Client {
 			$response = \wp_safe_remote_post(
 				$par_url,
 				array(
-					'headers' => array(
+					'headers'     => array(
 						'Content-Type' => 'application/x-www-form-urlencoded',
 						'DPoP'         => $dpop_proof,
 					),
-					'body'    => $body,
-					'timeout' => 15,
+					'body'        => $body,
+					'timeout'     => 15,
+					'redirection' => 0,
 				)
 			);
 
@@ -339,7 +341,7 @@ class Client {
 			}
 		}
 
-		if ( $status >= 400 || empty( $data['request_uri'] ) ) {
+		if ( 2 !== \intdiv( (int) $status, 100 ) || empty( $data['request_uri'] ) ) {
 			$msg = $data['error_description'] ?? ( $data['error'] ?? \__( 'PAR request failed.', 'atmosphere' ) );
 			return new \WP_Error( 'atmosphere_par', $msg );
 		}
@@ -433,12 +435,13 @@ class Client {
 		$response = \wp_safe_remote_post(
 			$token_endpoint,
 			array(
-				'headers' => array(
+				'headers'     => array(
 					'Content-Type' => 'application/x-www-form-urlencoded',
 					'DPoP'         => $dpop_proof,
 				),
-				'body'    => $token_body,
-				'timeout' => 15,
+				'body'        => $token_body,
+				'timeout'     => 15,
+				'redirection' => 0,
 			)
 		);
 
@@ -470,12 +473,13 @@ class Client {
 			$response = \wp_safe_remote_post(
 				$token_endpoint,
 				array(
-					'headers' => array(
+					'headers'     => array(
 						'Content-Type' => 'application/x-www-form-urlencoded',
 						'DPoP'         => $dpop_proof,
 					),
-					'body'    => $token_body,
-					'timeout' => 15,
+					'body'        => $token_body,
+					'timeout'     => 15,
+					'redirection' => 0,
 				)
 			);
 
@@ -502,7 +506,7 @@ class Client {
 			}
 		}
 
-		if ( $status >= 400 || empty( $data['access_token'] ) ) {
+		if ( 2 !== \intdiv( (int) $status, 100 ) || empty( $data['access_token'] ) ) {
 			$msg = $data['error_description'] ?? ( $data['error'] ?? \__( 'Token exchange failed.', 'atmosphere' ) );
 			return new \WP_Error( 'atmosphere_token', $msg );
 		}
@@ -712,12 +716,13 @@ class Client {
 		$response = \wp_safe_remote_post(
 			$token_endpoint,
 			array(
-				'headers' => array(
+				'headers'     => array(
 					'Content-Type' => 'application/x-www-form-urlencoded',
 					'DPoP'         => $dpop_proof,
 				),
-				'body'    => $body,
-				'timeout' => 15,
+				'body'        => $body,
+				'timeout'     => 15,
+				'redirection' => 0,
 			)
 		);
 
@@ -749,12 +754,13 @@ class Client {
 			$response = \wp_safe_remote_post(
 				$token_endpoint,
 				array(
-					'headers' => array(
+					'headers'     => array(
 						'Content-Type' => 'application/x-www-form-urlencoded',
 						'DPoP'         => $dpop_proof,
 					),
-					'body'    => $body,
-					'timeout' => 15,
+					'body'        => $body,
+					'timeout'     => 15,
+					'redirection' => 0,
 				)
 			);
 
@@ -781,7 +787,7 @@ class Client {
 			}
 		}
 
-		if ( $status >= 400 || empty( $data['access_token'] ) ) {
+		if ( 2 !== \intdiv( (int) $status, 100 ) || empty( $data['access_token'] ) ) {
 			$msg = $data['error_description'] ?? ( $data['error'] ?? \__( 'Token refresh failed.', 'atmosphere' ) );
 
 			/*
@@ -1371,12 +1377,13 @@ class Client {
 		$response = \wp_safe_remote_post(
 			$revocation_endpoint,
 			array(
-				'headers' => array(
+				'headers'     => array(
 					'Content-Type' => 'application/x-www-form-urlencoded',
 					'DPoP'         => $dpop_proof,
 				),
-				'body'    => $body,
-				'timeout' => 10,
+				'body'        => $body,
+				'timeout'     => 10,
+				'redirection' => 0,
 			)
 		);
 
@@ -1413,12 +1420,13 @@ class Client {
 			$response = \wp_safe_remote_post(
 				$revocation_endpoint,
 				array(
-					'headers' => array(
+					'headers'     => array(
 						'Content-Type' => 'application/x-www-form-urlencoded',
 						'DPoP'         => $dpop_proof,
 					),
-					'body'    => $body,
-					'timeout' => 10,
+					'body'        => $body,
+					'timeout'     => 10,
+					'redirection' => 0,
 				)
 			);
 
@@ -1446,7 +1454,7 @@ class Client {
 		 * indicates a misconfigured client or a server outage; either
 		 * way disconnect proceeds.
 		 */
-		if ( $status >= 400 ) {
+		if ( 2 !== \intdiv( (int) $status, 100 ) ) {
 			debug_log(
 				\sprintf(
 					'refresh-token revocation returned status %d',
