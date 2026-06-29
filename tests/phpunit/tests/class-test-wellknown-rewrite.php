@@ -38,8 +38,8 @@ class Test_Wellknown_Rewrite extends WP_UnitTestCase {
 	 * @var array<string, string>
 	 */
 	private const WELLKNOWN_PATTERNS = array(
-		'^\.well-known/atproto-did$'                 => 'index.php?atmosphere_wellknown=atproto-did',
-		'^\.well-known/site\.standard\.publication$' => 'index.php?atmosphere_wellknown=publication',
+		'^\.well-known/atproto-did/?$'                 => 'index.php?atmosphere_wellknown=atproto-did',
+		'^\.well-known/site\.standard\.publication/?$' => 'index.php?atmosphere_wellknown=publication',
 	);
 
 	/**
@@ -141,9 +141,9 @@ class Test_Wellknown_Rewrite extends WP_UnitTestCase {
 	 */
 	public function test_no_flush_when_both_patterns_present(): void {
 		$original = array(
-			'^\.well-known/atproto-did$'                 => 'index.php?atmosphere_wellknown=atproto-did',
-			'^\.well-known/site\.standard\.publication$' => 'index.php?atmosphere_wellknown=publication',
-			'some/other/rule'                            => 'index.php?other=1',
+			'^\.well-known/atproto-did/?$'                 => 'index.php?atmosphere_wellknown=atproto-did',
+			'^\.well-known/site\.standard\.publication/?$' => 'index.php?atmosphere_wellknown=publication',
+			'some/other/rule'                              => 'index.php?other=1',
 		);
 		\update_option( 'rewrite_rules', $original );
 
@@ -174,8 +174,25 @@ class Test_Wellknown_Rewrite extends WP_UnitTestCase {
 		\update_option(
 			'rewrite_rules',
 			array(
+				'^\.well-known/atproto-did/?$' => 'index.php?atmosphere_wellknown=atproto-did',
+				'some/other/rule'              => 'index.php?other=1',
+			)
+		);
+
+		Atmosphere::maybe_flush_wellknown_rewrites();
+
+		$this->assertWellknownPatternsResolved( \get_option( 'rewrite_rules' ) );
+	}
+
+	/**
+	 * Flushes when a site still has the older exact-match rules.
+	 */
+	public function test_flushes_when_legacy_exact_patterns_are_present(): void {
+		\update_option(
+			'rewrite_rules',
+			array(
 				'^\.well-known/atproto-did$' => 'index.php?atmosphere_wellknown=atproto-did',
-				'some/other/rule'            => 'index.php?other=1',
+				'^\.well-known/site\.standard\.publication$' => 'index.php?atmosphere_wellknown=publication',
 			)
 		);
 

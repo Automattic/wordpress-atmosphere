@@ -136,6 +136,77 @@ class Test_Client_Refresh extends WP_UnitTestCase {
 	}
 
 	/**
+	 * Refresh requests must not follow redirects.
+	 */
+	public function test_refresh_request_disables_redirection() {
+		$captured_args = null;
+
+		\add_filter(
+			'pre_http_request',
+			static function ( $response, $args, $url ) use ( &$captured_args ) {
+				if ( false !== \strpos( $url, 'oauth/token' ) ) {
+					$captured_args = $args;
+					return array(
+						'response' => array( 'code' => 200 ),
+						'headers'  => new \WpOrg\Requests\Utility\CaseInsensitiveDictionary( array() ),
+						'body'     => (string) \wp_json_encode(
+							array(
+								'access_token'  => 'new-access-token',
+								'refresh_token' => 'new-refresh-token',
+								'expires_in'    => 3600,
+							)
+						),
+					);
+				}
+
+				return $response;
+			},
+			10,
+			3
+		);
+
+		$result = Client::refresh();
+
+		$this->assertTrue( $result );
+		$this->assertSame( 0, $captured_args['redirection'] ?? null );
+	}
+
+	/**
+	 * Refresh-token revocation requests must not follow redirects.
+	 */
+	public function test_revoke_refresh_token_request_disables_redirection() {
+		$captured_args = null;
+		$dpop_jwk      = DPoP::generate_key();
+
+		\add_filter(
+			'pre_http_request',
+			static function ( $response, $args, $url ) use ( &$captured_args ) {
+				if ( false !== \strpos( $url, 'oauth/revoke' ) ) {
+					$captured_args = $args;
+					return array(
+						'response' => array( 'code' => 200 ),
+						'headers'  => new \WpOrg\Requests\Utility\CaseInsensitiveDictionary( array() ),
+						'body'     => '{}',
+					);
+				}
+
+				return $response;
+			},
+			10,
+			3
+		);
+
+		Client::revoke_refresh_token(
+			Encryption::encrypt( 'refresh-token' ),
+			Encryption::encrypt( (string) \wp_json_encode( $dpop_jwk ) ),
+			'https://auth.example.com/oauth/revoke',
+			'https://auth.example.com'
+		);
+
+		$this->assertSame( 0, $captured_args['redirection'] ?? null );
+	}
+
+	/**
 	 * Test that invalid_grant marks the connection for reauth without
 	 * deleting it, and preserves the identity option for the public
 	 * verification headers.

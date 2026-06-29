@@ -164,8 +164,8 @@ class Atmosphere {
 		// Well-known endpoints and front-end query vars.
 		\add_action( 'init', array( $this, 'register_wellknown_rewrite' ) );
 		\add_filter( 'query_vars', array( $this, 'register_query_vars' ) );
-		\add_action( 'template_redirect', array( $this, 'serve_wellknown_atproto_did' ) );
-		\add_action( 'template_redirect', array( $this, 'serve_wellknown_publication' ) );
+		\add_action( 'template_redirect', array( $this, 'serve_wellknown_atproto_did' ), 0 );
+		\add_action( 'template_redirect', array( $this, 'serve_wellknown_publication' ), 0 );
 
 		// Register the built-in content parsers.
 		self::register_default_content_parsers();
@@ -425,8 +425,8 @@ class Atmosphere {
 	 * @var array<string, string>
 	 */
 	private const WELLKNOWN_REWRITE_PATTERNS = array(
-		'^\.well-known/atproto-did$'                 => 'index.php?atmosphere_wellknown=atproto-did',
-		'^\.well-known/site\.standard\.publication$' => 'index.php?atmosphere_wellknown=publication',
+		'^\.well-known/atproto-did/?$'                 => 'index.php?atmosphere_wellknown=atproto-did',
+		'^\.well-known/site\.standard\.publication/?$' => 'index.php?atmosphere_wellknown=publication',
 	);
 
 	/**
