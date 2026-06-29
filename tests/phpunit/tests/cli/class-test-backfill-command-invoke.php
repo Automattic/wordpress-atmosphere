@@ -50,7 +50,6 @@ class Test_Backfill_Command_Invoke extends \WP_UnitTestCase {
 		\update_option( 'atmosphere_did', 'did:plc:test123' );
 
 		\add_filter( 'atmosphere_syncable_post_types', array( $this, 'force_post_support' ) );
-		\add_filter( 'pre_http_request', array( $this, 'mock_put_record' ), 10, 3 );
 	}
 
 	/**
@@ -62,7 +61,6 @@ class Test_Backfill_Command_Invoke extends \WP_UnitTestCase {
 
 		\remove_all_filters( 'atmosphere_pre_apply_writes' );
 		\remove_filter( 'atmosphere_syncable_post_types', array( $this, 'force_post_support' ) );
-		\remove_filter( 'pre_http_request', array( $this, 'mock_put_record' ), 10 );
 
 		parent::tear_down();
 	}
@@ -74,34 +72,6 @@ class Test_Backfill_Command_Invoke extends \WP_UnitTestCase {
 	 */
 	public function force_post_support(): array {
 		return array( 'post' );
-	}
-
-	/**
-	 * Mock the document-ref `putRecord` follow-up call.
-	 *
-	 * @param false|array|\WP_Error $response Preemptive HTTP response.
-	 * @param array                 $args     Request args.
-	 * @param string                $url      Request URL.
-	 * @return false|array|\WP_Error
-	 */
-	public function mock_put_record( $response, array $args, string $url ) {
-		if ( false !== $response ) {
-			return $response;
-		}
-
-		if ( false === \strpos( $url, 'com.atproto.repo.putRecord' ) ) {
-			return $response;
-		}
-
-		return array(
-			'response' => array( 'code' => 200 ),
-			'body'     => \wp_json_encode(
-				array(
-					'uri' => 'at://did:plc:test123/site.standard.document/doc-ref',
-					'cid' => 'bafyreibdocref',
-				)
-			),
-		);
 	}
 
 	/**

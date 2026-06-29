@@ -3939,6 +3939,40 @@ class Test_Post extends WP_UnitTestCase {
 	}
 
 	/**
+	 * Passing null explicitly suppresses the document-meta fallback.
+	 *
+	 * @covers ::transform
+	 */
+	public function test_long_form_embed_can_suppress_document_meta_fallback() {
+		\update_option( 'atmosphere_identity', array( 'did' => 'did:plc:test123' ), false );
+		\update_option( Publication::OPTION_TID, '3kpub00000000', false );
+		\update_option( Publication::OPTION_CID, 'bafyreipublication0000000000000000000000000000000000000000000', false );
+
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'A Titled Post',
+				'post_content' => 'Long-form blog body.',
+			)
+		);
+
+		\update_post_meta( $post->ID, Document::META_URI, 'at://did:plc:test123/site.standard.document/stale' );
+		\update_post_meta( $post->ID, Document::META_CID, 'bafyreistalestalestalestalestalestalestalestalestalestalestale' );
+
+		$transformer = new Post( $post );
+		$transformer->set_document_strong_ref( null );
+
+		$record = $transformer->transform();
+
+		$refs = $record['embed']['external']['associatedRefs'];
+		$this->assertCount( 1, $refs );
+		$this->assertSame( 'at://did:plc:test123/site.standard.publication/3kpub00000000', $refs[0]['uri'] );
+
+		\delete_option( 'atmosphere_identity' );
+		\delete_option( Publication::OPTION_TID );
+		\delete_option( Publication::OPTION_CID );
+	}
+
+	/**
 	 * Short-form posts (`app.bsky.embed.images`, or no embed) never
 	 * carry `associatedRefs` — that field is defined only on
 	 * `app.bsky.embed.external#external`. Even with both publication

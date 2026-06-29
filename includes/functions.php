@@ -650,3 +650,23 @@ function debug_log( string $message ): void {
 	// phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
 	\error_log( '[atmosphere] ' . $message );
 }
+
+/**
+ * Whether an HTTP status code is in the Success (2xx) class.
+ *
+ * "Success" is the IANA registry name for the 2xx range
+ * ({@link https://www.iana.org/assignments/http-status-codes/http-status-codes.xhtml}).
+ * AT Protocol OAuth and PDS requests disable redirects, so any non-2xx
+ * status (including a 3xx the server would have redirected) is treated
+ * as a failure. Centralizes that check for the OAuth and API callers.
+ *
+ * @since unreleased
+ *
+ * @param mixed $status HTTP status code (int, or '' when the request failed).
+ * @return bool True for 200-299, false otherwise.
+ */
+function is_success_status( $status ): bool {
+	$status = (int) $status;
+
+	return $status >= 200 && $status < 300;
+}
