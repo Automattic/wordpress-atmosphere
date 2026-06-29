@@ -15,6 +15,8 @@ use Atmosphere\Transformer\Facet;
 
 /**
  * Display-side mention linkifier.
+ *
+ * @since unreleased
  */
 class Mention {
 
@@ -22,11 +24,14 @@ class Mention {
 	 * Tags whose text content must never be linkified.
 	 *
 	 * Mirrors the ActivityPub plugin's protected-tag set so a mention inside
-	 * an existing link, code sample, or preformatted block is left alone.
+	 * an existing link, code sample, or preformatted block is left alone, plus
+	 * raw-text / non-rendered elements (`script`, `noscript`, `svg`, `iframe`,
+	 * `title`) whose text must never become an `<a>` — that would corrupt the
+	 * element rather than render a link.
 	 *
 	 * @var string[]
 	 */
-	private const PROTECTED_TAGS = array( 'a', 'code', 'pre', 'textarea', 'style' );
+	private const PROTECTED_TAGS = array( 'a', 'code', 'pre', 'textarea', 'style', 'script', 'noscript', 'svg', 'iframe', 'title' );
 
 	/**
 	 * Whether linkification is currently suppressed.
@@ -85,7 +90,7 @@ class Mention {
 			}
 
 			// Opening / closing tag: maintain the stack, never linkify a tag.
-			if ( \preg_match( '#^<(/)?([a-z0-9]+)\b[^>]*>$#i', $chunk, $m ) ) {
+			if ( \preg_match( '#^<(/)?([a-z][a-z0-9-]*)\b[^>]*>$#i', $chunk, $m ) ) {
 				$tag = \strtolower( $m[2] );
 				if ( '/' === $m[1] ) {
 					/*
@@ -173,6 +178,8 @@ class Mention {
 				 * resolves it. Return false to leave a specific handle as plain
 				 * text — e.g. to gate on a cached existence check or an
 				 * allowlist of known accounts.
+				 *
+				 * @since unreleased
 				 *
 				 * @param bool   $should_link Whether to link the handle. Default true.
 				 * @param string $handle      The bare handle (no leading `@`).

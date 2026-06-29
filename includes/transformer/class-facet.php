@@ -42,6 +42,8 @@ class Facet {
 	 * deliberately left out of the trailing class so a handle ending a
 	 * sentence (`@bsky.app.`) still matches.
 	 *
+	 * @since unreleased
+	 *
 	 * @var string
 	 */
 	public const MENTION_PATTERN = '/(?<![\w@.])@([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+)(?![\w@])/u';
@@ -52,8 +54,9 @@ class Facet {
 	 * Broadening mention collection to the full post body resolves the same
 	 * handle more than once per publish (the carry-over detection pass and
 	 * the final {@see self::extract()} on the composed text). Memoizing the
-	 * resolved DID (or the empty-string miss) keeps that to one lookup per
-	 * distinct handle per request, bounding duplicate DNS/HTTP egress. Keyed
+	 * resolved DID keeps that to one lookup per distinct handle per request,
+	 * bounding duplicate DNS/HTTP egress. Only successful resolutions are
+	 * cached — see {@see self::resolve_mention()} for why misses are not. Keyed
 	 * by lowercased handle.
 	 *
 	 * The self-handle short-circuit is intentionally evaluated outside this
@@ -384,6 +387,8 @@ class Facet {
 	 * guaranteed to produce a `#mention` facet when it reaches a record's
 	 * `text`. Shares the regex and resolver used to build mention facets.
 	 *
+	 * @since unreleased
+	 *
 	 * @param string $text Plain text.
 	 * @return array<string,string> Map of handle => DID.
 	 */
@@ -461,8 +466,9 @@ class Facet {
 	 * endpoint, not DNS, so a `did:web` guess is almost always wrong and
 	 * produces a record that links to a non-existent profile.
 	 *
-	 * The `is_valid_handle()` gate ensures only DNS-syntactically valid
-	 * handles reach resolution — that closes the "malformed handle as DNS
+	 * The {@see Resolver::is_valid_handle()} gate ensures only DNS-syntactically
+	 * valid handles reach resolution (sharing the resolver's rules, including
+	 * its reserved-TLD rejection) — that closes the "malformed handle as DNS
 	 * query smuggling" angle (e.g. control characters or percent-encoded
 	 * segments injected through a regex relaxation). It does NOT block
 	 * lookups against attacker-controlled but well-formed domains; that
@@ -484,12 +490,12 @@ class Facet {
 			return $conn['did'];
 		}
 
-		if ( ! self::is_valid_handle( $handle ) ) {
+		if ( ! Resolver::is_valid_handle( $handle ) ) {
 			return '';
 		}
 
 		$key = \strtolower( $handle );
-		if ( \array_key_exists( $key, self::$resolution_cache ) ) {
+		if ( isset( self::$resolution_cache[ $key ] ) ) {
 			return self::$resolution_cache[ $key ];
 		}
 
@@ -498,28 +504,14 @@ class Facet {
 			$did = '';
 		}
 
-		self::$resolution_cache[ $key ] = $did;
-
-		return $did;
-	}
-
-	/**
-	 * RFC 1035-style DNS-name validation, mirroring
-	 * `Resolver::is_valid_handle()`. Rejects empty strings, oversized
-	 * labels, leading/trailing hyphens, single-label hosts, and any
-	 * character outside `[A-Za-z0-9-]` — including percent-encoded
-	 * forms.
-	 *
-	 * @param string $host Handle to validate.
-	 * @return bool
-	 */
-	private static function is_valid_handle( string $host ): bool {
-		if ( '' === $host || \strlen( $host ) > 253 ) {
-			return false;
+		// Cache successes only. Memoizing a miss would let a single transient
+		// DNS/HTTP blip suppress that handle's #mention facet across every later
+		// post in a long-lived WP-CLI / cron run; re-resolving a genuine miss
+		// (at most twice per post) is the cheaper trade.
+		if ( '' !== $did ) {
+			self::$resolution_cache[ $key ] = $did;
 		}
 
-		$label = '[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?';
-
-		return (bool) \preg_match( '/^' . $label . '(?:\.' . $label . ')+$/', $host );
+		return $did;
 	}
 }

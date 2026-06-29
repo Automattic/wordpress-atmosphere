@@ -749,7 +749,11 @@ class Post extends Base {
 			$suffix = $sep . $permalink;
 			$prose  = \substr( $text, 0, \strlen( $text ) - \strlen( $suffix ) );
 		} elseif ( '' !== $permalink && $text === $permalink ) {
-			$suffix = $permalink;
+			// Carry the separator with the permalink so the mention line lands
+			// before it with a `\n\n` gap; without it the kept handle glues
+			// straight onto the URL (`@handle.tldhttps://…`), which over-extends
+			// MENTION_PATTERN and drops the #mention facet entirely.
+			$suffix = $sep . $permalink;
 			$prose  = '';
 		}
 
@@ -766,13 +770,13 @@ class Post extends Base {
 
 		// Greedily fit handles into the room left after the permalink. A
 		// handle that cannot fit even against an empty prose is dropped.
-		$suffix_len = \mb_strlen( $suffix );
+		$suffix_len = grapheme_length( $suffix );
 		$kept       = '';
 		$dropped    = 0;
 		foreach ( $missing as $mention ) {
 			$candidate = '' === $kept ? $mention : $kept . ' ' . $mention;
 			// Worst case needs a separator before the line; reserve one.
-			if ( \mb_strlen( $candidate ) + \mb_strlen( $sep ) + $suffix_len > $max ) {
+			if ( grapheme_length( $candidate ) + grapheme_length( $sep ) + $suffix_len > $max ) {
 				++$dropped;
 				continue;
 			}
@@ -795,12 +799,12 @@ class Post extends Base {
 		}
 
 		// Shrink the prose to fit the chosen line + permalink.
-		$line_sep     = '' !== $prose ? \mb_strlen( $sep ) : 0;
-		$prose_budget = $max - \mb_strlen( $kept ) - $line_sep - $suffix_len;
+		$line_sep     = '' !== $prose ? grapheme_length( $sep ) : 0;
+		$prose_budget = $max - grapheme_length( $kept ) - $line_sep - $suffix_len;
 
 		if ( $prose_budget <= 0 ) {
 			$prose = '';
-		} elseif ( \mb_strlen( $prose ) > $prose_budget ) {
+		} elseif ( grapheme_length( $prose ) > $prose_budget ) {
 			$prose = truncate_text( $prose, $prose_budget );
 		}
 
@@ -843,15 +847,30 @@ class Post extends Base {
 		$last = \count( $texts ) - 1;
 		$cta  = $texts[ $last ];
 		$sep  = "\n\n";
-		$room = self::BLUESKY_MAX_GRAPHEMES - \mb_strlen( $cta ) - \mb_strlen( $sep );
+		$room = self::BLUESKY_MAX_GRAPHEMES - grapheme_length( $cta ) - grapheme_length( $sep );
 
-		$kept = '';
+		$kept    = '';
+		$dropped = 0;
 		foreach ( $missing as $mention ) {
 			$candidate = '' === $kept ? $mention : $kept . ' ' . $mention;
-			if ( \mb_strlen( $candidate ) > $room ) {
-				break;
+			// Skip this handle rather than stop: a longer handle may not fit
+			// where a later, shorter one still would.
+			if ( grapheme_length( $candidate ) > $room ) {
+				++$dropped;
+				continue;
 			}
 			$kept = $candidate;
+		}
+
+		if ( $dropped > 0 ) {
+			debug_log(
+				\sprintf(
+					'post %d: %d body mention(s) dropped from the Bluesky teaser thread — no room within the %d-character limit',
+					$this->object->ID,
+					$dropped,
+					self::BLUESKY_MAX_GRAPHEMES
+				)
+			);
 		}
 
 		if ( '' === $kept ) {

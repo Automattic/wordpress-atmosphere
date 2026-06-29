@@ -68,6 +68,35 @@ class Test_Mention extends WP_UnitTestCase {
 	}
 
 	/**
+	 * A @mention inside a raw-text / non-rendered element (e.g. <script>,
+	 * <svg>) is left alone — linkifying it would corrupt the element.
+	 *
+	 * @dataProvider data_non_rendered_tags
+	 *
+	 * @param string $tag Protected tag name.
+	 */
+	public function test_skips_non_rendered_tags( string $tag ) {
+		$html = \sprintf( '<p><%1$s>@alice.bsky.social</%1$s></p>', $tag );
+
+		$this->assertSame( $html, Mention::the_content( $html ) );
+	}
+
+	/**
+	 * Raw-text / non-rendered elements whose contents must never be linkified.
+	 *
+	 * @return array<string,array{0:string}>
+	 */
+	public function data_non_rendered_tags(): array {
+		return array(
+			'script'   => array( 'script' ),
+			'noscript' => array( 'noscript' ),
+			'svg'      => array( 'svg' ),
+			'iframe'   => array( 'iframe' ),
+			'title'    => array( 'title' ),
+		);
+	}
+
+	/**
 	 * Nested same-name protected tags unwind one level at a time, so a handle
 	 * still inside the outer tag stays unlinked once the inner tag closes.
 	 */

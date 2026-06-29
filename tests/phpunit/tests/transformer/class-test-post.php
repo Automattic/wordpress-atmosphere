@@ -4325,4 +4325,49 @@ class Test_Post extends WP_UnitTestCase {
 		$this->assertCount( 0, $link_facets, 'Body mention must not become a #link facet.' );
 		$this->assertStringNotContainsString( '<a', $record['text'] );
 	}
+
+	/**
+	 * When the composed link-card text collapses to just the permalink (empty
+	 * title and excerpt), a carried body @mention is still separated from the
+	 * URL by a `\n\n`, so MENTION_PATTERN does not over-extend into the link and
+	 * the #mention facet survives.
+	 *
+	 * Regression: the bare-permalink branch dropped the separator, gluing
+	 * `@handle.tldhttps://…` together and silently losing the notification.
+	 */
+	public function test_bare_permalink_carries_body_mention_with_separator() {
+		$this->mock_handle_resolution( array( 'alice.bsky.social' => 'did:plc:alice' ) );
+
+		// Empty title + an excerpt that sanitises to nothing collapse
+		// build_text()'s $parts to just the permalink. The raw body is a bare
+		// HTML comment: non-empty (so WordPress accepts the insert) but stripped
+		// to '' by the excerpt builder. A the_content filter expands the
+		// *rendered* body past the 300-grapheme cap (routing the post to the
+		// link-card path) and plants the mention there, so body_mentions()
+		// discovers it while the excerpt stays empty.
+		$inject = static fn( $content ) => $content . \str_repeat( 'word ', 80 ) . 'Shout-out to @alice.bsky.social.';
+		\add_filter( 'the_content', $inject );
+
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => '',
+				'post_excerpt' => '',
+				'post_content' => '<!-- placeholder -->',
+			)
+		);
+
+		$record    = ( new Post( $post ) )->transform();
+		$permalink = \get_permalink( $post );
+
+		\remove_filter( 'the_content', $inject );
+
+		$this->assertStringContainsString( "@alice.bsky.social\n\n" . $permalink, $record['text'] );
+		$this->assertStringNotContainsString( '@alice.bsky.social' . $permalink, $record['text'] );
+
+		$mention_facets = \array_filter(
+			$record['facets'] ?? array(),
+			static fn( $facet ) => 'app.bsky.richtext.facet#mention' === ( $facet['features'][0]['$type'] ?? '' )
+		);
+		$this->assertCount( 1, $mention_facets, 'Bare-permalink post must still emit a #mention facet.' );
+	}
 }
