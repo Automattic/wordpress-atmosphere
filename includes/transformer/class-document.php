@@ -3,8 +3,7 @@
  * Transforms a WordPress post into a site.standard.document record.
  *
  * Documents carry full structured metadata: title, path, description,
- * cover image, plain-text content, tags, and a cross-reference to
- * the corresponding Bluesky post.
+ * cover image, plain-text content, and tags.
  *
  * @package Atmosphere
  */
@@ -127,16 +126,6 @@ class Document extends Base {
 			$tags = $this->collect_tags( $this->object );
 			if ( ! empty( $tags ) ) {
 				$record['tags'] = $tags;
-			}
-
-			// Bluesky cross-reference (populated after initial publish).
-			$bsky_uri = \get_post_meta( $this->object->ID, Post::META_URI, true );
-			$bsky_cid = \get_post_meta( $this->object->ID, Post::META_CID, true );
-			if ( $bsky_uri && $bsky_cid ) {
-				$record['bskyPostRef'] = array(
-					'uri' => $bsky_uri,
-					'cid' => $bsky_cid,
-				);
 			}
 
 			// Updated timestamp.

@@ -13,6 +13,7 @@ use function Atmosphere\appview_url;
 use function Atmosphere\sanitize_text;
 use function Atmosphere\truncate_text;
 use function Atmosphere\truncate_graphemes;
+use function Atmosphere\grapheme_length;
 use function Atmosphere\to_iso8601;
 use function Atmosphere\is_post_publishable;
 use function Atmosphere\is_sharing_enabled;
@@ -209,6 +210,79 @@ class Test_Functions extends \WP_UnitTestCase {
 
 		$this->assertLessThanOrEqual( 50, \mb_strlen( $result ) );
 		$this->assertStringEndsWith( '...', $result );
+	}
+
+	/**
+	 * Emoji-heavy text within the grapheme budget is returned untouched,
+	 * even when its code-point count exceeds the limit. Bluesky measures
+	 * the 300-cap in graphemes, so a family emoji (five code points) must
+	 * count as one against the limit — not five.
+	 */
+	public function test_truncate_text_counts_emoji_as_graphemes() {
+		if ( ! \function_exists( 'grapheme_strlen' ) ) {
+			$this->markTestSkipped( 'intl extension required for grapheme counting.' );
+		}
+
+		// 50 family emoji: 50 graphemes, but 250 code points.
+		$family = "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}";
+		$text   = \str_repeat( $family, 50 );
+
+		$this->assertGreaterThan( 100, \mb_strlen( $text ) );
+		$this->assertSame( $text, truncate_text( $text, 100 ) );
+	}
+
+	/**
+	 * When emoji text does exceed the grapheme budget, the cut lands on a
+	 * cluster boundary — never splitting a family emoji into mojibake — and
+	 * the result, marker included, stays within the grapheme limit.
+	 */
+	public function test_truncate_text_truncates_on_grapheme_boundary() {
+		if ( ! \function_exists( 'grapheme_strlen' ) ) {
+			$this->markTestSkipped( 'intl extension required for grapheme counting.' );
+		}
+
+		$family = "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}";
+		$text   = \str_repeat( $family, 200 ); // 200 graphemes.
+
+		$result = truncate_text( $text, 100 );
+
+		$this->assertLessThanOrEqual( 100, \grapheme_strlen( $result ) );
+		$this->assertStringEndsWith( '...', $result );
+
+		// The emoji body (marker stripped) is whole families, never a
+		// half-cluster: stripping '...' leaves a clean run of families.
+		$body = \substr( $result, 0, -3 );
+		$this->assertSame( \str_repeat( $family, \grapheme_strlen( $body ) ), $body );
+	}
+
+	/**
+	 * A budget too small to hold the marker hard-clamps to the limit
+	 * without one, rather than letting a negative cut length return nearly
+	 * the whole string and overshoot the limit.
+	 */
+	public function test_truncate_text_budget_smaller_than_marker() {
+		$this->assertSame( '', truncate_text( 'Hello world', 0 ) );
+		$this->assertSame( 'H', truncate_text( 'Hello world', 1 ) );
+		$this->assertSame( 'He', truncate_text( 'Hello world', 2 ) );
+	}
+
+	/**
+	 * The grapheme_length() helper counts a ZWJ family emoji as one, where
+	 * mb_strlen would report its five code points.
+	 */
+	public function test_grapheme_length_counts_emoji_as_one() {
+		if ( ! \function_exists( 'grapheme_strlen' ) ) {
+			$this->markTestSkipped( 'intl extension required for grapheme counting.' );
+		}
+
+		$family = "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}";
+
+		$this->assertSame( 1, grapheme_length( $family ) );
+		$this->assertSame( 3, grapheme_length( 'abc' ) );
+
+		// Other multi-code-point clusters Bluesky also counts as one.
+		$this->assertSame( 1, grapheme_length( "\u{1F44D}\u{1F3FB}" ) ); // Thumbs-up + skin tone.
+		$this->assertSame( 1, grapheme_length( "\u{1F1FA}\u{1F1F8}" ) ); // Flag: US.
 	}
 
 	/**
