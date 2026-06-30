@@ -43,6 +43,9 @@ class Test_Document extends \WP_UnitTestCase {
 		Registry::reset();
 		Parser_Base::flush_block_cache();
 		\delete_option( Registry::OPTION_FORMAT );
+		\remove_all_filters( 'atmosphere_document_links' );
+		\remove_all_filters( 'atmosphere_document_labels' );
+		\remove_all_filters( 'atmosphere_document_contributors' );
 		Atmosphere::register_default_content_parsers();
 		parent::tear_down();
 	}
@@ -519,6 +522,81 @@ class Test_Document extends \WP_UnitTestCase {
 
 		\delete_option( 'atmosphere_publication_tid' );
 		\delete_option( 'atmosphere_did' );
+	}
+
+	/**
+	 * Extensions can add a typed links union to document records.
+	 */
+	public function test_document_links_filter_adds_typed_union() {
+		\add_filter(
+			'atmosphere_document_links',
+			static fn() => array(
+				'$type' => 'example.links',
+				'items' => array(
+					array(
+						'uri'   => 'https://example.com/source',
+						'label' => 'Source',
+					),
+				),
+			)
+		);
+
+		$post   = self::factory()->post->create_and_get();
+		$record = ( new Document( $post ) )->transform();
+
+		$this->assertSame( 'example.links', $record['links']['$type'] );
+		$this->assertSame( 'https://example.com/source', $record['links']['items'][0]['uri'] );
+	}
+
+	/**
+	 * Extensions can add standard self-labels to document records.
+	 */
+	public function test_document_labels_filter_adds_self_labels() {
+		\add_filter(
+			'atmosphere_document_labels',
+			static fn() => array(
+				'$type'  => 'com.atproto.label.defs#selfLabels',
+				'values' => array(
+					array( 'val' => 'nudity' ),
+				),
+			)
+		);
+
+		$post   = self::factory()->post->create_and_get();
+		$record = ( new Document( $post ) )->transform();
+
+		$this->assertSame( 'com.atproto.label.defs#selfLabels', $record['labels']['$type'] );
+		$this->assertSame( 'nudity', $record['labels']['values'][0]['val'] );
+	}
+
+	/**
+	 * Extensions can add sanitized contributor records.
+	 */
+	public function test_document_contributors_filter_adds_sanitized_contributors() {
+		\add_filter(
+			'atmosphere_document_contributors',
+			static fn() => array(
+				array(
+					'did'         => 'did:plc:editor123',
+					'role'        => '<b>Editor</b>',
+					'displayName' => 'Jane &amp; Team',
+				),
+			)
+		);
+
+		$post   = self::factory()->post->create_and_get();
+		$record = ( new Document( $post ) )->transform();
+
+		$this->assertSame(
+			array(
+				array(
+					'did'         => 'did:plc:editor123',
+					'role'        => 'Editor',
+					'displayName' => 'Jane & Team',
+				),
+			),
+			$record['contributors']
+		);
 	}
 
 	/**

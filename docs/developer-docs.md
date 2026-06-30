@@ -35,11 +35,17 @@ ATmosphere exposes a small set of filters and actions for plugins to extend beha
 |------|------|-----|
 | `atmosphere_content_parser` | filter | Deprecated parser hook; use `Content_Parser\Registry::register()` instead. |
 | `atmosphere_document_content` | filter | Last-chance modification of the parsed content object. |
+| `atmosphere_document_links` | filter | Add a typed `links` union to `site.standard.document` records. |
+| `atmosphere_document_labels` | filter | Add standard self-labels to `site.standard.document` records. |
+| `atmosphere_document_contributors` | filter | Add contributor metadata to `site.standard.document` records. |
+| `atmosphere_publication_labels` | filter | Add standard self-labels to `site.standard.publication` records. |
+| `atmosphere_publication_show_in_discover` | filter | Override `preferences.showInDiscover` (defaults to the site's `blog_public` option) for `site.standard.publication` records. |
 | `atmosphere_syncable_post_types` | filter | Add or remove post types eligible for cross-posting. |
 | `atmosphere_should_publish_comment` | filter | Customise which approved comments are mirrored as Bluesky replies. |
 | `atmosphere_should_sync_reply` | filter | Customise which inbound Bluesky replies become WordPress comments. |
 | `atmosphere_transform_bsky_post` | filter | Mutate the Bluesky post record before write. |
 | `atmosphere_transform_document` | filter | Mutate the document record before write. |
+| `atmosphere_transform_publication` | filter | Mutate the publication record before write. |
 | `atmosphere_appview_host` | filter | Point Bluesky web links at an alternative AT Protocol appview (host or subpath). |
 | `atmosphere_appview_url` | filter | Rewrite the whole assembled appview link, including its route. |
 | `atmosphere_publish_post_result` | action | React to a post-publish outcome (success or `WP_Error`). |
@@ -101,6 +107,71 @@ add_filter(
 ```
 
 Of note: links rendered on the fly (facet mentions, hashtags, and the "View on Bluesky" link) pick up the filters on every render, so changing them updates immediately. The author and source links stored on synced reaction comments are resolved once at sync time, so they keep whichever host was in effect when the comment was synced.
+
+### Extending Standard.site metadata
+
+ATmosphere emits the core `site.standard.publication` and `site.standard.document` fields from WordPress data. Optional Standard.site fields that do not have a native WordPress source are extension points.
+
+Document metadata filters:
+
+```php
+add_filter(
+	'atmosphere_document_links',
+	static fn( $links, \WP_Post $post ) => array(
+		'$type' => 'example.document.links',
+		'items' => array(
+			array( 'uri' => 'https://example.com/source' ),
+		),
+	),
+	10,
+	2
+);
+
+add_filter(
+	'atmosphere_document_labels',
+	static fn() => array(
+		'$type'  => 'com.atproto.label.defs#selfLabels',
+		'values' => array(
+			array( 'val' => 'adult' ),
+		),
+	)
+);
+
+add_filter(
+	'atmosphere_document_contributors',
+	static fn( $contributors, \WP_Post $post ) => array(
+		array(
+			'did'         => 'did:plc:editor123',
+			'role'        => 'editor',
+			'displayName' => 'Jane Editor',
+		),
+	),
+	10,
+	2
+);
+```
+
+Publication metadata filters:
+
+```php
+add_filter(
+	'atmosphere_publication_labels',
+	static fn() => array(
+		'$type'  => 'com.atproto.label.defs#selfLabels',
+		'values' => array(
+			array( 'val' => 'adult' ),
+		),
+	)
+);
+
+// `showInDiscover` defaults to the site's `blog_public` option; force it
+// off (or return null to omit the preference entirely) regardless.
+add_filter( 'atmosphere_publication_show_in_discover', '__return_false' );
+```
+
+The field-specific filters run before `atmosphere_transform_document` and `atmosphere_transform_publication`, so a final record-level filter can still inspect or override the complete record.
+
+ATmosphere models one root publication per WordPress site. It verifies that publication at `/.well-known/site.standard.publication` and does not currently implement Standard.site's non-root publication verification path (`/.well-known/site.standard.publication/path/to/publication`). Social Standard.site lexicons such as `site.standard.graph.subscription` and `site.standard.graph.recommend` are also out of scope for the plugin's publishing flow; ATmosphere requests explicit `repo:` scopes only for `app.bsky.feed.post`, `site.standard.document`, and `site.standard.publication`, and intentionally keeps the documented `include:site.standard.authFull` permission set for Standard.site compatibility even though it does not publish or manage social records itself.
 
 ## Extending Content Formats
 

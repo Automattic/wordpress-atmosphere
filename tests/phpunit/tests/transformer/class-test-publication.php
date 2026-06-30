@@ -17,6 +17,18 @@ use Atmosphere\Transformer\Publication;
 class Test_Publication extends \WP_UnitTestCase {
 
 	/**
+	 * Clean up option/filter state between tests.
+	 */
+	public function tear_down(): void {
+		\remove_all_filters( 'atmosphere_publication_labels' );
+		\remove_all_filters( 'atmosphere_publication_show_in_discover' );
+		\delete_option( 'site_icon' );
+		\update_option( 'blog_public', 1 );
+
+		parent::tear_down();
+	}
+
+	/**
 	 * Test hex_to_rgb with a full hex color.
 	 */
 	public function test_hex_to_rgb_full() {
@@ -136,6 +148,93 @@ class Test_Publication extends \WP_UnitTestCase {
 
 		$this->assertArrayHasKey( 'name', $record );
 		$this->assertArrayNotHasKey( 'displayName', $record );
+	}
+
+	/**
+	 * The publication URL follows standard.site guidance and omits a
+	 * trailing slash.
+	 */
+	public function test_publication_url_omits_trailing_slash() {
+		$record = ( new Publication( null ) )->transform();
+
+		$this->assertSame( \untrailingslashit( \home_url( '/' ) ), $record['url'] );
+		$this->assertStringEndsNotWith( '/', $record['url'] );
+	}
+
+	/**
+	 * Extensions can add standard self-labels to publication records.
+	 */
+	public function test_publication_labels_filter_adds_self_labels() {
+		\add_filter(
+			'atmosphere_publication_labels',
+			static fn() => array(
+				'$type'  => 'com.atproto.label.defs#selfLabels',
+				'values' => array(
+					array( 'val' => 'adult' ),
+				),
+			)
+		);
+
+		$record = ( new Publication( null ) )->transform();
+
+		$this->assertSame( 'com.atproto.label.defs#selfLabels', $record['labels']['$type'] );
+		$this->assertSame( 'adult', $record['labels']['values'][0]['val'] );
+	}
+
+	/**
+	 * A public site (blog_public on) opts into discovery by default.
+	 */
+	public function test_publication_show_in_discover_defaults_to_true_for_public_site() {
+		\update_option( 'blog_public', 1 );
+
+		$record = ( new Publication( null ) )->transform();
+
+		$this->assertSame(
+			array( 'showInDiscover' => true ),
+			$record['preferences']
+		);
+	}
+
+	/**
+	 * A site that discourages search engines (blog_public off) stays out
+	 * of discovery by default.
+	 */
+	public function test_publication_show_in_discover_defaults_to_false_for_private_site() {
+		\update_option( 'blog_public', 0 );
+
+		$record = ( new Publication( null ) )->transform();
+
+		$this->assertSame(
+			array( 'showInDiscover' => false ),
+			$record['preferences']
+		);
+	}
+
+	/**
+	 * The filter overrides the blog_public default.
+	 */
+	public function test_publication_show_in_discover_filter_adds_preferences() {
+		\update_option( 'blog_public', 1 );
+		\add_filter( 'atmosphere_publication_show_in_discover', '__return_false' );
+
+		$record = ( new Publication( null ) )->transform();
+
+		$this->assertSame(
+			array( 'showInDiscover' => false ),
+			$record['preferences']
+		);
+	}
+
+	/**
+	 * A filter returning null omits the preference even on a public site.
+	 */
+	public function test_publication_show_in_discover_filter_can_omit_preferences() {
+		\update_option( 'blog_public', 1 );
+		\add_filter( 'atmosphere_publication_show_in_discover', '__return_null' );
+
+		$record = ( new Publication( null ) )->transform();
+
+		$this->assertArrayNotHasKey( 'preferences', $record );
 	}
 
 	/**

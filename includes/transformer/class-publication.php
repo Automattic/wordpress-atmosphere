@@ -65,7 +65,7 @@ class Publication extends Base {
 		 */
 		$record = array(
 			'$type'       => 'site.standard.publication',
-			'url'         => \home_url( '/' ),
+			'url'         => \untrailingslashit( \home_url( '/' ) ),
 			'name'        => truncate_graphemes( sanitize_text( \get_bloginfo( 'name' ) ), 500 ),
 			'description' => truncate_graphemes( sanitize_text( \get_bloginfo( 'description' ) ), 3000 ),
 		);
@@ -88,6 +88,55 @@ class Publication extends Base {
 		$basic_theme = $this->extract_basic_theme();
 		if ( $basic_theme ) {
 			$record['basicTheme'] = $basic_theme;
+		}
+
+		/**
+		 * Filters the site.standard.publication self-labels object.
+		 *
+		 * Return a com.atproto.label.defs#selfLabels object to add
+		 * content-warning labels. Return null or an empty array to omit it.
+		 *
+		 * @since unreleased
+		 *
+		 * @param array|null $labels Self-labels object, or null to omit.
+		 */
+		$labels = self::validate_self_labels(
+			\apply_filters( 'atmosphere_publication_labels', null ),
+			__METHOD__
+		);
+		if ( null !== $labels ) {
+			$record['labels'] = $labels;
+		}
+
+		/**
+		 * Filters whether the publication appears in standard.site discovery.
+		 *
+		 * Defaults to the site's `blog_public` option, so a public site
+		 * opts into discovery and a site set to discourage search engines
+		 * stays out — mirroring the visibility preference the user has
+		 * already expressed under Settings → Reading. Return true or false
+		 * to override and emit `preferences.showInDiscover`, or null to omit
+		 * the preference entirely and let downstream appviews apply their
+		 * own default.
+		 *
+		 * @since unreleased
+		 *
+		 * @param bool|null $show_in_discover Whether to show in discovery, or null to omit.
+		 */
+		$show_in_discover = \apply_filters(
+			'atmosphere_publication_show_in_discover',
+			(bool) \get_option( 'blog_public', 1 )
+		);
+		if ( \is_bool( $show_in_discover ) ) {
+			$record['preferences'] = array(
+				'showInDiscover' => $show_in_discover,
+			);
+		} elseif ( null !== $show_in_discover ) {
+			\_doing_it_wrong(
+				__METHOD__,
+				\esc_html__( 'atmosphere_publication_show_in_discover must return true, false, or null; omitting the preferences field.', 'atmosphere' ),
+				'unreleased'
+			);
 		}
 
 		/**
