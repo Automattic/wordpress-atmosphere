@@ -39,7 +39,7 @@ ATmosphere exposes a small set of filters and actions for plugins to extend beha
 | `atmosphere_document_labels` | filter | Add standard self-labels to `site.standard.document` records. |
 | `atmosphere_document_contributors` | filter | Add contributor metadata to `site.standard.document` records. |
 | `atmosphere_publication_labels` | filter | Add standard self-labels to `site.standard.publication` records. |
-| `atmosphere_publication_show_in_discover` | filter | Emit `preferences.showInDiscover` for `site.standard.publication` records. |
+| `atmosphere_publication_show_in_discover` | filter | Override `preferences.showInDiscover` (defaults to the site's `blog_public` option) for `site.standard.publication` records. |
 | `atmosphere_syncable_post_types` | filter | Add or remove post types eligible for cross-posting. |
 | `atmosphere_should_publish_comment` | filter | Customise which approved comments are mirrored as Bluesky replies. |
 | `atmosphere_should_sync_reply` | filter | Customise which inbound Bluesky replies become WordPress comments. |
@@ -164,7 +164,9 @@ add_filter(
 	)
 );
 
-add_filter( 'atmosphere_publication_show_in_discover', '__return_true' );
+// `showInDiscover` defaults to the site's `blog_public` option; force it
+// off (or return null to omit the preference entirely) regardless.
+add_filter( 'atmosphere_publication_show_in_discover', '__return_false' );
 ```
 
 The field-specific filters run before `atmosphere_transform_document` and `atmosphere_transform_publication`, so a final record-level filter can still inspect or override the complete record.

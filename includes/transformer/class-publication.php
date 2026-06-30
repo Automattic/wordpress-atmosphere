@@ -111,15 +111,22 @@ class Publication extends Base {
 		/**
 		 * Filters whether the publication appears in standard.site discovery.
 		 *
-		 * Return true or false to emit `preferences.showInDiscover`.
-		 * Return null to omit the preference and let downstream appviews
-		 * apply their own default.
+		 * Defaults to the site's `blog_public` option, so a public site
+		 * opts into discovery and a site set to discourage search engines
+		 * stays out — mirroring the visibility preference the user has
+		 * already expressed under Settings → Reading. Return true or false
+		 * to override and emit `preferences.showInDiscover`, or null to omit
+		 * the preference entirely and let downstream appviews apply their
+		 * own default.
 		 *
 		 * @since unreleased
 		 *
 		 * @param bool|null $show_in_discover Whether to show in discovery, or null to omit.
 		 */
-		$show_in_discover = \apply_filters( 'atmosphere_publication_show_in_discover', null );
+		$show_in_discover = \apply_filters(
+			'atmosphere_publication_show_in_discover',
+			(bool) \get_option( 'blog_public', 1 )
+		);
 		if ( \is_bool( $show_in_discover ) ) {
 			$record['preferences'] = array(
 				'showInDiscover' => $show_in_discover,
