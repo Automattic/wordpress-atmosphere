@@ -283,23 +283,14 @@ class Admin {
 	/**
 	 * Warn when auto-publish is on but no post type will ever publish.
 	 *
-	 * Auto-publish defaults on while the Post types list is easy to miss
-	 * further down the page, so a user can leave the screen "publishing"
-	 * with every post type unticked and nothing eligible to send — a
-	 * silent dead end (see issue #173). Registering the warning as a
-	 * settings error surfaces it at the top of the Settings page through
-	 * `options-head.php`'s `settings_errors()` call, alongside the usual
-	 * "Settings saved." notice.
+	 * Auto-publish defaults on and the Post types list is easy to miss, so
+	 * a user can end up "publishing" with everything unticked and nothing
+	 * eligible to send (issue #173). Registered as a settings error so it
+	 * surfaces at the top of the page via `options-head.php`.
 	 *
-	 * Hooked on `load-settings_page_atmosphere`, which fires before
-	 * `admin-header.php` renders the settings errors, so the notice lands
-	 * on the same pageview. Gated on `has_identity()` to match the
-	 * publishing section's own visibility: when no identity is on file the
-	 * Post types field is not on screen, so a warning about it would
-	 * dangle. The effective list from `get_supported_post_types()` (not
-	 * the raw option) is the right signal — a native
-	 * `add_post_type_support()` opt-in keeps publishing alive even with an
-	 * empty option, and that is not a misconfiguration to warn about.
+	 * Gated on `has_identity()` to match the publishing section's own
+	 * visibility, and on the effective `get_supported_post_types()` list so
+	 * a native `add_post_type_support()` opt-in does not trip a false alarm.
 	 */
 	public static function maybe_warn_missing_post_types(): void {
 		if ( ! \current_user_can( 'manage_options' ) ) {
