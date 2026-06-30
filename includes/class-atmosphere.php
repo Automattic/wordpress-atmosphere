@@ -336,9 +336,9 @@ class Atmosphere {
 	 * - Singular publishable posts, so a resolver landing on an article
 	 *   URL can find the parent publication directly without first
 	 *   fetching the document record.
-	 * - The WordPress front page, since the publication record's `url`
-	 *   field is `home_url('/')`. Lets a resolver verify the page <->
-	 *   publication binding by matching AT-URIs, sparing the
+	 * - The WordPress front page, which is the local page represented
+	 *   by the normalized publication URL. Lets a resolver verify the
+	 *   page <-> publication binding by matching AT-URIs, sparing the
 	 *   `.well-known/site.standard.publication` round-trip.
 	 *
 	 * Gated on `has_identity()` (not `is_connected()`) so the

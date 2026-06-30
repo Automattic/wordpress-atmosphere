@@ -216,4 +216,65 @@ abstract class Base {
 
 		return $plain;
 	}
+
+	/**
+	 * Validate an open-union extension object.
+	 *
+	 * @param mixed  $value   Filter return value.
+	 * @param string $method  Method name for _doing_it_wrong().
+	 * @param string $message Error message.
+	 * @return array|null Valid union object, or null when omitted/invalid.
+	 */
+	protected static function validate_open_union( $value, string $method, string $message ): ?array {
+		if ( null === $value || array() === $value ) {
+			return null;
+		}
+
+		if ( ! \is_array( $value ) || empty( $value['$type'] ) || ! \is_string( $value['$type'] ) ) {
+			\_doing_it_wrong( \esc_html( $method ), \esc_html( $message ), 'unreleased' );
+			return null;
+		}
+
+		return $value;
+	}
+
+	/**
+	 * Validate a com.atproto.label.defs#selfLabels object.
+	 *
+	 * @param mixed  $value  Filter return value.
+	 * @param string $method Method name for _doing_it_wrong().
+	 * @return array|null Valid self-labels object, or null when omitted/invalid.
+	 */
+	protected static function validate_self_labels( $value, string $method ): ?array {
+		if ( null === $value || array() === $value ) {
+			return null;
+		}
+
+		if (
+			! \is_array( $value )
+			|| 'com.atproto.label.defs#selfLabels' !== ( $value['$type'] ?? '' )
+			|| ! isset( $value['values'] )
+			|| ! \is_array( $value['values'] )
+		) {
+			\_doing_it_wrong(
+				\esc_html( $method ),
+				\esc_html__( 'Self-label filters must return a com.atproto.label.defs#selfLabels object with a values array; omitting the labels field.', 'atmosphere' ),
+				'unreleased'
+			);
+			return null;
+		}
+
+		foreach ( $value['values'] as $label ) {
+			if ( ! \is_array( $label ) || empty( $label['val'] ) || ! \is_string( $label['val'] ) ) {
+				\_doing_it_wrong(
+					\esc_html( $method ),
+					\esc_html__( 'Self-label values must be arrays with a non-empty string val field; omitting the labels field.', 'atmosphere' ),
+					'unreleased'
+				);
+				return null;
+			}
+		}
+
+		return $value;
+	}
 }

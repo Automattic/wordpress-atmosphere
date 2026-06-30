@@ -15,6 +15,7 @@
 namespace Atmosphere\Tests\Rest;
 
 use WP_UnitTestCase;
+use Atmosphere\OAuth\Client;
 use Atmosphere\Rest\Client_Metadata_Controller;
 
 /**
@@ -44,6 +45,22 @@ class Test_Client_Metadata_Filter extends WP_UnitTestCase {
 		$this->assertNotEmpty( $data['client_id'] );
 		$this->assertIsArray( $data['redirect_uris'] );
 		$this->assertNotEmpty( $data['redirect_uris'] );
+		$this->assertSame( Client::scopes(), $data['scope'] );
+		$this->assertStringNotContainsString( 'transition:generic', $data['scope'] );
+		$this->assertStringContainsString( 'repo:app.bsky.feed.post', $data['scope'] );
+		$this->assertStringContainsString( 'repo:site.standard.document', $data['scope'] );
+		$this->assertStringContainsString( 'repo:site.standard.publication', $data['scope'] );
+		$this->assertStringContainsString( 'blob:image/*', $data['scope'] );
+		$this->assertStringContainsString(
+			'rpc:app.bsky.actor.getProfile?aud=did:web:api.bsky.app%23bsky_appview',
+			$data['scope']
+		);
+		$this->assertStringContainsString(
+			'rpc:app.bsky.notification.listNotifications?aud=did:web:api.bsky.app%23bsky_appview',
+			$data['scope']
+		);
+		$this->assertStringContainsString( 'identity:handle', $data['scope'] );
+		$this->assertStringContainsString( 'include:site.standard.authFull', $data['scope'] );
 	}
 
 	/**
