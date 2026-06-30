@@ -106,19 +106,13 @@ class Post extends Base {
 	public const META_ORPHAN_RECORDS = '_atmosphere_bsky_orphan_records';
 
 	/**
-	 * Tracks a deferred `update_document_bsky_ref` failure.
+	 * Legacy post meta key for deferred document back-reference failures.
 	 *
-	 * Set by Publisher when the doc-ref `putRecord` fails after the
-	 * thread root + document have already been written, so the bsky
-	 * post(s) and the document are both live on the PDS but the
-	 * document's `bskyPostRef` is missing or stale. The publish itself
-	 * is treated as successful (replies still ship; rewriting the root
-	 * on the next edit would be worse) and this meta records the gap so
-	 * an operator or admin/Site Health surface can spot it.
-	 *
-	 * Cleared the next time `update_document_bsky_ref` succeeds for the
-	 * post (typical recovery path: any subsequent edit retries the
-	 * follow-up putRecord). Value: `[ stamp, code, message ]`.
+	 * Kept so cleanup paths remove markers left by older versions that
+	 * attempted a follow-up document `putRecord` after publishing the
+	 * Bluesky post. New writes no longer set this marker because the
+	 * document record is now the stable target of the Bluesky
+	 * `associatedRefs` strong reference.
 	 *
 	 * @var string
 	 */
@@ -168,14 +162,25 @@ class Post extends Base {
 	 * `source` / `associatedProfiles` enrichment).
 	 *
 	 * Null on a fresh transformer; reset whenever a fresh Post object
-	 * is constructed. Subsequent publishes of the same post
-	 * (`update_post()` flow) do not inject — by then
-	 * `Document::META_URI` / `Document::META_CID` are populated and
-	 * {@see self::build_embed()} reads the ref from meta instead.
+	 * is constructed. When no ref is injected and meta fallback is
+	 * enabled, {@see self::build_embed()} reads from `Document::META_*`.
 	 *
 	 * @var array{$type: string, uri: string, cid: string}|null
 	 */
 	private ?array $document_strong_ref = null;
+
+	/**
+	 * Whether the embed builder may fall back to the stored document ref.
+	 *
+	 * The Publisher disables this after it attempted to compute the
+	 * current document CID but failed. In that case `Document::META_CID`
+	 * points at the previous document version, while the same batch is
+	 * about to write a new document record, so advertising the meta ref
+	 * would preserve the stale-CID bug this guard exists to avoid.
+	 *
+	 * @var bool
+	 */
+	private bool $document_meta_strong_ref_enabled = true;
 
 	/**
 	 * Memoized short-form verdict for this post.
@@ -345,11 +350,20 @@ class Post extends Base {
 	 * See {@see self::$document_strong_ref} for the why. Passing an
 	 * empty array or a malformed shape (missing `uri` / `cid`) clears
 	 * the injection and the embed builder falls back to reading from
-	 * `Document::META_*`.
+	 * `Document::META_*`. Passing null clears the injection and
+	 * suppresses that fallback for this transformer instance.
 	 *
-	 * @param array $ref StrongRef to advertise (keys: optional `$type`, required `uri` and `cid`).
+	 * @param array|null $ref StrongRef to advertise (keys: optional `$type`, required `uri` and `cid`).
 	 */
-	public function set_document_strong_ref( array $ref ): void {
+	public function set_document_strong_ref( ?array $ref ): void {
+		if ( null === $ref ) {
+			$this->document_strong_ref              = null;
+			$this->document_meta_strong_ref_enabled = false;
+			return;
+		}
+
+		$this->document_meta_strong_ref_enabled = true;
+
 		if ( empty( $ref['uri'] ) || empty( $ref['cid'] ) ) {
 			$this->document_strong_ref = null;
 			return;
@@ -1092,17 +1106,15 @@ class Post extends Base {
 		 * record has been written.
 		 *
 		 * Document ref has two sources:
-		 *   - On the *initial* publish, the Publisher precomputes the
-		 *     document's CID locally via DAG-CBOR and injects via
-		 *     `set_document_strong_ref()`. Without this, the document
-		 *     ref could only be added after the atomic write returned
-		 *     — and Bluesky's AppView ignores subsequent
-		 *     `applyWrites#update` for the purposes of indexing
-		 *     `source` / `associatedProfiles` enrichment.
-		 *   - On an *update* publish, the injection is absent but
-		 *     `Document::META_*` are already populated by the
-		 *     previous publish's `store_document_meta()`, so reading
-		 *     from meta produces an equivalent ref.
+		 *   - The Publisher precomputes the document's CID locally via
+		 *     DAG-CBOR and injects via `set_document_strong_ref()`.
+		 *     Without this, the document ref could only be added after
+		 *     the atomic write returned — and Bluesky's AppView ignores
+		 *     subsequent `applyWrites#update` for the purposes of
+		 *     indexing `source` / `associatedProfiles` enrichment.
+		 *   - Read-only or legacy paths may omit injection and fall back
+		 *     to `Document::META_*`, which represents the last document
+		 *     record known to have been written.
 		 *
 		 * The injection wins if both sources are present — it
 		 * reflects what the Publisher is *about* to write, the meta
@@ -1117,7 +1129,7 @@ class Post extends Base {
 
 		if ( null !== $this->document_strong_ref ) {
 			$associated_refs[] = $this->document_strong_ref;
-		} else {
+		} elseif ( $this->document_meta_strong_ref_enabled ) {
 			$doc_uri = (string) \get_post_meta( $this->object->ID, Document::META_URI, true );
 			$doc_cid = (string) \get_post_meta( $this->object->ID, Document::META_CID, true );
 			if ( '' !== $doc_uri && '' !== $doc_cid ) {

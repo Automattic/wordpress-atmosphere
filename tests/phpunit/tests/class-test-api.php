@@ -132,6 +132,56 @@ class Test_API extends \WP_UnitTestCase {
 	}
 
 	/**
+	 * PDS API requests must not follow redirects.
+	 */
+	public function test_request_disables_redirection() {
+		$captured_args = null;
+
+		\add_filter(
+			'pre_http_request',
+			static function ( $response, $args, $url ) use ( &$captured_args ) {
+				if ( false !== \strpos( $url, '/xrpc/' ) ) {
+					$captured_args = $args;
+					return array(
+						'response' => array( 'code' => 200 ),
+						'headers'  => new \WpOrg\Requests\Utility\CaseInsensitiveDictionary( array() ),
+						'body'     => (string) \wp_json_encode( array( 'ok' => true ) ),
+					);
+				}
+
+				return $response;
+			},
+			10,
+			3
+		);
+
+		$result = API::get( '/xrpc/com.atproto.repo.getRecord' );
+
+		$this->assertIsArray( $result );
+		$this->assertSame( 0, $captured_args['redirection'] ?? null );
+	}
+
+	/**
+	 * Redirect responses are surfaced as failed PDS requests.
+	 */
+	public function test_request_rejects_redirect_response() {
+		$this->stub_http(
+			function () {
+				$this->fail( 'Token endpoint should not be called for a PDS redirect response.' );
+			},
+			function () {
+				return $this->http_response( 307, array() );
+			}
+		);
+
+		$result = API::get( '/xrpc/com.atproto.repo.getRecord' );
+
+		$this->assertWPError( $result );
+		$this->assertSame( 'atmosphere_pds', $result->get_error_code() );
+		$this->assertSame( 307, $result->get_error_data()['status'] ?? null );
+	}
+
+	/**
 	 * When the PDS rejects the access token with a 401 `InvalidToken`,
 	 * `API::request()` must call `Client::refresh()` exactly once and
 	 * replay the request with the rotated token.

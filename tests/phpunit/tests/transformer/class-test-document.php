@@ -194,6 +194,26 @@ class Test_Document extends \WP_UnitTestCase {
 	}
 
 	/**
+	 * Public document records do not include a Bluesky back-reference.
+	 */
+	public function test_document_omits_bsky_post_ref() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_status'  => 'publish',
+				'post_title'   => 'Public post',
+				'post_content' => 'Public body.',
+			)
+		);
+
+		\update_post_meta( $post->ID, Post::META_URI, 'at://did:plc:test/app.bsky.feed.post/public' );
+		\update_post_meta( $post->ID, Post::META_CID, 'bafypublic' );
+
+		$record = ( new Document( $post ) )->transform();
+
+		$this->assertArrayNotHasKey( 'bskyPostRef', $record );
+	}
+
+	/**
 	 * Password-protected posts must not expose protected fields through
 	 * document records, even when the transformer is called directly.
 	 */
