@@ -1,0 +1,4 @@
+Significance: minor
+Type: added
+
+The settings page now warns you when auto-publishing is on but no post types are selected, so nothing would be published. The post types list also sits directly under the auto-publish setting to make their connection clearer.
