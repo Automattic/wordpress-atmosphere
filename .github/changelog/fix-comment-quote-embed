@@ -1,0 +1,4 @@
+Significance: patch
+Type: fixed
+
+Bluesky replies that quote another post now keep a link to the quoted post when imported as comments, instead of dropping it.

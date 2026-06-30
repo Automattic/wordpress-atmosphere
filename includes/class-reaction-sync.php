@@ -566,10 +566,6 @@ class Reaction_Sync {
 
 		$text = $record['text'] ?? '';
 
-		if ( '' === $text ) {
-			return false;
-		}
-
 		/*
 		 * Bluesky stores `text` as the display string — long URLs are
 		 * truncated to e.g. `bsky.app/profile/jere...` and the real
@@ -583,6 +579,28 @@ class Reaction_Sync {
 		 */
 		$facets = $record['facets'] ?? array();
 		$text   = Facet::apply( $text, \is_array( $facets ) ? $facets : array() );
+
+		/*
+		 * A reply that quotes another post carries the quoted post's
+		 * AT-URI in `embed` (app.bsky.embed.record), not in `text`.
+		 * Surface it as a linked blockquote so the quote isn't dropped on
+		 * import; append after the reply text, mirroring how Bluesky
+		 * renders the quote card below the reply.
+		 */
+		$quote = self::build_quote_html( $record );
+
+		if ( '' !== $quote ) {
+			$text = '' === $text ? $quote : $text . "\n\n" . $quote;
+		}
+
+		/*
+		 * Drop replies that carry neither text nor a resolvable quote —
+		 * the gate is here, after both are resolved, so a quote-only
+		 * reply (empty `text`, populated `embed`) still imports.
+		 */
+		if ( '' === $text ) {
+			return false;
+		}
 
 		/**
 		 * Filters whether a reply should be synced as a WordPress comment.
@@ -911,6 +929,122 @@ class Reaction_Sync {
 					'handle' => $handle,
 					'rkey'   => $rkey,
 				)
+			)
+		);
+	}
+
+	/**
+	 * Build a blockquote linking to a reply's quoted post, if any.
+	 *
+	 * Bluesky quote-posts attach the quoted record to the reply's `embed`
+	 * (`app.bsky.embed.record`, or `recordWithMedia` when the quote also
+	 * carries media), pointing at the quoted post's AT-URI — the reply's
+	 * `text` says nothing about it. Without this, the quote is dropped on
+	 * import.
+	 *
+	 * Returns an HTML fragment safe to pass through the caller's
+	 * `wp_kses_post()` gate, or '' when there's no quoted `app.bsky.feed.post`
+	 * to link to. The quoted post's own text is intentionally not resolved:
+	 * it usually lives in another actor's repo, which would require a
+	 * separate network round-trip per quote — a link to the quote is enough
+	 * to stop the drop.
+	 *
+	 * @param array $record The reply record (notification record or own value).
+	 * @return string Blockquote HTML, or '' when there's no linkable quote.
+	 */
+	private static function build_quote_html( array $record ): string {
+		$embed = $record['embed'] ?? null;
+
+		if ( ! \is_array( $embed ) ) {
+			return '';
+		}
+
+		$uri = self::quoted_post_uri( $embed );
+		$url = '' === $uri ? '' : self::quoted_post_web_url( $uri );
+
+		if ( '' === $url ) {
+			return '';
+		}
+
+		$href = \esc_url( $url );
+
+		if ( '' === $href ) {
+			return '';
+		}
+
+		return '<blockquote class="atmosphere-bsky-quote"><p><a href="' . $href . '">'
+			. \esc_html__( 'Quoted post on Bluesky', 'atmosphere' )
+			. '</a></p></blockquote>';
+	}
+
+	/**
+	 * Read the quoted post's AT-URI out of a reply's `embed`.
+	 *
+	 * Handles `app.bsky.embed.record` (URI at `record.uri`) and
+	 * `app.bsky.embed.recordWithMedia` (one level deeper at
+	 * `record.record.uri`), along with their hydrated `#view` forms, which
+	 * share the same paths. Every level is `is_array()`-guarded because the
+	 * embed is untrusted PDS JSON; an unrecognised or malformed shape
+	 * returns '' rather than fataling the cron sync.
+	 *
+	 * @param array $embed The record's `embed` value.
+	 * @return string The quoted post's AT-URI, or '' when absent/malformed.
+	 */
+	private static function quoted_post_uri( array $embed ): string {
+		$type = $embed['$type'] ?? '';
+
+		if ( ! \is_string( $type ) || ! \str_starts_with( $type, 'app.bsky.embed.record' ) ) {
+			return '';
+		}
+
+		$record = $embed['record'] ?? null;
+
+		if ( ! \is_array( $record ) ) {
+			return '';
+		}
+
+		// recordWithMedia nests the quoted record one level deeper.
+		if ( ! isset( $record['uri'] ) && \is_array( $record['record'] ?? null ) ) {
+			$record = $record['record'];
+		}
+
+		$uri = $record['uri'] ?? '';
+
+		return \is_string( $uri ) ? $uri : '';
+	}
+
+	/**
+	 * Convert a quoted post's AT-URI to its appview web URL.
+	 *
+	 * Builds the DID form (`profile/<did>/post/<rkey>`), which resolves
+	 * without a handle lookup. The host defaults to `bsky.app` and is
+	 * filterable via `atmosphere_appview_host`. Only `app.bsky.feed.post`
+	 * records have an appview post page, so any other collection — or a
+	 * malformed URI — returns ''.
+	 *
+	 * @param string $at_uri Quoted post AT-URI.
+	 * @return string The appview URL, or '' when not a linkable post.
+	 */
+	private static function quoted_post_web_url( string $at_uri ): string {
+		$parts = parse_at_uri( $at_uri );
+
+		if ( false === $parts ) {
+			return '';
+		}
+
+		if ( 'app.bsky.feed.post' !== $parts['collection'] || '' === $parts['did'] || '' === $parts['rkey'] ) {
+			return '';
+		}
+
+		// The DID is passed raw, matching the other profile/<did>/post/<rkey>
+		// builders (Atmosphere::* and Facet); its colons are valid path chars
+		// the appview expects unencoded. Handles, by contrast, are rawurlencode()d.
+		return appview_url(
+			'profile/' . $parts['did'] . '/post/' . $parts['rkey'],
+			array(
+				'type' => 'post',
+				'did'  => $parts['did'],
+				'rkey' => $parts['rkey'],
 			)
 		);
 	}
