@@ -105,6 +105,10 @@ class Publisher {
 			return $result;
 		}
 
+		// Heal a drifted publication record before composing the post,
+		// so the embedded publication strongRef points at the current CID.
+		self::maybe_heal_publication();
+
 		$bsky_transformer = new Post( $post );
 		$doc_transformer  = new Document( $post );
 
@@ -740,6 +744,12 @@ class Publisher {
 
 			return self::publish_post( $post );
 		}
+
+		// In-place update path: heal a drifted publication record before
+		// composing the post so the embedded publication strongRef points
+		// at the current CID. The fresh-publish branch above already heals
+		// through its own `publish_post()` call.
+		self::maybe_heal_publication();
 
 		foreach ( $stored as $entry ) {
 			if ( empty( $entry['tid'] ) ) {
@@ -1594,6 +1604,57 @@ class Publisher {
 		}
 
 		return $result;
+	}
+
+	/**
+	 * Re-sync the publication record when it has drifted from the
+	 * record the current transform would produce.
+	 *
+	 * `sync_publication()` otherwise only runs on a handful of settings
+	 * hooks (site title, tagline, icon, theme — {@see Atmosphere::schedule_publication_sync()}).
+	 * A change that doesn't fire one of those never reaches the PDS: a
+	 * plugin update that alters the record shape, a newly-registered
+	 * `atmosphere_transform_publication` / `atmosphere_publication_*`
+	 * filter, or the publication-URL normalisation shipped in this
+	 * release. The live publication record — and the publication
+	 * strongRef every long-form post embeds in `associatedRefs` — would
+	 * stay frozen at the last settings-triggered sync, leaving the
+	 * Bluesky post pointing at a stale publication CID and standard.site
+	 * unable to verify the document against the publication URL.
+	 *
+	 * Detect that drift on the publish path and heal it before the
+	 * post's `associatedRefs` are built, so the post points at the
+	 * refreshed publication CID. Cheap when already in sync: one local
+	 * transform plus a DAG-CBOR encode, no network. A putRecord only
+	 * fires when the locally-computed CID diverges from the last synced
+	 * CID, and the sync's response refreshes `OPTION_CID` so the next
+	 * publish sees no drift.
+	 */
+	private static function maybe_heal_publication(): void {
+		if ( '' === get_did() ) {
+			return;
+		}
+
+		/*
+		 * No publication has ever been created for this site — there is
+		 * nothing to heal yet. The first write happens through the
+		 * connect / settings-save flow, which mints the TID.
+		 */
+		if ( '' === (string) \get_option( Publication::OPTION_TID, '' ) ) {
+			return;
+		}
+
+		$current = CID::from_record( ( new Publication( null ) )->transform() );
+
+		if ( \is_wp_error( $current ) ) {
+			return;
+		}
+
+		if ( (string) \get_option( Publication::OPTION_CID, '' ) === $current ) {
+			return;
+		}
+
+		self::sync_publication();
 	}
 
 	/**

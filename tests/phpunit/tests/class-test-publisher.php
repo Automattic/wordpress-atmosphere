@@ -21,6 +21,7 @@ use Atmosphere\OAuth\Encryption;
 use Atmosphere\Transformer\Comment;
 use Atmosphere\Transformer\Document;
 use Atmosphere\Transformer\Post;
+use Atmosphere\Transformer\Publication;
 
 /**
  * Publisher tests.
@@ -54,6 +55,7 @@ class Test_Publisher extends WP_UnitTestCase {
 		\delete_option( 'atmosphere_connection' );
 		\delete_option( 'atmosphere_did' );
 		\delete_option( 'atmosphere_publication_tid' );
+		\delete_option( 'atmosphere_publication_cid' );
 
 		\remove_all_filters( 'atmosphere_pre_apply_writes' );
 		\remove_all_filters( 'atmosphere_long_form_composition' );
@@ -2463,5 +2465,118 @@ class Test_Publisher extends WP_UnitTestCase {
 
 		$this->assertWPError( $result );
 		$this->assertSame( 'atmosphere_not_connected', $result->get_error_code() );
+	}
+
+	/**
+	 * A publication record that has drifted from the current transform
+	 * (e.g. after the URL normalization shipped this release, which no
+	 * settings hook fires for) is re-synced on the next publish, and the
+	 * post's publication strongRef points at the refreshed CID rather
+	 * than the stale one.
+	 */
+	public function test_publish_heals_drifted_publication() {
+		\update_option( Publication::OPTION_TID, '3kpub00000000', false );
+		\update_option( Publication::OPTION_CID, 'bafyreistalepublication00000000000000000000000000000000000000', false );
+
+		$put_calls  = array();
+		$fresh_cid  = 'bafyreifreshpublication00000000000000000000000000000000000000';
+		$put_filter = function ( $response, $args, $url ) use ( &$put_calls, $fresh_cid ) {
+			if ( false === \strpos( $url, 'com.atproto.repo.putRecord' ) ) {
+				return $response;
+			}
+
+			$put_calls[] = \json_decode( $args['body'] ?? '{}', true );
+
+			return array(
+				'response' => array( 'code' => 200 ),
+				'body'     => \wp_json_encode(
+					array(
+						'uri' => 'at://did:plc:test123/site.standard.publication/3kpub00000000',
+						'cid' => $fresh_cid,
+					)
+				),
+			);
+		};
+		\add_filter( 'pre_http_request', $put_filter, 10, 3 );
+
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'A Long-Form Post',
+				'post_content' => 'Body content.',
+			)
+		);
+
+		$this->fail_call_indexes = array();
+		$this->register_capture( $post->ID );
+
+		try {
+			$result = Publisher::publish( $post );
+		} finally {
+			\remove_filter( 'pre_http_request', $put_filter, 10 );
+		}
+
+		$this->assertIsArray( $result );
+
+		// Exactly one publication putRecord fired (the heal).
+		$this->assertCount( 1, $put_calls );
+		$this->assertSame( 'site.standard.publication', $put_calls[0]['collection'] );
+
+		// OPTION_CID was refreshed from the sync response.
+		$this->assertSame( $fresh_cid, \get_option( Publication::OPTION_CID ) );
+
+		// The post's publication strongRef points at the refreshed CID.
+		$writes  = $this->captured_calls[0]['writes'];
+		$refs    = $writes[0]['value']['embed']['external']['associatedRefs'] ?? array();
+		$pub_ref = null;
+		foreach ( $refs as $ref ) {
+			if ( false !== \strpos( $ref['uri'] ?? '', '/site.standard.publication/' ) ) {
+				$pub_ref = $ref;
+				break;
+			}
+		}
+
+		$this->assertIsArray( $pub_ref );
+		$this->assertSame( $fresh_cid, $pub_ref['cid'] );
+	}
+
+	/**
+	 * When the stored publication CID already matches the current
+	 * transform, publishing must not fire a redundant publication
+	 * putRecord.
+	 */
+	public function test_publish_skips_publication_sync_when_in_sync() {
+		$current_cid = CID::from_record( ( new Publication( null ) )->transform() );
+		$this->assertNotWPError( $current_cid );
+
+		\update_option( Publication::OPTION_TID, '3kpub00000000', false );
+		\update_option( Publication::OPTION_CID, $current_cid, false );
+
+		$put_calls  = array();
+		$put_filter = function ( $response, $args, $url ) use ( &$put_calls ) {
+			if ( false !== \strpos( $url, 'com.atproto.repo.putRecord' ) ) {
+				$put_calls[] = $url;
+			}
+			return $response;
+		};
+		\add_filter( 'pre_http_request', $put_filter, 10, 3 );
+
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'A Long-Form Post',
+				'post_content' => 'Body content.',
+			)
+		);
+
+		$this->fail_call_indexes = array();
+		$this->register_capture( $post->ID );
+
+		try {
+			$result = Publisher::publish( $post );
+		} finally {
+			\remove_filter( 'pre_http_request', $put_filter, 10 );
+		}
+
+		$this->assertIsArray( $result );
+		$this->assertCount( 0, $put_calls );
 	}
 }
