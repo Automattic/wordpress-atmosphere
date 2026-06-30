@@ -285,8 +285,8 @@ class Admin {
 	 *
 	 * Auto-publish defaults on and the Post types list is easy to miss, so
 	 * a user can end up "publishing" with everything unticked and nothing
-	 * eligible to send (issue #173). Registered as a settings error so it
-	 * surfaces at the top of the page via `options-head.php`.
+	 * eligible to send. Registered as a settings error so it surfaces at
+	 * the top of the page via `options-head.php`.
 	 *
 	 * Gated on `has_identity()` to match the publishing section's own
 	 * visibility, and on the effective `get_supported_post_types()` list so
