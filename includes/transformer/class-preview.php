@@ -55,6 +55,20 @@ class Preview {
 
 		$type = \sanitize_text_field( (string) $type );
 
+		/*
+		 * This runs on a singular / front-page front-end request, so display
+		 * plugins (sharing buttons, Related Posts, ad units, …) would hook
+		 * `the_content` and bleed their chrome into the previewed record —
+		 * chrome the real publish path never picks up, because it renders
+		 * outside the loop / main query. Those plugins already bail on REST
+		 * requests, so mark this one as REST to render the record the way it
+		 * is actually published. The handler exits below, so the constant
+		 * never outlives this preview request.
+		 */
+		if ( ! \defined( 'REST_REQUEST' ) ) {
+			\define( 'REST_REQUEST', true );
+		}
+
 		if ( \is_front_page() ) {
 			$payload = self::for_site( $type );
 		} elseif ( \is_singular() ) {
