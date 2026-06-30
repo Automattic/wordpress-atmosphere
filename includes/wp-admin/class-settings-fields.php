@@ -90,24 +90,18 @@ class Settings_Fields {
 			'atmosphere_publishing'
 		);
 
-		/*
-		 * Sits directly under Auto-publish on purpose: the two settings
-		 * gate each other (auto-publish does nothing with no post types
-		 * selected), so keeping them adjacent makes that dependency hard
-		 * to miss. See issue #173.
-		 */
 		\add_settings_field(
-			'atmosphere_support_post_types',
-			\__( 'Post types', 'atmosphere' ),
-			array( self::class, 'render_support_post_types_field' ),
+			'atmosphere_long_form_composition',
+			\__( 'Long-form posts', 'atmosphere' ),
+			array( self::class, 'render_long_form_composition_field' ),
 			'atmosphere',
 			'atmosphere_publishing'
 		);
 
 		\add_settings_field(
-			'atmosphere_long_form_composition',
-			\__( 'Long-form posts', 'atmosphere' ),
-			array( self::class, 'render_long_form_composition_field' ),
+			'atmosphere_support_post_types',
+			\__( 'Post types', 'atmosphere' ),
+			array( self::class, 'render_support_post_types_field' ),
 			'atmosphere',
 			'atmosphere_publishing'
 		);

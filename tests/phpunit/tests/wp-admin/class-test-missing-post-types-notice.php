@@ -4,7 +4,7 @@
  *
  * Auto-publish defaults on, so a user who unticks every Post types
  * checkbox ends up with publishing "enabled" yet nothing eligible to
- * publish — a silent dead end (see issue #173). The settings page must
+ * publish, a silent dead end (see issue #173). The settings page must
  * surface a warning in that state and stay quiet otherwise.
  *
  * The warning is registered as a settings error so WordPress renders it
@@ -162,7 +162,7 @@ class Test_Missing_Post_Types_Notice extends WP_UnitTestCase {
 
 	/**
 	 * Fresh install: neither option is stored, so both fall back to their
-	 * registered defaults — auto-publish on, post types `['post']`. The
+	 * registered defaults: auto-publish on, post types `['post']`. The
 	 * default list is non-empty, so the most common path stays quiet.
 	 */
 	public function test_no_warning_on_fresh_install_defaults(): void {

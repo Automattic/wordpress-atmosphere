@@ -312,7 +312,7 @@ class Admin {
 		\add_settings_error(
 			'atmosphere',
 			'no_post_types',
-			\__( 'Auto-publish is on, but no post types are selected — nothing will be published. Select one or more post types under “Post types” below to start publishing.', 'atmosphere' ),
+			\__( 'Auto-publish is on, but no post types are selected, so nothing will be published. Select one or more post types under “Post types” below to start publishing.', 'atmosphere' ),
 			'warning'
 		);
 	}
