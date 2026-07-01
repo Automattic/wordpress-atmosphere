@@ -55,41 +55,51 @@ class Preview {
 
 		$type = \sanitize_text_field( (string) $type );
 
-		/*
-		 * This runs on a singular / front-page front-end request, so display
-		 * plugins (sharing buttons, Related Posts, ad units, …) would hook
-		 * `the_content` and bleed their chrome into the previewed record —
-		 * chrome the real publish path never picks up, because it renders
-		 * outside the loop / main query. Those plugins already bail on REST
-		 * requests, so mark this one as REST to render the record the way it
-		 * is actually published. The handler exits below, so the constant
-		 * never outlives this preview request.
-		 */
-		if ( ! \defined( 'REST_REQUEST' ) ) {
-			\define( 'REST_REQUEST', true );
+		if ( \is_front_page() ) {
+			self::mark_rest_request();
+			self::send( self::for_site( $type ) );
+			exit;
 		}
 
-		if ( \is_front_page() ) {
-			$payload = self::for_site( $type );
-		} elseif ( \is_singular() ) {
-			$post = \get_queried_object();
-
-			if ( ! $post instanceof \WP_Post ) {
-				return;
-			}
-
-			if ( ! is_supported_post_type( $post->post_type ) ) {
-				\status_header( 404 );
-				exit;
-			}
-
-			$payload = self::for_post( $post, $type );
-		} else {
+		if ( ! \is_singular() ) {
 			return;
 		}
 
-		self::send( $payload );
+		$post = \get_queried_object();
+
+		if ( ! $post instanceof \WP_Post ) {
+			return;
+		}
+
+		if ( ! is_supported_post_type( $post->post_type ) ) {
+			\status_header( 404 );
+			exit;
+		}
+
+		self::mark_rest_request();
+		self::send( self::for_post( $post, $type ) );
 		exit;
+	}
+
+	/**
+	 * Mark the current request as a REST request before rendering a record.
+	 *
+	 * Called only on the two branches that resolve a record and immediately
+	 * `exit`, so the constant never outlives the preview request — an earlier
+	 * bare `return` (e.g. `?atproto` on a non-singular archive) must not leave
+	 * `REST_REQUEST` defined for the rest of the page render.
+	 *
+	 * This runs on a singular / front-page front-end request, so display
+	 * plugins (sharing buttons, Related Posts, ad units, …) would hook
+	 * `the_content` and bleed their chrome into the previewed record — chrome
+	 * the real publish path never picks up, because it renders outside the
+	 * loop / main query. Those plugins already bail on REST requests, so
+	 * marking this one as REST renders the record the way it is published.
+	 */
+	private static function mark_rest_request(): void {
+		if ( ! \defined( 'REST_REQUEST' ) ) {
+			\define( 'REST_REQUEST', true );
+		}
 	}
 
 	/**
