@@ -1833,6 +1833,16 @@ class Test_Atmosphere extends WP_UnitTestCase {
 	}
 
 	/**
+	 * Front-end endpoint query vars are registered through WordPress.
+	 */
+	public function test_register_query_vars_adds_atproto_preview_var() {
+		$vars = $this->atmosphere->register_query_vars( array( 'p' ) );
+
+		$this->assertContains( 'atproto', $vars );
+		$this->assertContains( 'atmosphere_wellknown', $vars );
+	}
+
+	/**
 	 * Document link emits for a previously-published post (META_URI on
 	 * file) even with no live OAuth session. The verification link is
 	 * the bidirectional anchor required by standard.site; it MUST keep
@@ -1927,9 +1937,9 @@ class Test_Atmosphere extends WP_UnitTestCase {
 	}
 
 	/**
-	 * Publication link tag fires on the WordPress front page, since the
-	 * publication record's `url` field is `home_url('/')`. Lets a
-	 * resolver verify the page-to-publication binding by matching
+	 * Publication link tag fires on the WordPress front page, which is
+	 * the local page represented by the normalized publication URL. Lets
+	 * a resolver verify the page-to-publication binding by matching
 	 * AT-URIs instead of round-tripping through `.well-known`.
 	 */
 	public function test_output_publication_link_emits_on_front_page() {
@@ -1951,9 +1961,9 @@ class Test_Atmosphere extends WP_UnitTestCase {
 	 * `is_front_page()` and `is_singular('page')` are BOTH true in
 	 * that scenario; the publishability gate would otherwise reject
 	 * the request because `page` is not in the default supported
-	 * post type list. The tag must still emit because `home_url('/')`
-	 * — which the publication record's `url` field points at — is
-	 * the static page's permalink.
+	 * post type list. The tag must still emit because the static page
+	 * is the site's front page and therefore represents the normalized
+	 * publication URL.
 	 */
 	public function test_output_publication_link_emits_on_static_front_page() {
 		\update_option( 'atmosphere_publication_tid', '3kpubtid000000' );

@@ -74,6 +74,24 @@ abstract class Base {
 	abstract public function get_rkey(): string;
 
 	/**
+	 * Records this transformer would publish, for the `?atproto` preview.
+	 *
+	 * Defaults to the single record produced by {@see self::transform()}.
+	 * Transformers that fan a post out into multiple records (e.g. a
+	 * Bluesky thread) override this to return them in publish order.
+	 *
+	 * Implementations MUST be read-only: the preview is served on a GET
+	 * request, so no blob uploads, meta writes, or rkey reservations.
+	 * Override this method (like Document and Publication do) when
+	 * `transform()` has publish-time side effects.
+	 *
+	 * @return array<int,array> Ordered list of record arrays, in publish order.
+	 */
+	public function get_preview_records(): array {
+		return array( $this->transform() );
+	}
+
+	/**
 	 * Build the full AT-URI for this record.
 	 *
 	 * @return string
@@ -242,5 +260,66 @@ abstract class Base {
 		$this->plain_content_cache[ $post->ID ] = $plain;
 
 		return $plain;
+	}
+
+	/**
+	 * Validate an open-union extension object.
+	 *
+	 * @param mixed  $value   Filter return value.
+	 * @param string $method  Method name for _doing_it_wrong().
+	 * @param string $message Error message.
+	 * @return array|null Valid union object, or null when omitted/invalid.
+	 */
+	protected static function validate_open_union( $value, string $method, string $message ): ?array {
+		if ( null === $value || array() === $value ) {
+			return null;
+		}
+
+		if ( ! \is_array( $value ) || empty( $value['$type'] ) || ! \is_string( $value['$type'] ) ) {
+			\_doing_it_wrong( \esc_html( $method ), \esc_html( $message ), 'unreleased' );
+			return null;
+		}
+
+		return $value;
+	}
+
+	/**
+	 * Validate a com.atproto.label.defs#selfLabels object.
+	 *
+	 * @param mixed  $value  Filter return value.
+	 * @param string $method Method name for _doing_it_wrong().
+	 * @return array|null Valid self-labels object, or null when omitted/invalid.
+	 */
+	protected static function validate_self_labels( $value, string $method ): ?array {
+		if ( null === $value || array() === $value ) {
+			return null;
+		}
+
+		if (
+			! \is_array( $value )
+			|| 'com.atproto.label.defs#selfLabels' !== ( $value['$type'] ?? '' )
+			|| ! isset( $value['values'] )
+			|| ! \is_array( $value['values'] )
+		) {
+			\_doing_it_wrong(
+				\esc_html( $method ),
+				\esc_html__( 'Self-label filters must return a com.atproto.label.defs#selfLabels object with a values array; omitting the labels field.', 'atmosphere' ),
+				'unreleased'
+			);
+			return null;
+		}
+
+		foreach ( $value['values'] as $label ) {
+			if ( ! \is_array( $label ) || empty( $label['val'] ) || ! \is_string( $label['val'] ) ) {
+				\_doing_it_wrong(
+					\esc_html( $method ),
+					\esc_html__( 'Self-label values must be arrays with a non-empty string val field; omitting the labels field.', 'atmosphere' ),
+					'unreleased'
+				);
+				return null;
+			}
+		}
+
+		return $value;
 	}
 }
