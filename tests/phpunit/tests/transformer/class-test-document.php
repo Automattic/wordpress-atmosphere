@@ -608,4 +608,90 @@ class Test_Document extends \WP_UnitTestCase {
 
 		$this->assertSame( 'site.standard.document', $transformer->get_collection() );
 	}
+
+	/**
+	 * Preview projections must stay read-only: a featured image whose
+	 * blob has never been uploaded is omitted from the previewed record
+	 * instead of triggering a PDS blob upload (and a blob-ref meta
+	 * write) as a side effect of a preview GET.
+	 */
+	public function test_preview_records_do_not_upload_uncached_cover_image() {
+		$upload_dir = \wp_upload_dir();
+		$path       = $upload_dir['basedir'] . '/atmosphere-doc-preview-test.jpg';
+		\file_put_contents( $path, 'LOCAL-IMAGE-BYTES' ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents
+
+		$attachment_id = self::factory()->attachment->create_object(
+			$path,
+			0,
+			array( 'post_mime_type' => 'image/jpeg' )
+		);
+
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'A Titled Post',
+				'post_content' => 'Long-form blog body.',
+			)
+		);
+		\set_post_thumbnail( $post->ID, $attachment_id );
+
+		$attempted     = false;
+		$short_circuit = static function () use ( &$attempted ) {
+			$attempted = true;
+			return array( 'blob' => array( 'cid' => 'bafyupload' ) );
+		};
+		\add_filter( 'atmosphere_pre_upload_blob', $short_circuit );
+
+		$records = ( new Document( $post ) )->get_preview_records();
+
+		\remove_filter( 'atmosphere_pre_upload_blob', $short_circuit );
+		\wp_delete_file( $path );
+
+		$this->assertFalse( $attempted, 'Previewing must not upload blobs.' );
+		$this->assertArrayNotHasKey( 'coverImage', $records[0] );
+		$this->assertSame( '', (string) \get_post_meta( $attachment_id, '_atmosphere_blob_ref', true ) );
+	}
+
+	/**
+	 * A previously-uploaded cover image blob is reused from its cached
+	 * ref in preview projections, so the previewed record — and any CID
+	 * computed from it — matches what a publish would write, without a
+	 * network round-trip.
+	 */
+	public function test_preview_records_use_cached_cover_image_blob() {
+		$attachment_id = self::factory()->attachment->create_object(
+			'2026/06/cached-cover.jpg',
+			0,
+			array( 'post_mime_type' => 'image/jpeg' )
+		);
+
+		$cached_ref = array(
+			'$type'    => 'blob',
+			'ref'      => array( '$link' => 'bafycachedcover' ),
+			'mimeType' => 'image/jpeg',
+			'size'     => 123,
+		);
+		\update_post_meta( $attachment_id, '_atmosphere_blob_ref', $cached_ref );
+
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'A Titled Post',
+				'post_content' => 'Long-form blog body.',
+			)
+		);
+		\set_post_thumbnail( $post->ID, $attachment_id );
+
+		$attempted     = false;
+		$short_circuit = static function () use ( &$attempted ) {
+			$attempted = true;
+			return array( 'blob' => array( 'cid' => 'bafyupload' ) );
+		};
+		\add_filter( 'atmosphere_pre_upload_blob', $short_circuit );
+
+		$records = ( new Document( $post ) )->get_preview_records();
+
+		\remove_filter( 'atmosphere_pre_upload_blob', $short_circuit );
+
+		$this->assertFalse( $attempted, 'A cached blob ref must not trigger an upload.' );
+		$this->assertSame( $cached_ref, $records[0]['coverImage'] );
+	}
 }

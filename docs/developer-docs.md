@@ -177,7 +177,7 @@ ATmosphere models one root publication per WordPress site. It verifies that publ
 
 ## Previewing AT Protocol Records
 
-Append `?atproto` to a URL while logged in as a user with the `edit_posts` capability to see the JSON records ATmosphere would publish, without writing anything:
+Append `?atproto` to a URL while logged in to see the JSON records ATmosphere would publish, without writing anything. Post previews require the `edit_post` capability for that specific post (the same gate as the block-editor panel); the front-page publication preview requires `edit_posts`:
 
 | URL | Returns |
 |-----|---------|
@@ -187,11 +187,11 @@ Append `?atproto` to a URL while logged in as a user with the `edit_posts` capab
 | `?atproto=all` | Every record family for that view, keyed by its lexicon `$type`. |
 | `?atproto={unknown}` | A `400` JSON error listing the supported selectors. |
 
-Each selector is the lexicon NSID of a transformer ([`Atmosphere\Transformer\Base`](../includes/transformer/class-base.php)). The preview reuses the same transformers as the publish path, so what you see is what would be written.
+Each selector is the lexicon NSID of a transformer ([`Atmosphere\Transformer\Base`](../includes/transformer/class-base.php)). The preview reuses the same transformers as the publish path, so what you see is what would be written. That includes the document strongRef in a long-form Bluesky record's `associatedRefs` — its CID is computed from the previewed document record, exactly like the publish path computes it. One caveat: on a post that has never been published to the PDS the ref is omitted, because its rkey is only reserved when the post is first published; it appears once the post has been published.
 
 ### Adding your own lexicon to the preview
 
-The `atmosphere_atproto_preview_transformers` filter receives the transformers offered for the current view and the queried post (`null` on the front page). Append any `Base` subclass; it becomes available under `?atproto={its-collection-nsid}` and in `?atproto=all` automatically — its `get_collection()` NSID is the selector, and `get_preview_records()` (which defaults to a single `transform()`, overridden when a post fans out into multiple records) supplies the JSON.
+The `atmosphere_atproto_preview_transformers` filter receives the transformers offered for the current view and the queried post (`null` on the front page). Append any `Base` subclass; it becomes available under `?atproto={its-collection-nsid}` and in `?atproto=all` automatically — its `get_collection()` NSID is the selector, and `get_preview_records()` (which defaults to a single `transform()`, overridden when a post fans out into multiple records) supplies the JSON. `get_preview_records()` must be read-only — it runs on a GET request, so it must not upload blobs, write meta, or reserve rkeys.
 
 ```php
 add_filter(

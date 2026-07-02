@@ -46,6 +46,35 @@ class Publication extends Base {
 	public const OPTION_CID = 'atmosphere_publication_cid';
 
 	/**
+	 * Whether the current transform is a read-only preview projection.
+	 *
+	 * Set for the duration of {@see self::get_preview_records()}. In
+	 * projection mode the site icon comes from the cached blob ref only
+	 * ({@see Post::cached_image_blob()}) — an uncached icon is omitted
+	 * rather than uploaded, so a front-page preview GET never writes to
+	 * the PDS or to attachment meta. Mirrors `Post::$projecting`.
+	 *
+	 * @var bool
+	 */
+	private bool $projecting = false;
+
+	/**
+	 * {@inheritDoc}
+	 *
+	 * Projects in read-only mode ({@see self::$projecting}) so no blobs
+	 * are uploaded and no meta is written by a preview request.
+	 */
+	public function get_preview_records(): array {
+		$this->projecting = true;
+
+		try {
+			return array( $this->transform() );
+		} finally {
+			$this->projecting = false;
+		}
+	}
+
+	/**
 	 * Transform site settings into a publication record.
 	 *
 	 * @return array site.standard.publication record.
@@ -73,9 +102,13 @@ class Publication extends Base {
 		// Site icon. The site.standard.publication lexicon expects a square
 		// `icon` blob (at least 256x256). The Site Icon control crops to a
 		// square and recommends 512px, which clears that guideline.
+		// Projections reuse the cached blob ref (or omit the icon) instead
+		// of uploading — see self::$projecting.
 		$icon_id = \get_option( 'site_icon' );
 		if ( $icon_id ) {
-			$blob = Post::upload_thumbnail( (int) $icon_id );
+			$blob = $this->projecting
+				? Post::cached_image_blob( (int) $icon_id )
+				: Post::upload_thumbnail( (int) $icon_id );
 			if ( $blob ) {
 				$record['icon'] = $blob;
 			}
