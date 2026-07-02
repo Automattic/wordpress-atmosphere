@@ -4328,6 +4328,103 @@ class Test_Post extends WP_UnitTestCase {
 	}
 
 	/**
+	 * A body handle that is a token prefix of a handle already visible in the
+	 * composed text is still carried. A substring "already present" test treated
+	 * `@alice.com` as present inside `@alice.company` and silently dropped it —
+	 * the account was never notified, defeating the feature's core promise.
+	 */
+	public function test_link_card_carries_prefix_collision_mention() {
+		$this->mock_handle_resolution(
+			array(
+				'alice.company' => 'did:plc:company',
+				'alice.com'     => 'did:plc:com',
+			)
+		);
+
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'News about @alice.company today',
+				'post_excerpt' => 'A short teaser.',
+				'post_content' => 'Intro paragraph.' . \str_repeat( ' filler', 60 ) . ' Shout-out to @alice.com near the end.',
+			)
+		);
+
+		$record    = ( new Post( $post ) )->transform();
+		$permalink = \get_permalink( $post );
+
+		// The prefix handle is carried as its own line before the permalink.
+		$this->assertStringContainsString( "@alice.com\n\n" . $permalink, $record['text'] );
+		$this->assertLessThanOrEqual( 300, \mb_strlen( $record['text'] ) );
+
+		// Both handles resolve to distinct #mention facets.
+		$mention_dids = \array_map(
+			static fn( $facet ) => $facet['features'][0]['did'] ?? '',
+			\array_filter(
+				$record['facets'] ?? array(),
+				static fn( $facet ) => 'app.bsky.richtext.facet#mention' === ( $facet['features'][0]['$type'] ?? '' )
+			)
+		);
+		$this->assertContains( 'did:plc:company', $mention_dids );
+		$this->assertContains( 'did:plc:com', $mention_dids );
+	}
+
+	/**
+	 * A body handle that only appears inside a protected tag (`<code>`, an
+	 * existing link) is not carried into the Bluesky post, matching the display
+	 * linkifier — otherwise publish and display would disagree on what counts as
+	 * a mention and an account named only in a code sample would be notified.
+	 */
+	public function test_link_card_does_not_carry_mention_inside_protected_tag() {
+		$this->mock_handle_resolution( array( 'buried.example.com' => 'did:plc:buried' ) );
+
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'A normal long-form title',
+				'post_excerpt' => 'A short teaser excerpt.',
+				'post_content' => 'Intro paragraph.' . \str_repeat( ' filler', 60 ) . ' Sample: <code>@buried.example.com</code> done.',
+			)
+		);
+
+		$record = ( new Post( $post ) )->transform();
+
+		$this->assertStringNotContainsString( '@buried.example.com', $record['text'] );
+
+		$mention_facets = \array_filter(
+			$record['facets'] ?? array(),
+			static fn( $facet ) => 'app.bsky.richtext.facet#mention' === ( $facet['features'][0]['$type'] ?? '' )
+		);
+		$this->assertCount( 0, $mention_facets );
+	}
+
+	/**
+	 * The pre-publish projection sizes the body-mention carry-over (from
+	 * syntactic candidates, no DNS) so its reported grapheme count matches the
+	 * record the publisher actually writes, rather than under-reporting a
+	 * composed record the carry-over will lengthen.
+	 */
+	public function test_projection_accounts_for_carried_body_mention() {
+		$this->mock_handle_resolution( array( 'alice.bsky.social' => 'did:plc:alice' ) );
+
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'A normal long-form title',
+				'post_excerpt' => 'A short teaser excerpt.',
+				'post_content' => 'Intro paragraph.' . \str_repeat( ' filler', 60 ) . ' Shout-out to @alice.bsky.social near the end.',
+			)
+		);
+
+		$projection = ( new Post( $post ) )->project();
+		$record     = ( new Post( $post ) )->transform();
+
+		$this->assertStringContainsString( '@alice.bsky.social', $record['text'] );
+		$this->assertSame(
+			\mb_strlen( $record['text'] ),
+			$projection['records'][0]['characters'],
+			'Projection must count the carried mention line the publisher adds.'
+		);
+	}
+
+	/**
 	 * A short-form post with a body @mention still produces a #mention facet
 	 * (not a #link facet) even though the display linkifier is active — the
 	 * Bluesky-text builders are guarded against it.

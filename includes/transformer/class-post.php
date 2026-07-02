@@ -225,8 +225,15 @@ class Post extends Base {
 	 * Facet extraction is likewise skipped: it resolves @-mentions over
 	 * DNS, and running that per keystroke on unsaved, caller-supplied text
 	 * would turn the preview endpoint into a DNS-egress amplifier. Facets
-	 * annotate the text without changing it, so the grapheme count the
-	 * preview reports is identical either way.
+	 * annotate the text without changing it, so the grapheme count is
+	 * unaffected by their absence.
+	 *
+	 * The body-mention *carry-over*, however, does change the composed text
+	 * (it inserts a `@handle` line), so skipping it entirely would make the
+	 * preview under-report a record the publisher will lengthen. Projection
+	 * therefore still sizes the carry-over, but from the *syntactic* body
+	 * handles ({@see self::body_mentions()}) rather than resolved ones — no
+	 * DNS, and an upper bound so the reported count is never short.
 	 *
 	 * @var bool
 	 */
@@ -710,20 +717,40 @@ class Post extends Base {
 	}
 
 	/**
-	 * Resolvable `@handle.tld` mentions found in the full post body.
+	 * Resolvable `@handle.tld` mentions found in the post body.
 	 *
 	 * Returns a map of handle => DID, first-appearance order. Empty for
-	 * redacted posts and in projection mode (the preview must not resolve
-	 * mentions over DNS — see {@see self::$projecting}).
+	 * redacted posts.
+	 *
+	 * The body is scanned as HTML with protected-tag regions removed
+	 * ({@see Mention::strip_protected()}), so a handle inside a `<code>` sample
+	 * or an existing `<a href>` link is *not* collected — matching what the
+	 * front-end linkifier does. Otherwise publish and display would disagree:
+	 * a handle the linkifier leaves as plain text would still be carried into
+	 * the Bluesky post and mint a `#mention` facet + notification.
+	 *
+	 * In projection mode the preview must not resolve mentions over DNS (see
+	 * {@see self::$projecting}), but the carry-over still lengthens the composed
+	 * record at publish. So the preview returns the *syntactic* candidate
+	 * handles (via {@see Facet::handles_in()}, no lookups) with empty DIDs — an
+	 * upper bound, since some may not resolve — so the carry-over sizing, and
+	 * therefore the reported grapheme count, never under-reports the record the
+	 * publisher will write.
 	 *
 	 * @return array<string,string>
 	 */
 	private function body_mentions(): array {
-		if ( $this->is_redacted() || $this->projecting ) {
+		if ( $this->is_redacted() ) {
 			return array();
 		}
 
-		return Facet::resolve_handles( $this->render_post_content_plain( $this->object ) );
+		$plain = sanitize_text( Mention::strip_protected( $this->render_post_content_html( $this->object ) ) );
+
+		if ( $this->projecting ) {
+			return \array_fill_keys( \array_keys( Facet::handles_in( $plain ) ), '' );
+		}
+
+		return Facet::resolve_handles( $plain );
 	}
 
 	/**
@@ -771,10 +798,14 @@ class Post extends Base {
 			$prose  = '';
 		}
 
-		// Handles not already visible in the prose, in order.
+		// Handles not already visible in the prose, in order. Compare handle
+		// sets on token boundaries, not by substring: a plain `mb_stripos`
+		// would treat `@alice.com` as present inside `@alice.company` and
+		// silently skip carrying (and notifying) it.
+		$present = Facet::handles_in( $prose );
 		$missing = array();
 		foreach ( $handles as $handle => $did ) {
-			if ( false === \mb_stripos( $prose, '@' . $handle ) ) {
+			if ( ! isset( $present[ \strtolower( $handle ) ] ) ) {
 				$missing[] = '@' . $handle;
 			}
 		}
@@ -848,9 +879,11 @@ class Post extends Base {
 
 		$shipped = \implode( "\n", $texts );
 
+		// Token-boundary membership, not substring: see carry_body_mentions().
+		$present = Facet::handles_in( $shipped );
 		$missing = array();
 		foreach ( $handles as $handle => $did ) {
-			if ( false === \mb_stripos( $shipped, '@' . $handle ) ) {
+			if ( ! isset( $present[ \strtolower( $handle ) ] ) ) {
 				$missing[] = '@' . $handle;
 			}
 		}
