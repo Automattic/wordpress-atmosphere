@@ -630,9 +630,9 @@ class Test_Document extends \WP_UnitTestCase {
 			'class="atmosphere-mention"',
 			$record['content']['html']
 		);
-  }
+	}
 
-  /**
+	/**
 	 * Preview projections must stay read-only: a featured image whose
 	 * blob has never been uploaded is omitted from the previewed record
 	 * instead of triggering a PDS blob upload (and a blob-ref meta
