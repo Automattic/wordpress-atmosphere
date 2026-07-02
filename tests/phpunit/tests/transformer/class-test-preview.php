@@ -321,6 +321,77 @@ class Test_Preview extends WP_UnitTestCase {
 		$this->assertSame( 'site.standard.document', $payload['$type'] );
 	}
 
+	/*
+	 * -----------------------------------------------------------------
+	 * Capability policy — current_user_can_preview().
+	 * -----------------------------------------------------------------
+	 */
+
+	/**
+	 * Post previews are gated per object, not by the generic `edit_posts`
+	 * capability: an author must not read another author's projected
+	 * record — it carries the saved custom Bluesky text, which that role
+	 * cannot otherwise see. Mirrors the REST pre-publish controller's
+	 * `edit_post` check.
+	 */
+	public function test_author_cannot_preview_other_authors_post() {
+		$author_a = self::factory()->user->create( array( 'role' => 'author' ) );
+		$author_b = self::factory()->user->create( array( 'role' => 'author' ) );
+		$post     = $this->make_post( array( 'post_author' => $author_a ) );
+
+		\wp_set_current_user( $author_b );
+
+		$this->assertFalse( Preview::current_user_can_preview( $post ) );
+	}
+
+	/**
+	 * An author previews their own post.
+	 */
+	public function test_author_can_preview_own_post() {
+		$author = self::factory()->user->create( array( 'role' => 'author' ) );
+		$post   = $this->make_post( array( 'post_author' => $author ) );
+
+		\wp_set_current_user( $author );
+
+		$this->assertTrue( Preview::current_user_can_preview( $post ) );
+	}
+
+	/**
+	 * An editor previews any author's post.
+	 */
+	public function test_editor_can_preview_other_authors_post() {
+		$author = self::factory()->user->create( array( 'role' => 'author' ) );
+		$editor = self::factory()->user->create( array( 'role' => 'editor' ) );
+		$post   = $this->make_post( array( 'post_author' => $author ) );
+
+		\wp_set_current_user( $editor );
+
+		$this->assertTrue( Preview::current_user_can_preview( $post ) );
+	}
+
+	/**
+	 * The front-page publication preview has no post to scope to and
+	 * keeps the `edit_posts` floor.
+	 */
+	public function test_front_page_preview_requires_edit_posts() {
+		\wp_set_current_user( self::factory()->user->create( array( 'role' => 'subscriber' ) ) );
+
+		$this->assertFalse( Preview::current_user_can_preview( null ) );
+
+		\wp_set_current_user( self::factory()->user->create( array( 'role' => 'author' ) ) );
+
+		$this->assertTrue( Preview::current_user_can_preview( null ) );
+	}
+
+	/**
+	 * Logged-out visitors never preview.
+	 */
+	public function test_logged_out_user_cannot_preview() {
+		\wp_set_current_user( 0 );
+
+		$this->assertFalse( Preview::current_user_can_preview( $this->make_post() ) );
+	}
+
 	/**
 	 * Filter entries that are not Base instances are ignored.
 	 */

@@ -39,8 +39,9 @@ class Preview {
 	 *
 	 * Bound to `template_redirect`. On a singular post the selectors expose
 	 * the post's record families; on the site front page they expose the
-	 * `site.standard.publication` record. Requires the edit_posts
-	 * capability — other requests fall through untouched.
+	 * `site.standard.publication` record. Authorization is per context
+	 * ({@see self::current_user_can_preview()}) — other requests fall
+	 * through untouched.
 	 */
 	public static function render(): void {
 		$type = \get_query_var( 'atproto', null );
@@ -49,13 +50,13 @@ class Preview {
 			return;
 		}
 
-		if ( ! \current_user_can( 'edit_posts' ) ) {
-			return;
-		}
-
 		$type = \sanitize_text_field( (string) $type );
 
 		if ( \is_front_page() ) {
+			if ( ! self::current_user_can_preview( null ) ) {
+				return;
+			}
+
 			self::mark_rest_request();
 			self::send( self::for_site( $type ) );
 			exit;
@@ -71,6 +72,10 @@ class Preview {
 			return;
 		}
 
+		if ( ! self::current_user_can_preview( $post ) ) {
+			return;
+		}
+
 		if ( ! is_supported_post_type( $post->post_type ) ) {
 			\status_header( 404 );
 			exit;
@@ -79,6 +84,27 @@ class Preview {
 		self::mark_rest_request();
 		self::send( self::for_post( $post, $type ) );
 		exit;
+	}
+
+	/**
+	 * Whether the current user may read the preview for a context.
+	 *
+	 * Post previews are gated per object — the projected record carries
+	 * the post's saved custom Bluesky text and any third-party
+	 * preview-transformer output, which the generic `edit_posts` floor
+	 * would expose across authors. Mirrors the `edit_post` gate on the
+	 * REST pre-publish controller. The front-page publication preview
+	 * has no post to scope to and keeps the `edit_posts` floor.
+	 *
+	 * @param \WP_Post|null $post Queried post, or null on the front page.
+	 * @return bool Whether the preview may be served.
+	 */
+	public static function current_user_can_preview( ?\WP_Post $post ): bool {
+		if ( $post instanceof \WP_Post ) {
+			return \current_user_can( 'edit_post', $post->ID );
+		}
+
+		return \current_user_can( 'edit_posts' );
 	}
 
 	/**
