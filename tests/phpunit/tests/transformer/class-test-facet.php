@@ -237,6 +237,96 @@ class Test_Facet extends WP_UnitTestCase {
 	}
 
 	/**
+	 * The distinct-handle cap keeps resolve_handles() from fanning out into
+	 * unbounded DNS/HTTP lookups when a body is stuffed with mentions.
+	 */
+	public function test_resolve_handles_caps_distinct_lookups() {
+		$attempted = array();
+
+		// Resolve every well-formed handle, recording each lookup.
+		\add_filter(
+			'pre_http_request',
+			static function ( $pre, $args, $url ) use ( &$attempted ) {
+				if ( \preg_match( '#^https://([^/]+)/\.well-known/atproto-did$#', $url, $m ) ) {
+					$attempted[] = $m[1];
+					return array(
+						'body'     => 'did:plc:' . \md5( $m[1] ),
+						'response' => array(
+							'code'    => 200,
+							'message' => 'OK',
+						),
+					);
+				}
+				return $pre;
+			},
+			10,
+			3
+		);
+
+		// 30 distinct handles; the cap is 20.
+		$text = '';
+		for ( $i = 0; $i < 30; $i++ ) {
+			$text .= " @handle{$i}.example.com";
+		}
+
+		$handles = Facet::resolve_handles( $text );
+
+		$this->assertCount( 20, $handles, 'resolve_handles must stop at the distinct-handle cap.' );
+		$this->assertCount( 20, \array_unique( $attempted ), 'no lookups should fire past the cap.' );
+	}
+
+	/**
+	 * The handles_in() helper returns the distinct handles present, keyed
+	 * lowercase, and performs no network resolution.
+	 */
+	public function test_handles_in_collects_without_resolving() {
+		// Tripwire: handles_in() must never hit the network.
+		\add_filter(
+			'pre_http_request',
+			static function () {
+				throw new \RuntimeException( 'handles_in() must not resolve handles.' );
+			},
+			1
+		);
+
+		$set = Facet::handles_in( 'Hi @Alice.BSky.Social and @alice.bsky.social and @bob.example.com' );
+
+		$this->assertSame(
+			array( 'alice.bsky.social', 'bob.example.com' ),
+			\array_keys( $set ),
+			'handles are deduplicated case-insensitively and lowercased.'
+		);
+		// A domain-shaped WebFinger user half is not a standalone handle.
+		$this->assertSame( array(), Facet::handles_in( 'Follow @notiz.blog@notiz.blog please' ) );
+	}
+
+	/**
+	 * Gating mentions off (the `false` flag to extract) still emits link/hashtag
+	 * facets but resolves no mentions — the gate the comment path relies on.
+	 */
+	public function test_extract_without_mentions_skips_resolution() {
+		// Tripwire: no handle resolution may fire when mentions are gated off.
+		\add_filter(
+			'pre_http_request',
+			static function () {
+				throw new \RuntimeException( 'Mentions must not resolve when gated off.' );
+			},
+			1
+		);
+
+		$facets = Facet::extract( 'See https://example.com and #news from @alice.bsky.social', false );
+
+		$types = \array_map(
+			static fn( $facet ) => $facet['features'][0]['$type'] ?? '',
+			$facets
+		);
+
+		$this->assertContains( 'app.bsky.richtext.facet#link', $types );
+		$this->assertContains( 'app.bsky.richtext.facet#tag', $types );
+		$this->assertNotContains( 'app.bsky.richtext.facet#mention', $types );
+	}
+
+	/**
 	 * Test that trailing punctuation is stripped from URLs.
 	 */
 	public function test_link_strips_trailing_punctuation() {

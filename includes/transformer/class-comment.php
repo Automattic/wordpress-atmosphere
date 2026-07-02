@@ -97,7 +97,15 @@ class Comment extends Base {
 			'reply'     => $this->build_reply_ref( $comment ),
 		);
 
-		$facets = Facet::extract( $text );
+		/*
+		 * Do not resolve @mentions on the comment path. The comment body is
+		 * third-party (commenter-supplied) content, and mention resolution
+		 * issues live DNS + HTTPS lookups to the mentioned host; extracting
+		 * mentions here would let an approved comment steer the server's
+		 * outbound requests at an arbitrary public host. Link and hashtag
+		 * facets, which never touch the network, are still emitted.
+		 */
+		$facets = Facet::extract( $text, false );
 		if ( ! empty( $facets ) ) {
 			$record['facets'] = $facets;
 		}

@@ -16,6 +16,7 @@ use Atmosphere\OAuth\Resolver;
 
 use function Atmosphere\get_connection;
 use function Atmosphere\appview_url;
+use function Atmosphere\debug_log;
 
 /**
  * Extracts facets from plain text.
@@ -49,6 +50,25 @@ class Facet {
 	public const MENTION_PATTERN = '/(?<![\w@.])@([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+)(?![\w@])/u';
 
 	/**
+	 * Hard cap on distinct handles resolved in a single {@see self::resolve_handles()} scan.
+	 *
+	 * `resolve_handles()` runs over the *entire* post body, and each distinct
+	 * handle costs a DNS TXT lookup plus an HTTPS `.well-known/atproto-did`
+	 * fallback ({@see Resolver::handle_to_did()}). Without a ceiling an author
+	 * could pack a body with thousands of distinct `@fake-N.example.com` tokens
+	 * and turn one publish (or a 500-post backfill chunk) into tens of thousands
+	 * of blocking outbound requests aimed at attacker-chosen hosts. A Bluesky
+	 * post is 300 graphemes, so only a handful of mentions can ever be carried
+	 * anyway; 20 is a generous headroom over any legitimate post while keeping
+	 * the egress bounded. Handles past the cap are ignored (and logged once).
+	 *
+	 * @since unreleased
+	 *
+	 * @var int
+	 */
+	private const MAX_RESOLVED_HANDLES = 20;
+
+	/**
 	 * Request-scoped memo of handle => DID resolutions.
 	 *
 	 * Broadening mention collection to the full post body resolves the same
@@ -69,13 +89,24 @@ class Facet {
 	/**
 	 * Extract all facet types from a piece of text.
 	 *
-	 * @param string $text Plain text.
+	 * `$with_mentions` gates the one facet type that performs network
+	 * resolution. Mention facets require a DID, so building them runs the full
+	 * handle-resolution chain (DNS + HTTPS) — see {@see self::resolve_mention()}.
+	 * Callers that feed lower-trust, third-party text (the comment-sync path
+	 * passes commenter-supplied content) pass `false` so an approved comment
+	 * mentioning `@target.example.com` can't make the server issue outbound
+	 * HTTPS to an arbitrary host. Those mentions simply stay as plain text in
+	 * the record. Link and hashtag facets, which never touch the network, are
+	 * unaffected.
+	 *
+	 * @param string $text          Plain text.
+	 * @param bool   $with_mentions Whether to resolve and emit `#mention` facets. Default true.
 	 * @return array Sorted array of facet objects.
 	 */
-	public static function extract( string $text ): array {
+	public static function extract( string $text, bool $with_mentions = true ): array {
 		$facets = \array_merge(
 			self::links( $text ),
-			self::mentions( $text ),
+			$with_mentions ? self::mentions( $text ) : array(),
 			self::hashtags( $text )
 		);
 
@@ -405,6 +436,23 @@ class Facet {
 			if ( isset( $seen[ $key ] ) ) {
 				continue;
 			}
+
+			/*
+			 * Stop resolving once the distinct-handle cap is reached: each new
+			 * handle past this point costs a fresh DNS + HTTPS lookup, and the
+			 * scan runs over the whole (untruncated) body. See
+			 * self::MAX_RESOLVED_HANDLES for the threat this bounds.
+			 */
+			if ( \count( $seen ) >= self::MAX_RESOLVED_HANDLES ) {
+				debug_log(
+					\sprintf(
+						'Facet::resolve_handles: body has more than %d distinct @mentions; the rest are left unresolved to bound DNS/HTTP lookups.',
+						self::MAX_RESOLVED_HANDLES
+					)
+				);
+				break;
+			}
+
 			$seen[ $key ] = true;
 
 			$did = self::resolve_mention( $handle );
@@ -416,6 +464,34 @@ class Facet {
 		}
 
 		return $handles;
+	}
+
+	/**
+	 * Collect the distinct `@handle.tld` mentions present in a piece of text.
+	 *
+	 * A resolution-free companion to {@see self::resolve_handles()}: it applies
+	 * the shared {@see self::MENTION_PATTERN} but performs no DNS/HTTP lookups,
+	 * returning a set keyed by lowercased handle (value `true`). Used to test
+	 * mention membership on token boundaries — a substring check would treat
+	 * `@alice.com` as already present inside `@alice.company` — and to size the
+	 * carry-over line in the DNS-free pre-publish preview.
+	 *
+	 * @since unreleased
+	 *
+	 * @param string $text Plain text.
+	 * @return array<string,true> Set of lowercased handles present in the text.
+	 */
+	public static function handles_in( string $text ): array {
+		if ( ! \preg_match_all( self::MENTION_PATTERN, $text, $matches ) ) {
+			return array();
+		}
+
+		$set = array();
+		foreach ( $matches[1] as $handle ) {
+			$set[ \strtolower( $handle ) ] = true;
+		}
+
+		return $set;
 	}
 
 	/**
@@ -474,11 +550,13 @@ class Facet {
 	 * lookups against attacker-controlled but well-formed domains; that
 	 * broader DNS/HTTP egress is by design, since mention resolution must
 	 * reach the mentioned handle's authoritative server (the HTTP fallback
-	 * uses `wp_safe_remote_get()`, which rejects internal hosts). If that
-	 * egress surface becomes a concern, the right fix is at the
-	 * threat-model layer (skip mention resolution on the commenter path,
-	 * allowlist mention authorities, or move to DoH with a hard timeout)
-	 * rather than tightening the syntactic gate further.
+	 * uses `wp_safe_remote_get()`, which rejects internal hosts). The
+	 * lower-trust commenter path opts out of this resolution entirely by
+	 * passing `$with_mentions = false` to {@see self::extract()}; the
+	 * body-scan path bounds it with {@see self::MAX_RESOLVED_HANDLES}. If the
+	 * remaining egress surface becomes a concern, the right next step is at the
+	 * threat-model layer (allowlist mention authorities, or move to DoH with a
+	 * hard timeout) rather than tightening the syntactic gate further.
 	 *
 	 * @param string $handle AT Protocol handle.
 	 * @return string DID string, or empty string if the handle is malformed
