@@ -14,7 +14,10 @@ namespace Atmosphere\Transformer;
 \defined( 'ABSPATH' ) || exit;
 
 use Atmosphere\API;
+use Atmosphere\CID;
+use function Atmosphere\build_at_uri;
 use function Atmosphere\debug_log;
+use function Atmosphere\get_did;
 use function Atmosphere\grapheme_length;
 use function Atmosphere\sanitize_text;
 use function Atmosphere\truncate_graphemes;
@@ -337,10 +340,68 @@ class Post extends Base {
 				return array( $this->transform() );
 			}
 
+			$this->inject_preview_document_ref();
+
 			return $this->build_long_form_records();
 		} finally {
 			$this->projecting = false;
 		}
+	}
+
+	/**
+	 * Mirror the Publisher's document strongRef precompute for previews.
+	 *
+	 * The publish path transforms the document, computes its CID locally,
+	 * and injects the resulting strongRef before composing the post
+	 * ({@see \Atmosphere\Publisher::publish_post()}). Without the same
+	 * step a preview falls back to `Document::META_*`, which goes stale
+	 * as soon as the document changes — so the projected `associatedRefs`
+	 * would not match what the Publisher writes on the next update.
+	 *
+	 * Stays strictly read-only: `Document::get_rkey()` would reserve
+	 * `META_TID`, a publish-state marker `Publisher::update_post()` keys
+	 * off, so the reserved TID is read straight from meta instead. A
+	 * never-published post has no rkey to read — the ref only exists
+	 * once publish reserves one, so the preview omits it rather than
+	 * minting a placeholder URI.
+	 */
+	private function inject_preview_document_ref(): void {
+		if ( null !== $this->document_strong_ref ) {
+			return;
+		}
+
+		$did = get_did();
+
+		if ( '' === $did ) {
+			return;
+		}
+
+		$rkey = (string) \get_post_meta( $this->object->ID, Document::META_TID, true );
+
+		if ( '' === $rkey ) {
+			return;
+		}
+
+		/*
+		 * Hash the *projected* document record — the same JSON the
+		 * `?atproto` document selector serves — so the projection stays
+		 * read-only (no blob uploads; see Document::get_preview_records())
+		 * and the injected CID matches the displayed document preview.
+		 */
+		$doc_cid = CID::from_record( ( new Document( $this->object ) )->get_preview_records()[0] );
+
+		if ( \is_wp_error( $doc_cid ) ) {
+			// Same degradation as the publish path: no ref beats a stale one.
+			$this->set_document_strong_ref( null );
+			return;
+		}
+
+		$this->set_document_strong_ref(
+			array(
+				'uri' => build_at_uri( $did, 'site.standard.document', $rkey ),
+				'cid' => $doc_cid,
+			)
+		);
 	}
 
 	/**
@@ -1007,8 +1068,8 @@ class Post extends Base {
 	 */
 	public static function upload_image_blob( int $attachment_id ): ?array {
 		// Check cache first.
-		$cached = \get_post_meta( $attachment_id, '_atmosphere_blob_ref', true );
-		if ( ! empty( $cached ) ) {
+		$cached = self::cached_image_blob( $attachment_id );
+		if ( null !== $cached ) {
 			return $cached;
 		}
 
@@ -1348,6 +1409,24 @@ class Post extends Base {
 	 */
 	public static function upload_thumbnail( int $attachment_id ): ?array {
 		return self::upload_image_blob( $attachment_id );
+	}
+
+	/**
+	 * Read a previously-uploaded image blob ref from cache, never uploading.
+	 *
+	 * Read-only companion to {@see self::upload_image_blob()} for preview
+	 * projections: a blob that already landed on the PDS is reused (so the
+	 * projected record matches what a publish would write), while an
+	 * uncached image yields null instead of a network upload and a meta
+	 * write from a GET request.
+	 *
+	 * @param int $attachment_id WordPress attachment ID.
+	 * @return array|null Cached blob reference or null.
+	 */
+	public static function cached_image_blob( int $attachment_id ): ?array {
+		$cached = \get_post_meta( $attachment_id, '_atmosphere_blob_ref', true );
+
+		return empty( $cached ) ? null : $cached;
 	}
 
 	/**
