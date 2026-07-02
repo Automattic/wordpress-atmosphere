@@ -79,6 +79,61 @@ class Mention {
 			return $content;
 		}
 
+		return self::walk(
+			$content,
+			// Linkify a text chunk only when no protected tag is open.
+			static fn( string $text, bool $in_protected ): string => $in_protected ? $text : self::linkify( $text )
+		);
+	}
+
+	/**
+	 * Return HTML with the text inside protected tags removed.
+	 *
+	 * Shares the tokenizer (and therefore the exact protected-tag rules) with
+	 * {@see self::the_content()}, so the publish path can find the same set of
+	 * "linkable" mentions the front end would render. A `@handle` living inside
+	 * a `<code>` sample or an existing `<a href>` link is dropped here, so it is
+	 * never carried into the Bluesky post text nor minted into a `#mention`
+	 * facet the display side would have left as plain text.
+	 *
+	 * Tags themselves are preserved so a downstream {@see \Atmosphere\sanitize_text()}
+	 * still yields clean plain text; only the protected regions' text is elided.
+	 *
+	 * @since unreleased
+	 *
+	 * @param string $content Rendered HTML.
+	 * @return string
+	 */
+	public static function strip_protected( string $content ): string {
+		if ( '' === $content ) {
+			return $content;
+		}
+
+		// Same pathological-input guard as the linkifier.
+		if ( \strlen( $content ) > MB_IN_BYTES ) {
+			return $content;
+		}
+
+		return self::walk(
+			$content,
+			// Keep unprotected text; drop the text inside protected tags.
+			static fn( string $text, bool $in_protected ): string => $in_protected ? '' : $text
+		);
+	}
+
+	/**
+	 * Walk rendered HTML chunk by chunk, tracking the open-tag stack.
+	 *
+	 * Tags and comments pass through untouched; each text chunk is handed to
+	 * `$on_text( $text, $protected )`, where `$protected` is true when a
+	 * {@see self::PROTECTED_TAGS} element is currently open, and the callback's
+	 * return value is emitted in its place.
+	 *
+	 * @param string   $content Rendered HTML.
+	 * @param callable $on_text fn(string $text, bool $in_protected): string.
+	 * @return string
+	 */
+	private static function walk( string $content, callable $on_text ): string {
 		$tag_stack = array();
 		$out       = '';
 
@@ -89,7 +144,7 @@ class Mention {
 				continue;
 			}
 
-			// Opening / closing tag: maintain the stack, never linkify a tag.
+			// Opening / closing tag: maintain the stack, never transform a tag.
 			if ( \preg_match( '#^<(/)?([a-z][a-z0-9-]*)\b[^>]*>$#i', $chunk, $m ) ) {
 				$tag = \strtolower( $m[2] );
 				if ( '/' === $m[1] ) {
@@ -105,20 +160,22 @@ class Mention {
 					if ( ! empty( $keys ) ) {
 						$tag_stack = \array_slice( $tag_stack, 0, \end( $keys ) );
 					}
-				} else {
+				} elseif ( ! \preg_match( '#/\s*>$#', $chunk ) ) {
+					/*
+					 * Push opening tags only. A self-closed tag (`<svg/>`,
+					 * `<iframe … />`) opens and closes in a single chunk, so
+					 * pushing it would leave a phantom protected tag on the
+					 * stack that is never popped — suppressing linkification for
+					 * every mention after it in the render.
+					 */
 					$tag_stack[] = $tag;
 				}
 				$out .= $chunk;
 				continue;
 			}
 
-			// Text chunk: linkify only when no protected tag is open.
-			if ( \array_intersect( $tag_stack, self::PROTECTED_TAGS ) ) {
-				$out .= $chunk;
-				continue;
-			}
-
-			$out .= self::linkify( $chunk );
+			$in_protected = (bool) \array_intersect( $tag_stack, self::PROTECTED_TAGS );
+			$out         .= $on_text( $chunk, $in_protected );
 		}
 
 		return $out;

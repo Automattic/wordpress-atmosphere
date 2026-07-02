@@ -107,6 +107,39 @@ class Test_Mention extends WP_UnitTestCase {
 	}
 
 	/**
+	 * A self-closed protected tag (`<svg/>`, `<iframe … />`) opens and closes in
+	 * one chunk, so it must not be pushed onto the tag stack. Otherwise it would
+	 * stay "open" forever and suppress every mention after it in the render.
+	 */
+	public function test_self_closed_protected_tag_does_not_swallow_later_mentions() {
+		$html = '<p><svg/> then hi @alice.bsky.social</p>';
+
+		$out = Mention::the_content( $html );
+
+		$this->assertStringContainsString(
+			'<a class="atmosphere-mention" href="https://bsky.app/profile/alice.bsky.social">@alice.bsky.social</a>',
+			$out
+		);
+	}
+
+	/**
+	 * The strip_protected() helper drops the text inside protected tags while
+	 * keeping unprotected text (and the surrounding tags), so the publish-side
+	 * body scan collects the same mentions the front-end linkifier would link.
+	 */
+	public function test_strip_protected_removes_protected_regions() {
+		$html = '<p>hi @alice.bsky.social <code>@buried.example.com</code> '
+			. '<a href="https://x.test">@linked.example.com</a> bye @carol.example.com</p>';
+
+		$stripped = Mention::strip_protected( $html );
+
+		$this->assertStringContainsString( '@alice.bsky.social', $stripped );
+		$this->assertStringContainsString( '@carol.example.com', $stripped );
+		$this->assertStringNotContainsString( '@buried.example.com', $stripped );
+		$this->assertStringNotContainsString( '@linked.example.com', $stripped );
+	}
+
+	/**
 	 * The domain half of an ActivityPub @user@domain.tld handle is not linked.
 	 */
 	public function test_skips_activitypub_webfinger_form() {
