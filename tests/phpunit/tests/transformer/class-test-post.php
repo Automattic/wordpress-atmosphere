@@ -10,6 +10,7 @@
 namespace Atmosphere\Tests\Transformer;
 
 use WP_UnitTestCase;
+use Atmosphere\CID;
 use Atmosphere\Transformer\Document;
 use Atmosphere\Transformer\Post;
 use Atmosphere\Transformer\Publication;
@@ -4008,6 +4009,125 @@ class Test_Post extends WP_UnitTestCase {
 		\delete_option( 'atmosphere_identity' );
 		\delete_option( Publication::OPTION_TID );
 		\delete_option( Publication::OPTION_CID );
+	}
+
+	/**
+	 * A never-published long-form post previews without a document ref:
+	 * the real rkey is only reserved when the post is first published,
+	 * and the preview must not reserve it — `Document::META_TID` is a
+	 * publish-state marker `Publisher::update_post()` keys off. The ref
+	 * appears once the post has been published (see the stale-meta test
+	 * below).
+	 *
+	 * @covers ::get_preview_records
+	 */
+	public function test_preview_records_omit_document_ref_for_unpublished_post() {
+		\update_option( 'atmosphere_identity', array( 'did' => 'did:plc:test123' ), false );
+
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'A Titled Post',
+				'post_content' => 'Long-form blog body.',
+			)
+		);
+
+		$records = ( new Post( $post ) )->get_preview_records();
+
+		$refs = $records[0]['embed']['external']['associatedRefs'] ?? array();
+		$this->assertSame( array(), $refs );
+
+		$this->assertSame( '', (string) \get_post_meta( $post->ID, Document::META_TID, true ) );
+
+		\delete_option( 'atmosphere_identity' );
+	}
+
+	/**
+	 * A post whose document changed since the last publish previews with
+	 * a freshly computed CID at the reserved rkey — not the stale
+	 * `Document::META_CID` from the previous write, which is what the
+	 * meta fallback would surface.
+	 *
+	 * @covers ::get_preview_records
+	 */
+	public function test_preview_records_recompute_document_cid_over_stale_meta() {
+		\update_option( 'atmosphere_identity', array( 'did' => 'did:plc:test123' ), false );
+
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'A Titled Post',
+				'post_content' => 'Long-form blog body, edited since the last publish.',
+			)
+		);
+
+		\update_post_meta( $post->ID, Document::META_TID, '3kdoc00000000' );
+		\update_post_meta( $post->ID, Document::META_URI, 'at://did:plc:test123/site.standard.document/3kdoc00000000' );
+		\update_post_meta( $post->ID, Document::META_CID, 'bafyreistalestalestalestalestalestalestalestalestalestalestale' );
+
+		$expected_cid = CID::from_record( ( new Document( $post ) )->transform() );
+		$this->assertIsString( $expected_cid );
+
+		$records = ( new Post( $post ) )->get_preview_records();
+
+		$refs = $records[0]['embed']['external']['associatedRefs'] ?? array();
+		$this->assertCount( 1, $refs );
+		$this->assertSame( $expected_cid, $refs[0]['cid'] );
+		$this->assertNotSame( 'bafyreistalestalestalestalestalestalestalestalestalestalestale', $refs[0]['cid'] );
+		$this->assertSame( 'at://did:plc:test123/site.standard.document/3kdoc00000000', $refs[0]['uri'] );
+
+		\delete_option( 'atmosphere_identity' );
+	}
+
+	/**
+	 * The document strongRef precompute stays read-only end to end:
+	 * previewing the Bluesky record for a published post with an
+	 * uncached featured image must not upload the blob, and the injected
+	 * CID matches the projected document preview record — the same JSON
+	 * the `?atproto` document selector shows.
+	 *
+	 * @covers ::get_preview_records
+	 */
+	public function test_preview_document_ref_does_not_upload_uncached_thumbnail() {
+		\update_option( 'atmosphere_identity', array( 'did' => 'did:plc:test123' ), false );
+
+		$upload_dir = \wp_upload_dir();
+		$path       = $upload_dir['basedir'] . '/atmosphere-ref-preview-test.jpg';
+		\file_put_contents( $path, 'LOCAL-IMAGE-BYTES' ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents
+
+		$attachment_id = self::factory()->attachment->create_object(
+			$path,
+			0,
+			array( 'post_mime_type' => 'image/jpeg' )
+		);
+
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'A Titled Post',
+				'post_content' => 'Long-form blog body.',
+			)
+		);
+		\set_post_thumbnail( $post->ID, $attachment_id );
+		\update_post_meta( $post->ID, Document::META_TID, '3kdoc00000000' );
+
+		$attempted     = false;
+		$short_circuit = static function () use ( &$attempted ) {
+			$attempted = true;
+			return array( 'blob' => array( 'cid' => 'bafyupload' ) );
+		};
+		\add_filter( 'atmosphere_pre_upload_blob', $short_circuit );
+
+		$records = ( new Post( $post ) )->get_preview_records();
+
+		\remove_filter( 'atmosphere_pre_upload_blob', $short_circuit );
+		\wp_delete_file( $path );
+
+		$this->assertFalse( $attempted, 'Previewing must not upload blobs.' );
+
+		$expected_cid = CID::from_record( ( new Document( $post ) )->get_preview_records()[0] );
+		$refs         = $records[0]['embed']['external']['associatedRefs'] ?? array();
+		$this->assertCount( 1, $refs );
+		$this->assertSame( $expected_cid, $refs[0]['cid'] );
+
+		\delete_option( 'atmosphere_identity' );
 	}
 
 	/**

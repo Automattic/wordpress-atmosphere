@@ -58,6 +58,35 @@ class Document extends Base {
 	public const META_CID = '_atmosphere_doc_cid';
 
 	/**
+	 * Whether the current transform is a read-only preview projection.
+	 *
+	 * Set for the duration of {@see self::get_preview_records()}. In
+	 * projection mode the cover image comes from the cached blob ref
+	 * only ({@see Post::cached_image_blob()}) — an uncached image is
+	 * omitted rather than uploaded, so a preview GET never writes to
+	 * the PDS or to attachment meta. Mirrors `Post::$projecting`.
+	 *
+	 * @var bool
+	 */
+	private bool $projecting = false;
+
+	/**
+	 * {@inheritDoc}
+	 *
+	 * Projects in read-only mode ({@see self::$projecting}) so no blobs
+	 * are uploaded and no meta is written by a preview request.
+	 */
+	public function get_preview_records(): array {
+		$this->projecting = true;
+
+		try {
+			return array( $this->transform() );
+		} finally {
+			$this->projecting = false;
+		}
+	}
+
+	/**
 	 * Transform the post into a document record.
 	 *
 	 * @return array site.standard.document record.
@@ -102,10 +131,13 @@ class Document extends Base {
 				$record['description'] = $excerpt;
 			}
 
-			// Cover image.
+			// Cover image. Projections reuse the cached blob ref (or omit
+			// the image) instead of uploading — see self::$projecting.
 			$thumb_id = \get_post_thumbnail_id( $this->object );
 			if ( $thumb_id ) {
-				$blob = Post::upload_thumbnail( $thumb_id );
+				$blob = $this->projecting
+					? Post::cached_image_blob( $thumb_id )
+					: Post::upload_thumbnail( $thumb_id );
 				if ( $blob ) {
 					$record['coverImage'] = $blob;
 				}

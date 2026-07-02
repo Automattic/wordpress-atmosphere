@@ -73,6 +73,24 @@ abstract class Base {
 	abstract public function get_rkey(): string;
 
 	/**
+	 * Records this transformer would publish, for the `?atproto` preview.
+	 *
+	 * Defaults to the single record produced by {@see self::transform()}.
+	 * Transformers that fan a post out into multiple records (e.g. a
+	 * Bluesky thread) override this to return them in publish order.
+	 *
+	 * Implementations MUST be read-only: the preview is served on a GET
+	 * request, so no blob uploads, meta writes, or rkey reservations.
+	 * Override this method (like Document and Publication do) when
+	 * `transform()` has publish-time side effects.
+	 *
+	 * @return array<int,array> Ordered list of record arrays, in publish order.
+	 */
+	public function get_preview_records(): array {
+		return array( $this->transform() );
+	}
+
+	/**
 	 * Build the full AT-URI for this record.
 	 *
 	 * @return string

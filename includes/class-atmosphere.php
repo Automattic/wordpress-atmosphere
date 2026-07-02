@@ -18,6 +18,7 @@ use Atmosphere\OAuth\Client;
 use Atmosphere\Transformer\Comment;
 use Atmosphere\Transformer\Document;
 use Atmosphere\Transformer\Post;
+use Atmosphere\Transformer\Preview;
 use Atmosphere\Transformer\Publication;
 use Atmosphere\Integrations\Load;
 use Atmosphere\Rest\Admin\Pre_Publish_Controller;
@@ -160,8 +161,9 @@ class Atmosphere {
 		\add_action( 'wp_head', array( $this, 'output_document_link' ) );
 		\add_action( 'wp_head', array( $this, 'output_publication_link' ) );
 
-		// Well-known endpoints.
+		// Well-known endpoints and front-end query vars.
 		\add_action( 'init', array( $this, 'register_wellknown_rewrite' ) );
+		\add_filter( 'query_vars', array( $this, 'register_query_vars' ) );
 		\add_action( 'template_redirect', array( $this, 'serve_wellknown_atproto_did' ), 0 );
 		\add_action( 'template_redirect', array( $this, 'serve_wellknown_publication' ), 0 );
 
@@ -172,7 +174,7 @@ class Atmosphere {
 		Load::init();
 
 		// JSON preview for AT Protocol records.
-		\add_action( 'template_redirect', array( $this, 'preview' ) );
+		\add_action( 'template_redirect', array( Preview::class, 'render' ) );
 
 		// Post lifecycle hooks.
 		\add_action( 'transition_post_status', array( $this, 'on_status_change' ), 10, 3 );
@@ -434,14 +436,19 @@ class Atmosphere {
 		foreach ( self::WELLKNOWN_REWRITE_PATTERNS as $pattern => $target ) {
 			\add_rewrite_rule( $pattern, $target, 'top' );
 		}
+	}
 
-		\add_filter(
-			'query_vars',
-			static function ( array $vars ): array {
-				$vars[] = 'atmosphere_wellknown';
-				return $vars;
-			}
-		);
+	/**
+	 * Register public query vars used by front-end endpoints.
+	 *
+	 * @param string[] $vars Public query vars.
+	 * @return string[] Public query vars.
+	 */
+	public function register_query_vars( array $vars ): array {
+		$vars[] = 'atmosphere_wellknown';
+		$vars[] = 'atproto';
+
+		return $vars;
 	}
 
 	/**
@@ -609,43 +616,6 @@ class Atmosphere {
 		\status_header( 200 );
 		\header( 'Content-Type: text/plain; charset=utf-8' );
 		echo \esc_html( $uri );
-		exit;
-	}
-
-	/**
-	 * Serve a JSON preview of the AT Protocol record for a post.
-	 *
-	 * Append ?atproto to a singular post URL to see the document
-	 * record JSON. Requires the edit_posts capability.
-	 */
-	public function preview(): void {
-		// phpcs:ignore WordPress.Security.NonceVerification.Recommended
-		if ( ! isset( $_GET['atproto'] ) || ! \is_singular() ) {
-			return;
-		}
-
-		if ( ! \current_user_can( 'edit_posts' ) ) {
-			return;
-		}
-
-		$post = \get_queried_object();
-
-		if ( ! $post instanceof \WP_Post ) {
-			return;
-		}
-
-		if ( ! is_supported_post_type( $post->post_type ) ) {
-			\status_header( 404 );
-			exit;
-		}
-
-		$transformer = new Document( $post );
-		$record      = $transformer->transform();
-
-		\status_header( 200 );
-		\header( 'Content-Type: application/json; charset=utf-8' );
-		// phpcs:ignore WordPress.WP.AlternativeFunctions.json_encode_json_encode
-		echo \wp_json_encode( $record, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE );
 		exit;
 	}
 

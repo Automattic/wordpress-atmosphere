@@ -218,6 +218,7 @@ use function Atmosphere\is_connected;
 \apply_filters( 'atmosphere_publication_show_in_discover', (bool) \get_option( 'blog_public', 1 ) );
 \apply_filters( 'atmosphere_long_form_composition', $composition, $post );
 \apply_filters( 'atmosphere_teaser_thread_posts',   $max_posts, $post );
+\apply_filters( 'atmosphere_atproto_preview_transformers', $transformers, $post ); // Add a transformer to the ?atproto={$type} preview.
 ```
 
 **Behaviour / gating filters:**

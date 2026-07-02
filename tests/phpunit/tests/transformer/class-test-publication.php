@@ -680,4 +680,39 @@ class Test_Publication extends \WP_UnitTestCase {
 		\delete_option( 'atmosphere_identity' );
 		\delete_option( Publication::OPTION_TID );
 	}
+
+	/**
+	 * Preview projections must stay read-only: a site icon whose blob
+	 * has never been uploaded is omitted from the previewed record
+	 * instead of triggering a PDS blob upload as a side effect of a
+	 * front-page preview GET.
+	 */
+	public function test_preview_records_do_not_upload_uncached_site_icon() {
+		$upload_dir = \wp_upload_dir();
+		$path       = $upload_dir['basedir'] . '/atmosphere-icon-preview-test.png';
+		\file_put_contents( $path, 'LOCAL-ICON-BYTES' ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents
+
+		$attachment_id = self::factory()->attachment->create_object(
+			$path,
+			0,
+			array( 'post_mime_type' => 'image/png' )
+		);
+		\update_option( 'site_icon', $attachment_id );
+
+		$attempted     = false;
+		$short_circuit = static function () use ( &$attempted ) {
+			$attempted = true;
+			return array( 'blob' => array( 'cid' => 'bafyupload' ) );
+		};
+		\add_filter( 'atmosphere_pre_upload_blob', $short_circuit );
+
+		$records = ( new Publication( null ) )->get_preview_records();
+
+		\remove_filter( 'atmosphere_pre_upload_blob', $short_circuit );
+		\wp_delete_file( $path );
+
+		$this->assertFalse( $attempted, 'Previewing must not upload blobs.' );
+		$this->assertArrayNotHasKey( 'icon', $records[0] );
+		$this->assertSame( '', (string) \get_post_meta( $attachment_id, '_atmosphere_blob_ref', true ) );
+	}
 }

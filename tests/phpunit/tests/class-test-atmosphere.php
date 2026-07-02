@@ -1833,6 +1833,16 @@ class Test_Atmosphere extends WP_UnitTestCase {
 	}
 
 	/**
+	 * Front-end endpoint query vars are registered through WordPress.
+	 */
+	public function test_register_query_vars_adds_atproto_preview_var() {
+		$vars = $this->atmosphere->register_query_vars( array( 'p' ) );
+
+		$this->assertContains( 'atproto', $vars );
+		$this->assertContains( 'atmosphere_wellknown', $vars );
+	}
+
+	/**
 	 * Document link emits for a previously-published post (META_URI on
 	 * file) even with no live OAuth session. The verification link is
 	 * the bidirectional anchor required by standard.site; it MUST keep
