@@ -4517,6 +4517,103 @@ class Test_Post extends WP_UnitTestCase {
 	}
 
 	/**
+	 * A short-form post whose body ships verbatim must not mint a `#mention`
+	 * facet for a handle that lives only inside a protected tag (`<code>`): the
+	 * front end leaves it unlinked, so publishing a notification for it would
+	 * break publish/display parity. A visible handle in the same body still
+	 * notifies.
+	 */
+	public function test_short_form_does_not_mint_mention_inside_protected_tag() {
+		$this->mock_handle_resolution(
+			array(
+				'alice.bsky.social'  => 'did:plc:alice',
+				'buried.example.com' => 'did:plc:buried',
+			)
+		);
+
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => '',
+				'post_content' => 'Hi @alice.bsky.social — see <code>@buried.example.com</code> for the sample.',
+			)
+		);
+
+		$record = ( new Post( $post ) )->transform();
+
+		$dids = \array_map(
+			static fn( $facet ) => $facet['features'][0]['did'] ?? '',
+			\array_filter(
+				$record['facets'] ?? array(),
+				static fn( $facet ) => 'app.bsky.richtext.facet#mention' === ( $facet['features'][0]['$type'] ?? '' )
+			)
+		);
+
+		$this->assertContains( 'did:plc:alice', $dids, 'A visible body mention still notifies.' );
+		$this->assertNotContains( 'did:plc:buried', $dids, 'A code-buried handle must not mint a mention facet.' );
+	}
+
+	/**
+	 * Shrinking the prose to fit a carried mention line must not silently drop a
+	 * handle that was visible in the prose before the shrink. Here the excerpt
+	 * ends with @alice (present) and the body also names @carol (absent from the
+	 * excerpt); carrying @carol shrinks the excerpt past @alice, so @alice must
+	 * be rescued into the carried line rather than lost.
+	 */
+	public function test_carry_rescues_mention_truncated_by_shrink() {
+		$this->mock_handle_resolution(
+			array(
+				'alice.bsky.social' => 'did:plc:alice',
+				'carol.example.com' => 'did:plc:carol',
+			)
+		);
+
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'T',
+				'post_content' => 'Intro naming @alice.bsky.social and @carol.example.com up top.',
+			)
+		);
+
+		/*
+		 * Size the excerpt against the real permalink so the scenario is exact:
+		 * make the composed title + excerpt + permalink land at 298 graphemes
+		 * (just under the 300 cap, so the whole-text carry path runs), with
+		 * @alice at the very end of the excerpt. Carrying @carol then shrinks the
+		 * excerpt by 15 graphemes — enough to cut @alice, which must be rescued.
+		 */
+		$permalink   = \get_permalink( $post );
+		$plen        = \Atmosphere\grapheme_length( $permalink );
+		$handle      = '@alice.bsky.social';
+		$excerpt_len = 293 - $plen; // 1 (title) + 2 + excerpt + 2 + permalink = 298.
+		$fill_len    = $excerpt_len - \strlen( $handle ) - 1;
+		$excerpt     = \str_repeat( 'w', \max( 1, $fill_len ) ) . ' ' . $handle;
+
+		\wp_update_post(
+			array(
+				'ID'           => $post->ID,
+				'post_excerpt' => $excerpt,
+			)
+		);
+		\clean_post_cache( $post->ID );
+
+		$record = ( new Post( \get_post( $post->ID ) ) )->transform();
+
+		$this->assertLessThanOrEqual( 300, \Atmosphere\grapheme_length( $record['text'] ), 'Record stays within the cap.' );
+		$this->assertStringContainsString( '@carol.example.com', $record['text'] );
+		$this->assertStringContainsString( '@alice.bsky.social', $record['text'], 'The truncated-away mention is rescued, not lost.' );
+
+		$dids = \array_map(
+			static fn( $facet ) => $facet['features'][0]['did'] ?? '',
+			\array_filter(
+				$record['facets'] ?? array(),
+				static fn( $facet ) => 'app.bsky.richtext.facet#mention' === ( $facet['features'][0]['$type'] ?? '' )
+			)
+		);
+		$this->assertContains( 'did:plc:alice', $dids );
+		$this->assertContains( 'did:plc:carol', $dids );
+	}
+
+	/**
 	 * The pre-publish projection sizes the body-mention carry-over (from
 	 * syntactic candidates, no DNS) so its reported grapheme count matches the
 	 * record the publisher actually writes, rather than under-reporting a

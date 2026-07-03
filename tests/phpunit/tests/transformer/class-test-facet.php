@@ -327,6 +327,121 @@ class Test_Facet extends WP_UnitTestCase {
 	}
 
 	/**
+	 * A handle in the deny-set never mints a `#mention` facet even when it
+	 * occurs in the text — the seam the post path uses to keep a code-buried
+	 * handle out of the record while the front end leaves it as plain text.
+	 */
+	public function test_extract_blocks_denied_handles() {
+		// Tripwire: a blocked handle must not even be resolved.
+		$this->mock_handle_resolution(
+			array(
+				'alice.bsky.social'  => 'did:plc:alice',
+				'buried.example.com' => 'did:plc:buried',
+			)
+		);
+
+		$facets = Facet::extract(
+			'Hi @alice.bsky.social and @buried.example.com',
+			true,
+			array( 'buried.example.com' => true )
+		);
+
+		$dids = \array_map(
+			static fn( $facet ) => $facet['features'][0]['did'] ?? '',
+			\array_filter(
+				$facets,
+				static fn( $facet ) => 'app.bsky.richtext.facet#mention' === ( $facet['features'][0]['$type'] ?? '' )
+			)
+		);
+
+		$this->assertContains( 'did:plc:alice', $dids );
+		$this->assertNotContains( 'did:plc:buried', $dids, 'A denied handle must not mint a mention facet.' );
+	}
+
+	/**
+	 * A mention directly after a period (the Twitter-style dot-mention idiom)
+	 * still resolves and mints a facet.
+	 */
+	public function test_extract_dot_mention() {
+		$this->mock_handle_resolution( array( 'alice.bsky.social' => 'did:plc:alice' ) );
+
+		$facets = Facet::extract( '.@alice.bsky.social check this out' );
+
+		$mentions = \array_filter(
+			$facets,
+			static fn( $facet ) => 'app.bsky.richtext.facet#mention' === ( $facet['features'][0]['$type'] ?? '' )
+		);
+
+		$this->assertCount( 1, $mentions );
+	}
+
+	/**
+	 * `extract()` caps distinct handle resolution the same way the body scan
+	 * does, so a record stuffed with unresolvable tokens can't fan out into an
+	 * unbounded run of blocking DNS/HTTP lookups.
+	 */
+	public function test_extract_caps_mention_resolution() {
+		$attempted = array();
+
+		\add_filter(
+			'pre_http_request',
+			static function ( $pre, $args, $url ) use ( &$attempted ) {
+				if ( \preg_match( '#^https://([^/]+)/\.well-known/atproto-did$#', $url, $m ) ) {
+					$attempted[] = $m[1];
+					// Every handle is a miss (404), the worst case for egress.
+					return array(
+						'body'     => '',
+						'response' => array(
+							'code'    => 404,
+							'message' => 'Not Found',
+						),
+					);
+				}
+				return $pre;
+			},
+			10,
+			3
+		);
+
+		$text = '';
+		for ( $i = 0; $i < 30; $i++ ) {
+			$text .= " @handle{$i}.example.com";
+		}
+
+		Facet::extract( $text );
+
+		$this->assertCount(
+			20,
+			\array_unique( $attempted ),
+			'extract() must stop resolving new handles at the distinct-handle cap.'
+		);
+	}
+
+	/**
+	 * An unresolvable handle mints no facet by default (no fabricated
+	 * `did:web:`), but the `atmosphere_mention_didweb_fallback` filter can
+	 * restore the fallback for a site that hosts `did:web` accounts.
+	 */
+	public function test_didweb_fallback_is_filterable() {
+		// No resolution stub: every lookup fails, so the handle is unresolvable.
+		$this->assertSame( array(), Facet::extract( 'Hi @example.com there' ), 'No facet without the fallback.' );
+
+		$filter = static fn() => true;
+		\add_filter( 'atmosphere_mention_didweb_fallback', $filter );
+
+		$facets = Facet::extract( 'Hi @example.com there' );
+
+		\remove_filter( 'atmosphere_mention_didweb_fallback', $filter );
+
+		$mentions = \array_filter(
+			$facets,
+			static fn( $facet ) => 'app.bsky.richtext.facet#mention' === ( $facet['features'][0]['$type'] ?? '' )
+		);
+		$this->assertCount( 1, $mentions );
+		$this->assertSame( 'did:web:example.com', \reset( $mentions )['features'][0]['did'] );
+	}
+
+	/**
 	 * Test that trailing punctuation is stripped from URLs.
 	 */
 	public function test_link_strips_trailing_punctuation() {

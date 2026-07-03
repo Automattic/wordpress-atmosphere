@@ -82,60 +82,113 @@ class Mention {
 		return self::walk(
 			$content,
 			// Linkify a text chunk only when no protected tag is open.
-			static fn( string $text, bool $in_protected ): string => $in_protected ? $text : self::linkify( $text )
+			static fn( string $text, bool $in_protected, string $prev_char ): string
+				=> $in_protected ? $text : self::linkify( $text, $prev_char )
 		);
 	}
 
 	/**
-	 * Return HTML with the text inside protected tags removed.
+	 * Classify the `@handle.tld` mentions in rendered HTML by whether the
+	 * front end would linkify them.
 	 *
-	 * Shares the tokenizer (and therefore the exact protected-tag rules) with
-	 * {@see self::the_content()}, so the publish path can find the same set of
-	 * "linkable" mentions the front end would render. A `@handle` living inside
-	 * a `<code>` sample or an existing `<a href>` link is dropped here, so it is
-	 * never carried into the Bluesky post text nor minted into a `#mention`
-	 * facet the display side would have left as plain text.
+	 * Returns `array( 'linkable' => …, 'protected' => … )`:
 	 *
-	 * Tags themselves are preserved so a downstream {@see \Atmosphere\sanitize_text()}
-	 * still yields clean plain text; only the protected regions' text is elided.
+	 * - `linkable`: a map of lowercased handle => first-seen handle for every
+	 *   mention the display linkifier ({@see self::the_content()}) would turn
+	 *   into a profile link, in first-appearance order. The publish path resolves
+	 *   and carries exactly this set, so a Bluesky `#mention` (and its
+	 *   notification) is only ever minted for a handle the site itself links.
+	 * - `protected`: the set of lowercased handles that appear *only* inside a
+	 *   protected region (a `<code>`/`<pre>` sample or an existing `<a href>`).
+	 *   The transformer subtracts `linkable` from this to build the deny-set it
+	 *   passes to {@see Facet::extract()}, so a handle buried in a code sample
+	 *   never mints a `#mention` facet the front end leaves as plain text — even
+	 *   when it leaks into the excerpt.
+	 *
+	 * Shares the {@see self::walk()} tokenizer (and therefore the exact
+	 * protected-tag rules and cross-tag boundary handling) with the display
+	 * linkifier, so publish and display can never disagree about what is a
+	 * mention. Returns empty sets for empty or pathologically large content,
+	 * mirroring {@see self::the_content()}, which linkifies neither.
 	 *
 	 * @since unreleased
 	 *
 	 * @param string $content Rendered HTML.
-	 * @return string
+	 * @return array{linkable:array<string,string>,protected:array<string,true>}
 	 */
-	public static function strip_protected( string $content ): string {
-		if ( '' === $content ) {
-			return $content;
-		}
-
-		// Same pathological-input guard as the linkifier.
-		if ( \strlen( $content ) > MB_IN_BYTES ) {
-			return $content;
-		}
-
-		return self::walk(
-			$content,
-			// Keep unprotected text; drop the text inside protected tags.
-			static fn( string $text, bool $in_protected ): string => $in_protected ? '' : $text
+	public static function classify_handles( string $content ): array {
+		$result = array(
+			'linkable'  => array(),
+			'protected' => array(),
 		);
+
+		// Same empty / pathological-input guards as the linkifier: when it
+		// would linkify nothing, the publish path must mint nothing.
+		if ( '' === $content || \strlen( $content ) > MB_IN_BYTES ) {
+			return $result;
+		}
+
+		self::walk(
+			$content,
+			static function ( string $text, bool $in_protected, string $prev_char ) use ( &$result ): string {
+				if ( $in_protected ) {
+					/*
+					 * Collect protected-region handles greedily (no boundary
+					 * prefix): over-collecting only ever *blocks* a mint, which
+					 * is the safe direction. `linkable` is subtracted from this,
+					 * so a handle that also appears in linkable text stays
+					 * mintable.
+					 */
+					if ( \preg_match_all( Facet::MENTION_PATTERN, $text, $matches ) ) {
+						foreach ( $matches[1] as $handle ) {
+							$result['protected'][ \strtolower( $handle ) ] = true;
+						}
+					}
+					return $text;
+				}
+
+				// Mirror self::linkify()'s cross-tag boundary so this scan and
+				// the display linkifier classify a handle the same way.
+				$prefix = self::boundary_prefix( $prev_char );
+				if ( \preg_match_all( Facet::MENTION_PATTERN, $prefix . $text, $matches ) ) {
+					foreach ( $matches[1] as $handle ) {
+						$key = \strtolower( $handle );
+						if ( ! isset( $result['linkable'][ $key ] ) ) {
+							$result['linkable'][ $key ] = $handle;
+						}
+					}
+				}
+				return $text;
+			}
+		);
+
+		return $result;
 	}
 
 	/**
 	 * Walk rendered HTML chunk by chunk, tracking the open-tag stack.
 	 *
 	 * Tags and comments pass through untouched; each text chunk is handed to
-	 * `$on_text( $text, $protected )`, where `$protected` is true when a
-	 * {@see self::PROTECTED_TAGS} element is currently open, and the callback's
-	 * return value is emitted in its place.
+	 * `$on_text( $text, $protected, $prev_char )`, where `$protected` is true
+	 * when a {@see self::PROTECTED_TAGS} element is currently open and
+	 * `$prev_char` is the last plain-text character emitted before this chunk
+	 * (see below). The callback's return value is emitted in its place.
+	 *
+	 * `$prev_char` carries the boundary across inline markup: text on either
+	 * side of a non-protected tag (`<b>bob</b>@example.com`) is glued, so the
+	 * mention boundary check sees the `@handle` as the tail of the preceding
+	 * word (an email) rather than a standalone handle — matching how the
+	 * publish path's flattened plain text reads it. Protected regions are elided
+	 * from the linkified stream, so their text does not advance the boundary.
 	 *
 	 * @param string   $content Rendered HTML.
-	 * @param callable $on_text fn(string $text, bool $in_protected): string.
+	 * @param callable $on_text fn(string $text, bool $in_protected, string $prev_char): string.
 	 * @return string
 	 */
 	private static function walk( string $content, callable $on_text ): string {
 		$tag_stack = array();
 		$out       = '';
+		$prev_char = '';
 
 		foreach ( \wp_html_split( $content ) as $chunk ) {
 			// HTML comment: copy through untouched.
@@ -160,7 +213,7 @@ class Mention {
 					if ( ! empty( $keys ) ) {
 						$tag_stack = \array_slice( $tag_stack, 0, \end( $keys ) );
 					}
-				} elseif ( ! \preg_match( '#/\s*>$#', $chunk ) ) {
+				} elseif ( ! self::is_self_closing( $chunk ) ) {
 					/*
 					 * Push opening tags only. A self-closed tag (`<svg/>`,
 					 * `<iframe … />`) opens and closes in a single chunk, so
@@ -175,10 +228,56 @@ class Mention {
 			}
 
 			$in_protected = (bool) \array_intersect( $tag_stack, self::PROTECTED_TAGS );
-			$out         .= $on_text( $chunk, $in_protected );
+			$out         .= $on_text( $chunk, $in_protected, $prev_char );
+
+			// Advance the boundary past unprotected text only; protected text
+			// is elided from the linkified stream, so a handle right after a
+			// protected region still sees the character before that region.
+			if ( ! $in_protected && '' !== $chunk ) {
+				$prev_char = \mb_substr( $chunk, -1 );
+			}
 		}
 
 		return $out;
+	}
+
+	/**
+	 * The synthetic prefix that reproduces a cross-tag mention boundary.
+	 *
+	 * {@see Facet::MENTION_PATTERN}'s leading `(?<![\w@])` lookbehind can only
+	 * see characters inside the string it runs against, so a per-chunk match
+	 * can't tell that the previous chunk ended in a word character. Prepending
+	 * a single word character when the boundary is "glued" makes the lookbehind
+	 * reject a leading `@handle`, exactly as it would on the joined plain text.
+	 * A boundary character (whitespace, punctuation, `.`, or start-of-content)
+	 * needs no prefix, so a legitimate leading handle still matches.
+	 *
+	 * @param string $prev_char Character emitted immediately before the chunk.
+	 * @return string `'x'` when the boundary is glued, `''` otherwise.
+	 */
+	private static function boundary_prefix( string $prev_char ): string {
+		return ( '' !== $prev_char && \preg_match( '/[\w@]/u', $prev_char ) ) ? 'x' : '';
+	}
+
+	/**
+	 * Whether a start-tag chunk is self-closing.
+	 *
+	 * Quoted attribute values are stripped first so a value that ends in `/`
+	 * (or contains `>`) can't be mistaken for the tag's own self-closing slash.
+	 * The tag then counts as self-closing only when the trailing `/` sits right
+	 * after the tag name (`<svg/>`) or is separated from the last attribute by
+	 * whitespace, a quote, or `=` (`<svg />`, `<iframe src="x"/>`). A `/` glued
+	 * to an *unquoted* attribute value (`<a href=https://example.com/>`) is part
+	 * of that value, so the element actually stays open and its `@handle`
+	 * content remains protected.
+	 *
+	 * @param string $tag Full start-tag chunk, e.g. `<a href="…">`.
+	 * @return bool
+	 */
+	private static function is_self_closing( string $tag ): bool {
+		$bare = (string) \preg_replace( '/"[^"]*"|\'[^\']*\'/', '', $tag );
+
+		return (bool) \preg_match( '#(?:^<[a-z][a-z0-9-]*|[\s"\'=])/\s*>$#i', $bare );
 	}
 
 	/**
@@ -218,10 +317,14 @@ class Mention {
 	 * wants stricter display links can veto a handle through the
 	 * `atmosphere_link_mention` filter.
 	 *
-	 * @param string $text Plain-text chunk (no tags).
+	 * @param string $text      Plain-text chunk (no tags).
+	 * @param string $prev_char Last plain-text character before this chunk, used
+	 *                          to reproduce a mention boundary that falls across
+	 *                          an inline-tag split. See {@see self::boundary_prefix()}.
 	 * @return string
 	 */
-	private static function linkify( string $text ): string {
+	private static function linkify( string $text, string $prev_char = '' ): string {
+		$prefix   = self::boundary_prefix( $prev_char );
 		$replaced = \preg_replace_callback(
 			Facet::MENTION_PATTERN,
 			static function ( array $m ): string {
@@ -259,10 +362,15 @@ class Mention {
 					\esc_html( $handle )
 				);
 			},
-			$text
+			$prefix . $text
 		);
 
 		// preg_replace_callback returns null on PCRE failure; keep the text.
-		return \is_string( $replaced ) ? $replaced : $text;
+		if ( ! \is_string( $replaced ) ) {
+			return $text;
+		}
+
+		// Drop the synthetic boundary prefix; it can never be part of a match.
+		return '' === $prefix ? $replaced : \substr( $replaced, \strlen( $prefix ) );
 	}
 }

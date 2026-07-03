@@ -214,6 +214,16 @@ class Post extends Base {
 	private ?string $custom_text_override = null;
 
 	/**
+	 * Memoized classification of the post body's @mentions.
+	 *
+	 * Cached result of {@see Mention::classify_handles()} so the carry-over and
+	 * the publish-time mention deny-set share a single HTML walk per transform.
+	 *
+	 * @var array{linkable:array<string,string>,protected:array<string,true>}|null
+	 */
+	private ?array $classified_body_handles = null;
+
+	/**
 	 * Whether the transformer is running in projection mode.
 	 *
 	 * Projection mode ({@see self::project()}) reproduces the exact text
@@ -633,7 +643,10 @@ class Post extends Base {
 			// Skip DNS-resolving facet extraction in projection mode (see $projecting).
 			$facets = array();
 		} else {
-			$facets = $this->merge_link_facets( $link_facets, Facet::extract( $text ) );
+			$facets = $this->merge_link_facets(
+				$link_facets,
+				Facet::extract( $text, $this->mentions_enabled(), $this->blocked_mention_handles() )
+			);
 		}
 		if ( ! empty( $facets ) ) {
 			$record['facets'] = $facets;
@@ -806,20 +819,19 @@ class Post extends Base {
 	 * Returns a map of handle => DID, first-appearance order. Empty for
 	 * redacted posts.
 	 *
-	 * The body is scanned as HTML with protected-tag regions removed
-	 * ({@see Mention::strip_protected()}), so a handle inside a `<code>` sample
-	 * or an existing `<a href>` link is *not* collected — matching what the
-	 * front-end linkifier does. Otherwise publish and display would disagree:
-	 * a handle the linkifier leaves as plain text would still be carried into
-	 * the Bluesky post and mint a `#mention` facet + notification.
+	 * The body is scanned as HTML through {@see Mention::classify_handles()},
+	 * which shares the display linkifier's tokenizer, so only handles the front
+	 * end would actually link are collected — a handle inside a `<code>` sample
+	 * or an existing `<a href>` link is *not*. Otherwise publish and display
+	 * would disagree: a handle the linkifier leaves as plain text would still be
+	 * carried into the Bluesky post and mint a `#mention` facet + notification.
 	 *
 	 * In projection mode the preview must not resolve mentions over DNS (see
 	 * {@see self::$projecting}), but the carry-over still lengthens the composed
-	 * record at publish. So the preview returns the *syntactic* candidate
-	 * handles (via {@see Facet::handles_in()}, no lookups) with empty DIDs — an
-	 * upper bound, since some may not resolve — so the carry-over sizing, and
-	 * therefore the reported grapheme count, never under-reports the record the
-	 * publisher will write.
+	 * record at publish. So the preview returns the *syntactic* linkable
+	 * handles (no lookups) with empty DIDs — an upper bound, since some may not
+	 * resolve — so the carry-over sizing, and therefore the reported grapheme
+	 * count, never under-reports the record the publisher will write.
 	 *
 	 * @return array<string,string>
 	 */
@@ -828,13 +840,76 @@ class Post extends Base {
 			return array();
 		}
 
-		$plain = sanitize_text( Mention::strip_protected( $this->render_post_content_html( $this->object ) ) );
+		$linkable = $this->classified_body_handles()['linkable'];
 
-		if ( $this->projecting ) {
-			return \array_fill_keys( \array_keys( Facet::handles_in( $plain ) ), '' );
+		if ( empty( $linkable ) ) {
+			return array();
 		}
 
-		return Facet::resolve_handles( $plain );
+		if ( $this->projecting ) {
+			return \array_fill_keys( \array_values( $linkable ), '' );
+		}
+
+		return Facet::resolve_handle_list( \array_values( $linkable ) );
+	}
+
+	/**
+	 * Classify the post body's @mentions once per transform.
+	 *
+	 * Memoizes {@see Mention::classify_handles()} over the rendered body so the
+	 * carry-over ({@see self::body_mentions()}) and the publish-time mention
+	 * deny-set ({@see self::blocked_mention_handles()}) share one HTML walk.
+	 *
+	 * @return array{linkable:array<string,string>,protected:array<string,true>}
+	 */
+	private function classified_body_handles(): array {
+		if ( null === $this->classified_body_handles ) {
+			$this->classified_body_handles = Mention::classify_handles(
+				$this->render_post_content_html( $this->object )
+			);
+		}
+
+		return $this->classified_body_handles;
+	}
+
+	/**
+	 * Handles that must never mint a `#mention` facet for this post.
+	 *
+	 * The set of body handles that appear *only* inside a protected region (a
+	 * `<code>`/`<pre>` sample or an existing `<a href>` link) and nowhere the
+	 * front end would linkify. {@see Facet::extract()} skips these, so a handle
+	 * buried in a code sample never notifies anyone even when it leaks into the
+	 * excerpt — keeping every record's `#mention` facets in lockstep with what
+	 * the site's own page renders as a link.
+	 *
+	 * @return array<string,true> Lowercased handles.
+	 */
+	private function blocked_mention_handles(): array {
+		$classified = $this->classified_body_handles();
+
+		$blocked = array();
+		foreach ( $classified['protected'] as $key => $unused ) {
+			if ( ! isset( $classified['linkable'][ $key ] ) ) {
+				$blocked[ $key ] = true;
+			}
+		}
+
+		return $blocked;
+	}
+
+	/**
+	 * Whether this post's records may resolve and mint `#mention` facets.
+	 *
+	 * False for a redacted post (no body to mention from) and for a body so
+	 * large the linkifier bails ({@see Mention::the_content()} leaves >1 MB
+	 * content unlinked), so the publish path mints nothing the front end would
+	 * not have linked.
+	 *
+	 * @return bool
+	 */
+	private function mentions_enabled(): bool {
+		return ! $this->is_redacted()
+			&& \strlen( $this->render_post_content_html( $this->object ) ) <= MB_IN_BYTES;
 	}
 
 	/**
@@ -850,7 +925,10 @@ class Post extends Base {
 	 *
 	 * The permalink is preserved in full (it is the load-bearing link); as
 	 * many handles as fit are kept; the prose shrinks last to stay within the
-	 * 300-grapheme cap. Handles that still don't fit are dropped and logged.
+	 * 300-grapheme cap. Shrinking the prose can truncate away a handle that was
+	 * visible before the carry line was added, so the fit is computed to a
+	 * fixpoint: any such handle is pulled into the carried line rather than
+	 * silently lost. Handles that still don't fit are dropped and logged.
 	 *
 	 * @param string $text      Composed post text (may end with `\n\n$permalink`).
 	 * @param string $permalink Post permalink, or '' when the text carries no
@@ -882,42 +960,85 @@ class Post extends Base {
 			$prose  = '';
 		}
 
-		// Handles not already visible in the prose, in order. Compare handle
-		// sets on token boundaries, not by substring: a plain `mb_stripos`
-		// would treat `@alice.com` as present inside `@alice.company` and
-		// silently skip carrying (and notifying) it.
-		$present = Facet::handles_in( $prose );
-		$missing = array();
+		// Every resolvable body handle, as an `@mention`, keyed by lowercased
+		// handle so membership tests compare on token boundaries, not by
+		// substring: a plain `mb_stripos` would treat `@alice.com` as present
+		// inside `@alice.company` and silently skip carrying (and notifying) it.
+		$all = array();
 		foreach ( $handles as $handle => $did ) {
-			if ( ! isset( $present[ \strtolower( $handle ) ] ) ) {
-				$missing[] = '@' . $handle;
-			}
-		}
-		if ( empty( $missing ) ) {
-			return $text;
+			$all[ \strtolower( $handle ) ] = '@' . $handle;
 		}
 
-		// Greedily fit handles into the room left after the permalink. A
-		// handle that cannot fit even against an empty prose is dropped.
-		$suffix_len = grapheme_length( $suffix );
-		$kept       = '';
-		$dropped    = 0;
-		foreach ( $missing as $mention ) {
-			$candidate = '' === $kept ? $mention : $kept . ' ' . $mention;
-			// Worst case needs a separator before the line; reserve one.
-			if ( grapheme_length( $candidate ) + grapheme_length( $sep ) + $suffix_len > $max ) {
-				++$dropped;
-				continue;
+		$suffix_len  = grapheme_length( $suffix );
+		$kept        = '';
+		$prose_final = $prose;
+		$carried     = array(); // Lowercased handles now in the carried line.
+		$dropped     = array(); // Lowercased handles that fit nowhere.
+
+		/*
+		 * Fit handles into a carried line, then shrink the prose to make room —
+		 * but which handles need carrying depends on which survive in the
+		 * shrunken prose, and that depends on how long the carried line is.
+		 * Iterate to a fixpoint: a handle assumed visible in the prose but then
+		 * truncated away is pulled into the carried line on the next pass, so a
+		 * mention is never silently lost between the presence check and the
+		 * truncation. Each pass only shrinks the prose, so it converges in at
+		 * most one pass per handle.
+		 */
+		for ( $pass = 0, $limit = \count( $all ) + 1; $pass <= $limit; $pass++ ) {
+			$present = Facet::handles_in( $prose_final );
+
+			$need = array();
+			foreach ( $all as $key => $mention ) {
+				// Skip handles already visible in the surviving prose, already
+				// carried, or already given up on.
+				if ( isset( $present[ $key ] ) || isset( $carried[ $key ] ) || isset( $dropped[ $key ] ) ) {
+					continue;
+				}
+				$need[ $key ] = $mention;
 			}
-			$kept = $candidate;
+
+			if ( empty( $need ) ) {
+				break;
+			}
+
+			// Greedily add the needed handles to the carried line. A handle that
+			// cannot fit even against an empty prose is dropped (and logged).
+			foreach ( $need as $key => $mention ) {
+				$candidate = '' === $kept ? $mention : $kept . ' ' . $mention;
+				// Worst case needs a separator before the line; reserve one.
+				if ( grapheme_length( $candidate ) + grapheme_length( $sep ) + $suffix_len > $max ) {
+					$dropped[ $key ] = true;
+					continue;
+				}
+				$kept            = $candidate;
+				$carried[ $key ] = true;
+			}
+
+			if ( '' === $kept ) {
+				$prose_final = $prose;
+				break;
+			}
+
+			// Reshrink the prose to whatever room the carried line leaves.
+			$line_sep     = '' !== $prose ? grapheme_length( $sep ) : 0;
+			$prose_budget = $max - grapheme_length( $kept ) - $line_sep - $suffix_len;
+
+			if ( $prose_budget <= 0 ) {
+				$prose_final = '';
+			} elseif ( grapheme_length( $prose ) > $prose_budget ) {
+				$prose_final = truncate_text( $prose, $prose_budget );
+			} else {
+				$prose_final = $prose;
+			}
 		}
 
-		if ( $dropped > 0 ) {
+		if ( ! empty( $dropped ) ) {
 			debug_log(
 				\sprintf(
 					'post %d: %d body mention(s) dropped from the Bluesky post — no room within the %d-character limit',
 					$this->object->ID,
-					$dropped,
+					\count( $dropped ),
 					$max
 				)
 			);
@@ -927,17 +1048,7 @@ class Post extends Base {
 			return $text;
 		}
 
-		// Shrink the prose to fit the chosen line + permalink.
-		$line_sep     = '' !== $prose ? grapheme_length( $sep ) : 0;
-		$prose_budget = $max - grapheme_length( $kept ) - $line_sep - $suffix_len;
-
-		if ( $prose_budget <= 0 ) {
-			$prose = '';
-		} elseif ( grapheme_length( $prose ) > $prose_budget ) {
-			$prose = truncate_text( $prose, $prose_budget );
-		}
-
-		$head = '' !== $prose ? $prose . $sep : '';
+		$head = '' !== $prose_final ? $prose_final . $sep : '';
 
 		return $head . $kept . $suffix;
 	}
@@ -2805,7 +2916,9 @@ class Post extends Base {
 		);
 
 		// Skip DNS-resolving facet extraction in projection mode (see $projecting).
-		$facets = $this->projecting ? array() : Facet::extract( $text );
+		$facets = $this->projecting
+			? array()
+			: Facet::extract( $text, $this->mentions_enabled(), $this->blocked_mention_handles() );
 		if ( ! empty( $facets ) ) {
 			$record['facets'] = $facets;
 		}
@@ -2877,7 +2990,9 @@ class Post extends Base {
 		);
 
 		// Skip DNS-resolving facet extraction in projection mode (see $projecting).
-		$facets = $this->projecting ? array() : Facet::extract( $text );
+		$facets = $this->projecting
+			? array()
+			: Facet::extract( $text, $this->mentions_enabled(), $this->blocked_mention_handles() );
 		if ( ! empty( $facets ) ) {
 			$record['facets'] = $facets;
 		}
