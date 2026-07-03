@@ -97,15 +97,26 @@ class Comment extends Base {
 			'reply'     => $this->build_reply_ref( $comment ),
 		);
 
-		/*
-		 * Do not resolve @mentions on the comment path. The comment body is
-		 * third-party (commenter-supplied) content, and mention resolution
-		 * issues live DNS + HTTPS lookups to the mentioned host; extracting
-		 * mentions here would let an approved comment steer the server's
-		 * outbound requests at an arbitrary public host. Link and hashtag
-		 * facets, which never touch the network, are still emitted.
+		/**
+		 * Filters whether @mentions in a synced comment are resolved into
+		 * `#mention` facets.
+		 *
+		 * Off by default: the comment body is third-party (commenter-supplied)
+		 * content, and mention resolution issues live DNS + HTTPS lookups to the
+		 * mentioned host, so resolving here would let an approved comment steer
+		 * the server's outbound requests at an arbitrary public host. Link and
+		 * hashtag facets, which never touch the network, are emitted regardless.
+		 * A site that trusts its (already moderated) commenters and wants their
+		 * mentions to notify can return true to opt back in.
+		 *
+		 * @since unreleased
+		 *
+		 * @param bool        $resolve Whether to resolve comment mentions. Default false.
+		 * @param \WP_Comment $comment The comment being transformed.
 		 */
-		$facets = Facet::extract( $text, false );
+		$resolve_mentions = (bool) \apply_filters( 'atmosphere_resolve_comment_mentions', false, $comment );
+
+		$facets = Facet::extract( $text, $resolve_mentions );
 		if ( ! empty( $facets ) ) {
 			$record['facets'] = $facets;
 		}
