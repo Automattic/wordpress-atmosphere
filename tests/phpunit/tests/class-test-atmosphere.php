@@ -2582,6 +2582,11 @@ class Test_Atmosphere extends WP_UnitTestCase {
 			'No retry may be scheduled once the ladder is exhausted.'
 		);
 		$this->assertSame( '', \get_post_meta( $post->ID, '_atmosphere_publish_retries', true ) );
+
+		$error = \get_post_meta( $post->ID, '_atmosphere_last_publish_error', true );
+
+		$this->assertIsArray( $error, 'Exhausting the ladder must persist the final error.' );
+		$this->assertFalse( $error['retrying'], 'No further attempts are queued after exhaustion.' );
 	}
 
 	/**
@@ -2744,6 +2749,16 @@ class Test_Atmosphere extends WP_UnitTestCase {
 	public function test_status_transition_resets_retry_counter() {
 		$post = self::factory()->post->create_and_get( array( 'post_status' => 'draft' ) );
 		\update_post_meta( $post->ID, '_atmosphere_publish_retries', '2' );
+		\update_post_meta(
+			$post->ID,
+			'_atmosphere_last_publish_error',
+			array(
+				'code'     => 'atmosphere_pds',
+				'message'  => 'boom',
+				'retrying' => false,
+				'time'     => \time(),
+			)
+		);
 
 		\wp_publish_post( $post->ID );
 
@@ -2752,7 +2767,13 @@ class Test_Atmosphere extends WP_UnitTestCase {
 			\get_post_meta( $post->ID, '_atmosphere_publish_retries', true ),
 			'Publishing a post must reset any stranded retry counter.'
 		);
+		$this->assertSame(
+			'',
+			\get_post_meta( $post->ID, '_atmosphere_last_publish_error', true ),
+			'A status transition is fresh intent — the stale error record must go too.'
+		);
 	}
+
 	/**
 	 * A failed publish attempt persists a per-post error record so the
 	 * editor can surface it — with the retrying flag set while the
@@ -2865,6 +2886,86 @@ class Test_Atmosphere extends WP_UnitTestCase {
 		$this->assertSame( 'atmosphere_pds', $error['code'] );
 		$this->assertSame( 'Upstream Failure', $error['message'] );
 		$this->assertTrue( $error['retrying'] );
+	}
+
+	/**
+	 * The stored message is stripped of markup and truncated: PDS error
+	 * strings are attacker-influenced and end up rendered in the editor.
+	 */
+	public function test_publish_error_message_is_sanitized_and_truncated() {
+		$post = self::factory()->post->create_and_get( array( 'post_status' => 'publish' ) );
+
+		/*
+		 * WP-Cron unschedules an event before running its callback; mirror
+		 * that so the creation-time event doesn't mask the retry.
+		 */
+		\wp_clear_scheduled_hook( 'atmosphere_publish_post', array( $post->ID ) );
+
+		\add_filter(
+			'atmosphere_pre_apply_writes',
+			static fn() => new \WP_Error(
+				'atmosphere_pds',
+				'<script>alert(1)</script>' . \str_repeat( 'A', 400 ),
+				array( 'status' => 500 )
+			)
+		);
+
+		\do_action( 'atmosphere_publish_post', $post->ID );
+
+		$error = \get_post_meta( $post->ID, '_atmosphere_last_publish_error', true );
+
+		$this->assertIsArray( $error );
+		$this->assertStringNotContainsString( '<', $error['message'], 'Markup must be stripped before storage.' );
+		$this->assertLessThanOrEqual( 300, \mb_strlen( $error['message'] ), 'The stored message must be truncated.' );
+	}
+
+	/**
+	 * The delete worker's reconcile-to-publishable branch republished the
+	 * post successfully — the stale failure record must not survive it.
+	 */
+	public function test_delete_worker_reconcile_success_clears_error_meta() {
+		$post = self::factory()->post->create_and_get( array( 'post_status' => 'publish' ) );
+
+		\update_post_meta( $post->ID, Post::META_TID, 'bsky-tid-123' );
+		\update_post_meta(
+			$post->ID,
+			Post::META_THREAD_RECORDS,
+			array(
+				array(
+					'uri' => 'at://did:plc:test123/app.bsky.feed.post/bsky-tid-123',
+					'cid' => 'bafyreiboldcid',
+					'tid' => 'bsky-tid-123',
+				),
+			)
+		);
+		\update_post_meta( $post->ID, Document::META_TID, 'doc-tid-456' );
+		\update_post_meta( $post->ID, Document::META_URI, 'at://did:plc:test123/site.standard.document/doc-tid-456' );
+		\update_post_meta(
+			$post->ID,
+			'_atmosphere_last_publish_error',
+			array(
+				'code'     => 'atmosphere_pds',
+				'message'  => 'boom',
+				'retrying' => false,
+				'time'     => \time(),
+			)
+		);
+
+		/*
+		 * WP-Cron unschedules an event before running its callback; mirror
+		 * that so the creation-time event doesn't mask the retry.
+		 */
+		\wp_clear_scheduled_hook( 'atmosphere_publish_post', array( $post->ID ) );
+
+		$this->force_apply_writes_success();
+
+		\do_action( 'atmosphere_delete_post', $post->ID );
+
+		$this->assertSame(
+			'',
+			\get_post_meta( $post->ID, '_atmosphere_last_publish_error', true ),
+			'A successful reconcile-republish must clear the stale failure record.'
+		);
 	}
 
 	/**
