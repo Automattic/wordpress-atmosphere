@@ -709,6 +709,16 @@ class Atmosphere {
 		try {
 			\do_action( 'atmosphere_publishing', $post );
 
+			/*
+			 * A status transition is fresh user intent, so it starts a
+			 * new retry budget. Without this, a counter stranded by a
+			 * dead retry event (disconnect cleared the queue, the post
+			 * was trashed mid-ladder, a cron event was lost) would
+			 * silently shrink — or zero out — the ladder of the next
+			 * publish attempt.
+			 */
+			\delete_post_meta( $post->ID, self::META_PUBLISH_RETRIES );
+
 			if ( $is_publishable ) {
 				\wp_clear_scheduled_hook( 'atmosphere_delete_post', array( $post->ID ) );
 			}
@@ -1933,18 +1943,24 @@ class Atmosphere {
 			 * Ladder exhausted. Clear the counter so a future fresh save
 			 * gets a new budget, and leave a breadcrumb — this is the
 			 * point where a post has definitively failed to reach the
-			 * PDS despite retries.
+			 * PDS despite retries. No breadcrumb when the filter
+			 * disabled retries outright: "giving up after 0 retries"
+			 * would misread as a failure of the ladder the operator
+			 * deliberately switched off.
 			 */
 			\delete_post_meta( $post_id, self::META_PUBLISH_RETRIES );
-			debug_log(
-				\sprintf(
-					'%s %d: giving up after %d retries (%s)',
-					$hook,
-					$post_id,
-					$attempts,
-					$result->get_error_code()
-				)
-			);
+
+			if ( ! empty( $delays ) ) {
+				debug_log(
+					\sprintf(
+						'%s %d: giving up after %d retries (%s)',
+						$hook,
+						$post_id,
+						$attempts,
+						$result->get_error_code()
+					)
+				);
+			}
 			return;
 		}
 
@@ -1977,6 +1993,19 @@ class Atmosphere {
 			'atmosphere_missing_tid',
 			'atmosphere_invalid_pre_apply_writes_return',
 			'atmosphere_invalid_pre_apply_writes_response',
+			'atmosphere_invalid_pre_upload_blob_return',
+			'atmosphere_decrypt',
+			'atmosphere_did_mismatch',
+
+			/*
+			 * Never retry a failed thread rollback: the orphan manifest
+			 * records live partial records on the PDS, and a retried
+			 * publish would mint fresh TIDs next to them — a duplicate,
+			 * user-visible copy of the post. This state needs operator
+			 * attention (see Post::META_ORPHAN_RECORDS), not another
+			 * attempt.
+			 */
+			'atmosphere_thread_rollback_failed',
 		);
 
 		if ( \in_array( $error->get_error_code(), $permanent_codes, true ) ) {

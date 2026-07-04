@@ -58,11 +58,16 @@ class Test_Atmosphere extends WP_UnitTestCase {
 		\delete_option( 'atmosphere_publication_tid' );
 		\delete_option( \Atmosphere\OAuth\Client::DISCONNECTED_OPTION );
 
-		\wp_clear_scheduled_hook( 'atmosphere_publish_post' );
-		\wp_clear_scheduled_hook( 'atmosphere_update_post' );
-		\wp_clear_scheduled_hook( 'atmosphere_delete_post' );
-		\wp_clear_scheduled_hook( 'atmosphere_delete_records' );
-		\wp_clear_scheduled_hook( 'atmosphere_delete_comment_record' );
+		/*
+		 * wp_unschedule_hook(), not wp_clear_scheduled_hook(): the events
+		 * these tests queue carry per-post args, which the argless clear
+		 * would silently skip.
+		 */
+		\wp_unschedule_hook( 'atmosphere_publish_post' );
+		\wp_unschedule_hook( 'atmosphere_update_post' );
+		\wp_unschedule_hook( 'atmosphere_delete_post' );
+		\wp_unschedule_hook( 'atmosphere_delete_records' );
+		\wp_unschedule_hook( 'atmosphere_delete_comment_record' );
 
 		\remove_all_filters( 'atmosphere_should_publish_comment' );
 		\remove_all_filters( 'atmosphere_pre_apply_writes' );
@@ -2697,5 +2702,55 @@ class Test_Atmosphere extends WP_UnitTestCase {
 			'A fourth attempt must be scheduled when the filtered ladder has four rungs.'
 		);
 		$this->assertSame( '4', \get_post_meta( $post->ID, '_atmosphere_publish_retries', true ) );
+	}
+
+	/**
+	 * A failed thread rollback leaves live orphan records on the PDS;
+	 * an automatic retry would mint fresh TIDs and publish a duplicate
+	 * copy next to them. That failure must never be retried.
+	 */
+	public function test_publish_worker_does_not_retry_after_failed_thread_rollback() {
+		$post = self::factory()->post->create_and_get( array( 'post_status' => 'publish' ) );
+
+		/*
+		 * WP-Cron unschedules an event before running its callback; mirror
+		 * that so the creation-time event doesn't mask the retry.
+		 */
+		\wp_clear_scheduled_hook( 'atmosphere_publish_post', array( $post->ID ) );
+
+		\add_filter(
+			'atmosphere_pre_apply_writes',
+			static fn() => new \WP_Error(
+				'atmosphere_thread_rollback_failed',
+				'Thread publish failed and rollback also failed.',
+				array( 'partial_records' => array() )
+			)
+		);
+
+		\do_action( 'atmosphere_publish_post', $post->ID );
+
+		$this->assertFalse(
+			\wp_next_scheduled( 'atmosphere_publish_post', array( $post->ID ) ),
+			'A failed rollback must not be retried — live orphans plus a retry means duplicate posts.'
+		);
+		$this->assertSame( '', \get_post_meta( $post->ID, '_atmosphere_publish_retries', true ) );
+	}
+
+	/**
+	 * A fresh user-intent status transition starts a new retry budget:
+	 * a counter stranded by a dead retry event (disconnect, trash, lost
+	 * cron) must not shrink the next ladder.
+	 */
+	public function test_status_transition_resets_retry_counter() {
+		$post = self::factory()->post->create_and_get( array( 'post_status' => 'draft' ) );
+		\update_post_meta( $post->ID, '_atmosphere_publish_retries', '2' );
+
+		\wp_publish_post( $post->ID );
+
+		$this->assertSame(
+			'',
+			\get_post_meta( $post->ID, '_atmosphere_publish_retries', true ),
+			'Publishing a post must reset any stranded retry counter.'
+		);
 	}
 }
