@@ -2753,4 +2753,132 @@ class Test_Atmosphere extends WP_UnitTestCase {
 			'Publishing a post must reset any stranded retry counter.'
 		);
 	}
+	/**
+	 * A failed publish attempt persists a per-post error record so the
+	 * editor can surface it — with the retrying flag set while the
+	 * backoff ladder is still running.
+	 */
+	public function test_publish_worker_records_error_meta_with_retrying_flag() {
+		$post = self::factory()->post->create_and_get( array( 'post_status' => 'publish' ) );
+
+		/*
+		 * WP-Cron unschedules an event before running its callback; mirror
+		 * that so the creation-time event doesn't mask the retry.
+		 */
+		\wp_clear_scheduled_hook( 'atmosphere_publish_post', array( $post->ID ) );
+
+		$this->force_apply_writes_error( 500 );
+
+		\do_action( 'atmosphere_publish_post', $post->ID );
+
+		$error = \get_post_meta( $post->ID, '_atmosphere_last_publish_error', true );
+
+		$this->assertIsArray( $error, 'A failed publish must persist a per-post error record.' );
+		$this->assertSame( 'atmosphere_pds', $error['code'] );
+		$this->assertNotSame( '', $error['message'] );
+		$this->assertTrue( $error['retrying'], 'The ladder scheduled a retry, so the record must say so.' );
+		$this->assertIsInt( $error['time'] );
+	}
+
+	/**
+	 * A permanent rejection persists the error with retrying=false so
+	 * the editor can tell the author a re-save is needed.
+	 */
+	public function test_publish_worker_records_error_meta_without_retry_on_permanent_error() {
+		$post = self::factory()->post->create_and_get( array( 'post_status' => 'publish' ) );
+
+		/*
+		 * WP-Cron unschedules an event before running its callback; mirror
+		 * that so the creation-time event doesn't mask the retry.
+		 */
+		\wp_clear_scheduled_hook( 'atmosphere_publish_post', array( $post->ID ) );
+
+		$this->force_apply_writes_error( 400 );
+
+		\do_action( 'atmosphere_publish_post', $post->ID );
+
+		$error = \get_post_meta( $post->ID, '_atmosphere_last_publish_error', true );
+
+		$this->assertIsArray( $error );
+		$this->assertFalse( $error['retrying'], 'A permanent rejection is not retried.' );
+	}
+
+	/**
+	 * A successful publish clears a leftover error record.
+	 */
+	public function test_publish_worker_success_clears_error_meta() {
+		$post = self::factory()->post->create_and_get( array( 'post_status' => 'publish' ) );
+		\update_post_meta(
+			$post->ID,
+			'_atmosphere_last_publish_error',
+			array(
+				'code'     => 'atmosphere_pds',
+				'message'  => 'boom',
+				'retrying' => true,
+				'time'     => \time(),
+			)
+		);
+
+		/*
+		 * WP-Cron unschedules an event before running its callback; mirror
+		 * that so the creation-time event doesn't mask the retry.
+		 */
+		\wp_clear_scheduled_hook( 'atmosphere_publish_post', array( $post->ID ) );
+
+		$this->force_apply_writes_success();
+
+		\do_action( 'atmosphere_publish_post', $post->ID );
+
+		$this->assertSame(
+			'',
+			\get_post_meta( $post->ID, '_atmosphere_last_publish_error', true ),
+			'A successful publish must clear the error record.'
+		);
+	}
+
+	/**
+	 * The `atmosphere_publish_error` REST field exposes the stored error
+	 * in the edit context, and null when there is none.
+	 */
+	public function test_atmosphere_publish_error_rest_field() {
+		$admin = self::factory()->user->create( array( 'role' => 'administrator' ) );
+		\wp_set_current_user( $admin );
+
+		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
+
+		$this->assertNull( $this->rest_get_publish_error( $post_id ), 'No error stored — the field must be null.' );
+
+		\update_post_meta(
+			$post_id,
+			'_atmosphere_last_publish_error',
+			array(
+				'code'     => 'atmosphere_pds',
+				'message'  => 'Upstream Failure',
+				'retrying' => true,
+				'time'     => 1234567890,
+			)
+		);
+
+		$error = $this->rest_get_publish_error( $post_id );
+
+		$this->assertIsArray( $error );
+		$this->assertSame( 'atmosphere_pds', $error['code'] );
+		$this->assertSame( 'Upstream Failure', $error['message'] );
+		$this->assertTrue( $error['retrying'] );
+	}
+
+	/**
+	 * Fetch a post's `atmosphere_publish_error` REST field in the edit context.
+	 *
+	 * @param int $post_id Post ID.
+	 * @return array|null
+	 */
+	private function rest_get_publish_error( int $post_id ): ?array {
+		$request = new \WP_REST_Request( 'GET', '/wp/v2/posts/' . $post_id );
+		$request->set_param( 'context', 'edit' );
+
+		$data = \rest_do_request( $request )->get_data();
+
+		return $data['atmosphere_publish_error'] ?? null;
+	}
 }

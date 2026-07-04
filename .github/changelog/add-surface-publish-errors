@@ -1,0 +1,4 @@
+Significance: minor
+Type: added
+
+The editor now shows a notice when sharing a post to Bluesky fails, including whether it will be retried automatically or needs the post to be updated again.
