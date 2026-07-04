@@ -2642,4 +2642,60 @@ class Test_Atmosphere extends WP_UnitTestCase {
 		$this->assertNotFalse( $next, 'Expected the update worker to schedule a retry after a transient PDS error.' );
 		$this->assertSame( '1', \get_post_meta( $post->ID, '_atmosphere_publish_retries', true ) );
 	}
+
+	/**
+	 * Returning an empty ladder from the delays filter disables
+	 * retries entirely.
+	 */
+	public function test_publish_retry_delays_filter_disables_retries() {
+		$post = self::factory()->post->create_and_get( array( 'post_status' => 'publish' ) );
+
+		/*
+		 * WP-Cron unschedules an event before running its callback; mirror
+		 * that so the creation-time event doesn't mask the retry.
+		 */
+		\wp_clear_scheduled_hook( 'atmosphere_publish_post', array( $post->ID ) );
+
+		\add_filter( 'atmosphere_publish_retry_delays', '__return_empty_array' );
+		$this->force_apply_writes_error( 500 );
+
+		\do_action( 'atmosphere_publish_post', $post->ID );
+
+		\remove_filter( 'atmosphere_publish_retry_delays', '__return_empty_array' );
+
+		$this->assertFalse(
+			\wp_next_scheduled( 'atmosphere_publish_post', array( $post->ID ) ),
+			'An empty delays ladder must disable retries.'
+		);
+		$this->assertSame( '', \get_post_meta( $post->ID, '_atmosphere_publish_retries', true ) );
+	}
+
+	/**
+	 * A longer filtered ladder raises the retry budget: the ladder's
+	 * length is the maximum attempt count.
+	 */
+	public function test_publish_retry_delays_filter_extends_ladder() {
+		$post = self::factory()->post->create_and_get( array( 'post_status' => 'publish' ) );
+		\update_post_meta( $post->ID, '_atmosphere_publish_retries', '3' );
+
+		/*
+		 * WP-Cron unschedules an event before running its callback; mirror
+		 * that so the creation-time event doesn't mask the retry.
+		 */
+		\wp_clear_scheduled_hook( 'atmosphere_publish_post', array( $post->ID ) );
+
+		$ladder = static fn() => array( 10, 20, 30, 40 );
+		\add_filter( 'atmosphere_publish_retry_delays', $ladder );
+		$this->force_apply_writes_error( 500 );
+
+		\do_action( 'atmosphere_publish_post', $post->ID );
+
+		\remove_filter( 'atmosphere_publish_retry_delays', $ladder );
+
+		$this->assertNotFalse(
+			\wp_next_scheduled( 'atmosphere_publish_post', array( $post->ID ) ),
+			'A fourth attempt must be scheduled when the filtered ladder has four rungs.'
+		);
+		$this->assertSame( '4', \get_post_meta( $post->ID, '_atmosphere_publish_retries', true ) );
+	}
 }

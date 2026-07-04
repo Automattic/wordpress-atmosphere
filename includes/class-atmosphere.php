@@ -1905,9 +1905,30 @@ class Atmosphere {
 			return;
 		}
 
+		/**
+		 * Filters the backoff ladder for transient publish/update failures.
+		 *
+		 * One entry per retry, in seconds — the ladder's length IS the
+		 * retry budget. Return an empty array to disable retries, or a
+		 * longer array to raise the budget (the same knob covers both,
+		 * so the delay schedule and the attempt cap cannot contradict
+		 * each other).
+		 *
+		 * @since unreleased
+		 *
+		 * @param int[] $delays Retry delays in seconds. Default 60, 300, 900.
+		 */
+		$delays = \apply_filters( 'atmosphere_publish_retry_delays', self::PUBLISH_RETRY_DELAYS );
+		$delays = \array_values(
+			\array_filter(
+				\array_map( 'intval', (array) $delays ),
+				static fn( int $delay ): bool => $delay > 0
+			)
+		);
+
 		$attempts = (int) \get_post_meta( $post_id, self::META_PUBLISH_RETRIES, true );
 
-		if ( $attempts >= \count( self::PUBLISH_RETRY_DELAYS ) ) {
+		if ( $attempts >= \count( $delays ) ) {
 			/*
 			 * Ladder exhausted. Clear the counter so a future fresh save
 			 * gets a new budget, and leave a breadcrumb — this is the
@@ -1929,7 +1950,7 @@ class Atmosphere {
 
 		\update_post_meta( $post_id, self::META_PUBLISH_RETRIES, $attempts + 1 );
 		\wp_schedule_single_event(
-			\time() + self::PUBLISH_RETRY_DELAYS[ $attempts ],
+			\time() + $delays[ $attempts ],
 			$hook,
 			array( $post_id )
 		);
