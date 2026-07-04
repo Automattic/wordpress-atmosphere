@@ -2439,4 +2439,207 @@ class Test_Atmosphere extends WP_UnitTestCase {
 
 		return (string) ( \rest_do_request( $request )->get_data()['atmosphere_url'] ?? '' );
 	}
+
+	/**
+	 * Short-circuit applyWrites with a transient (retryable) PDS error.
+	 *
+	 * @param int $status HTTP status carried in the error data.
+	 */
+	private function force_apply_writes_error( int $status ): void {
+		\add_filter(
+			'atmosphere_pre_apply_writes',
+			static fn() => new \WP_Error(
+				'atmosphere_pds',
+				'PDS request failed.',
+				array( 'status' => $status )
+			)
+		);
+	}
+
+	/**
+	 * Short-circuit applyWrites with a plausible per-write success response.
+	 */
+	private function force_apply_writes_success(): void {
+		\add_filter(
+			'atmosphere_pre_apply_writes',
+			static function ( $short_circuit, array $writes ) {
+				$results = array();
+				foreach ( $writes as $write ) {
+					$results[] = array(
+						'uri' => 'at://did:plc:test123/' . ( $write['collection'] ?? 'app.bsky.feed.post' ) . '/' . ( $write['rkey'] ?? 'rk' ),
+						'cid' => 'bafyreib' . \substr( \md5( (string) \wp_json_encode( $write ) ), 0, 20 ),
+					);
+				}
+
+				return array( 'results' => $results );
+			},
+			10,
+			2
+		);
+	}
+
+	/**
+	 * A transient PDS failure (5xx) in the publish worker schedules a
+	 * delayed retry of the same hook and records the attempt.
+	 */
+	public function test_publish_worker_schedules_backoff_retry_on_transient_pds_error() {
+		$post = self::factory()->post->create_and_get( array( 'post_status' => 'publish' ) );
+
+		/*
+		 * WP-Cron unschedules an event before running its callback; mirror
+		 * that so the creation-time event doesn't mask the retry.
+		 */
+		\wp_clear_scheduled_hook( 'atmosphere_publish_post', array( $post->ID ) );
+		\wp_clear_scheduled_hook( 'atmosphere_update_post', array( $post->ID ) );
+
+		$this->force_apply_writes_error( 500 );
+
+		\do_action( 'atmosphere_publish_post', $post->ID );
+
+		$next = \wp_next_scheduled( 'atmosphere_publish_post', array( $post->ID ) );
+
+		$this->assertNotFalse( $next, 'Expected a retry to be scheduled after a transient PDS error.' );
+		$this->assertGreaterThanOrEqual( \time() + 45, $next, 'First retry should back off by about a minute.' );
+		$this->assertLessThanOrEqual( \time() + 75, $next, 'First retry should back off by about a minute.' );
+		$this->assertSame( '1', \get_post_meta( $post->ID, '_atmosphere_publish_retries', true ) );
+	}
+
+	/**
+	 * The retry delay escalates with the attempt count.
+	 */
+	public function test_publish_worker_backoff_escalates_with_attempts() {
+		$post = self::factory()->post->create_and_get( array( 'post_status' => 'publish' ) );
+		\update_post_meta( $post->ID, '_atmosphere_publish_retries', '1' );
+
+		/*
+		 * WP-Cron unschedules an event before running its callback; mirror
+		 * that so the creation-time event doesn't mask the retry.
+		 */
+		\wp_clear_scheduled_hook( 'atmosphere_publish_post', array( $post->ID ) );
+		\wp_clear_scheduled_hook( 'atmosphere_update_post', array( $post->ID ) );
+
+		$this->force_apply_writes_error( 500 );
+
+		\do_action( 'atmosphere_publish_post', $post->ID );
+
+		$next = \wp_next_scheduled( 'atmosphere_publish_post', array( $post->ID ) );
+
+		$this->assertNotFalse( $next, 'Expected a second retry to be scheduled.' );
+		$this->assertGreaterThanOrEqual( \time() + 4 * MINUTE_IN_SECONDS, $next, 'Second retry should back off by about five minutes.' );
+		$this->assertSame( '2', \get_post_meta( $post->ID, '_atmosphere_publish_retries', true ) );
+	}
+
+	/**
+	 * A permanent PDS rejection (plain 4xx) is not retried.
+	 */
+	public function test_publish_worker_does_not_retry_permanent_pds_error() {
+		$post = self::factory()->post->create_and_get( array( 'post_status' => 'publish' ) );
+
+		/*
+		 * WP-Cron unschedules an event before running its callback; mirror
+		 * that so the creation-time event doesn't mask the retry.
+		 */
+		\wp_clear_scheduled_hook( 'atmosphere_publish_post', array( $post->ID ) );
+		\wp_clear_scheduled_hook( 'atmosphere_update_post', array( $post->ID ) );
+
+		$this->force_apply_writes_error( 400 );
+
+		\do_action( 'atmosphere_publish_post', $post->ID );
+
+		$this->assertFalse(
+			\wp_next_scheduled( 'atmosphere_publish_post', array( $post->ID ) ),
+			'A permanent PDS rejection must not schedule a retry.'
+		);
+		$this->assertSame( '', \get_post_meta( $post->ID, '_atmosphere_publish_retries', true ) );
+	}
+
+	/**
+	 * Retries stop after the ladder is exhausted, and the counter resets
+	 * so a later fresh save starts a new ladder.
+	 */
+	public function test_publish_worker_gives_up_after_max_retries() {
+		$post = self::factory()->post->create_and_get( array( 'post_status' => 'publish' ) );
+		\update_post_meta( $post->ID, '_atmosphere_publish_retries', '3' );
+
+		/*
+		 * WP-Cron unschedules an event before running its callback; mirror
+		 * that so the creation-time event doesn't mask the retry.
+		 */
+		\wp_clear_scheduled_hook( 'atmosphere_publish_post', array( $post->ID ) );
+		\wp_clear_scheduled_hook( 'atmosphere_update_post', array( $post->ID ) );
+
+		$this->force_apply_writes_error( 500 );
+
+		\do_action( 'atmosphere_publish_post', $post->ID );
+
+		$this->assertFalse(
+			\wp_next_scheduled( 'atmosphere_publish_post', array( $post->ID ) ),
+			'No retry may be scheduled once the ladder is exhausted.'
+		);
+		$this->assertSame( '', \get_post_meta( $post->ID, '_atmosphere_publish_retries', true ) );
+	}
+
+	/**
+	 * A successful publish clears a leftover retry counter.
+	 */
+	public function test_publish_worker_success_clears_retry_counter() {
+		$post = self::factory()->post->create_and_get( array( 'post_status' => 'publish' ) );
+		\update_post_meta( $post->ID, '_atmosphere_publish_retries', '2' );
+
+		/*
+		 * WP-Cron unschedules an event before running its callback; mirror
+		 * that so the creation-time event doesn't mask the retry.
+		 */
+		\wp_clear_scheduled_hook( 'atmosphere_publish_post', array( $post->ID ) );
+		\wp_clear_scheduled_hook( 'atmosphere_update_post', array( $post->ID ) );
+
+		$this->force_apply_writes_success();
+
+		\do_action( 'atmosphere_publish_post', $post->ID );
+
+		$this->assertFalse(
+			\wp_next_scheduled( 'atmosphere_publish_post', array( $post->ID ) ),
+			'A successful publish must not schedule a retry.'
+		);
+		$this->assertSame( '', \get_post_meta( $post->ID, '_atmosphere_publish_retries', true ) );
+	}
+
+	/**
+	 * The update worker retries transient failures the same way,
+	 * rescheduling its own hook.
+	 */
+	public function test_update_worker_schedules_backoff_retry_on_transient_pds_error() {
+		$post = self::factory()->post->create_and_get( array( 'post_status' => 'publish' ) );
+
+		\update_post_meta( $post->ID, Post::META_TID, 'bsky-tid-123' );
+		\update_post_meta(
+			$post->ID,
+			Post::META_THREAD_RECORDS,
+			array(
+				array(
+					'uri' => 'at://did:plc:test123/app.bsky.feed.post/bsky-tid-123',
+					'cid' => 'bafyreiboldcid',
+					'tid' => 'bsky-tid-123',
+				),
+			)
+		);
+		\update_post_meta( $post->ID, Document::META_TID, 'doc-tid-456' );
+		\update_post_meta( $post->ID, Document::META_URI, 'at://did:plc:test123/site.standard.document/doc-tid-456' );
+
+		/*
+		 * WP-Cron unschedules an event before running its callback; mirror
+		 * that so the creation-time event doesn't mask the retry.
+		 */
+		\wp_clear_scheduled_hook( 'atmosphere_publish_post', array( $post->ID ) );
+		\wp_clear_scheduled_hook( 'atmosphere_update_post', array( $post->ID ) );
+
+		$this->force_apply_writes_error( 503 );
+
+		\do_action( 'atmosphere_update_post', $post->ID );
+
+		$next = \wp_next_scheduled( 'atmosphere_update_post', array( $post->ID ) );
+
+		$this->assertNotFalse( $next, 'Expected the update worker to schedule a retry after a transient PDS error.' );
+		$this->assertSame( '1', \get_post_meta( $post->ID, '_atmosphere_publish_retries', true ) );
+	}
 }

@@ -1,0 +1,4 @@
+Significance: minor
+Type: added
+
+Failed attempts to share a post to Bluesky are now retried automatically for about twenty minutes, so a brief network or server hiccup no longer means the post silently never appears.
