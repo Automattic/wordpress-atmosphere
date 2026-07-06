@@ -530,7 +530,14 @@ function get_cron_hooks(): array {
  */
 function clear_scheduled_hooks(): void {
 	foreach ( get_cron_hooks() as $hook ) {
-		\wp_clear_scheduled_hook( $hook );
+		/*
+		 * `wp_unschedule_hook()`, not `wp_clear_scheduled_hook()`: the
+		 * latter only removes events whose args match the given array
+		 * (default: empty), so an argless call would leave every queued
+		 * per-post/per-comment event (`[ $post_id ]`) in place — exactly
+		 * the events that must not fire against a different connection.
+		 */
+		\wp_unschedule_hook( $hook );
 	}
 }
 
@@ -544,7 +551,10 @@ function clear_scheduled_hooks(): void {
  */
 function clear_scheduled_hooks_all(): void {
 	clear_scheduled_hooks();
-	\wp_clear_scheduled_hook( 'atmosphere_revoke_refresh_token' );
+
+	// The revoke event always carries args (the encrypted token payload),
+	// so it likewise needs the args-agnostic unschedule.
+	\wp_unschedule_hook( 'atmosphere_revoke_refresh_token' );
 }
 
 /**

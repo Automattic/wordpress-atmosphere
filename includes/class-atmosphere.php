@@ -47,6 +47,36 @@ class Atmosphere {
 	private const META_PUBLISH_ATTEMPTS = '_atmosphere_publish_attempts';
 
 	/**
+	 * Post meta key tracking how many delayed retries a failed
+	 * publish/update cron worker has scheduled for the post.
+	 *
+	 * Deleted on success, on a permanent (non-retryable) failure, and
+	 * when the retry ladder is exhausted, so the next fresh save always
+	 * starts with a full retry budget.
+	 *
+	 * @var string
+	 */
+	private const META_PUBLISH_RETRIES = '_atmosphere_publish_retries';
+
+	/**
+	 * Backoff ladder for transient publish/update failures, in seconds.
+	 *
+	 * `wp_schedule_single_event()` is one-shot: without a re-queue, a
+	 * single PDS 5xx / rate limit / network blip permanently drops the
+	 * post from Bluesky with no operator-visible trace. One entry per
+	 * retry — three attempts spread over ~21 minutes rides out PDS
+	 * restarts and rate-limit windows without hammering a struggling
+	 * server.
+	 *
+	 * @var int[]
+	 */
+	private const PUBLISH_RETRY_DELAYS = array(
+		MINUTE_IN_SECONDS,
+		5 * MINUTE_IN_SECONDS,
+		15 * MINUTE_IN_SECONDS,
+	);
+
+	/**
 	 * Post meta marker set when remote records were removed because a
 	 * previously public post left public visibility.
 	 *
@@ -678,6 +708,16 @@ class Atmosphere {
 		 */
 		try {
 			\do_action( 'atmosphere_publishing', $post );
+
+			/*
+			 * A status transition is fresh user intent, so it starts a
+			 * new retry budget. Without this, a counter stranded by a
+			 * dead retry event (disconnect cleared the queue, the post
+			 * was trashed mid-ladder, a cron event was lost) would
+			 * silently shrink — or zero out — the ladder of the next
+			 * publish attempt.
+			 */
+			\delete_post_meta( $post->ID, self::META_PUBLISH_RETRIES );
 
 			if ( $is_publishable ) {
 				\wp_clear_scheduled_hook( 'atmosphere_delete_post', array( $post->ID ) );
@@ -1457,6 +1497,7 @@ class Atmosphere {
 						? Publisher::update_post( $post )
 						: Publisher::publish_post( $post );
 					self::log_cron_error( 'publish_post', $post_id, $result );
+					self::maybe_schedule_publish_retry( 'atmosphere_publish_post', $post_id, $result );
 					if ( ! \is_wp_error( $result ) ) {
 						self::clear_visibility_cleanup_marker( $post );
 					}
@@ -1481,6 +1522,7 @@ class Atmosphere {
 						? Publisher::update_post( $post )
 						: Publisher::publish_post( $post );
 					self::log_cron_error( 'update_post', $post_id, $result );
+					self::maybe_schedule_publish_retry( 'atmosphere_update_post', $post_id, $result );
 					if ( ! \is_wp_error( $result ) ) {
 						self::clear_visibility_cleanup_marker( $post );
 					}
@@ -1849,6 +1891,142 @@ class Atmosphere {
 	 */
 	public static function log_reconcile_cleanup_error( int $post_id, $result ): void {
 		self::log_cron_error( 'reconcile_cleanup', $post_id, $result );
+	}
+
+	/**
+	 * Re-queue a failed publish/update cron worker with backoff.
+	 *
+	 * Mirrors the comment parent-defer pattern ({@see self::defer_for_parent()}):
+	 * a per-object attempt counter in meta, a bounded ladder, and a
+	 * one-shot re-schedule of the same hook + args. The worker re-checks
+	 * post state when the retry fires, so a post that was unpublished or
+	 * disabled in the meantime routes to cleanup instead of publishing.
+	 *
+	 * Success and permanent failures clear the counter so the next
+	 * fresh save starts with a full retry budget.
+	 *
+	 * @param string $hook    Cron hook to re-schedule (`atmosphere_publish_post` or `atmosphere_update_post`).
+	 * @param int    $post_id Post ID the worker ran for.
+	 * @param mixed  $result  Publisher result: array on success, `WP_Error` on failure.
+	 */
+	private static function maybe_schedule_publish_retry( string $hook, int $post_id, $result ): void {
+		if ( ! \is_wp_error( $result ) || ! self::is_transient_publish_error( $result ) ) {
+			\delete_post_meta( $post_id, self::META_PUBLISH_RETRIES );
+			return;
+		}
+
+		/**
+		 * Filters the backoff ladder for transient publish/update failures.
+		 *
+		 * One entry per retry, in seconds — the ladder's length IS the
+		 * retry budget. Return an empty array to disable retries, or a
+		 * longer array to raise the budget (the same knob covers both,
+		 * so the delay schedule and the attempt cap cannot contradict
+		 * each other).
+		 *
+		 * @since unreleased
+		 *
+		 * @param int[] $delays Retry delays in seconds. Default 60, 300, 900.
+		 */
+		$delays = \apply_filters( 'atmosphere_publish_retry_delays', self::PUBLISH_RETRY_DELAYS );
+		$delays = \array_values(
+			\array_filter(
+				\array_map( 'intval', (array) $delays ),
+				static fn( int $delay ): bool => $delay > 0
+			)
+		);
+
+		$attempts = (int) \get_post_meta( $post_id, self::META_PUBLISH_RETRIES, true );
+
+		if ( $attempts >= \count( $delays ) ) {
+			/*
+			 * Ladder exhausted. Clear the counter so a future fresh save
+			 * gets a new budget, and leave a breadcrumb — this is the
+			 * point where a post has definitively failed to reach the
+			 * PDS despite retries. No breadcrumb when the filter
+			 * disabled retries outright: "giving up after 0 retries"
+			 * would misread as a failure of the ladder the operator
+			 * deliberately switched off.
+			 */
+			\delete_post_meta( $post_id, self::META_PUBLISH_RETRIES );
+
+			if ( ! empty( $delays ) ) {
+				debug_log(
+					\sprintf(
+						'%s %d: giving up after %d retries (%s)',
+						$hook,
+						$post_id,
+						$attempts,
+						$result->get_error_code()
+					)
+				);
+			}
+			return;
+		}
+
+		\update_post_meta( $post_id, self::META_PUBLISH_RETRIES, $attempts + 1 );
+		\wp_schedule_single_event(
+			\time() + $delays[ $attempts ],
+			$hook,
+			array( $post_id )
+		);
+	}
+
+	/**
+	 * Whether a publish failure is worth retrying.
+	 *
+	 * Retry-by-default with a bounded ladder: a wrongly-retried
+	 * permanent error costs at most three extra requests, while a
+	 * wrongly-dropped transient error silently loses the post. Only
+	 * failures that are deterministic — locally-generated preconditions
+	 * or a PDS 4xx that will reject the identical payload again — are
+	 * excluded.
+	 *
+	 * @param \WP_Error $error Failure returned by the Publisher.
+	 * @return bool True when a retry has a chance of succeeding.
+	 */
+	private static function is_transient_publish_error( \WP_Error $error ): bool {
+		$permanent_codes = array(
+			'atmosphere_post_not_publishable',
+			'atmosphere_not_connected',
+			'atmosphere_needs_reauth',
+			'atmosphere_missing_tid',
+			'atmosphere_invalid_pre_apply_writes_return',
+			'atmosphere_invalid_pre_apply_writes_response',
+			'atmosphere_invalid_pre_upload_blob_return',
+			'atmosphere_decrypt',
+			'atmosphere_did_mismatch',
+
+			/*
+			 * Never retry a failed thread rollback: the orphan manifest
+			 * records live partial records on the PDS, and a retried
+			 * publish would mint fresh TIDs next to them — a duplicate,
+			 * user-visible copy of the post. This state needs operator
+			 * attention (see Post::META_ORPHAN_RECORDS), not another
+			 * attempt.
+			 */
+			'atmosphere_thread_rollback_failed',
+		);
+
+		if ( \in_array( $error->get_error_code(), $permanent_codes, true ) ) {
+			return false;
+		}
+
+		$data   = $error->get_error_data();
+		$status = \is_array( $data ) && isset( $data['status'] ) ? (int) $data['status'] : 0;
+
+		/*
+		 * No status means the request never completed (DNS, TLS,
+		 * timeout) — the classic transient class. 408/429/5xx are the
+		 * server-side equivalents. Any other 4xx is a deterministic
+		 * rejection of this exact payload and would fail identically
+		 * on every attempt.
+		 */
+		if ( 0 === $status ) {
+			return true;
+		}
+
+		return 408 === $status || 429 === $status || $status >= 500;
 	}
 
 	/**
