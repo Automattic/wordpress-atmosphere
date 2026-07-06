@@ -59,6 +59,21 @@ class Atmosphere {
 	private const META_PUBLISH_RETRIES = '_atmosphere_publish_retries';
 
 	/**
+	 * Post meta key holding the most recent publish/update failure.
+	 *
+	 * Written by the cron workers when an attempt fails, cleared on the
+	 * next success. Shape: `code`, `message` (sanitized + truncated —
+	 * PDS-supplied strings can carry hostile bytes), `retrying` (whether
+	 * the backoff ladder scheduled another attempt), `time`. Exposed to
+	 * the block editor via the read-only `atmosphere_publish_error`
+	 * REST field so authors can see that a share failed instead of the
+	 * failure vanishing into a WP_DEBUG-gated log line.
+	 *
+	 * @var string
+	 */
+	private const META_LAST_PUBLISH_ERROR = '_atmosphere_last_publish_error';
+
+	/**
 	 * Backoff ladder for transient publish/update failures, in seconds.
 	 *
 	 * `wp_schedule_single_event()` is one-shot: without a re-queue, a
@@ -715,9 +730,13 @@ class Atmosphere {
 			 * dead retry event (disconnect cleared the queue, the post
 			 * was trashed mid-ladder, a cron event was lost) would
 			 * silently shrink — or zero out — the ladder of the next
-			 * publish attempt.
+			 * publish attempt. The stale failure record goes with it:
+			 * on a cleanup transition the delete worker never routes
+			 * through the retry helper, so an old "share failed" notice
+			 * would otherwise stick to a post that is no longer shared.
 			 */
 			\delete_post_meta( $post->ID, self::META_PUBLISH_RETRIES );
+			\delete_post_meta( $post->ID, self::META_LAST_PUBLISH_ERROR );
 
 			if ( $is_publishable ) {
 				\wp_clear_scheduled_hook( 'atmosphere_delete_post', array( $post->ID ) );
@@ -1415,11 +1434,15 @@ class Atmosphere {
 	}
 
 	/**
-	 * Register a read-only REST field with the published post's Bluesky URL.
+	 * Register the read-only REST fields backing the editor panel.
 	 *
-	 * Lets the block-editor panel show a "View on Bluesky" link once the
-	 * post has been shared, without exposing internal AT-URI meta keys.
-	 * Empty until the post has a Bluesky record.
+	 * `atmosphere_url` lets the panel show a "View on Bluesky" link once
+	 * the post has been shared, without exposing internal AT-URI meta
+	 * keys (empty until the post has a Bluesky record).
+	 * `atmosphere_publish_error` carries the most recent share failure
+	 * (null when the last attempt succeeded) so the panel can tell the
+	 * author a share failed instead of the failure vanishing into a
+	 * WP_DEBUG-gated log line. Both are edit-context only.
 	 */
 	public function register_share_status_field(): void {
 		foreach ( get_supported_post_types() as $post_type ) {
@@ -1437,6 +1460,51 @@ class Atmosphere {
 						'type'        => 'string',
 						'description' => \__( 'The Bluesky web URL for this post, empty until it is shared.', 'atmosphere' ),
 						'context'     => array( 'edit' ),
+					),
+				)
+			);
+
+			\register_rest_field(
+				$post_type,
+				'atmosphere_publish_error',
+				array(
+					'get_callback'    => static function ( $post_arr ) {
+						$error = \get_post_meta( (int) $post_arr['id'], self::META_LAST_PUBLISH_ERROR, true );
+
+						if ( ! \is_array( $error ) || empty( $error['code'] ) ) {
+							return null;
+						}
+
+						return array(
+							'code'     => (string) $error['code'],
+							'message'  => (string) ( $error['message'] ?? '' ),
+							'retrying' => ! empty( $error['retrying'] ),
+							'time'     => (int) ( $error['time'] ?? 0 ),
+						);
+					},
+					'update_callback' => null,
+					'schema'          => array(
+						'type'        => array( 'object', 'null' ),
+						'description' => \__( 'The most recent Bluesky sharing failure for this post, null when the last attempt succeeded.', 'atmosphere' ),
+						'context'     => array( 'edit' ),
+						'properties'  => array(
+							'code'     => array(
+								'type'        => 'string',
+								'description' => \__( 'Machine-readable failure code.', 'atmosphere' ),
+							),
+							'message'  => array(
+								'type'        => 'string',
+								'description' => \__( 'Human-readable failure message.', 'atmosphere' ),
+							),
+							'retrying' => array(
+								'type'        => 'boolean',
+								'description' => \__( 'Whether another automatic attempt is scheduled.', 'atmosphere' ),
+							),
+							'time'     => array(
+								'type'        => 'integer',
+								'description' => \__( 'Unix timestamp of the failed attempt.', 'atmosphere' ),
+							),
+						),
 					),
 				)
 			);
@@ -1545,6 +1613,15 @@ class Atmosphere {
 							? Publisher::update_post( $post )
 							: Publisher::publish_post( $post );
 						self::log_cron_error( 'delete_post_publishable_reconcile', $post_id, $result );
+
+						/*
+						 * Same lifecycle as the publish/update workers: a
+						 * successful reconcile clears the retry counter and
+						 * the stale failure record, and a transient failure
+						 * re-queues (as an update — the worker re-checks
+						 * state when the retry fires).
+						 */
+						self::maybe_schedule_publish_retry( 'atmosphere_update_post', $post_id, $result );
 						if ( ! \is_wp_error( $result ) ) {
 							self::clear_visibility_cleanup_marker( $post );
 						}
@@ -1910,7 +1987,14 @@ class Atmosphere {
 	 * @param mixed  $result  Publisher result: array on success, `WP_Error` on failure.
 	 */
 	private static function maybe_schedule_publish_retry( string $hook, int $post_id, $result ): void {
-		if ( ! \is_wp_error( $result ) || ! self::is_transient_publish_error( $result ) ) {
+		if ( ! \is_wp_error( $result ) ) {
+			\delete_post_meta( $post_id, self::META_PUBLISH_RETRIES );
+			\delete_post_meta( $post_id, self::META_LAST_PUBLISH_ERROR );
+			return;
+		}
+
+		if ( ! self::is_transient_publish_error( $result ) ) {
+			self::record_publish_error( $post_id, $result, false );
 			\delete_post_meta( $post_id, self::META_PUBLISH_RETRIES );
 			return;
 		}
@@ -1948,6 +2032,7 @@ class Atmosphere {
 			 * would misread as a failure of the ladder the operator
 			 * deliberately switched off.
 			 */
+			self::record_publish_error( $post_id, $result, false );
 			\delete_post_meta( $post_id, self::META_PUBLISH_RETRIES );
 
 			if ( ! empty( $delays ) ) {
@@ -1964,11 +2049,37 @@ class Atmosphere {
 			return;
 		}
 
+		self::record_publish_error( $post_id, $result, true );
 		\update_post_meta( $post_id, self::META_PUBLISH_RETRIES, $attempts + 1 );
 		\wp_schedule_single_event(
 			\time() + $delays[ $attempts ],
 			$hook,
 			array( $post_id )
+		);
+	}
+
+	/**
+	 * Persist a publish failure to post meta for the editor to surface.
+	 *
+	 * The message flows from `WP_Error::get_error_message()` and can carry
+	 * PDS-supplied bytes, so it is sanitized and truncated before storage
+	 * — same caution as `log_cron_error()`, but for a value that ends up
+	 * rendered in the block editor rather than a log line.
+	 *
+	 * @param int       $post_id  Post the attempt ran for.
+	 * @param \WP_Error $error    The failure.
+	 * @param bool      $retrying Whether the backoff ladder scheduled another attempt.
+	 */
+	private static function record_publish_error( int $post_id, \WP_Error $error, bool $retrying ): void {
+		\update_post_meta(
+			$post_id,
+			self::META_LAST_PUBLISH_ERROR,
+			array(
+				'code'     => (string) $error->get_error_code(),
+				'message'  => truncate_text( sanitize_text( $error->get_error_message() ), 300 ),
+				'retrying' => $retrying,
+				'time'     => \time(),
+			)
 		);
 	}
 

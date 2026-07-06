@@ -83,6 +83,7 @@ $atmosphere_meta_keys = array(
 	'_atmosphere_doc_ref_pending',
 	'_atmosphere_visibility_cleanup',
 	'_atmosphere_publish_retries',
+	'_atmosphere_last_publish_error',
 	'_atmosphere_blob_ref',
 	'atmosphere_custom_text',
 );
