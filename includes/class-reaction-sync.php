@@ -1059,15 +1059,11 @@ class Reaction_Sync {
 	 * fallback, a like/repost targeting a reply post would silently
 	 * fail to resolve back to the originating WordPress post.
 	 *
-	 * Both lookups are scoped to `get_supported_post_types()` rather
-	 * than left to `get_posts()`'s `post_type => 'post'` default.
-	 * Without the explicit scope, reactions targeting a custom post
-	 * type we publish (an `aside`/`status`-style CPT, a note type,
-	 * etc.) resolve to nothing and are dropped silently — no comment
-	 * row, no error. The resolver must cover exactly the types the
-	 * Publisher federates. Passing the types explicitly also picks up
-	 * supported CPTs registered with `exclude_from_search`, which the
-	 * `'any'` shortcut would miss.
+	 * Both lookups are scoped to `get_supported_post_types()` so the
+	 * resolver covers exactly the types the Publisher federates — see
+	 * {@see self::find_post_by_uri_meta()} for why the explicit scope
+	 * matters. When no post types are supported there is nothing to
+	 * resolve, so bail before running any query.
 	 *
 	 * @param string $uri AT-URI.
 	 * @return int|false
@@ -1079,25 +1075,45 @@ class Reaction_Sync {
 
 		$post_types = get_supported_post_types();
 
-		$posts = \get_posts(
-			array(
-				'meta_key'       => BskyPost::META_URI, // phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_key
-				'meta_value'     => $uri, // phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_value
-				'post_type'      => $post_types,
-				'posts_per_page' => 1,
-				'post_status'    => 'publish',
-				'has_password'   => false,
-				'fields'         => 'ids',
-			)
-		);
-
-		if ( ! empty( $posts ) ) {
-			return (int) $posts[0];
+		/*
+		 * An empty supported-types list means nothing is federated, so
+		 * nothing should resolve. Bail before get_posts(), whose empty
+		 * `post_type` array silently falls back to WordPress's `post`
+		 * default and would reintroduce the exact miss this scoping fixes.
+		 */
+		if ( empty( $post_types ) ) {
+			return false;
 		}
 
+		$post_id = self::find_post_by_uri_meta( BskyPost::META_URI, $uri, $post_types );
+
+		if ( false !== $post_id ) {
+			return $post_id;
+		}
+
+		return self::find_post_by_uri_meta( BskyPost::META_URI_INDEX, $uri, $post_types );
+	}
+
+	/**
+	 * Resolve a published, federated post from a URI-valued meta key.
+	 *
+	 * Scoped to the supported post types rather than left to
+	 * `get_posts()`'s `post_type => 'post'` default. Without the explicit
+	 * scope, reactions targeting a custom post type we publish (an
+	 * `aside`/`status`-style CPT, a note type, etc.) resolve to nothing
+	 * and are dropped silently — no comment row, no error. Passing the
+	 * types explicitly also picks up supported CPTs registered with
+	 * `exclude_from_search`, which the `'any'` shortcut would miss.
+	 *
+	 * @param string   $meta_key   Meta key to match ({@see BskyPost::META_URI} or META_URI_INDEX).
+	 * @param string   $uri        AT-URI to match.
+	 * @param string[] $post_types Supported post types to scope the query to.
+	 * @return int|false
+	 */
+	private static function find_post_by_uri_meta( string $meta_key, string $uri, array $post_types ): int|false {
 		$posts = \get_posts(
 			array(
-				'meta_key'       => BskyPost::META_URI_INDEX, // phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_key
+				'meta_key'       => $meta_key, // phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_key
 				'meta_value'     => $uri, // phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_value
 				'post_type'      => $post_types,
 				'posts_per_page' => 1,

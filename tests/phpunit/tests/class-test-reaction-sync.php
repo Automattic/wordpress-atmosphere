@@ -150,6 +150,85 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 	}
 
 	/**
+	 * The thread-index fallback must also resolve a supported non-`post` type.
+	 *
+	 * `find_post_by_bsky_uri()` scopes BOTH lookups — the single-record
+	 * `META_URI` key and the `META_URI_INDEX` thread fallback Publisher
+	 * populates for every teaser-thread reply. The other regression tests
+	 * only seed `META_URI`, so they never reach the second query. This one
+	 * seeds only the index key on a `page` to guard the fallback branch
+	 * against a future change that drops its `post_type` scope.
+	 */
+	public function test_find_post_by_bsky_uri_thread_index_resolves_supported_non_default_post_type() {
+		\update_option( 'atmosphere_support_post_types', array( 'post', 'page' ) );
+
+		$post_id   = self::factory()->post->create(
+			array(
+				'post_type'   => 'page',
+				'post_status' => 'publish',
+			)
+		);
+		$reply_uri = 'at://did:plc:test123/app.bsky.feed.post/pagereply123';
+
+		\add_post_meta( $post_id, BskyPost::META_URI_INDEX, $reply_uri );
+
+		$method = new \ReflectionMethod( Reaction_Sync::class, 'find_post_by_bsky_uri' );
+
+		$this->assertSame( $post_id, $method->invoke( null, $reply_uri ) );
+	}
+
+	/**
+	 * A reaction on an unsupported post type must NOT resolve.
+	 *
+	 * Pins the upper bound of the scoping: the resolver covers exactly the
+	 * federated types, no more. Without this, a future widening back to
+	 * `post_type => 'any'` would silently start importing reactions onto
+	 * content the site never federated, and every positive test would still
+	 * pass. Here `page` carries matching meta but is absent from the
+	 * supported list, so the lookup must miss.
+	 */
+	public function test_find_post_by_bsky_uri_ignores_unsupported_post_type() {
+		\update_option( 'atmosphere_support_post_types', array( 'post' ) );
+
+		$post_id = self::factory()->post->create(
+			array(
+				'post_type'   => 'page',
+				'post_status' => 'publish',
+			)
+		);
+		$uri     = 'at://did:plc:test123/app.bsky.feed.post/unsupported123';
+
+		\update_post_meta( $post_id, BskyPost::META_URI, $uri );
+
+		$method = new \ReflectionMethod( Reaction_Sync::class, 'find_post_by_bsky_uri' );
+
+		$this->assertFalse( $method->invoke( null, $uri ) );
+	}
+
+	/**
+	 * An empty supported-types list must resolve nothing, not fall back to `post`.
+	 *
+	 * When a site owner unticks every type, the option is stored as an empty
+	 * array. Passing `post_type => array()` to `get_posts()` silently defaults
+	 * to `post_type => 'post'`, which would reintroduce the original miss (and
+	 * resolve reactions onto content the Publisher no longer federates). The
+	 * resolver must short-circuit to false instead: a matching `post` exists
+	 * here, yet nothing is federated, so nothing should resolve.
+	 */
+	public function test_find_post_by_bsky_uri_returns_false_when_no_supported_types() {
+		\update_option( 'atmosphere_support_post_types', array() );
+
+		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		$uri     = 'at://did:plc:test123/app.bsky.feed.post/notypes123';
+
+		\update_post_meta( $post_id, BskyPost::META_URI, $uri );
+
+		$method = new \ReflectionMethod( Reaction_Sync::class, 'find_post_by_bsky_uri' );
+
+		$this->assertFalse( $method->invoke( null, $uri ) );
+	}
+
+	/**
 	 * Test that find_comment_by_source_id returns the correct comment.
 	 */
 	public function test_find_comment_by_source_id() {
