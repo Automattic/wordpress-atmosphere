@@ -18,7 +18,7 @@ When you publish a post, ATmosphere automatically shares it on Bluesky and store
 
 = What you get =
 
-* **Your posts on Bluesky, automatically.** Hit "Publish" on WordPress, and a moment later your post appears on Bluesky. Links, @-mentions, and #hashtags are detected for you.
+* **Your posts on Bluesky, automatically.** Hit "Publish" on WordPress, and a moment later your post appears on Bluesky. Links, @-mentions, and #hashtags are detected for you. Mention a Bluesky account with `@handle.tld` and the mention links to their profile on your site, while they get notified on Bluesky — even on longer posts.
 * **Long posts done right.** A long article becomes a short, readable Bluesky thread that links back to the full piece on your site. Edits are kept tidy so existing replies and reposts on Bluesky don't get orphaned.
 * **Use your own domain as your Bluesky handle.** With one click, your handle becomes something like `@yourblog.com` instead of `@you.bsky.social`. ATmosphere does the technical bit; Bluesky verifies it.
 * **Bluesky reactions become WordPress comments.** Replies appear in your comments. Likes and reposts show up alongside them with their own counts so the engagement is visible to your readers.

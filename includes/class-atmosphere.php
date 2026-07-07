@@ -164,6 +164,13 @@ class Atmosphere {
 		\add_action( 'init', array( Settings_Fields::class, 'init' ), 5 );
 
 		/*
+		 * Display-side @handle.tld mention auto-linking. Self-registers on
+		 * init so the_content (priority 100) is wired for both front-end
+		 * rendering and the site.standard.document content parsers.
+		 */
+		\add_action( 'init', array( Mention::class, 'init' ), 5 );
+
+		/*
 		 * Seed the long-form composition strategy from the user's
 		 * setting. Priority 1 so any downstream filter at the default
 		 * priority can still override it per post.

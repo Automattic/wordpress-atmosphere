@@ -12,6 +12,7 @@ namespace Atmosphere\Transformer;
 
 \defined( 'ABSPATH' ) || exit;
 
+use Atmosphere\Mention;
 use function Atmosphere\build_at_uri;
 use function Atmosphere\get_did;
 use function Atmosphere\sanitize_text;
@@ -199,6 +200,46 @@ abstract class Base {
 	private array $plain_content_cache = array();
 
 	/**
+	 * Per-instance memoization of the rendered-HTML render (linkification off).
+	 *
+	 * @var array<int,string>
+	 */
+	private array $html_content_cache = array();
+
+	/**
+	 * Render a post's content to HTML, with mention linkification suppressed.
+	 *
+	 * Runs the `the_content` filter chain once and caches the result. Mention
+	 * linkification is suppressed for the same reason {@see self::render_post_content_plain()}
+	 * suppresses it: this render feeds the Bluesky post-text composition, where
+	 * an `@handle` rendered as an `<a>` would become a `#link` facet (no
+	 * notification) instead of a `#mention` facet (which notifies). The rich
+	 * document / front-end render uses a separate, un-guarded `the_content` call.
+	 *
+	 * Callers that need mention/context awareness (which tags a handle sits
+	 * inside) work from this HTML; callers that only need plain text go through
+	 * {@see self::render_post_content_plain()}, which strips tags from it.
+	 *
+	 * @since unreleased
+	 *
+	 * @param \WP_Post $post Post object.
+	 * @return string
+	 */
+	protected function render_post_content_html( \WP_Post $post ): string {
+		if ( isset( $this->html_content_cache[ $post->ID ] ) ) {
+			return $this->html_content_cache[ $post->ID ];
+		}
+
+		$html = Mention::without_links(
+			static fn() => \apply_filters( 'the_content', $post->post_content ) // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Core WordPress filter.
+		);
+
+		$this->html_content_cache[ $post->ID ] = $html;
+
+		return $html;
+	}
+
+	/**
 	 * Render a post's content to plain text.
 	 *
 	 * Runs the_content filter, strips tags, decodes entities, and
@@ -214,8 +255,7 @@ abstract class Base {
 			return $this->plain_content_cache[ $post->ID ];
 		}
 
-		$content = \apply_filters( 'the_content', $post->post_content ); // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Core WordPress filter.
-		$plain   = sanitize_text( $content );
+		$plain = sanitize_text( $this->render_post_content_html( $post ) );
 
 		$this->plain_content_cache[ $post->ID ] = $plain;
 

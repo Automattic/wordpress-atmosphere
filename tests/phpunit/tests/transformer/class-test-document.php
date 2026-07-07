@@ -610,6 +610,29 @@ class Test_Document extends \WP_UnitTestCase {
 	}
 
 	/**
+	 * The standard.site document's rich HTML content keeps @mention links —
+	 * the document parser path renders through the_content and is NOT covered
+	 * by the Bluesky-text suppression guard.
+	 */
+	public function test_document_content_linkifies_mentions() {
+		\Atmosphere\Mention::init();
+		Registry::register( new Html() );
+
+		$post = self::factory()->post->create_and_get(
+			array( 'post_content' => 'Hello @alice.bsky.social!' )
+		);
+
+		$record = ( new Document( $post ) )->transform();
+
+		$this->assertArrayHasKey( 'content', $record );
+		$this->assertSame( Html::TYPE, $record['content']['$type'] );
+		$this->assertStringContainsString(
+			'class="atmosphere-mention"',
+			$record['content']['html']
+		);
+	}
+
+	/**
 	 * Preview projections must stay read-only: a featured image whose
 	 * blob has never been uploaded is omitted from the previewed record
 	 * instead of triggering a PDS blob upload (and a blob-ref meta

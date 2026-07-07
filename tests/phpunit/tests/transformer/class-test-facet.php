@@ -16,6 +16,56 @@ use Atmosphere\Transformer\Facet;
 class Test_Facet extends WP_UnitTestCase {
 
 	/**
+	 * Reset the request-scoped resolution memo between tests.
+	 *
+	 * `Facet::$resolution_cache` is static, so a DID resolved (or a miss
+	 * cached) in one test would otherwise leak into the next.
+	 */
+	public function tear_down() {
+		// Drop any handle-resolution HTTP stub a test registered.
+		\remove_all_filters( 'pre_http_request' );
+
+		$cache = new \ReflectionProperty( Facet::class, 'resolution_cache' );
+		$cache->setAccessible( true );
+		$cache->setValue( null, array() );
+
+		parent::tear_down();
+	}
+
+	/**
+	 * Stub AT Protocol handle resolution over the HTTPS well-known
+	 * endpoint so mention tests stay offline and deterministic.
+	 *
+	 * Handles resolve via `_atproto.<handle>` DNS first (empty for these
+	 * fixtures) and then `https://<handle>/.well-known/atproto-did`, which
+	 * is the request this short-circuits. A handle absent from the map (or
+	 * mapped to an empty string) is left unresolved.
+	 *
+	 * @param array<string,string> $map Handle => DID to return.
+	 */
+	private function mock_handle_resolution( array $map ) {
+		\add_filter(
+			'pre_http_request',
+			static function ( $pre, $args, $url ) use ( $map ) {
+				foreach ( $map as $handle => $did ) {
+					if ( 'https://' . $handle . '/.well-known/atproto-did' === $url ) {
+						return array(
+							'body'     => $did,
+							'response' => array(
+								'code'    => '' === $did ? 404 : 200,
+								'message' => '' === $did ? 'Not Found' : 'OK',
+							),
+						);
+					}
+				}
+				return $pre;
+			},
+			10,
+			3
+		);
+	}
+
+	/**
 	 * Test extracting a URL link facet.
 	 */
 	public function test_extract_links() {
@@ -43,11 +93,53 @@ class Test_Facet extends WP_UnitTestCase {
 	 * Test extracting a mention facet.
 	 */
 	public function test_extract_mentions() {
+		$this->mock_handle_resolution( array( 'alice.bsky.social' => 'did:plc:alice' ) );
+
 		$text   = 'Hello @alice.bsky.social!';
 		$facets = Facet::extract( $text );
 
 		$this->assertCount( 1, $facets );
 		$this->assertSame( 'app.bsky.richtext.facet#mention', $facets[0]['features'][0]['$type'] );
+		$this->assertSame( 'did:plc:alice', $facets[0]['features'][0]['did'] );
+	}
+
+	/**
+	 * A handle that resolves only over the HTTPS well-known endpoint (as
+	 * every `*.bsky.social` handle does — they have no `_atproto` DNS TXT
+	 * record) must use the real DID it returns, never a fabricated
+	 * `did:web:<handle>`. Regression test for the broken mention facet that
+	 * pointed at `did:web:pevohr.bsky.social` (a dead profile) instead of
+	 * the account's actual `did:plc:…`, which suppressed Bluesky's
+	 * publication preview card on the companion post.
+	 */
+	public function test_mention_uses_resolved_did_not_didweb() {
+		$this->mock_handle_resolution( array( 'pevohr.bsky.social' => 'did:plc:sl5e4dhceock5r7f7ahnq4jm' ) );
+
+		$facets = Facet::extract( 'Thanks @pevohr.bsky.social!' );
+
+		$this->assertCount( 1, $facets );
+		$this->assertSame( 'app.bsky.richtext.facet#mention', $facets[0]['features'][0]['$type'] );
+		$this->assertSame( 'did:plc:sl5e4dhceock5r7f7ahnq4jm', $facets[0]['features'][0]['did'] );
+		$this->assertStringStartsNotWith( 'did:web:', $facets[0]['features'][0]['did'] );
+	}
+
+	/**
+	 * A handle that resolves via neither DNS nor the well-known endpoint
+	 * must NOT produce a mention facet — leaving the `@handle` as plain
+	 * text is correct, and far better than emitting a `did:web:<handle>`
+	 * the network can't resolve.
+	 */
+	public function test_unresolvable_mention_produces_no_facet() {
+		$this->mock_handle_resolution( array( 'ghost.example' => '' ) );
+
+		$facets = Facet::extract( 'Hi @ghost.example are you there?' );
+
+		$mention_facets = \array_filter(
+			$facets,
+			static fn( $facet ) => 'app.bsky.richtext.facet#mention' === ( $facet['features'][0]['$type'] ?? '' )
+		);
+
+		$this->assertCount( 0, $mention_facets );
 	}
 
 	/**
@@ -68,6 +160,285 @@ class Test_Facet extends WP_UnitTestCase {
 		);
 
 		$this->assertCount( 0, $mention_facets );
+	}
+
+	/**
+	 * The domain half of an email address or an ActivityPub `@user@domain`
+	 * handle is not a mention, so it neither resolves nor produces a facet —
+	 * and never triggers a resolution lookup. Pins the boundary guard on
+	 * `MENTION_PATTERN`.
+	 */
+	public function test_email_and_webfinger_domain_halves_are_not_mentions() {
+		// A tripwire on pre_http_request: any lookup here is a failure.
+		\add_filter(
+			'pre_http_request',
+			static function () {
+				throw new \RuntimeException( 'Unexpected handle resolution lookup.' );
+			},
+			1
+		);
+
+		$mention_facets = static fn( string $text ) => \array_filter(
+			Facet::extract( $text ),
+			static fn( $facet ) => 'app.bsky.richtext.facet#mention' === ( $facet['features'][0]['$type'] ?? '' )
+		);
+
+		$this->assertCount( 0, $mention_facets( 'Mail me at bob@example.com today' ) );
+		$this->assertCount( 0, $mention_facets( 'Hi @pfefferle@notiz.blog there' ) );
+		// A WebFinger handle whose user half is domain-shaped: the leading
+		// `@notiz.blog` must not be read as a standalone Bluesky handle.
+		$this->assertCount( 0, $mention_facets( 'Follow @notiz.blog@notiz.blog please' ) );
+		$this->assertSame( array(), Facet::resolve_handles( 'bob@example.com and @pfefferle@notiz.blog' ) );
+		$this->assertSame( array(), Facet::resolve_handles( 'Follow @notiz.blog@notiz.blog please' ) );
+	}
+
+	/**
+	 * The resolve_handles() method returns resolvable body mentions as handle => DID.
+	 */
+	public function test_resolve_handles_returns_resolvable_mentions() {
+		$this->mock_handle_resolution(
+			array(
+				'alice.bsky.social' => 'did:plc:alice',
+				'bob.example.com'   => 'did:plc:bob',
+			)
+		);
+
+		$handles = Facet::resolve_handles( 'Hi @alice.bsky.social and @bob.example.com!' );
+
+		$this->assertArrayHasKey( 'alice.bsky.social', $handles );
+		$this->assertArrayHasKey( 'bob.example.com', $handles );
+		$this->assertSame( 'did:plc:alice', $handles['alice.bsky.social'] );
+	}
+
+	/**
+	 * A single-label `@bareword` is not a handle and is not returned.
+	 */
+	public function test_resolve_handles_skips_single_label() {
+		$handles = Facet::resolve_handles( 'Hey @notadomain over there' );
+
+		$this->assertArrayNotHasKey( 'notadomain', $handles );
+	}
+
+	/**
+	 * The same handle mentioned twice appears once.
+	 */
+	public function test_resolve_handles_deduplicates() {
+		$this->mock_handle_resolution( array( 'alice.bsky.social' => 'did:plc:alice' ) );
+
+		$handles = Facet::resolve_handles( '@alice.bsky.social then @alice.bsky.social again' );
+
+		$count = 0;
+		foreach ( \array_keys( $handles ) as $key ) {
+			if ( 'alice.bsky.social' === \strtolower( $key ) ) {
+				++$count;
+			}
+		}
+		$this->assertSame( 1, $count );
+	}
+
+	/**
+	 * The distinct-handle cap keeps resolve_handles() from fanning out into
+	 * unbounded DNS/HTTP lookups when a body is stuffed with mentions.
+	 */
+	public function test_resolve_handles_caps_distinct_lookups() {
+		$attempted = array();
+
+		// Resolve every well-formed handle, recording each lookup.
+		\add_filter(
+			'pre_http_request',
+			static function ( $pre, $args, $url ) use ( &$attempted ) {
+				if ( \preg_match( '#^https://([^/]+)/\.well-known/atproto-did$#', $url, $m ) ) {
+					$attempted[] = $m[1];
+					return array(
+						'body'     => 'did:plc:' . \md5( $m[1] ),
+						'response' => array(
+							'code'    => 200,
+							'message' => 'OK',
+						),
+					);
+				}
+				return $pre;
+			},
+			10,
+			3
+		);
+
+		// 30 distinct handles; the cap is 20.
+		$text = '';
+		for ( $i = 0; $i < 30; $i++ ) {
+			$text .= " @handle{$i}.example.com";
+		}
+
+		$handles = Facet::resolve_handles( $text );
+
+		$this->assertCount( 20, $handles, 'resolve_handles must stop at the distinct-handle cap.' );
+		$this->assertCount( 20, \array_unique( $attempted ), 'no lookups should fire past the cap.' );
+	}
+
+	/**
+	 * The handles_in() helper returns the distinct handles present, keyed
+	 * lowercase, and performs no network resolution.
+	 */
+	public function test_handles_in_collects_without_resolving() {
+		// Tripwire: handles_in() must never hit the network.
+		\add_filter(
+			'pre_http_request',
+			static function () {
+				throw new \RuntimeException( 'handles_in() must not resolve handles.' );
+			},
+			1
+		);
+
+		$set = Facet::handles_in( 'Hi @Alice.BSky.Social and @alice.bsky.social and @bob.example.com' );
+
+		$this->assertSame(
+			array( 'alice.bsky.social', 'bob.example.com' ),
+			\array_keys( $set ),
+			'handles are deduplicated case-insensitively and lowercased.'
+		);
+		// A domain-shaped WebFinger user half is not a standalone handle.
+		$this->assertSame( array(), Facet::handles_in( 'Follow @notiz.blog@notiz.blog please' ) );
+	}
+
+	/**
+	 * Gating mentions off (the `false` flag to extract) still emits link/hashtag
+	 * facets but resolves no mentions — the gate the comment path relies on.
+	 */
+	public function test_extract_without_mentions_skips_resolution() {
+		// Tripwire: no handle resolution may fire when mentions are gated off.
+		\add_filter(
+			'pre_http_request',
+			static function () {
+				throw new \RuntimeException( 'Mentions must not resolve when gated off.' );
+			},
+			1
+		);
+
+		$facets = Facet::extract( 'See https://example.com and #news from @alice.bsky.social', false );
+
+		$types = \array_map(
+			static fn( $facet ) => $facet['features'][0]['$type'] ?? '',
+			$facets
+		);
+
+		$this->assertContains( 'app.bsky.richtext.facet#link', $types );
+		$this->assertContains( 'app.bsky.richtext.facet#tag', $types );
+		$this->assertNotContains( 'app.bsky.richtext.facet#mention', $types );
+	}
+
+	/**
+	 * A handle in the deny-set never mints a `#mention` facet even when it
+	 * occurs in the text — the seam the post path uses to keep a code-buried
+	 * handle out of the record while the front end leaves it as plain text.
+	 */
+	public function test_extract_blocks_denied_handles() {
+		// Tripwire: a blocked handle must not even be resolved.
+		$this->mock_handle_resolution(
+			array(
+				'alice.bsky.social'  => 'did:plc:alice',
+				'buried.example.com' => 'did:plc:buried',
+			)
+		);
+
+		$facets = Facet::extract(
+			'Hi @alice.bsky.social and @buried.example.com',
+			true,
+			array( 'buried.example.com' => true )
+		);
+
+		$dids = \array_map(
+			static fn( $facet ) => $facet['features'][0]['did'] ?? '',
+			\array_filter(
+				$facets,
+				static fn( $facet ) => 'app.bsky.richtext.facet#mention' === ( $facet['features'][0]['$type'] ?? '' )
+			)
+		);
+
+		$this->assertContains( 'did:plc:alice', $dids );
+		$this->assertNotContains( 'did:plc:buried', $dids, 'A denied handle must not mint a mention facet.' );
+	}
+
+	/**
+	 * A mention directly after a period (the Twitter-style dot-mention idiom)
+	 * still resolves and mints a facet.
+	 */
+	public function test_extract_dot_mention() {
+		$this->mock_handle_resolution( array( 'alice.bsky.social' => 'did:plc:alice' ) );
+
+		$facets = Facet::extract( '.@alice.bsky.social check this out' );
+
+		$mentions = \array_filter(
+			$facets,
+			static fn( $facet ) => 'app.bsky.richtext.facet#mention' === ( $facet['features'][0]['$type'] ?? '' )
+		);
+
+		$this->assertCount( 1, $mentions );
+	}
+
+	/**
+	 * `extract()` caps distinct handle resolution the same way the body scan
+	 * does, so a record stuffed with unresolvable tokens can't fan out into an
+	 * unbounded run of blocking DNS/HTTP lookups.
+	 */
+	public function test_extract_caps_mention_resolution() {
+		$attempted = array();
+
+		\add_filter(
+			'pre_http_request',
+			static function ( $pre, $args, $url ) use ( &$attempted ) {
+				if ( \preg_match( '#^https://([^/]+)/\.well-known/atproto-did$#', $url, $m ) ) {
+					$attempted[] = $m[1];
+					// Every handle is a miss (404), the worst case for egress.
+					return array(
+						'body'     => '',
+						'response' => array(
+							'code'    => 404,
+							'message' => 'Not Found',
+						),
+					);
+				}
+				return $pre;
+			},
+			10,
+			3
+		);
+
+		$text = '';
+		for ( $i = 0; $i < 30; $i++ ) {
+			$text .= " @handle{$i}.example.com";
+		}
+
+		Facet::extract( $text );
+
+		$this->assertCount(
+			20,
+			\array_unique( $attempted ),
+			'extract() must stop resolving new handles at the distinct-handle cap.'
+		);
+	}
+
+	/**
+	 * An unresolvable handle mints no facet by default (no fabricated
+	 * `did:web:`), but the `atmosphere_mention_didweb_fallback` filter can
+	 * restore the fallback for a site that hosts `did:web` accounts.
+	 */
+	public function test_didweb_fallback_is_filterable() {
+		// No resolution stub: every lookup fails, so the handle is unresolvable.
+		$this->assertSame( array(), Facet::extract( 'Hi @example.com there' ), 'No facet without the fallback.' );
+
+		$filter = static fn() => true;
+		\add_filter( 'atmosphere_mention_didweb_fallback', $filter );
+
+		$facets = Facet::extract( 'Hi @example.com there' );
+
+		\remove_filter( 'atmosphere_mention_didweb_fallback', $filter );
+
+		$mentions = \array_filter(
+			$facets,
+			static fn( $facet ) => 'app.bsky.richtext.facet#mention' === ( $facet['features'][0]['$type'] ?? '' )
+		);
+		$this->assertCount( 1, $mentions );
+		$this->assertSame( 'did:web:example.com', \reset( $mentions )['features'][0]['did'] );
 	}
 
 	/**
