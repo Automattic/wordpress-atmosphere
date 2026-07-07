@@ -1,0 +1,4 @@
+Significance: patch
+Type: fixed
+
+Disconnecting or deactivating now reliably removes all pending background tasks, so a task queued under a previous connection can no longer run against a newly connected account.

@@ -41,25 +41,18 @@ class Test_Feature extends WP_UnitTestCase {
 
 ### Test File Location
 
-Tests live in `tests/phpunit/tests/` with a directory structure mirroring `includes/`:
+Tests live in `tests/phpunit/tests/`, mirroring `includes/` (run `ls -R tests/phpunit/tests` for the current listing):
 
 ```
 tests/phpunit/tests/
-├── class-test-admin-handle.php
-├── class-test-atmosphere.php
-├── class-test-dpop.php
-├── class-test-functions.php
-├── class-test-handle.php
-├── class-test-long-form-composition-setting.php
-├── class-test-post-types.php
-├── class-test-publisher.php          # Largest fixture; exposes register_capture() etc.
-├── class-test-reaction-sync.php
-├── oauth/
-└── transformer/
-    ├── class-test-facet.php
-    ├── class-test-post.php
-    ├── class-test-publication.php
-    └── class-test-tid.php
+├── class-test-*.php        # Core classes. class-test-publisher.php is the largest fixture;
+│                           # it exposes register_capture() / $captured_calls / $fail_call_indexes.
+├── cli/                    # WP-CLI command tests.
+├── content-parser/         # Parser tests + Fake_Parser / Minimal_Parser stubs + trait-block-fixtures.php.
+├── oauth/                  # Client authorize/refresh, encryption, resolver, redirect-uri filter.
+├── rest/                   # REST controllers (admin/ for the pre-publish controller).
+├── transformer/            # One test file per transformer + class-stub-parser.php.
+└── wp-admin/               # Settings, notices, sanitize callbacks.
 ```
 
 Test files are prefixed with `class-test-` and the class name is `Test_` + feature name.
@@ -101,6 +94,34 @@ npm run env-test -- --stop-on-failure
 # Run single test method.
 npm run env-test -- --filter=test_specific_method
 ```
+
+## Common Fixtures
+
+```php
+// Connected-account fixture — get_did() etc. read the identity option.
+\update_option( 'atmosphere_identity', array( 'did' => 'did:plc:test123' ), false );
+// Delete it in tear_down().
+
+// Stub blob uploads (thumbnails, icons) without HTTP — records the attempt too.
+$attempted     = false;
+$short_circuit = static function () use ( &$attempted ) {
+	$attempted = true;
+	return array( 'blob' => array( 'cid' => 'bafytest' ) );
+};
+\add_filter( 'atmosphere_pre_upload_blob', $short_circuit );
+
+// HTTP tripwire — fail loudly if any code path fires a real request.
+$fetched  = false;
+$tripwire = static function ( $preempt ) use ( &$fetched ) {
+	$fetched = true;
+	return $preempt;
+};
+\add_filter( 'pre_http_request', $tripwire, 1, 1 );
+// ...exercise...
+$this->assertFalse( $fetched, 'No HTTP request should be made.' );
+```
+
+Asserting a path is read-only? Pair the tripwire with a meta assertion (e.g. `Document::META_TID` still empty) — GET-serving preview paths must not write publish-state meta.
 
 ## Stubbing `applyWrites` calls
 

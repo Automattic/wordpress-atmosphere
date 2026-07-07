@@ -809,4 +809,53 @@ class Test_Functions extends \WP_UnitTestCase {
 		$this->assertSame( 'hashtag', $seen['context']['type'] );
 		$this->assertSame( 'WordPress', $seen['context']['tag'] );
 	}
+
+	/**
+	 * Disconnect cleanup must remove queued events regardless of their
+	 * args — per-post publish events carry a post ID, and a leftover
+	 * event firing after a reconnect would issue applyWrites against
+	 * a different repo.
+	 */
+	public function test_clear_scheduled_hooks_removes_events_with_args() {
+		\wp_schedule_single_event( \time() + 60, 'atmosphere_publish_post', array( 123 ) );
+		\wp_schedule_single_event( \time() + 60, 'atmosphere_update_post', array( 456 ) );
+		\wp_schedule_single_event( \time() + 60, 'atmosphere_sync_publication' );
+
+		\Atmosphere\clear_scheduled_hooks();
+
+		$this->assertFalse(
+			\wp_next_scheduled( 'atmosphere_publish_post', array( 123 ) ),
+			'A queued per-post publish event must be cleared on disconnect.'
+		);
+		$this->assertFalse(
+			\wp_next_scheduled( 'atmosphere_update_post', array( 456 ) ),
+			'A queued per-post update event must be cleared on disconnect.'
+		);
+		$this->assertFalse(
+			\wp_next_scheduled( 'atmosphere_sync_publication' ),
+			'An argless event must still be cleared.'
+		);
+	}
+
+	/**
+	 * Deactivation/uninstall cleanup must also remove the queued revoke
+	 * event, which always carries args (the encrypted token payload).
+	 */
+	public function test_clear_scheduled_hooks_all_removes_revoke_event_with_args() {
+		\wp_schedule_single_event(
+			\time() + 60,
+			'atmosphere_revoke_refresh_token',
+			array( 'ciphertext', 'https://auth.example.com/revoke' )
+		);
+
+		\Atmosphere\clear_scheduled_hooks_all();
+
+		$this->assertFalse(
+			\wp_next_scheduled(
+				'atmosphere_revoke_refresh_token',
+				array( 'ciphertext', 'https://auth.example.com/revoke' )
+			),
+			'The queued revoke event must be cleared at deactivation/uninstall.'
+		);
+	}
 }
