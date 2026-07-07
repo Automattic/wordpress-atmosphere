@@ -18,6 +18,8 @@ Before auditing, fetch the relevant specs for current requirements:
 - **Bluesky Lexicons** — https://docs.bsky.app/ (app.bsky.feed.post and related schemas)
 - **standard.site Lexicons** — https://standard.site/ (site.standard.publication, site.standard.document schemas)
 - **Markpub Lexicons** — https://markpub.at/ (at.markpub.markdown, at.markpub.text schemas for rich content in document records)
+- **org.wordpress.html** — [`docs/org.wordpress.html.md`](../../docs/org.wordpress.html.md) (the plugin's own Lexicon for the HTML content type — the in-repo doc is canonical)
+- **Leaflet / Pckt content types** — `pub.leaflet.content` and `blog.pckt.content` (see [`docs/content-formats.md`](../../docs/content-formats.md) for the survey and pointers to their upstream schemas)
 
 Focus on **required** fields and constraints. Treat optional fields as non-blocking.
 
@@ -38,7 +40,7 @@ If the user specifies a live PDS or handle, use `curl` to test actual responses.
 - **app.bsky.feed.post** — required fields (text, createdAt), facets (mentions, links, hashtags), embed structure, character limits
 - **site.standard.document** — required and recommended properties per Lexicon, content union field
 - **site.standard.publication** — publication metadata record structure
-- **at.markpub.markdown** — content format for document records (text, flavor, facets)
+- **Document content union** — the registered parsers each emit their own content `$type`: `org.wordpress.html` (default HTML), `at.markpub.markdown`, `pub.leaflet.content`, `blog.pckt.content`. Validate each against its Lexicon; parser selection lives in `includes/content-parser/class-registry.php` (`atmosphere_content_format` option, third-party registrations via `Registry::register()`)
 - **OAuth 2.1 flow** — PKCE (S256), DPoP proof generation (ES256), PAR, client metadata document
 - **DPoP** — proof structure, nonce handling, token binding, key thumbprint
 - **Repository operations** — com.atproto.repo.applyWrites batch format, TID generation, rkey constraints
