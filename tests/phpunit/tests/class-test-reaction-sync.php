@@ -19,6 +19,19 @@ use Atmosphere\Transformer\Post as BskyPost;
 class Test_Reaction_Sync extends WP_UnitTestCase {
 
 	/**
+	 * Reset post-type support state leaked by the resolver tests.
+	 */
+	public function tear_down(): void {
+		\delete_option( 'atmosphere_support_post_types' );
+
+		if ( \post_type_exists( 'atmos_hidden_cpt' ) ) {
+			\unregister_post_type( 'atmos_hidden_cpt' );
+		}
+
+		parent::tear_down();
+	}
+
+	/**
 	 * Test that find_post_by_bsky_uri returns the correct post.
 	 */
 	public function test_find_post_by_bsky_uri() {
@@ -73,6 +86,67 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 		$method = new \ReflectionMethod( Reaction_Sync::class, 'find_post_by_bsky_uri' );
 
 		$this->assertFalse( $method->invoke( null, 'at://did:plc:unknown/app.bsky.feed.post/xyz' ) );
+	}
+
+	/**
+	 * A reaction targeting a supported non-`post` post type must resolve.
+	 *
+	 * Regression: `find_post_by_bsky_uri()` called `get_posts()` without a
+	 * `post_type`, so WordPress defaulted the query to `post_type => 'post'`.
+	 * Every like/repost/reply on a supported page or custom post type then
+	 * resolved to nothing and was dropped silently — no comment row, no
+	 * error, no log. Fails before the resolver is scoped to the federated
+	 * post types.
+	 */
+	public function test_find_post_by_bsky_uri_resolves_supported_non_default_post_type() {
+		\update_option( 'atmosphere_support_post_types', array( 'post', 'page' ) );
+
+		$post_id = self::factory()->post->create(
+			array(
+				'post_type'   => 'page',
+				'post_status' => 'publish',
+			)
+		);
+		$uri     = 'at://did:plc:test123/app.bsky.feed.post/page123';
+
+		\update_post_meta( $post_id, BskyPost::META_URI, $uri );
+
+		$method = new \ReflectionMethod( Reaction_Sync::class, 'find_post_by_bsky_uri' );
+
+		$this->assertSame( $post_id, $method->invoke( null, $uri ) );
+	}
+
+	/**
+	 * A supported CPT registered with `exclude_from_search` must resolve too.
+	 *
+	 * This is why the resolver scopes to `get_supported_post_types()` rather
+	 * than the `post_type => 'any'` shortcut: `'any'` omits post types flagged
+	 * `exclude_from_search`, so a naive `'any'` fix would still drop reactions
+	 * on such a type. Fails both before the fix and under an `'any'`-based fix.
+	 */
+	public function test_find_post_by_bsky_uri_resolves_supported_exclude_from_search_cpt() {
+		\register_post_type(
+			'atmos_hidden_cpt',
+			array(
+				'public'              => true,
+				'exclude_from_search' => true,
+			)
+		);
+		\update_option( 'atmosphere_support_post_types', array( 'post', 'atmos_hidden_cpt' ) );
+
+		$post_id = self::factory()->post->create(
+			array(
+				'post_type'   => 'atmos_hidden_cpt',
+				'post_status' => 'publish',
+			)
+		);
+		$uri     = 'at://did:plc:test123/app.bsky.feed.post/hidden123';
+
+		\update_post_meta( $post_id, BskyPost::META_URI, $uri );
+
+		$method = new \ReflectionMethod( Reaction_Sync::class, 'find_post_by_bsky_uri' );
+
+		$this->assertSame( $post_id, $method->invoke( null, $uri ) );
 	}
 
 	/**

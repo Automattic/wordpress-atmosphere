@@ -1059,6 +1059,16 @@ class Reaction_Sync {
 	 * fallback, a like/repost targeting a reply post would silently
 	 * fail to resolve back to the originating WordPress post.
 	 *
+	 * Both lookups are scoped to `get_supported_post_types()` rather
+	 * than left to `get_posts()`'s `post_type => 'post'` default.
+	 * Without the explicit scope, reactions targeting a custom post
+	 * type we publish (an `aside`/`status`-style CPT, a note type,
+	 * etc.) resolve to nothing and are dropped silently — no comment
+	 * row, no error. The resolver must cover exactly the types the
+	 * Publisher federates. Passing the types explicitly also picks up
+	 * supported CPTs registered with `exclude_from_search`, which the
+	 * `'any'` shortcut would miss.
+	 *
 	 * @param string $uri AT-URI.
 	 * @return int|false
 	 */
@@ -1067,10 +1077,13 @@ class Reaction_Sync {
 			return false;
 		}
 
+		$post_types = get_supported_post_types();
+
 		$posts = \get_posts(
 			array(
 				'meta_key'       => BskyPost::META_URI, // phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_key
 				'meta_value'     => $uri, // phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_value
+				'post_type'      => $post_types,
 				'posts_per_page' => 1,
 				'post_status'    => 'publish',
 				'has_password'   => false,
@@ -1086,6 +1099,7 @@ class Reaction_Sync {
 			array(
 				'meta_key'       => BskyPost::META_URI_INDEX, // phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_key
 				'meta_value'     => $uri, // phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_value
+				'post_type'      => $post_types,
 				'posts_per_page' => 1,
 				'post_status'    => 'publish',
 				'has_password'   => false,

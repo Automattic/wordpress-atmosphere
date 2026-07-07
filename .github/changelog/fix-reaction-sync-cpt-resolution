@@ -1,0 +1,4 @@
+Significance: patch
+Type: fixed
+
+Import Bluesky likes, reposts, and replies on custom post types too. The reaction resolver previously only matched the default `post` type, so interactions on any other published post type it federates (pages, notes, and similar) were dropped silently.
