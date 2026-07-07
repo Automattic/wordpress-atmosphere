@@ -1466,7 +1466,9 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 
 		$this->invoke_paginate( $fetch, 'items', $option_key, $process );
 
-		$this->assertSame( array( 'at://a/1', 'at://a/2', 'at://a/3' ), $seen );
+		// Bluesky streams newest-first; paginate processes oldest-first so a
+		// reply's parent is synced before the reply that targets it.
+		$this->assertSame( array( 'at://a/3', 'at://a/2', 'at://a/1' ), $seen );
 		$this->assertSame( 'at://a/1', \get_option( $option_key ) );
 	}
 
@@ -1510,7 +1512,9 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 			'at://a/13',
 			'at://a/14',
 		);
-		$this->assertSame( $expected, $seen );
+		// $expected lists the collected set in stream order; paginate
+		// processes it oldest-first, so assert against the reverse.
+		$this->assertSame( \array_reverse( $expected ), $seen );
 		$this->assertSame( 'at://a/1', \get_option( $option_key ) );
 	}
 
@@ -1575,7 +1579,9 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 			'at://a/13',
 			'at://a/14',
 		);
-		$this->assertSame( $expected, $seen );
+		// $expected lists the collected set in stream order; paginate
+		// processes it oldest-first, so assert against the reverse.
+		$this->assertSame( \array_reverse( $expected ), $seen );
 		$this->assertSame( 'at://a/1', \get_option( $option_key ) );
 	}
 
@@ -1603,8 +1609,100 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 
 		$this->invoke_paginate( $fetch, 'items', $option_key, $process );
 
-		$this->assertSame( array( 'at://a/1', 'at://a/2', 'at://a/3', 'at://a/4' ), $seen );
+		// Processed oldest-first (reverse of the newest-first stream).
+		$this->assertSame( array( 'at://a/4', 'at://a/3', 'at://a/2', 'at://a/1' ), $seen );
 		$this->assertSame( 'at://a/1', \get_option( $option_key ) );
+	}
+
+	/**
+	 * A reply that arrives before the parent it targets — the normal case,
+	 * since Bluesky streams newest-first — must still thread correctly within
+	 * a single run.
+	 *
+	 * Before oldest-first processing, the child reply was reached first, its
+	 * parent comment did not yet exist, and process_reply() dropped it — left
+	 * to the next run's bounded WATERMARK_GRACE re-walk, which loses deeper or
+	 * bursty threads. Processing oldest-first syncs the parent reply first, so
+	 * the child resolves against it in the same run.
+	 */
+	public function test_nested_reply_arriving_before_parent_resolves_in_one_run() {
+		$post_id  = self::factory()->post->create();
+		$post_uri = 'at://did:plc:me/app.bsky.feed.post/rootpost';
+		\update_post_meta( $post_id, BskyPost::META_URI, $post_uri );
+
+		$parent_uri = 'at://did:plc:alice/app.bsky.feed.post/parentreply';
+		$child_uri  = 'at://did:plc:bob/app.bsky.feed.post/childreply';
+
+		// Keep resolve_author() off the network — cache both profiles.
+		\set_transient( 'atmosphere_profile_' . \md5( 'did:plc:alice' ), array( 'handle' => 'alice.bsky.social' ), \HOUR_IN_SECONDS );
+		\set_transient( 'atmosphere_profile_' . \md5( 'did:plc:bob' ), array( 'handle' => 'bob.bsky.social' ), \HOUR_IN_SECONDS );
+
+		// Stream order is newest-first: the child reply (later) comes before
+		// the parent reply (earlier) that it targets.
+		$notifications = array(
+			array(
+				'reason' => 'reply',
+				'uri'    => $child_uri,
+				'cid'    => 'cidchild',
+				'record' => array(
+					'text'      => 'Replying to Alice',
+					'createdAt' => '2026-03-21T12:05:00.000Z',
+					'reply'     => array(
+						'parent' => array( 'uri' => $parent_uri ),
+						'root'   => array( 'uri' => $post_uri ),
+					),
+				),
+				'author' => array(
+					'did'    => 'did:plc:bob',
+					'handle' => 'bob.bsky.social',
+				),
+			),
+			array(
+				'reason' => 'reply',
+				'uri'    => $parent_uri,
+				'cid'    => 'cidparent',
+				'record' => array(
+					'text'      => 'Replying to the post',
+					'createdAt' => '2026-03-21T12:00:00.000Z',
+					'reply'     => array(
+						'parent' => array( 'uri' => $post_uri ),
+						'root'   => array( 'uri' => $post_uri ),
+					),
+				),
+				'author' => array(
+					'did'    => 'did:plc:alice',
+					'handle' => 'alice.bsky.social',
+				),
+			),
+		);
+
+		$dispatch = new \ReflectionMethod( Reaction_Sync::class, 'process_notification' );
+		$process  = static function ( array $item ) use ( $dispatch ) {
+			$dispatch->invoke( null, $item );
+		};
+
+		$option_key = 'atmosphere_test_nested_reply';
+		\delete_option( $option_key );
+
+		$this->invoke_paginate(
+			static fn() => array( 'notifications' => $notifications ),
+			'notifications',
+			$option_key,
+			$process
+		);
+
+		$find      = new \ReflectionMethod( Reaction_Sync::class, 'find_comment_by_source_id' );
+		$parent_id = $find->invoke( null, $parent_uri );
+		$child_id  = $find->invoke( null, $child_uri );
+
+		$this->assertIsInt( $parent_id, 'parent reply synced' );
+		$this->assertIsInt( $child_id, 'child reply synced in the same run' );
+
+		$this->assertSame(
+			(string) $parent_id,
+			\get_comment( $child_id )->comment_parent,
+			'child reply threads under the parent reply, not the root post'
+		);
 	}
 
 	/**

@@ -349,6 +349,7 @@ class Reaction_Sync {
 		$cursor    = null;
 		$pages     = 0;
 		$rewalk    = null;
+		$collected = array();
 
 		while ( $pages < self::MAX_PAGES ) {
 			$response = $fetch( $cursor );
@@ -385,7 +386,7 @@ class Reaction_Sync {
 
 				if ( null === $rewalk && $last_seen && $uri === $last_seen ) {
 					/*
-					 * +1 because the watermark item itself is processed
+					 * +1 because the watermark item itself is collected
 					 * (and dedup-skipped) before this counter decrements;
 					 * initialising to GRACE + 1 means we re-walk exactly
 					 * GRACE items strictly past the watermark.
@@ -397,7 +398,7 @@ class Reaction_Sync {
 					break 2;
 				}
 
-				$process( $item );
+				$collected[] = $item;
 
 				if ( null !== $rewalk ) {
 					--$rewalk;
@@ -410,6 +411,23 @@ class Reaction_Sync {
 			if ( ! $cursor ) {
 				break;
 			}
+		}
+
+		/*
+		 * Process oldest-first. Bluesky streams newest-first, but a reply's
+		 * parent (a post record or an earlier reply) is always older than the
+		 * reply itself. Processing in stream order therefore reaches a child
+		 * reply before its parent exists as a local comment, and
+		 * process_reply() drops any reply whose parent it can't resolve. By
+		 * reversing to oldest-first, a parent is synced before any reply that
+		 * targets it, so an entire thread that arrives within one run resolves
+		 * in that run — instead of relying on the next run's WATERMARK_GRACE
+		 * re-walk, which only reaches GRACE items and loses deeper or bursty
+		 * threads. Dedup via source_id keeps the reprocessing idempotent, and
+		 * the watermark below is still the newest URI regardless of order.
+		 */
+		foreach ( \array_reverse( $collected ) as $item ) {
+			$process( $item );
 		}
 
 		if ( $newest ) {
