@@ -19,6 +19,19 @@ use Atmosphere\Transformer\Post as BskyPost;
 class Test_Reaction_Sync extends WP_UnitTestCase {
 
 	/**
+	 * Reset post-type support state leaked by the resolver tests.
+	 */
+	public function tear_down(): void {
+		\delete_option( 'atmosphere_support_post_types' );
+
+		if ( \post_type_exists( 'atmos_hidden_cpt' ) ) {
+			\unregister_post_type( 'atmos_hidden_cpt' );
+		}
+
+		parent::tear_down();
+	}
+
+	/**
 	 * Test that find_post_by_bsky_uri returns the correct post.
 	 */
 	public function test_find_post_by_bsky_uri() {
@@ -73,6 +86,146 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 		$method = new \ReflectionMethod( Reaction_Sync::class, 'find_post_by_bsky_uri' );
 
 		$this->assertFalse( $method->invoke( null, 'at://did:plc:unknown/app.bsky.feed.post/xyz' ) );
+	}
+
+	/**
+	 * A reaction targeting a supported non-`post` post type must resolve.
+	 *
+	 * Regression: `find_post_by_bsky_uri()` called `get_posts()` without a
+	 * `post_type`, so WordPress defaulted the query to `post_type => 'post'`.
+	 * Every like/repost/reply on a supported page or custom post type then
+	 * resolved to nothing and was dropped silently — no comment row, no
+	 * error, no log. Fails before the resolver is scoped to the federated
+	 * post types.
+	 */
+	public function test_find_post_by_bsky_uri_resolves_supported_non_default_post_type() {
+		\update_option( 'atmosphere_support_post_types', array( 'post', 'page' ) );
+
+		$post_id = self::factory()->post->create(
+			array(
+				'post_type'   => 'page',
+				'post_status' => 'publish',
+			)
+		);
+		$uri     = 'at://did:plc:test123/app.bsky.feed.post/page123';
+
+		\update_post_meta( $post_id, BskyPost::META_URI, $uri );
+
+		$method = new \ReflectionMethod( Reaction_Sync::class, 'find_post_by_bsky_uri' );
+
+		$this->assertSame( $post_id, $method->invoke( null, $uri ) );
+	}
+
+	/**
+	 * A supported CPT registered with `exclude_from_search` must resolve too.
+	 *
+	 * This is why the resolver scopes to `get_supported_post_types()` rather
+	 * than the `post_type => 'any'` shortcut: `'any'` omits post types flagged
+	 * `exclude_from_search`, so a naive `'any'` fix would still drop reactions
+	 * on such a type. Fails both before the fix and under an `'any'`-based fix.
+	 */
+	public function test_find_post_by_bsky_uri_resolves_supported_exclude_from_search_cpt() {
+		\register_post_type(
+			'atmos_hidden_cpt',
+			array(
+				'public'              => true,
+				'exclude_from_search' => true,
+			)
+		);
+		\update_option( 'atmosphere_support_post_types', array( 'post', 'atmos_hidden_cpt' ) );
+
+		$post_id = self::factory()->post->create(
+			array(
+				'post_type'   => 'atmos_hidden_cpt',
+				'post_status' => 'publish',
+			)
+		);
+		$uri     = 'at://did:plc:test123/app.bsky.feed.post/hidden123';
+
+		\update_post_meta( $post_id, BskyPost::META_URI, $uri );
+
+		$method = new \ReflectionMethod( Reaction_Sync::class, 'find_post_by_bsky_uri' );
+
+		$this->assertSame( $post_id, $method->invoke( null, $uri ) );
+	}
+
+	/**
+	 * The thread-index fallback must also resolve a supported non-`post` type.
+	 *
+	 * `find_post_by_bsky_uri()` scopes BOTH lookups — the single-record
+	 * `META_URI` key and the `META_URI_INDEX` thread fallback Publisher
+	 * populates for every teaser-thread reply. The other regression tests
+	 * only seed `META_URI`, so they never reach the second query. This one
+	 * seeds only the index key on a `page` to guard the fallback branch
+	 * against a future change that drops its `post_type` scope.
+	 */
+	public function test_find_post_by_bsky_uri_thread_index_resolves_supported_non_default_post_type() {
+		\update_option( 'atmosphere_support_post_types', array( 'post', 'page' ) );
+
+		$post_id   = self::factory()->post->create(
+			array(
+				'post_type'   => 'page',
+				'post_status' => 'publish',
+			)
+		);
+		$reply_uri = 'at://did:plc:test123/app.bsky.feed.post/pagereply123';
+
+		\add_post_meta( $post_id, BskyPost::META_URI_INDEX, $reply_uri );
+
+		$method = new \ReflectionMethod( Reaction_Sync::class, 'find_post_by_bsky_uri' );
+
+		$this->assertSame( $post_id, $method->invoke( null, $reply_uri ) );
+	}
+
+	/**
+	 * A reaction on an unsupported post type must NOT resolve.
+	 *
+	 * Pins the upper bound of the scoping: the resolver covers exactly the
+	 * federated types, no more. Without this, a future widening back to
+	 * `post_type => 'any'` would silently start importing reactions onto
+	 * content the site never federated, and every positive test would still
+	 * pass. Here `page` carries matching meta but is absent from the
+	 * supported list, so the lookup must miss.
+	 */
+	public function test_find_post_by_bsky_uri_ignores_unsupported_post_type() {
+		\update_option( 'atmosphere_support_post_types', array( 'post' ) );
+
+		$post_id = self::factory()->post->create(
+			array(
+				'post_type'   => 'page',
+				'post_status' => 'publish',
+			)
+		);
+		$uri     = 'at://did:plc:test123/app.bsky.feed.post/unsupported123';
+
+		\update_post_meta( $post_id, BskyPost::META_URI, $uri );
+
+		$method = new \ReflectionMethod( Reaction_Sync::class, 'find_post_by_bsky_uri' );
+
+		$this->assertFalse( $method->invoke( null, $uri ) );
+	}
+
+	/**
+	 * An empty supported-types list must resolve nothing, not fall back to `post`.
+	 *
+	 * When a site owner unticks every type, the option is stored as an empty
+	 * array. Passing `post_type => array()` to `get_posts()` silently defaults
+	 * to `post_type => 'post'`, which would reintroduce the original miss (and
+	 * resolve reactions onto content the Publisher no longer federates). The
+	 * resolver must short-circuit to false instead: a matching `post` exists
+	 * here, yet nothing is federated, so nothing should resolve.
+	 */
+	public function test_find_post_by_bsky_uri_returns_false_when_no_supported_types() {
+		\update_option( 'atmosphere_support_post_types', array() );
+
+		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		$uri     = 'at://did:plc:test123/app.bsky.feed.post/notypes123';
+
+		\update_post_meta( $post_id, BskyPost::META_URI, $uri );
+
+		$method = new \ReflectionMethod( Reaction_Sync::class, 'find_post_by_bsky_uri' );
+
+		$this->assertFalse( $method->invoke( null, $uri ) );
 	}
 
 	/**
