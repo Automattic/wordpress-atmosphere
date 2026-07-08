@@ -1,4 +1,0 @@
-Significance: minor
-Type: added
-
-Add filters so links to Bluesky can point at an alternative AT Protocol appview, including ones hosted on a subdomain or subpath.

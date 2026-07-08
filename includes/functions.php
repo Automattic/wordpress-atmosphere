@@ -72,7 +72,7 @@ function appview_url( string $path, array $context = array() ): string {
 	 * the Bluesky appview. To rewrite the path itself (e.g. a custom route),
 	 * use the {@see 'atmosphere_appview_url'} filter instead.
 	 *
-	 * @since unreleased
+	 * @since 2.0.0
 	 *
 	 * @param string $host    Default appview host ('bsky.app').
 	 * @param string $path    Path being built, e.g. 'profile/<did>'.
@@ -90,7 +90,7 @@ function appview_url( string $path, array $context = array() ): string {
 	 * route — by rebuilding it from the parts in $context. Return a complete
 	 * URL; it is escaped by the caller, not here.
 	 *
-	 * @since unreleased
+	 * @since 2.0.0
 	 *
 	 * @param string $url     Assembled URL, e.g. 'https://bsky.app/profile/<did>'.
 	 * @param string $path    Path that was appended, e.g. 'profile/<did>'.
@@ -670,7 +670,7 @@ function debug_log( string $message ): void {
  * status (including a 3xx the server would have redirected) is treated
  * as a failure. Centralizes that check for the OAuth and API callers.
  *
- * @since unreleased
+ * @since 2.0.0
  *
  * @param mixed $status HTTP status code (int, or '' when the request failed).
  * @return bool True for 200-299, false otherwise.

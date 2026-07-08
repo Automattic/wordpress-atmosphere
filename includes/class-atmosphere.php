@@ -2015,7 +2015,7 @@ class Atmosphere {
 		 * so the delay schedule and the attempt cap cannot contradict
 		 * each other).
 		 *
-		 * @since unreleased
+		 * @since 2.0.0
 		 *
 		 * @param int[] $delays Retry delays in seconds. Default 60, 300, 900.
 		 */

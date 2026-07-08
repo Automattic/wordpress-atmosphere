@@ -1,4 +1,0 @@
-Significance: patch
-Type: fixed
-
-Kept standard.site document references in Bluesky posts pointing at the current document record and made discovery URLs resolve more consistently.

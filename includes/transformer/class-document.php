@@ -167,7 +167,7 @@ class Document extends Base {
 			 * Return an array with a non-empty string `$type` field to add
 			 * the `links` field. Return null or an empty array to omit it.
 			 *
-			 * @since unreleased
+			 * @since 2.0.0
 			 *
 			 * @param array|null $links Links union object, or null to omit.
 			 * @param \WP_Post   $post  WordPress post.
@@ -187,7 +187,7 @@ class Document extends Base {
 			 * Return a com.atproto.label.defs#selfLabels object to add
 			 * content-warning labels. Return null or an empty array to omit it.
 			 *
-			 * @since unreleased
+			 * @since 2.0.0
 			 *
 			 * @param array|null $labels Self-labels object, or null to omit.
 			 * @param \WP_Post   $post   WordPress post.
@@ -208,7 +208,7 @@ class Document extends Base {
 			 * sanitized and capped to the lexicon's 100-grapheme limit.
 			 * Return null or an empty array to omit the field.
 			 *
-			 * @since unreleased
+			 * @since 2.0.0
 			 *
 			 * @param array|null $contributors Contributor list, or null to omit.
 			 * @param \WP_Post   $post         WordPress post.

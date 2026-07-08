@@ -109,7 +109,7 @@ class Comment extends Base {
 		 * A site that trusts its (already moderated) commenters and wants their
 		 * mentions to notify can return true to opt back in.
 		 *
-		 * @since unreleased
+		 * @since 2.0.0
 		 *
 		 * @param bool        $resolve Whether to resolve comment mentions. Default false.
 		 * @param \WP_Comment $comment The comment being transformed.

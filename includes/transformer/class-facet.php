@@ -45,7 +45,7 @@ class Facet {
 	 * leading class so the Twitter-style dot-mention idiom
 	 * (`.@alice.bsky.social`) still resolves and links.
 	 *
-	 * @since unreleased
+	 * @since 2.0.0
 	 *
 	 * @var string
 	 */
@@ -64,7 +64,7 @@ class Facet {
 	 * anyway; 20 is a generous headroom over any legitimate post while keeping
 	 * the egress bounded. Handles past the cap are ignored (and logged once).
 	 *
-	 * @since unreleased
+	 * @since 2.0.0
 	 *
 	 * @var int
 	 */
@@ -179,7 +179,7 @@ class Facet {
 	 * `wp_kses_post()` by the caller (as the reaction-sync path does), so
 	 * only the generated `href` attributes are escaped here.
 	 *
-	 * @since unreleased
+	 * @since 2.0.0
 	 *
 	 * @param string $text   Plain-text display string from the record.
 	 * @param array  $facets Facet array from the record, as stored on the PDS.
@@ -464,7 +464,7 @@ class Facet {
 	 * guaranteed to produce a `#mention` facet when it reaches a record's
 	 * `text`. Shares the regex and resolver used to build mention facets.
 	 *
-	 * @since unreleased
+	 * @since 2.0.0
 	 *
 	 * @param string $text Plain text.
 	 * @return array<string,string> Map of handle => DID.
@@ -488,7 +488,7 @@ class Facet {
 	 * first-appearance order, drops handles that don't resolve, and applies the
 	 * same {@see self::MAX_RESOLVED_HANDLES} egress cap.
 	 *
-	 * @since unreleased
+	 * @since 2.0.0
 	 *
 	 * @param string[] $handles Candidate handles (no leading `@`).
 	 * @return array<string,string> Map of handle => DID.
@@ -541,7 +541,7 @@ class Facet {
 	 * `@alice.com` as already present inside `@alice.company` — and to size the
 	 * carry-over line in the DNS-free pre-publish preview.
 	 *
-	 * @since unreleased
+	 * @since 2.0.0
 	 *
 	 * @param string $text Plain text.
 	 * @return array<string,true> Set of lowercased handles present in the text.
@@ -658,7 +658,7 @@ class Facet {
 			 * return true to restore the pre-1.0 fallback and keep the mention
 			 * even through a transient resolver blip.
 			 *
-			 * @since unreleased
+			 * @since 2.0.0
 			 *
 			 * @param bool     $fallback Whether to fall back to `did:web:<handle>`. Default false.
 			 * @param string   $handle   The handle that failed to resolve.
