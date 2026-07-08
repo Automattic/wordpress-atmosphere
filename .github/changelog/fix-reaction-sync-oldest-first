@@ -1,0 +1,4 @@
+Significance: patch
+Type: fixed
+
+Reliably import nested Bluesky replies. Reactions are now processed oldest-first within each sync, so a reply threads under its parent comment in the same run instead of being dropped when a whole thread arrives between syncs.
