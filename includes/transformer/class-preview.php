@@ -213,7 +213,7 @@ class Preview {
 		 * same way {@see \Atmosphere\Content_Parser\Registry::register()}
 		 * lets a registration override a default by NSID.
 		 *
-		 * @since unreleased
+		 * @since 2.0.0
 		 *
 		 * @param Base[]        $transformers Default transformers for the context.
 		 * @param \WP_Post|null $post         Queried post, or null on the front page.

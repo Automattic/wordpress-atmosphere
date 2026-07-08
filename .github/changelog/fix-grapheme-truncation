@@ -1,4 +1,0 @@
-Significance: patch
-Type: fixed
-
-Emoji now count as a single character against Bluesky's 300-character limit, the same way Bluesky's own composer counts them. Posts with emoji are no longer trimmed earlier than necessary, and the editor's character count matches what you would see on Bluesky.

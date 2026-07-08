@@ -1,4 +1,0 @@
-Significance: patch
-Type: fixed
-
-Your site's theme colours now display correctly in enhanced link cards on Bluesky and other apps, instead of being dropped because the publication record failed validation.

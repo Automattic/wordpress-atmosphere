@@ -220,7 +220,7 @@ abstract class Base {
 	 * inside) work from this HTML; callers that only need plain text go through
 	 * {@see self::render_post_content_plain()}, which strips tags from it.
 	 *
-	 * @since unreleased
+	 * @since 2.0.0
 	 *
 	 * @param \WP_Post $post Post object.
 	 * @return string

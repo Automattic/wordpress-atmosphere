@@ -129,7 +129,7 @@ class Publication extends Base {
 		 * Return a com.atproto.label.defs#selfLabels object to add
 		 * content-warning labels. Return null or an empty array to omit it.
 		 *
-		 * @since unreleased
+		 * @since 2.0.0
 		 *
 		 * @param array|null $labels Self-labels object, or null to omit.
 		 */
@@ -152,7 +152,7 @@ class Publication extends Base {
 		 * the preference entirely and let downstream appviews apply their
 		 * own default.
 		 *
-		 * @since unreleased
+		 * @since 2.0.0
 		 *
 		 * @param bool|null $show_in_discover Whether to show in discovery, or null to omit.
 		 */

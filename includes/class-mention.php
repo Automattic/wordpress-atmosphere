@@ -16,7 +16,7 @@ use Atmosphere\Transformer\Facet;
 /**
  * Display-side mention linkifier.
  *
- * @since unreleased
+ * @since 2.0.0
  */
 class Mention {
 
@@ -111,7 +111,7 @@ class Mention {
 	 * mention. Returns empty sets for empty or pathologically large content,
 	 * mirroring {@see self::the_content()}, which linkifies neither.
 	 *
-	 * @since unreleased
+	 * @since 2.0.0
 	 *
 	 * @param string $content Rendered HTML.
 	 * @return array{linkable:array<string,string>,protected:array<string,true>}
@@ -339,7 +339,7 @@ class Mention {
 				 * text — e.g. to gate on a cached existence check or an
 				 * allowlist of known accounts.
 				 *
-				 * @since unreleased
+				 * @since 2.0.0
 				 *
 				 * @param bool   $should_link Whether to link the handle. Default true.
 				 * @param string $handle      The bare handle (no leading `@`).
