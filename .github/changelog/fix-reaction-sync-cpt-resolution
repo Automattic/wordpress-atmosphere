@@ -1,0 +1,4 @@
+Significance: patch
+Type: fixed
+
+Import Bluesky likes, reposts, and replies on all your published content types. Previously these interactions were only brought back for standard posts, so likes and replies on pages and other content published to Bluesky were quietly missed.
