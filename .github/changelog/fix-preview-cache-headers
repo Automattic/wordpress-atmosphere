@@ -1,0 +1,4 @@
+Significance: patch
+Type: fixed
+
+Send private, no-cache headers on the record preview so a caching layer cannot store a logged-in preview and show it to other visitors.

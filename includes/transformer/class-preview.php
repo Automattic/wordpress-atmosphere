@@ -77,6 +77,9 @@ class Preview {
 		}
 
 		if ( ! is_supported_post_type( $post->post_type ) ) {
+			// No-cache this exit too, so a fronting cache can't pin the 404
+			// for a post type later added to the syncable allowlist.
+			\nocache_headers();
 			\status_header( 404 );
 			exit;
 		}
@@ -273,6 +276,16 @@ class Preview {
 	 * @param array|\WP_Error $payload Preview payload or error.
 	 */
 	private static function send( array|\WP_Error $payload ): void {
+		/*
+		 * The preview is served on a public front-end URL but carries
+		 * per-object, `edit_post`-gated data (the post's custom Bluesky
+		 * text, third-party preview-transformer output). Send no-cache
+		 * headers on every branch so a URL-keyed edge/page cache cannot
+		 * retain an authorized projection and replay it to a later
+		 * unauthorized visitor — mirroring the well-known handlers.
+		 */
+		\nocache_headers();
+
 		if ( \is_wp_error( $payload ) ) {
 			\status_header( 400 );
 			$payload = array(
