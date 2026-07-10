@@ -33,3 +33,11 @@ export const CUSTOM_TEXT_META_KEY =
  */
 export const PREVIEW_PATH =
 	options.previewPath || '/atmosphere/1.0/admin/pre-publish-preview';
+
+/**
+ * URL of the ATmosphere settings page, for reconnect prompts.
+ *
+ * @type {string}
+ */
+export const SETTINGS_URL =
+	options.settingsUrl || 'options-general.php?page=atmosphere';

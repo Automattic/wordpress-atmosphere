@@ -18,30 +18,71 @@ namespace Atmosphere\OAuth;
 class Encryption {
 
 	/**
-	 * Derive a 32-byte key from the site's auth salt.
+	 * Secret material the encryption key is derived from.
 	 *
-	 * Prefers `AUTH_KEY . AUTH_SALT` so previously encrypted tokens still
-	 * decrypt; falls back to `wp_salt( 'auth' )` on sites that don't
-	 * define those constants.
+	 * Precedence:
+	 *
+	 *  1. `ATMOSPHERE_ENCRYPTION_KEY` — an explicit opt-in for sites
+	 *     whose WordPress salts are not stable: scheduled salt rotation
+	 *     by a security plugin, or hosts/migrations that regenerate
+	 *     `wp-config.php`. Salt-derived keys stop decrypting after every
+	 *     rotation; a pinned constant keeps the stored tokens readable
+	 *     while still living outside the database. Changing or removing
+	 *     the constant orphans existing tokens like any other key change.
+	 *  2. `AUTH_KEY . AUTH_SALT`, so previously encrypted tokens still
+	 *     decrypt.
+	 *  3. `wp_salt( 'auth' )` on sites that don't define those constants.
+	 *
+	 * @since unreleased Recognizes `ATMOSPHERE_ENCRYPTION_KEY`.
 	 *
 	 * @return string
 	 */
-	private static function key(): string {
+	private static function key_material(): string {
+		if ( \defined( 'ATMOSPHERE_ENCRYPTION_KEY' ) && '' !== ATMOSPHERE_ENCRYPTION_KEY ) {
+			return ATMOSPHERE_ENCRYPTION_KEY;
+		}
+
 		if (
 			\defined( 'AUTH_KEY' )
 			&& \defined( 'AUTH_SALT' )
 			&& '' !== AUTH_KEY
 			&& '' !== AUTH_SALT
 		) {
-			$material = AUTH_KEY . AUTH_SALT;
-		} else {
-			$material = \wp_salt( 'auth' );
+			return AUTH_KEY . AUTH_SALT;
 		}
 
+		return \wp_salt( 'auth' );
+	}
+
+	/**
+	 * Derive the 32-byte secretbox key from the key material.
+	 *
+	 * @return string
+	 */
+	private static function key(): string {
 		return \sodium_crypto_generichash(
-			$material,
+			self::key_material(),
 			'',
 			SODIUM_CRYPTO_SECRETBOX_KEYBYTES
+		);
+	}
+
+	/**
+	 * Fingerprint of the current encryption key, safe to persist.
+	 *
+	 * Stored alongside the encrypted tokens so a later decrypt failure
+	 * can be classified: a mismatch means the key material changed (salt
+	 * rotation, regenerated `wp-config.php`), while a match points at
+	 * corrupted ciphertext. Domain-separated from the key derivation so
+	 * the stored value cannot double as key material.
+	 *
+	 * @since unreleased
+	 *
+	 * @return string 32-character hex string.
+	 */
+	public static function key_fingerprint(): string {
+		return \sodium_bin2hex(
+			\sodium_crypto_generichash( 'atmosphere-key-fingerprint' . self::key(), '', 16 )
 		);
 	}
 

@@ -2113,6 +2113,7 @@ class Atmosphere {
 			'atmosphere_invalid_pre_apply_writes_response',
 			'atmosphere_invalid_pre_upload_blob_return',
 			'atmosphere_decrypt',
+			'atmosphere_key_changed',
 			'atmosphere_did_mismatch',
 
 			/*

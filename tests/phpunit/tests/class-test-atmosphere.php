@@ -2969,6 +2969,20 @@ class Test_Atmosphere extends WP_UnitTestCase {
 	}
 
 	/**
+	 * Decrypt failures are deterministic — the ciphertext can never be
+	 * read until the user reconnects — so neither classification may
+	 * enter the retry ladder.
+	 */
+	public function test_decrypt_failures_are_not_retried() {
+		$reflection = new \ReflectionClass( Atmosphere::class );
+		$method     = $reflection->getMethod( 'is_transient_publish_error' );
+		$method->setAccessible( true );
+
+		$this->assertFalse( $method->invoke( null, new \WP_Error( 'atmosphere_decrypt', 'nope' ) ) );
+		$this->assertFalse( $method->invoke( null, new \WP_Error( 'atmosphere_key_changed', 'nope' ) ) );
+	}
+
+	/**
 	 * Fetch a post's `atmosphere_publish_error` REST field in the edit context.
 	 *
 	 * @param int $post_id Post ID.

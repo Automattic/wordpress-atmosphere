@@ -24,8 +24,28 @@ import {
 import { useSelect } from '@wordpress/data';
 import { useEntityProp } from '@wordpress/core-data';
 import { __ } from '@wordpress/i18n';
-import { DISABLED_META_KEY, CUSTOM_TEXT_META_KEY } from '../config';
+import {
+	DISABLED_META_KEY,
+	CUSTOM_TEXT_META_KEY,
+	SETTINGS_URL,
+} from '../config';
 import { isSharingEnabled } from './utils';
+
+/**
+ * Failure codes that can only be resolved by reconnecting the Bluesky
+ * account on the settings page. Re-saving the post can never fix these,
+ * so the panel swaps the "update to try again" hint for a reconnect
+ * link. Mirrors the connection-level entries in
+ * `Atmosphere::is_transient_publish_error()`.
+ *
+ * @type {string[]}
+ */
+const RECONNECT_ERROR_CODES = [
+	'atmosphere_key_changed',
+	'atmosphere_decrypt',
+	'atmosphere_needs_reauth',
+	'atmosphere_not_connected',
+];
 
 /**
  * The ATmosphere symbol (the plugin logo), shown after the panel title like
@@ -79,6 +99,19 @@ const EditorPlugin = () => {
 
 	const enabled = isSharingEnabled( meta );
 	const customText = ( meta && meta[ CUSTOM_TEXT_META_KEY ] ) || '';
+
+	/* Precomputed so the notice below avoids a nested ternary. */
+	const needsReconnect =
+		publishError && RECONNECT_ERROR_CODES.includes( publishError.code );
+	const retryMessage = publishError?.retrying
+		? __(
+				'Sharing to Bluesky failed. Your site will retry automatically.',
+				'atmosphere'
+		  )
+		: __(
+				'Sharing to Bluesky failed. Update the post to try again.',
+				'atmosphere'
+		  );
 
 	// `PluginDocumentSettingPanel` moved from edit-post to editor; support both.
 	const SettingsPanel = PluginDocumentSettingPanel || DocumentSettingPanel;
@@ -156,15 +189,22 @@ const EditorPlugin = () => {
 			     attempt queued; otherwise the author's update is the retry. */ }
 			{ publishError && enabled && (
 				<Notice status="error" isDismissible={ false }>
-					{ publishError.retrying
-						? __(
-								'Sharing to Bluesky failed. Your site will retry automatically.',
+					{ needsReconnect ? (
+						<>
+							{ __(
+								'Sharing to Bluesky failed because your site is no longer connected to Bluesky.',
 								'atmosphere'
-						  )
-						: __(
-								'Sharing to Bluesky failed. Update the post to try again.',
-								'atmosphere'
-						  ) }
+							) }{ ' ' }
+							<a href={ SETTINGS_URL }>
+								{ __(
+									'Reconnect on the settings page.',
+									'atmosphere'
+								) }
+							</a>
+						</>
+					) : (
+						retryMessage
+					) }
 					{ publishError.message && (
 						<p style={ { marginBottom: 0 } }>
 							<small>{ publishError.message }</small>

@@ -251,12 +251,22 @@ class Admin {
 		 * "session expired" copy, which is the accurate framing for the
 		 * actual failure mode.
 		 */
-		$disconnected = \get_option( Client::DISCONNECTED_OPTION, false ) && empty( get_connection() );
+		$connection   = get_connection();
+		$disconnected = \get_option( Client::DISCONNECTED_OPTION, false ) && empty( $connection );
+		$reason       = \is_array( $connection ) ? (string) ( $connection['reauth_reason'] ?? '' ) : '';
 
 		if ( $disconnected ) {
 			$heading = \__( 'ATmosphere: disconnected', 'atmosphere' );
 			/* translators: %s: URL to the ATmosphere settings page. */
 			$message = \__( 'ATmosphere is disconnected from AT Protocol. New posts and comments will not publish until you <a href="%s">reconnect on the settings page</a>. Your publishing preferences and verification headers stay in place in the meantime.', 'atmosphere' );
+		} elseif ( 'key_changed' === $reason ) {
+			$heading = \__( 'ATmosphere: reconnection required', 'atmosphere' );
+			/* translators: %s: URL to the ATmosphere settings page. */
+			$message = \__( 'Your site’s security keys have changed — this can happen after a migration, or when a security plugin rotates them — so ATmosphere can no longer read its saved Bluesky login. New posts and comments will not publish until you <a href="%s">reconnect on the settings page</a>. Your publishing preferences and verification headers stay in place in the meantime.', 'atmosphere' );
+		} elseif ( 'decrypt_failed' === $reason ) {
+			$heading = \__( 'ATmosphere: reconnection required', 'atmosphere' );
+			/* translators: %s: URL to the ATmosphere settings page. */
+			$message = \__( 'ATmosphere can no longer read its saved Bluesky login. New posts and comments will not publish until you <a href="%s">reconnect on the settings page</a>. Your publishing preferences and verification headers stay in place in the meantime.', 'atmosphere' );
 		} else {
 			$heading = \__( 'ATmosphere: reconnection required', 'atmosphere' );
 			/* translators: %s: URL to the ATmosphere settings page. */

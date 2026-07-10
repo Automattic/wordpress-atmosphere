@@ -62,7 +62,7 @@ class API {
 
 		$dpop_jwk_json = Encryption::decrypt( $conn['dpop_jwk'] ?? '' );
 		if ( false === $dpop_jwk_json ) {
-			return new \WP_Error( 'atmosphere_decrypt', \__( 'Failed to decrypt DPoP key.', 'atmosphere' ) );
+			return Client::flag_decrypt_failure( $conn, 'dpop_jwk' );
 		}
 
 		$dpop_jwk = \json_decode( $dpop_jwk_json, true );

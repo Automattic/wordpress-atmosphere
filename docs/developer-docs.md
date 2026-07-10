@@ -7,6 +7,7 @@
 - [Previewing AT Protocol Records](#previewing-at-protocol-records)
 - [Extending Content Formats](#extending-content-formats)
 - [Custom Post Type Support](#custom-post-type-support)
+- [Token Encryption](#token-encryption)
 - [Templates and Admin UI](#templates-and-admin-ui)
 
 ## Introduction
@@ -276,6 +277,18 @@ ATmosphere only cross-posts post types that opt in. Two ways to add one:
 ```
 
 The plugin merges all three sources, dedupes, and sanitises.
+
+## Token Encryption
+
+OAuth tokens are encrypted at rest with a key derived from the site's `AUTH_KEY` and `AUTH_SALT`. That keeps the key out of the database, but it also means the stored tokens become unreadable when the salts change — after a migration, a regenerated `wp-config.php`, or a security plugin that rotates salts on a schedule. ATmosphere detects that case, flags the connection, and asks the user to reconnect.
+
+Sites that rotate their salts deliberately can pin a dedicated key instead, which takes precedence over the salts:
+
+```php
+define( 'ATMOSPHERE_ENCRYPTION_KEY', 'a long random secret that never changes' );
+```
+
+Define it in `wp-config.php` **before** connecting (or reconnect afterwards — changing key material always orphans previously stored tokens). Treat it like a salt: long, random, and never committed to version control.
 
 ## Templates and Admin UI
 
