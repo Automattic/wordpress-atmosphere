@@ -25,6 +25,7 @@ use Atmosphere\Rest\Admin\Pre_Publish_Controller;
 use Atmosphere\Rest\Client_Metadata_Controller;
 use Atmosphere\Rest\Reactions_Controller;
 use Atmosphere\WP_Admin\Admin;
+use Atmosphere\WP_Admin\Health_Check;
 use Atmosphere\WP_Admin\Settings_Fields;
 
 /**
@@ -162,6 +163,14 @@ class Atmosphere {
 		 */
 		\add_action( 'init', array( Options::class, 'init' ), 5 );
 		\add_action( 'init', array( Settings_Fields::class, 'init' ), 5 );
+
+		/*
+		 * Site Health status test + debug information. Registered
+		 * unconditionally (not admin-gated) because the weekly
+		 * `wp_site_health_scheduled_check` cron runs the direct tests
+		 * in a non-admin context to feed the dashboard status counter.
+		 */
+		\add_action( 'init', array( Health_Check::class, 'init' ), 5 );
 
 		/*
 		 * Display-side @handle.tld mention auto-linking. Self-registers on
