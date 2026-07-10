@@ -7,6 +7,7 @@
 - [Previewing AT Protocol Records](#previewing-at-protocol-records)
 - [Extending Content Formats](#extending-content-formats)
 - [Custom Post Type Support](#custom-post-type-support)
+- [Publishing Programmatically](#publishing-programmatically)
 - [Templates and Admin UI](#templates-and-admin-ui)
 
 ## Introduction
@@ -276,6 +277,65 @@ ATmosphere only cross-posts post types that opt in. Two ways to add one:
 ```
 
 The plugin merges all three sources, dedupes, and sanitises.
+
+## Publishing Programmatically
+
+Publishing UIs, syndication managers, and other companion plugins can drive
+cross-posting per post instead of relying on the automatic save-flow.
+
+### Per-post controls
+
+Two registered post metas (both `show_in_rest`, writable with `edit_post`)
+control what a cross-post looks like before it happens:
+
+| Meta key | Constant | Effect |
+|----------|----------|--------|
+| `atmosphere_disabled` | `ATMOSPHERE_META_DISABLED` | Sharing is opt-out: `'1'` excludes the post from cross-posting (and removes already-published remote records). |
+| `atmosphere_custom_text` | `ATMOSPHERE_META_CUSTOM_TEXT` | Replaces the derived Bluesky post text for this post. |
+
+### Taking over the publish flow
+
+The automatic save-flow is gated by the `atmosphere_auto_publish` option
+(`'1'` by default). An integration that wants to decide *when* a post is
+cross-posted can disable it and call the publisher directly:
+
+```php
+\update_option( 'atmosphere_auto_publish', '0' );
+
+$result = \Atmosphere\Publisher::publish_post( $post );
+
+if ( \is_wp_error( $result ) ) {
+    // Post was ineligible or the write failed.
+}
+```
+
+`publish_post()` enforces `\Atmosphere\is_post_publishable()` — the post
+must be published, not password-protected, of a [supported post
+type](#custom-post-type-support), and not opted out via
+`atmosphere_disabled`. It fires
+[`atmosphere_publish_post_result`](#public-hooks) once with the final
+outcome, and returns the `applyWrites` response(s) or a `WP_Error`.
+`Publisher::update_post()` and `Publisher::delete_post()` complete the
+lifecycle.
+
+### Reading back the published record
+
+After a successful publish the post carries the created record's
+references:
+
+| Meta key | Constant | Value |
+|----------|----------|-------|
+| `_atmosphere_bsky_uri` | `\Atmosphere\Transformer\Post::META_URI` | The `at://` URI of the Bluesky post. |
+| `_atmosphere_bsky_tid` | `\Atmosphere\Transformer\Post::META_TID` | The record key (TID). |
+
+```php
+$at_uri = \get_post_meta( $post_id, \Atmosphere\Transformer\Post::META_URI, true );
+```
+
+Replies and reposts synced back from Bluesky arrive as native WordPress
+comments (`protocol` comment meta `atproto`, source link in `source_url`);
+integrations can react to each via
+[`atmosphere_reaction_synced`](#public-hooks).
 
 ## Templates and Admin UI
 

@@ -1,0 +1,4 @@
+Significance: patch
+Type: added
+
+Developer docs: document the programmatic publishing surface (per-post metas, Publisher::publish_post(), record read-back) for integrating plugins.
