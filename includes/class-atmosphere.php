@@ -1483,10 +1483,11 @@ class Atmosphere {
 						}
 
 						return array(
-							'code'     => (string) $error['code'],
-							'message'  => (string) ( $error['message'] ?? '' ),
-							'retrying' => ! empty( $error['retrying'] ),
-							'time'     => (int) ( $error['time'] ?? 0 ),
+							'code'            => (string) $error['code'],
+							'message'         => (string) ( $error['message'] ?? '' ),
+							'retrying'        => ! empty( $error['retrying'] ),
+							'needs_reconnect' => \in_array( (string) $error['code'], self::RECONNECT_ERROR_CODES, true ),
+							'time'            => (int) ( $error['time'] ?? 0 ),
 						);
 					},
 					'update_callback' => null,
@@ -1495,19 +1496,23 @@ class Atmosphere {
 						'description' => \__( 'The most recent Bluesky sharing failure for this post, null when the last attempt succeeded.', 'atmosphere' ),
 						'context'     => array( 'edit' ),
 						'properties'  => array(
-							'code'     => array(
+							'code'            => array(
 								'type'        => 'string',
 								'description' => \__( 'Machine-readable failure code.', 'atmosphere' ),
 							),
-							'message'  => array(
+							'message'         => array(
 								'type'        => 'string',
 								'description' => \__( 'Human-readable failure message.', 'atmosphere' ),
 							),
-							'retrying' => array(
+							'retrying'        => array(
 								'type'        => 'boolean',
 								'description' => \__( 'Whether another automatic attempt is scheduled.', 'atmosphere' ),
 							),
-							'time'     => array(
+							'needs_reconnect' => array(
+								'type'        => 'boolean',
+								'description' => \__( 'Whether the failure can only be resolved by reconnecting the Bluesky account.', 'atmosphere' ),
+							),
+							'time'            => array(
 								'type'        => 'integer',
 								'description' => \__( 'Unix timestamp of the failed attempt.', 'atmosphere' ),
 							),
@@ -2089,6 +2094,25 @@ class Atmosphere {
 			)
 		);
 	}
+
+	/**
+	 * Failure codes resolvable only by reconnecting the Bluesky account.
+	 *
+	 * Consumed by the `atmosphere_publish_error` REST field as the
+	 * `needs_reconnect` flag so the editor panel never keeps its own
+	 * copy of this judgment. A curated subset of the permanent codes in
+	 * {@see self::is_transient_publish_error()} — deliberately without
+	 * `atmosphere_did_mismatch`, which reconnecting to the current
+	 * account does not fix.
+	 *
+	 * @var string[]
+	 */
+	private const RECONNECT_ERROR_CODES = array(
+		'atmosphere_key_changed',
+		'atmosphere_decrypt',
+		'atmosphere_needs_reauth',
+		'atmosphere_not_connected',
+	);
 
 	/**
 	 * Whether a publish failure is worth retrying.
