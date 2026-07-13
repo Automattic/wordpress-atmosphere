@@ -1,0 +1,4 @@
+Significance: patch
+Type: fixed
+
+Busy Bluesky threads no longer lose older replies and reactions when more than 250 notifications arrive between syncs, and older missed replies are now recovered automatically or on demand with WP-CLI.
