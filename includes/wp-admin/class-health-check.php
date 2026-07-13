@@ -19,11 +19,14 @@ namespace Atmosphere\WP_Admin;
 \defined( 'ABSPATH' ) || exit;
 
 use Atmosphere\OAuth\Client;
-use function Atmosphere\get_connection;
+use Atmosphere\OAuth\Encryption;
 use function Atmosphere\get_identity;
+use function Atmosphere\get_reauth_reason;
 use function Atmosphere\get_supported_post_types;
 use function Atmosphere\has_identity;
 use function Atmosphere\is_connected;
+use function Atmosphere\is_operator_disconnected;
+use function Atmosphere\settings_url;
 
 /**
  * Health check class.
@@ -89,17 +92,19 @@ class Health_Check {
 			'test'        => 'atmosphere_test_connection',
 		);
 
-		if ( is_connected() ) {
+		$state = self::connection_state();
+
+		if ( 'connected' === $state ) {
 			return $result;
 		}
 
 		$result['actions'] = \sprintf(
 			'<p><a href="%s">%s</a></p>',
-			\esc_url( \admin_url( 'options-general.php?page=atmosphere' ) ),
+			\esc_url( settings_url() ),
 			\esc_html__( 'Open the ATmosphere settings page', 'atmosphere' )
 		);
 
-		if ( ! has_identity() ) {
+		if ( 'never_connected' === $state ) {
 			$result['status']      = 'recommended';
 			$result['label']       = \__( 'ATmosphere is not connected to Bluesky yet', 'atmosphere' );
 			$result['description'] = \sprintf(
@@ -110,13 +115,7 @@ class Health_Check {
 			return $result;
 		}
 
-		/*
-		 * Same gate as the admin notice: the explicit-disconnect marker
-		 * only counts when the connection row is genuinely gone — see
-		 * Admin::maybe_render_reauth_notice() for the stale-marker
-		 * rationale.
-		 */
-		if ( \get_option( Client::DISCONNECTED_OPTION, false ) && empty( get_connection() ) ) {
+		if ( 'disconnected' === $state ) {
 			$result['status']      = 'recommended';
 			$result['label']       = \__( 'ATmosphere is disconnected from Bluesky', 'atmosphere' );
 			$result['description'] = \sprintf(
@@ -136,20 +135,48 @@ class Health_Check {
 	}
 
 	/**
+	 * Resolve the connection state once for both Site Health surfaces.
+	 *
+	 * Precedence matters: a live connection wins, a site with no
+	 * identity has never connected, the operator-disconnect gate (see
+	 * `is_operator_disconnected()` for the stale-marker rationale) beats
+	 * the failure states, and everything else needs a reconnect — the
+	 * `reauth_reason` marker carries the specific cause.
+	 *
+	 * @return string One of `connected`, `never_connected`,
+	 *                `disconnected`, `needs_reauth`.
+	 */
+	private static function connection_state(): string {
+		if ( is_connected() ) {
+			return 'connected';
+		}
+
+		if ( ! has_identity() ) {
+			return 'never_connected';
+		}
+
+		if ( is_operator_disconnected() ) {
+			return 'disconnected';
+		}
+
+		return 'needs_reauth';
+	}
+
+	/**
 	 * Build the cause-specific description for the needs-reauth state.
 	 *
 	 * @return string HTML paragraphs.
 	 */
 	private static function reauth_description(): string {
-		$reason = (string) ( get_connection()['reauth_reason'] ?? '' );
+		$reason = get_reauth_reason();
 
-		if ( 'key_changed' === $reason ) {
+		if ( Client::REAUTH_REASON_KEY_CHANGED === $reason ) {
 			$description = \sprintf(
 				'<p>%s</p>',
 				\__( 'Your site’s security keys have changed — this can happen after a migration, or when a security plugin rotates them on a schedule — so ATmosphere can no longer read its saved Bluesky login. Reconnect your Bluesky account on the settings page.', 'atmosphere' )
 			);
 
-			if ( \defined( 'ATMOSPHERE_ENCRYPTION_KEY' ) && '' !== ATMOSPHERE_ENCRYPTION_KEY ) {
+			if ( Encryption::has_dedicated_key() ) {
 				$description .= \sprintf(
 					'<p>%s</p>',
 					\__( 'A dedicated ATmosphere encryption key is defined, but its value appears to have changed. Restore the previous value, or reconnect to save a new login under the current one.', 'atmosphere' )
@@ -175,7 +202,7 @@ class Health_Check {
 			return $description;
 		}
 
-		if ( 'decrypt_failed' === $reason ) {
+		if ( Client::REAUTH_REASON_DECRYPT_FAILED === $reason ) {
 			return \sprintf(
 				'<p>%s</p>',
 				\__( 'ATmosphere can no longer read its saved Bluesky login. Reconnect your Bluesky account on the settings page to resume sharing.', 'atmosphere' )
@@ -232,7 +259,7 @@ class Health_Check {
 				),
 				'encryption_key'    => array(
 					'label'   => \__( 'Encryption Key Source', 'atmosphere' ),
-					'value'   => \defined( 'ATMOSPHERE_ENCRYPTION_KEY' ) && '' !== ATMOSPHERE_ENCRYPTION_KEY
+					'value'   => Encryption::has_dedicated_key()
 						? \__( 'Dedicated key (ATMOSPHERE_ENCRYPTION_KEY)', 'atmosphere' )
 						: \__( 'WordPress security keys (AUTH_KEY/AUTH_SALT)', 'atmosphere' ),
 					'private' => false,
@@ -261,24 +288,19 @@ class Health_Check {
 	 * @return string
 	 */
 	private static function connection_status(): string {
-		if ( is_connected() ) {
-			return \__( 'Connected', 'atmosphere' );
+		switch ( self::connection_state() ) {
+			case 'connected':
+				return \__( 'Connected', 'atmosphere' );
+			case 'never_connected':
+				return \__( 'Not connected', 'atmosphere' );
+			case 'disconnected':
+				return \__( 'Disconnected by the user', 'atmosphere' );
 		}
 
-		if ( ! has_identity() ) {
-			return \__( 'Not connected', 'atmosphere' );
-		}
-
-		if ( \get_option( Client::DISCONNECTED_OPTION, false ) && empty( get_connection() ) ) {
-			return \__( 'Disconnected by the user', 'atmosphere' );
-		}
-
-		$reason = (string) ( get_connection()['reauth_reason'] ?? '' );
-
-		switch ( $reason ) {
-			case 'key_changed':
+		switch ( get_reauth_reason() ) {
+			case Client::REAUTH_REASON_KEY_CHANGED:
 				return \__( 'Needs reconnect (security keys changed)', 'atmosphere' );
-			case 'decrypt_failed':
+			case Client::REAUTH_REASON_DECRYPT_FAILED:
 				return \__( 'Needs reconnect (saved login unreadable)', 'atmosphere' );
 			default:
 				return \__( 'Needs reconnect (session expired)', 'atmosphere' );
