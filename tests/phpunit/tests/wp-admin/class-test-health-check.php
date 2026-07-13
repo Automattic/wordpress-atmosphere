@@ -135,7 +135,14 @@ class Test_Health_Check extends \WP_UnitTestCase {
 		$this->assertSame( 'critical', $result['status'] );
 		$this->assertStringContainsString( 'security keys have changed', $result['description'] );
 		$this->assertStringContainsString( 'ATMOSPHERE_ENCRYPTION_KEY', $result['description'] );
+		$this->assertStringContainsString( 'define(', $result['description'] );
 		$this->assertStringContainsString( 'options-general.php?page=atmosphere', $result['actions'] );
+
+		/*
+		 * The snippet must contain a freshly generated key, not a
+		 * static placeholder — two renders differ only in the key.
+		 */
+		$this->assertNotSame( $result['description'], Health_Check::test_connection()['description'] );
 	}
 
 	/**

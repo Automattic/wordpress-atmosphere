@@ -155,10 +155,20 @@ class Health_Check {
 					\__( 'A dedicated ATmosphere encryption key is defined, but its value appears to have changed. Restore the previous value, or reconnect to save a new login under the current one.', 'atmosphere' )
 				);
 			} else {
+				/*
+				 * Generate a real, ready-to-paste key (same recipe as
+				 * WordPress's own secret-key service) instead of a
+				 * placeholder the user has to know how to replace. A
+				 * fresh value is generated per render and never stored
+				 * — only the copy the user pastes into wp-config.php
+				 * matters. `wp_generate_password()`'s character set
+				 * contains no quotes or backslashes, so the value is
+				 * safe inside a single-quoted PHP string literal.
+				 */
 				$description .= \sprintf(
 					'<p>%s</p><p><code>%s</code></p>',
-					\__( 'If your security keys are rotated regularly, add a dedicated key for ATmosphere to your wp-config.php before reconnecting, so the connection survives future rotations. Use a long random value and never change it:', 'atmosphere' ),
-					\esc_html( "define( 'ATMOSPHERE_ENCRYPTION_KEY', 'a-long-random-secret-that-never-changes' );" )
+					\__( 'If your security keys are rotated regularly, add a dedicated key for ATmosphere to your wp-config.php before reconnecting, so the connection survives future rotations. Copy this freshly generated line as-is, and never change it afterwards:', 'atmosphere' ),
+					\esc_html( "define( 'ATMOSPHERE_ENCRYPTION_KEY', '" . \wp_generate_password( 64, true, true ) . "' );" )
 				);
 			}
 
