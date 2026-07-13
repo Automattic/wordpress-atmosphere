@@ -165,12 +165,16 @@ class Atmosphere {
 		\add_action( 'init', array( Settings_Fields::class, 'init' ), 5 );
 
 		/*
-		 * Site Health status test + debug information. Registered
-		 * unconditionally (not admin-gated) because the weekly
-		 * `wp_site_health_scheduled_check` cron runs the direct tests
-		 * in a non-admin context to feed the dashboard status counter.
+		 * Site Health status test + debug information. The cron gate is
+		 * needed alongside `is_admin()` because the weekly
+		 * `wp_site_health_scheduled_check` event runs the direct tests
+		 * in a non-admin context to feed the dashboard status counter;
+		 * front-end requests never fire either filter, so they skip the
+		 * class entirely.
 		 */
-		\add_action( 'init', array( Health_Check::class, 'init' ), 5 );
+		if ( \is_admin() || \wp_doing_cron() ) {
+			\add_action( 'init', array( Health_Check::class, 'init' ), 5 );
+		}
 
 		/*
 		 * Display-side @handle.tld mention auto-linking. Self-registers on
@@ -1495,7 +1499,7 @@ class Atmosphere {
 							'code'            => (string) $error['code'],
 							'message'         => (string) ( $error['message'] ?? '' ),
 							'retrying'        => ! empty( $error['retrying'] ),
-							'needs_reconnect' => \in_array( (string) $error['code'], self::RECONNECT_ERROR_CODES, true ),
+							'needs_reconnect' => Client::is_reconnect_error( (string) $error['code'] ),
 							'time'            => (int) ( $error['time'] ?? 0 ),
 						);
 					},
@@ -2103,25 +2107,6 @@ class Atmosphere {
 			)
 		);
 	}
-
-	/**
-	 * Failure codes resolvable only by reconnecting the Bluesky account.
-	 *
-	 * Consumed by the `atmosphere_publish_error` REST field as the
-	 * `needs_reconnect` flag so the editor panel never keeps its own
-	 * copy of this judgment. A curated subset of the permanent codes in
-	 * {@see self::is_transient_publish_error()} — deliberately without
-	 * `atmosphere_did_mismatch`, which reconnecting to the current
-	 * account does not fix.
-	 *
-	 * @var string[]
-	 */
-	private const RECONNECT_ERROR_CODES = array(
-		'atmosphere_key_changed',
-		'atmosphere_decrypt',
-		'atmosphere_needs_reauth',
-		'atmosphere_not_connected',
-	);
 
 	/**
 	 * Whether a publish failure is worth retrying.

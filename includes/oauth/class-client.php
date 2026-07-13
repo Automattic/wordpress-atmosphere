@@ -794,14 +794,14 @@ class Client {
 	 * @return true|\WP_Error
 	 */
 	private static function refresh_locked( array $conn ): true|\WP_Error {
-		$refresh_token = Encryption::decrypt( $conn['refresh_token'] );
-		if ( false === $refresh_token ) {
-			return self::flag_decrypt_failure( $conn, 'refresh_token' );
+		$refresh_token = self::decrypt_field( $conn, 'refresh_token' );
+		if ( \is_wp_error( $refresh_token ) ) {
+			return $refresh_token;
 		}
 
-		$dpop_jwk_json = Encryption::decrypt( $conn['dpop_jwk'] );
-		if ( false === $dpop_jwk_json ) {
-			return self::flag_decrypt_failure( $conn, 'dpop_jwk' );
+		$dpop_jwk_json = self::decrypt_field( $conn, 'dpop_jwk' );
+		if ( \is_wp_error( $dpop_jwk_json ) ) {
+			return $dpop_jwk_json;
 		}
 
 		$dpop_jwk       = \json_decode( $dpop_jwk_json, true );
@@ -971,6 +971,66 @@ class Client {
 		\update_option( 'atmosphere_connection', $current, false );
 
 		return true;
+	}
+
+	/**
+	 * Decrypt a stored connection credential, flagging the row for
+	 * reauth on failure.
+	 *
+	 * The single chokepoint for reading connection ciphertext, so the
+	 * invariant "a failed credential decrypt always flags the row" is
+	 * enforced by the mechanism instead of repeated at every call site
+	 * (see {@see self::flag_decrypt_failure()} for why the failure is
+	 * permanent).
+	 *
+	 * @since unreleased
+	 *
+	 * @param array  $conn  Connection row the credential was read from.
+	 * @param string $field Connection field to decrypt (`access_token`,
+	 *                      `refresh_token`, `dpop_jwk`).
+	 * @return string|\WP_Error The plaintext, or the reauth error.
+	 */
+	public static function decrypt_field( array $conn, string $field ): string|\WP_Error {
+		$plaintext = Encryption::decrypt( (string) ( $conn[ $field ] ?? '' ) );
+
+		if ( false === $plaintext ) {
+			return self::flag_decrypt_failure( $conn, $field );
+		}
+
+		return $plaintext;
+	}
+
+	/**
+	 * Failure codes resolvable only by reconnecting the Bluesky account.
+	 *
+	 * Consumed by the `atmosphere_publish_error` REST field as the
+	 * `needs_reconnect` flag so the editor panel never keeps its own
+	 * copy of this judgment. Lives here, next to the code paths that
+	 * mint these codes, so a future reconnect-class error is added in
+	 * one place. A curated subset of the permanent codes in
+	 * {@see \Atmosphere\Atmosphere::is_transient_publish_error()} —
+	 * deliberately without `atmosphere_did_mismatch`, which reconnecting
+	 * to the current account does not fix.
+	 *
+	 * @var string[]
+	 */
+	private const RECONNECT_ERROR_CODES = array(
+		'atmosphere_key_changed',
+		'atmosphere_decrypt',
+		'atmosphere_needs_reauth',
+		'atmosphere_not_connected',
+	);
+
+	/**
+	 * Whether a failure code can only be resolved by reconnecting.
+	 *
+	 * @since unreleased
+	 *
+	 * @param string $code Machine-readable failure code.
+	 * @return bool
+	 */
+	public static function is_reconnect_error( string $code ): bool {
+		return \in_array( $code, self::RECONNECT_ERROR_CODES, true );
 	}
 
 	/**
@@ -1331,12 +1391,7 @@ class Client {
 			$conn = \get_option( 'atmosphere_connection', array() );
 		}
 
-		$token = Encryption::decrypt( $conn['access_token'] );
-		if ( false === $token ) {
-			return self::flag_decrypt_failure( $conn, 'access_token' );
-		}
-
-		return $token;
+		return self::decrypt_field( $conn, 'access_token' );
 	}
 
 	/**

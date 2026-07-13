@@ -13,8 +13,8 @@ use Atmosphere\Atmosphere;
 use Atmosphere\Handle;
 use Atmosphere\OAuth\Client;
 use Atmosphere\Publisher;
-use function Atmosphere\get_reauth_reason;
 use function Atmosphere\is_operator_disconnected;
+use function Atmosphere\reauth_reason_lead;
 use function Atmosphere\settings_url;
 use function Atmosphere\get_supported_post_types;
 use function Atmosphere\has_identity;
@@ -144,7 +144,7 @@ class Admin {
 		);
 		\set_transient( 'settings_errors', \get_settings_errors(), 30 );
 
-		\wp_safe_redirect( \admin_url( 'options-general.php?page=atmosphere&connected=1' ) );
+		\wp_safe_redirect( \add_query_arg( 'connected', '1', settings_url() ) );
 		exit;
 	}
 
@@ -211,7 +211,7 @@ class Admin {
 		);
 		\set_transient( 'settings_errors', \get_settings_errors(), 30 );
 
-		\wp_safe_redirect( \admin_url( 'options-general.php?page=atmosphere' ) );
+		\wp_safe_redirect( settings_url() );
 		exit;
 	}
 
@@ -238,23 +238,18 @@ class Admin {
 		}
 
 		$heading = \__( 'ATmosphere: reconnection required', 'atmosphere' );
-		$reason  = get_reauth_reason();
 
 		/*
-		 * Each branch supplies only its lead sentence; the shared tail
-		 * (what stops working + the reconnect link) is composed below so
-		 * copy edits and translations happen once. The disconnect gate's
+		 * The cause lead comes from `reauth_reason_lead()` (shared with
+		 * the Site Health test); only the shared tail (what stops working
+		 * + the reconnect link) is composed here. The disconnect gate's
 		 * stale-marker rationale lives in `is_operator_disconnected()`.
 		 */
 		if ( is_operator_disconnected() ) {
 			$heading = \__( 'ATmosphere: disconnected', 'atmosphere' );
 			$lead    = \__( 'ATmosphere is disconnected from AT Protocol.', 'atmosphere' );
-		} elseif ( Client::REAUTH_REASON_KEY_CHANGED === $reason ) {
-			$lead = \__( 'Your site’s security keys have changed — this can happen after a migration, or when a security plugin rotates them on a schedule — so ATmosphere can no longer read its saved Bluesky login.', 'atmosphere' );
-		} elseif ( Client::REAUTH_REASON_DECRYPT_FAILED === $reason ) {
-			$lead = \__( 'ATmosphere can no longer read its saved Bluesky login.', 'atmosphere' );
 		} else {
-			$lead = \__( 'Your AT Protocol session has expired.', 'atmosphere' );
+			$lead = reauth_reason_lead();
 		}
 
 		/* translators: %s: URL to the ATmosphere settings page. */

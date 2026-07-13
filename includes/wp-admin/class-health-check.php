@@ -26,6 +26,7 @@ use function Atmosphere\get_supported_post_types;
 use function Atmosphere\has_identity;
 use function Atmosphere\is_connected;
 use function Atmosphere\is_operator_disconnected;
+use function Atmosphere\reauth_reason_lead;
 use function Atmosphere\settings_url;
 
 /**
@@ -168,51 +169,44 @@ class Health_Check {
 	 * @return string HTML paragraphs.
 	 */
 	private static function reauth_description(): string {
-		$reason = get_reauth_reason();
+		/*
+		 * The cause sentence is shared with the admin reconnect notice
+		 * via `reauth_reason_lead()`; only the action tail is owned here.
+		 */
+		$description = \sprintf(
+			'<p>%s %s</p>',
+			reauth_reason_lead(),
+			\__( 'Reconnect your Bluesky account on the settings page to resume sharing.', 'atmosphere' )
+		);
 
-		if ( Client::REAUTH_REASON_KEY_CHANGED === $reason ) {
-			$description = \sprintf(
-				'<p>%s</p>',
-				\__( 'Your site’s security keys have changed — this can happen after a migration, or when a security plugin rotates them on a schedule — so ATmosphere can no longer read its saved Bluesky login. Reconnect your Bluesky account on the settings page.', 'atmosphere' )
-			);
-
-			if ( Encryption::has_dedicated_key() ) {
-				$description .= \sprintf(
-					'<p>%s</p>',
-					\__( 'A dedicated ATmosphere encryption key is defined, but its value appears to have changed. Restore the previous value, or reconnect to save a new login under the current one.', 'atmosphere' )
-				);
-			} else {
-				/*
-				 * Generate a real, ready-to-paste key (same recipe as
-				 * WordPress's own secret-key service) instead of a
-				 * placeholder the user has to know how to replace. A
-				 * fresh value is generated per render and never stored
-				 * — only the copy the user pastes into wp-config.php
-				 * matters. `wp_generate_password()`'s character set
-				 * contains no quotes or backslashes, so the value is
-				 * safe inside a single-quoted PHP string literal.
-				 */
-				$description .= \sprintf(
-					'<p>%s</p><p><code>%s</code></p>',
-					\__( 'If your security keys are rotated regularly, add a dedicated key for ATmosphere to your wp-config.php before reconnecting, so the connection survives future rotations. Copy this freshly generated line as-is, and never change it afterwards:', 'atmosphere' ),
-					\esc_html( "define( 'ATMOSPHERE_ENCRYPTION_KEY', '" . \wp_generate_password( 64, true, true ) . "' );" )
-				);
-			}
-
+		if ( Client::REAUTH_REASON_KEY_CHANGED !== get_reauth_reason() ) {
 			return $description;
 		}
 
-		if ( Client::REAUTH_REASON_DECRYPT_FAILED === $reason ) {
-			return \sprintf(
+		if ( Encryption::has_dedicated_key() ) {
+			$description .= \sprintf(
 				'<p>%s</p>',
-				\__( 'ATmosphere can no longer read its saved Bluesky login. Reconnect your Bluesky account on the settings page to resume sharing.', 'atmosphere' )
+				\__( 'A dedicated ATmosphere encryption key is defined, but its value appears to have changed. Restore the previous value, or reconnect to save a new login under the current one.', 'atmosphere' )
+			);
+		} else {
+			/*
+			 * Generate a real, ready-to-paste key (same recipe as
+			 * WordPress's own secret-key service) instead of a
+			 * placeholder the user has to know how to replace. A
+			 * fresh value is generated per render and never stored
+			 * — only the copy the user pastes into wp-config.php
+			 * matters. `wp_generate_password()`'s character set
+			 * contains no quotes or backslashes, so the value is
+			 * safe inside a single-quoted PHP string literal.
+			 */
+			$description .= \sprintf(
+				'<p>%s</p><p><code>%s</code></p>',
+				\__( 'If your security keys are rotated regularly, add a dedicated key for ATmosphere to your wp-config.php before reconnecting, so the connection survives future rotations. Copy this freshly generated line as-is, and never change it afterwards:', 'atmosphere' ),
+				\esc_html( "define( 'ATMOSPHERE_ENCRYPTION_KEY', '" . \wp_generate_password( 64, true, true ) . "' );" )
 			);
 		}
 
-		return \sprintf(
-			'<p>%s</p>',
-			\__( 'Your Bluesky session has expired. Reconnect your Bluesky account on the settings page to resume sharing.', 'atmosphere' )
-		);
+		return $description;
 	}
 
 	/**
