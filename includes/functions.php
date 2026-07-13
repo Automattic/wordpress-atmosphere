@@ -9,6 +9,8 @@ namespace Atmosphere;
 
 \defined( 'ABSPATH' ) || exit;
 
+use Atmosphere\OAuth\Client;
+
 /**
  * Parse an AT-URI into components.
  *
@@ -462,6 +464,58 @@ function needs_reauth(): bool {
 	$conn = get_connection();
 
 	return ! empty( $conn['needs_reauth'] ) || empty( $conn['access_token'] );
+}
+
+/**
+ * Whether the operator explicitly disconnected the site.
+ *
+ * The explicit-disconnect marker only counts when the connection row is
+ * genuinely empty. `Client::disconnect()` deletes `atmosphere_connection`
+ * before any other admin request can land, so a missing connection
+ * alongside the marker is a true operator-initiated disconnect. After a
+ * refresh failure, the connection row stays put (with `needs_reauth`
+ * set) — if a stale marker from an earlier disconnect survived (e.g. a
+ * `delete_option` silently failed at a cache layer), the connection's
+ * presence outs the marker as stale and callers should fall through to
+ * their failure copy, which is the accurate framing.
+ *
+ * @since unreleased
+ *
+ * @return bool
+ */
+function is_operator_disconnected(): bool {
+	return (bool) \get_option( Client::DISCONNECTED_OPTION, false ) && empty( get_connection() );
+}
+
+/**
+ * Why the connection was flagged for reauth.
+ *
+ * Canonical values are the `Client::REAUTH_REASON_*` constants:
+ * `key_changed` (encryption key material changed under the stored
+ * tokens) and `decrypt_failed` (tokens unreadable with an unchanged
+ * key). An empty string means no specific cause was recorded — legacy
+ * rows and plain session expiry.
+ *
+ * @since unreleased
+ *
+ * @return string
+ */
+function get_reauth_reason(): string {
+	return (string) ( get_connection()['reauth_reason'] ?? '' );
+}
+
+/**
+ * URL of the ATmosphere settings page.
+ *
+ * Single source for the settings-page location so reconnect prompts and
+ * editor surfaces don't each hardcode the page slug.
+ *
+ * @since unreleased
+ *
+ * @return string Unescaped admin URL; escape at the call site.
+ */
+function settings_url(): string {
+	return \admin_url( 'options-general.php?page=atmosphere' );
 }
 
 /**

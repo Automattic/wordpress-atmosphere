@@ -95,7 +95,7 @@ class Block_Editor {
 			'previewPath'       => Pre_Publish_Controller::full_route(),
 			'disabledMetaKey'   => ATMOSPHERE_META_DISABLED,
 			'customTextMetaKey' => ATMOSPHERE_META_CUSTOM_TEXT,
-			'settingsUrl'       => \admin_url( 'options-general.php?page=atmosphere' ),
+			'settingsUrl'       => settings_url(),
 		);
 	}
 }

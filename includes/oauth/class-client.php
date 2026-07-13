@@ -136,6 +136,31 @@ class Client {
 	public const DISCONNECTED_OPTION = 'atmosphere_disconnected';
 
 	/**
+	 * `reauth_reason` marker: the encryption key material changed under
+	 * the stored tokens (salt rotation, regenerated wp-config.php).
+	 *
+	 * Written by {@see self::flag_decrypt_failure()}; read by the admin
+	 * reauth notice and Site Health, whose copy explains the cause. A
+	 * mistyped comparison fails soft (falls through to generic expiry
+	 * copy), so consumers MUST use these constants.
+	 *
+	 * @since unreleased
+	 *
+	 * @var string
+	 */
+	public const REAUTH_REASON_KEY_CHANGED = 'key_changed';
+
+	/**
+	 * `reauth_reason` marker: tokens unreadable although the key
+	 * fingerprint still matches (corrupted ciphertext).
+	 *
+	 * @since unreleased
+	 *
+	 * @var string
+	 */
+	public const REAUTH_REASON_DECRYPT_FAILED = 'decrypt_failed';
+
+	/**
 	 * Get the client_id URL (= client metadata endpoint).
 	 *
 	 * @return string
@@ -887,7 +912,7 @@ class Client {
 			 */
 			$error = $data['error'] ?? '';
 			if ( \in_array( $error, array( 'invalid_grant', 'invalid_client', 'unauthorized_client' ), true ) ) {
-				self::mark_needs_reauth( $conn );
+				self::mark_needs_reauth( $conn, 'refresh_token' );
 			}
 
 			return new \WP_Error( 'atmosphere_refresh', $msg, array( 'status' => $status ) );
@@ -980,7 +1005,11 @@ class Client {
 		$stored      = (string) ( $conn['key_fingerprint'] ?? '' );
 		$key_changed = '' !== $stored && ! \hash_equals( Encryption::key_fingerprint(), $stored );
 
-		self::mark_needs_reauth( $conn, $field, $key_changed ? 'key_changed' : 'decrypt_failed' );
+		self::mark_needs_reauth(
+			$conn,
+			$field,
+			$key_changed ? self::REAUTH_REASON_KEY_CHANGED : self::REAUTH_REASON_DECRYPT_FAILED
+		);
 
 		if ( $key_changed ) {
 			return new \WP_Error(
@@ -1019,7 +1048,7 @@ class Client {
 	 *                       `reauth_reason` so the admin notice can
 	 *                       explain the failure (e.g. `key_changed`).
 	 */
-	private static function mark_needs_reauth( array $conn, string $field = 'refresh_token', string $reason = '' ): void {
+	private static function mark_needs_reauth( array $conn, string $field, string $reason = '' ): void {
 		if ( empty( $conn[ $field ] ) ) {
 			return;
 		}
