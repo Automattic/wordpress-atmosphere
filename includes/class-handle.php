@@ -45,13 +45,6 @@ class Handle {
 	public const NOTICE_SETTING = 'atmosphere';
 
 	/**
-	 * Option storing the previous handle so disconnect can revert.
-	 *
-	 * @var string
-	 */
-	public const OPTION_PREVIOUS_HANDLE = 'atmosphere_previous_handle';
-
-	/**
 	 * Whether the entire feature is enabled.
 	 *
 	 * @return bool
@@ -61,7 +54,7 @@ class Handle {
 		 * Filter whether the domain-handle feature is enabled.
 		 *
 		 * Filter to false to fully disable: the Settings panel suppresses
-		 * the confirm button, and disconnect does not attempt to revert.
+		 * the confirm button.
 		 *
 		 * @param bool $enabled Default true.
 		 */
@@ -136,9 +129,9 @@ class Handle {
 	 * `updateHandle` against the user's connected account without an
 	 * explicit cap-bearing context.
 	 *
-	 * On success: snapshots the current handle (so disconnect can revert),
-	 * invokes `com.atproto.identity.updateHandle` via Atmosphere's DPoP
-	 * client, and posts a settings notice describing the outcome.
+	 * On success: invokes `com.atproto.identity.updateHandle` via
+	 * Atmosphere's DPoP client and posts a settings notice describing
+	 * the outcome.
 	 *
 	 * @return true|\WP_Error|null Null when the feature is disabled, the
 	 *                              install is ineligible, the current user
@@ -179,15 +172,15 @@ class Handle {
 			return null;
 		}
 
-		if ( '' !== $current ) {
-			/*
-			 * Snapshot the current handle BEFORE the XRPC call. If the call
-			 * succeeds, the snapshot is what we revert to on disconnect. If it
-			 * fails, the PDS handle is unchanged, so the snapshot still equals
-			 * the user's actual handle and a later revert call is a safe no-op.
-			 */
-			\update_option( self::OPTION_PREVIOUS_HANDLE, $current, false );
-		}
+		/*
+		 * Self-heal the well-known rewrite before the XRPC call: the PDS
+		 * fetches `/.well-known/atproto-did` within milliseconds of
+		 * `updateHandle`, so the persisted rule must be in place by then.
+		 * This is the exact failure surface from issue 90. See
+		 * {@see Atmosphere::maybe_flush_wellknown_rewrites()} for why the
+		 * activation-time flush alone is not enough.
+		 */
+		Atmosphere::maybe_flush_wellknown_rewrites();
 
 		$result = self::call_update_handle( $target );
 
@@ -213,65 +206,6 @@ class Handle {
 				$target
 			),
 			'success'
-		);
-
-		return true;
-	}
-
-	/**
-	 * Attempt to revert to the previously snapshotted handle.
-	 *
-	 * No-op when the feature is disabled or there is nothing to revert.
-	 * Caller (the disconnect flow) MUST invoke this BEFORE
-	 * `\Atmosphere\OAuth\Client::disconnect()` so the access token is still
-	 * valid for the call.
-	 *
-	 * @return true|\WP_Error|null Null when no revert was attempted.
-	 */
-	public static function maybe_revert_on_disconnect(): true|\WP_Error|null {
-		if ( ! self::is_enabled() ) {
-			return null;
-		}
-
-		$previous = (string) \get_option( self::OPTION_PREVIOUS_HANDLE, '' );
-		if ( '' === $previous ) {
-			return null;
-		}
-
-		$result = self::call_update_handle( $previous );
-
-		if ( \is_wp_error( $result ) ) {
-			self::add_settings_notice(
-				\sprintf(
-					/* translators: 1: previous handle to restore; 2: error message from the PDS. */
-					\__( 'Could not restore your previous Bluesky handle (%1$s): %2$s', 'atmosphere' ),
-					$previous,
-					$result->get_error_message()
-				),
-				'warning'
-			);
-			return $result;
-		}
-
-		\delete_option( self::OPTION_PREVIOUS_HANDLE );
-
-		/*
-		 * Mirror the restored handle into atmosphere_connection. On the
-		 * standard disconnect path Client::disconnect() drops the option
-		 * moments later, so this write is wasted there — but keeping it
-		 * decouples Handle from disconnect ordering, so any future caller
-		 * (e.g. a manual revert action that does not also disconnect) gets
-		 * a consistent local snapshot.
-		 */
-		self::sync_connection_handle( $previous );
-
-		self::add_settings_notice(
-			\sprintf(
-				/* translators: %s: the handle that was restored (e.g. alice.bsky.social). */
-				\__( 'Restored your previous Bluesky handle: %s.', 'atmosphere' ),
-				$previous
-			),
-			'info'
 		);
 
 		return true;

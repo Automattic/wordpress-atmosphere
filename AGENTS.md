@@ -2,7 +2,7 @@
 
 WordPress plugin that publishes posts to AT Protocol in both `app.bsky.feed.post` (Bluesky) and `site.standard.document` / `site.standard.publication` (standard.site) formats via native OAuth.
 
-**Tech stack:** PHP 8.2+, WordPress 6.2+, wp-env for local dev, PHPUnit for tests, Jetpack Changelogger for changelog management.
+**Tech stack:** PHP 8.2+, WordPress 6.5+, wp-env for local dev, PHPUnit for tests, Jetpack Changelogger for changelog management.
 
 **Do NOT:**
 - Edit WordPress core files
@@ -71,6 +71,8 @@ Text domain: always `'atmosphere'`.
 **MUST** backslash-prefix all WordPress/PHP global functions in namespaced code: `\get_option()`, `\add_action()`, `\apply_filters()`, `\strlen()`, `\time()`, etc.
 
 **MUST** use `use` imports for cross-namespace references — no inline `\Namespace\Class`.
+
+**MUST** build any front-end-displayed Bluesky/appview web link (`profile`, `post`, `hashtag`, `mention`) through `Atmosphere\appview_url( $path, $context )` in `includes/functions.php` — never hardcode `https://bsky.app/...`. The helper centralizes the host and makes it filterable (`atmosphere_appview_host` / `atmosphere_appview_url`). Keep escaping at the call site (`\esc_url()` for HTML, `\esc_url_raw()` for storage); the helper returns an unescaped URL on purpose. This applies to display links only, not to AT Protocol records being published.
 
 ## Autoloading
 

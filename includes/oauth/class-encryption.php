@@ -18,13 +18,28 @@ namespace Atmosphere\OAuth;
 class Encryption {
 
 	/**
-	 * Derive a 32-byte key from WordPress auth constants.
+	 * Derive a 32-byte key from the site's auth salt.
+	 *
+	 * Prefers `AUTH_KEY . AUTH_SALT` so previously encrypted tokens still
+	 * decrypt; falls back to `wp_salt( 'auth' )` on sites that don't
+	 * define those constants.
 	 *
 	 * @return string
 	 */
 	private static function key(): string {
+		if (
+			\defined( 'AUTH_KEY' )
+			&& \defined( 'AUTH_SALT' )
+			&& '' !== AUTH_KEY
+			&& '' !== AUTH_SALT
+		) {
+			$material = AUTH_KEY . AUTH_SALT;
+		} else {
+			$material = \wp_salt( 'auth' );
+		}
+
 		return \sodium_crypto_generichash(
-			AUTH_KEY . AUTH_SALT,
+			$material,
 			'',
 			SODIUM_CRYPTO_SECRETBOX_KEYBYTES
 		);

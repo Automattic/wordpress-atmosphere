@@ -10,6 +10,8 @@ namespace Atmosphere;
 
 \defined( 'ABSPATH' ) || exit;
 
+use Atmosphere\OAuth\Client;
+use Atmosphere\Transformer\Facet;
 use Atmosphere\Transformer\Post as BskyPost;
 
 /**
@@ -110,6 +112,121 @@ class Reaction_Sync {
 	public static function register(): void {
 		\add_filter( 'get_avatar_comment_types', array( self::class, 'avatar_comment_types' ) );
 		\add_filter( 'pre_get_avatar_data', array( self::class, 'filter_avatar_data' ), 10, 2 );
+
+		/*
+		 * Keep synced likes and reposts out of the post's comment list and
+		 * count — they're surfaced via the reactions block instead. Replies
+		 * (comment_type `comment`) stay, as they are genuine comments.
+		 *
+		 * Skipped when the ActivityPub plugin is active: it already excludes
+		 * these comment types (they share its shape), so running our own
+		 * filters too would double up.
+		 */
+		if ( ! is_activitypub_active() ) {
+			\add_action( 'pre_get_comments', array( self::class, 'exclude_reactions_from_comments' ) );
+			\add_filter( 'pre_wp_update_comment_count_now', array( self::class, 'exclude_reactions_from_count' ), 5, 3 );
+		}
+	}
+
+	/**
+	 * The comment types surfaced via the reactions block, not the comment list.
+	 *
+	 * @return string[]
+	 */
+	private static function reaction_comment_types(): array {
+		return array( 'like', 'repost' );
+	}
+
+	/**
+	 * Exclude likes and reposts from front-end comment queries.
+	 *
+	 * Bails for admin, REST, and non-singular contexts, and for any query
+	 * that already constrains comment types, so only the default front-end
+	 * comment list on a single post is filtered.
+	 *
+	 * @param \WP_Comment_Query $query The comment query.
+	 * @return void
+	 */
+	public static function exclude_reactions_from_comments( $query ): void {
+		if ( ! $query instanceof \WP_Comment_Query ) {
+			return;
+		}
+
+		if ( \is_admin() || ( \defined( 'REST_REQUEST' ) && \REST_REQUEST ) ) {
+			return;
+		}
+
+		if ( ! \is_singular() ) {
+			return;
+		}
+
+		if ( ! empty( $query->query_vars['type'] )
+			|| ! empty( $query->query_vars['type__in'] )
+			|| ! empty( $query->query_vars['type__not_in'] )
+		) {
+			return;
+		}
+
+		$query->query_vars['type__not_in'] = self::reaction_comment_types();
+	}
+
+	/**
+	 * Exclude likes and reposts from a post's comment count.
+	 *
+	 * Hooked early on `pre_wp_update_comment_count_now`; recomputes the count
+	 * over everything except the reaction comment types so the "N comments"
+	 * total reflects replies only.
+	 *
+	 * @param int|null $new_count The new count, or null to use the default.
+	 * @param int      $old_count The old count.
+	 * @param int      $post_id   The post ID.
+	 * @return int The comment count excluding reactions.
+	 */
+	public static function exclude_reactions_from_count( $new_count, $old_count, $post_id ) {
+		if ( null !== $new_count ) {
+			return $new_count;
+		}
+
+		$excluded     = self::reaction_comment_types();
+		$placeholders = \implode( ', ', \array_fill( 0, \count( $excluded ), '%s' ) );
+
+		global $wpdb;
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		return (int) $wpdb->get_var(
+			$wpdb->prepare(
+				// phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+				"SELECT COUNT(*) FROM {$wpdb->comments} WHERE comment_post_ID = %d AND comment_approved = '1' AND comment_type NOT IN ( {$placeholders} )",
+				\array_merge( array( $post_id ), $excluded )
+			)
+		);
+	}
+
+	/**
+	 * Whether likes and reposts are imported (user setting).
+	 *
+	 * The gate is intentionally per-item: the sync watermarks keep
+	 * advancing while the setting is off, so interactions from the
+	 * off period are skipped for good rather than imported
+	 * retroactively when the setting is re-enabled.
+	 *
+	 * @return bool
+	 */
+	private static function reactions_enabled(): bool {
+		return '1' === \get_option( 'atmosphere_sync_reactions', '1' );
+	}
+
+	/**
+	 * Whether replies are imported as comments (user setting).
+	 *
+	 * Same going-forward semantics as {@see self::reactions_enabled()}:
+	 * replies that arrive while the setting is off are not imported
+	 * retroactively on re-enable.
+	 *
+	 * @return bool
+	 */
+	private static function replies_enabled(): bool {
+		return '1' === \get_option( 'atmosphere_sync_replies', '1' );
 	}
 
 	/**
@@ -155,6 +272,26 @@ class Reaction_Sync {
 	 */
 	public static function sync(): void {
 		if ( ! is_connected() ) {
+			return;
+		}
+
+		/*
+		 * Probe the access token once before walking the four streams.
+		 * Without this, a refresh that's locked or has just flipped
+		 * `needs_reauth` would be hit independently by each
+		 * {@see self::paginate()} call below — surfacing the same
+		 * incident four times in the error log and re-triggering the
+		 * refresh path on a session we already know is broken.
+		 */
+		$token = Client::access_token();
+		if ( \is_wp_error( $token ) ) {
+			debug_log(
+				\sprintf(
+					'reaction sync aborted: %s — %s',
+					$token->get_error_code(),
+					$token->get_error_message()
+				)
+			);
 			return;
 		}
 
@@ -212,6 +349,7 @@ class Reaction_Sync {
 		$cursor    = null;
 		$pages     = 0;
 		$rewalk    = null;
+		$collected = array();
 
 		while ( $pages < self::MAX_PAGES ) {
 			$response = $fetch( $cursor );
@@ -222,9 +360,9 @@ class Reaction_Sync {
 				 * stopped making progress (rate limit, OAuth refresh
 				 * failure, transient 5xx all surface here identically).
 				 */
-				\error_log( // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
+				debug_log(
 					\sprintf(
-						'[atmosphere] reaction sync (%s) fetch failed: %s — %s',
+						'reaction sync (%s) fetch failed: %s — %s',
 						$option_key,
 						$response->get_error_code(),
 						$response->get_error_message()
@@ -248,7 +386,7 @@ class Reaction_Sync {
 
 				if ( null === $rewalk && $last_seen && $uri === $last_seen ) {
 					/*
-					 * +1 because the watermark item itself is processed
+					 * +1 because the watermark item itself is collected
 					 * (and dedup-skipped) before this counter decrements;
 					 * initialising to GRACE + 1 means we re-walk exactly
 					 * GRACE items strictly past the watermark.
@@ -260,7 +398,7 @@ class Reaction_Sync {
 					break 2;
 				}
 
-				$process( $item );
+				$collected[] = $item;
 
 				if ( null !== $rewalk ) {
 					--$rewalk;
@@ -273,6 +411,23 @@ class Reaction_Sync {
 			if ( ! $cursor ) {
 				break;
 			}
+		}
+
+		/*
+		 * Process oldest-first. Bluesky streams newest-first, but a reply's
+		 * parent (a post record or an earlier reply) is always older than the
+		 * reply itself. Processing in stream order therefore reaches a child
+		 * reply before its parent exists as a local comment, and
+		 * process_reply() drops any reply whose parent it can't resolve. By
+		 * reversing to oldest-first, a parent is synced before any reply that
+		 * targets it, so an entire thread that arrives within one run resolves
+		 * in that run — instead of relying on the next run's WATERMARK_GRACE
+		 * re-walk, which only reaches GRACE items and loses deeper or bursty
+		 * threads. Dedup via source_id keeps the reprocessing idempotent, and
+		 * the watermark below is still the newest URI regardless of order.
+		 */
+		foreach ( \array_reverse( $collected ) as $item ) {
+			$process( $item );
 		}
 
 		if ( $newest ) {
@@ -363,6 +518,10 @@ class Reaction_Sync {
 	 * @return int|false Comment ID or false.
 	 */
 	private static function process_reply( array $notification ): int|false {
+		if ( ! self::replies_enabled() ) {
+			return false;
+		}
+
 		$reply_uri = $notification['uri'] ?? '';
 		$record    = $notification['record'] ?? array();
 		$author    = $notification['author'] ?? array();
@@ -376,7 +535,6 @@ class Reaction_Sync {
 		}
 
 		$parent_uri = $record['reply']['parent']['uri'] ?? '';
-		$root_uri   = $record['reply']['root']['uri'] ?? '';
 
 		if ( empty( $parent_uri ) ) {
 			return false;
@@ -399,17 +557,65 @@ class Reaction_Sync {
 			}
 		}
 
-		if ( ! $post_id ) {
-			// Deep thread rooted at one of our posts.
-			$post_id = self::find_post_by_bsky_uri( $root_uri );
-		}
-
+		/*
+		 * Drop replies whose parent we can't resolve. A parent that
+		 * doesn't match a local WP post or a previously-synced WP
+		 * comment is either:
+		 *
+		 *   - Orphaned: the parent was deleted on Bluesky (e.g. blocked
+		 *     user, account deletion) or removed from our moderation
+		 *     queue. Falling back to the root post would re-attach
+		 *     every subsequent re-walk as a top-level orphan, looping
+		 *     the moderation queue indefinitely until the watermark
+		 *     advances past it.
+		 *
+		 *   - Out-of-order: a deep reply seen before its parent in the
+		 *     same `listNotifications`/`listRecords` page. Dropping
+		 *     here is recoverable: the parent gets synced in the same
+		 *     run, the child re-enters via the WATERMARK_GRACE window
+		 *     on the next run, and parent resolution succeeds.
+		 *
+		 * Direct replies (parent_uri is one of our WP posts) and
+		 * resolved nested replies are unaffected.
+		 */
 		if ( ! $post_id ) {
 			return false;
 		}
 
 		$text = $record['text'] ?? '';
 
+		/*
+		 * Bluesky stores `text` as the display string — long URLs are
+		 * truncated to e.g. `bsky.app/profile/jere...` and the real
+		 * target lives only in `facets`. Resolve those byte ranges back
+		 * into anchors before the text becomes comment content; otherwise
+		 * imported replies keep the lossy, unclickable display string.
+		 *
+		 * `facets` is untrusted PDS JSON: guard the type here so a
+		 * present-but-non-array value can't fatal the typed `apply()` call
+		 * and silently kill this notification's cron sync.
+		 */
+		$facets = $record['facets'] ?? array();
+		$text   = Facet::apply( $text, \is_array( $facets ) ? $facets : array() );
+
+		/*
+		 * A reply that quotes another post carries the quoted post's
+		 * AT-URI in `embed` (app.bsky.embed.record), not in `text`.
+		 * Surface it as a linked blockquote so the quote isn't dropped on
+		 * import; append after the reply text, mirroring how Bluesky
+		 * renders the quote card below the reply.
+		 */
+		$quote = self::build_quote_html( $record );
+
+		if ( '' !== $quote ) {
+			$text = '' === $text ? $quote : $text . "\n\n" . $quote;
+		}
+
+		/*
+		 * Drop replies that carry neither text nor a resolvable quote —
+		 * the gate is here, after both are resolved, so a quote-only
+		 * reply (empty `text`, populated `embed`) still imports.
+		 */
 		if ( '' === $text ) {
 			return false;
 		}
@@ -458,6 +664,10 @@ class Reaction_Sync {
 	 * @return int|false Comment ID or false.
 	 */
 	private static function process_subject_reaction( array $notification, string $comment_type ): int|false {
+		if ( ! self::reactions_enabled() ) {
+			return false;
+		}
+
 		$uri    = $notification['uri'] ?? '';
 		$record = $notification['record'] ?? array();
 		$author = $notification['author'] ?? array();
@@ -543,11 +753,23 @@ class Reaction_Sync {
 		$timestamp = \strtotime( $record['createdAt'] ?? '' );
 		$gm_date   = \gmdate( 'Y-m-d H:i:s', false === $timestamp ? 0 : $timestamp );
 
+		if ( '' === $content ) {
+			$content = self::default_reaction_excerpt( $comment_type );
+		}
+
 		$comment_data = array(
 			'comment_post_ID'      => $post_id,
 			'comment_parent'       => $comment_parent,
 			'comment_author'       => $author_name,
-			'comment_author_url'   => \esc_url_raw( 'https://bsky.app/profile/' . \rawurlencode( $author_handle ) ),
+			'comment_author_url'   => \esc_url_raw(
+				appview_url(
+					'profile/' . \rawurlencode( $author_handle ),
+					array(
+						'type'   => 'profile',
+						'handle' => $author_handle,
+					)
+				)
+			),
 			'comment_author_email' => '',
 			'comment_author_IP'    => '',
 			'comment_content'      => \wp_kses_post( $content ),
@@ -636,6 +858,30 @@ class Reaction_Sync {
 	}
 
 	/**
+	 * Default comment body for content-less reactions (likes and reposts).
+	 *
+	 * Mirrors the wording the wordpress-activitypub plugin uses for its
+	 * own like/repost rows, so themes that render activity feeds get a
+	 * consistent reading experience across protocols. The leading
+	 * ellipsis is intentional: most themes render the author name
+	 * immediately before the comment body, so the result reads as
+	 * "Jane Doe … liked this!".
+	 *
+	 * @param string $comment_type One of 'like', 'repost'.
+	 * @return string Translated excerpt, or empty string for unknown types.
+	 */
+	private static function default_reaction_excerpt( string $comment_type ): string {
+		switch ( $comment_type ) {
+			case 'like':
+				return \__( '… liked this!', 'atmosphere' );
+			case 'repost':
+				return \__( '… reposted this!', 'atmosphere' );
+			default:
+				return '';
+		}
+	}
+
+	/**
 	 * Resolve a Bluesky actor profile via getProfile, transient-cached.
 	 *
 	 * @param string $did Author DID.
@@ -671,10 +917,11 @@ class Reaction_Sync {
 	}
 
 	/**
-	 * Build the https://bsky.app/... web URL for a given AT-URI + handle.
+	 * Build the appview web URL for a given AT-URI + handle.
 	 *
-	 * Only app.bsky.feed.post records have a corresponding bsky.app
-	 * web page; like and repost rkeys don't, so those return ''.
+	 * Only app.bsky.feed.post records have a corresponding appview web
+	 * page; like and repost rkeys don't, so those return ''. The host
+	 * defaults to `bsky.app` and is filterable via `atmosphere_appview_host`.
 	 *
 	 * @param string $at_uri AT-URI.
 	 * @param string $handle Bluesky handle.
@@ -692,7 +939,132 @@ class Reaction_Sync {
 			return '';
 		}
 
-		return \esc_url_raw( 'https://bsky.app/profile/' . \rawurlencode( $handle ) . '/post/' . $rkey );
+		return \esc_url_raw(
+			appview_url(
+				'profile/' . \rawurlencode( $handle ) . '/post/' . $rkey,
+				array(
+					'type'   => 'post',
+					'handle' => $handle,
+					'rkey'   => $rkey,
+				)
+			)
+		);
+	}
+
+	/**
+	 * Build a blockquote linking to a reply's quoted post, if any.
+	 *
+	 * Bluesky quote-posts attach the quoted record to the reply's `embed`
+	 * (`app.bsky.embed.record`, or `recordWithMedia` when the quote also
+	 * carries media), pointing at the quoted post's AT-URI — the reply's
+	 * `text` says nothing about it. Without this, the quote is dropped on
+	 * import.
+	 *
+	 * Returns an HTML fragment safe to pass through the caller's
+	 * `wp_kses_post()` gate, or '' when there's no quoted `app.bsky.feed.post`
+	 * to link to. The quoted post's own text is intentionally not resolved:
+	 * it usually lives in another actor's repo, which would require a
+	 * separate network round-trip per quote — a link to the quote is enough
+	 * to stop the drop.
+	 *
+	 * @param array $record The reply record (notification record or own value).
+	 * @return string Blockquote HTML, or '' when there's no linkable quote.
+	 */
+	private static function build_quote_html( array $record ): string {
+		$embed = $record['embed'] ?? null;
+
+		if ( ! \is_array( $embed ) ) {
+			return '';
+		}
+
+		$uri = self::quoted_post_uri( $embed );
+		$url = '' === $uri ? '' : self::quoted_post_web_url( $uri );
+
+		if ( '' === $url ) {
+			return '';
+		}
+
+		$href = \esc_url( $url );
+
+		if ( '' === $href ) {
+			return '';
+		}
+
+		return '<blockquote class="atmosphere-bsky-quote"><p><a href="' . $href . '">'
+			. \esc_html__( 'Quoted post on Bluesky', 'atmosphere' )
+			. '</a></p></blockquote>';
+	}
+
+	/**
+	 * Read the quoted post's AT-URI out of a reply's `embed`.
+	 *
+	 * Handles `app.bsky.embed.record` (URI at `record.uri`) and
+	 * `app.bsky.embed.recordWithMedia` (one level deeper at
+	 * `record.record.uri`), along with their hydrated `#view` forms, which
+	 * share the same paths. Every level is `is_array()`-guarded because the
+	 * embed is untrusted PDS JSON; an unrecognised or malformed shape
+	 * returns '' rather than fataling the cron sync.
+	 *
+	 * @param array $embed The record's `embed` value.
+	 * @return string The quoted post's AT-URI, or '' when absent/malformed.
+	 */
+	private static function quoted_post_uri( array $embed ): string {
+		$type = $embed['$type'] ?? '';
+
+		if ( ! \is_string( $type ) || ! \str_starts_with( $type, 'app.bsky.embed.record' ) ) {
+			return '';
+		}
+
+		$record = $embed['record'] ?? null;
+
+		if ( ! \is_array( $record ) ) {
+			return '';
+		}
+
+		// recordWithMedia nests the quoted record one level deeper.
+		if ( ! isset( $record['uri'] ) && \is_array( $record['record'] ?? null ) ) {
+			$record = $record['record'];
+		}
+
+		$uri = $record['uri'] ?? '';
+
+		return \is_string( $uri ) ? $uri : '';
+	}
+
+	/**
+	 * Convert a quoted post's AT-URI to its appview web URL.
+	 *
+	 * Builds the DID form (`profile/<did>/post/<rkey>`), which resolves
+	 * without a handle lookup. The host defaults to `bsky.app` and is
+	 * filterable via `atmosphere_appview_host`. Only `app.bsky.feed.post`
+	 * records have an appview post page, so any other collection — or a
+	 * malformed URI — returns ''.
+	 *
+	 * @param string $at_uri Quoted post AT-URI.
+	 * @return string The appview URL, or '' when not a linkable post.
+	 */
+	private static function quoted_post_web_url( string $at_uri ): string {
+		$parts = parse_at_uri( $at_uri );
+
+		if ( false === $parts ) {
+			return '';
+		}
+
+		if ( 'app.bsky.feed.post' !== $parts['collection'] || '' === $parts['did'] || '' === $parts['rkey'] ) {
+			return '';
+		}
+
+		// The DID is passed raw, matching the other profile/<did>/post/<rkey>
+		// builders (Atmosphere::* and Facet); its colons are valid path chars
+		// the appview expects unencoded. Handles, by contrast, are rawurlencode()d.
+		return appview_url(
+			'profile/' . $parts['did'] . '/post/' . $parts['rkey'],
+			array(
+				'type' => 'post',
+				'did'  => $parts['did'],
+				'rkey' => $parts['rkey'],
+			)
+		);
 	}
 
 	/**
@@ -705,6 +1077,12 @@ class Reaction_Sync {
 	 * fallback, a like/repost targeting a reply post would silently
 	 * fail to resolve back to the originating WordPress post.
 	 *
+	 * Both lookups are scoped to `get_supported_post_types()` so the
+	 * resolver covers exactly the types the Publisher federates — see
+	 * {@see self::find_post_by_uri_meta()} for why the explicit scope
+	 * matters. When no post types are supported there is nothing to
+	 * resolve, so bail before running any query.
+	 *
 	 * @param string $uri AT-URI.
 	 * @return int|false
 	 */
@@ -713,25 +1091,49 @@ class Reaction_Sync {
 			return false;
 		}
 
-		$posts = \get_posts(
-			array(
-				'meta_key'       => BskyPost::META_URI, // phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_key
-				'meta_value'     => $uri, // phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_value
-				'posts_per_page' => 1,
-				'post_status'    => 'publish',
-				'has_password'   => false,
-				'fields'         => 'ids',
-			)
-		);
+		$post_types = get_supported_post_types();
 
-		if ( ! empty( $posts ) ) {
-			return (int) $posts[0];
+		/*
+		 * An empty supported-types list means nothing is federated, so
+		 * nothing should resolve. Bail before get_posts(), whose empty
+		 * `post_type` array silently falls back to WordPress's `post`
+		 * default and would reintroduce the exact miss this scoping fixes.
+		 */
+		if ( empty( $post_types ) ) {
+			return false;
 		}
 
+		$post_id = self::find_post_by_uri_meta( BskyPost::META_URI, $uri, $post_types );
+
+		if ( false !== $post_id ) {
+			return $post_id;
+		}
+
+		return self::find_post_by_uri_meta( BskyPost::META_URI_INDEX, $uri, $post_types );
+	}
+
+	/**
+	 * Resolve a published, federated post from a URI-valued meta key.
+	 *
+	 * Scoped to the supported post types rather than left to
+	 * `get_posts()`'s `post_type => 'post'` default. Without the explicit
+	 * scope, reactions targeting a custom post type we publish (an
+	 * `aside`/`status`-style CPT, a note type, etc.) resolve to nothing
+	 * and are dropped silently — no comment row, no error. Passing the
+	 * types explicitly also picks up supported CPTs registered with
+	 * `exclude_from_search`, which the `'any'` shortcut would miss.
+	 *
+	 * @param string   $meta_key   Meta key to match ({@see BskyPost::META_URI} or META_URI_INDEX).
+	 * @param string   $uri        AT-URI to match.
+	 * @param string[] $post_types Supported post types to scope the query to.
+	 * @return int|false
+	 */
+	private static function find_post_by_uri_meta( string $meta_key, string $uri, array $post_types ): int|false {
 		$posts = \get_posts(
 			array(
-				'meta_key'       => BskyPost::META_URI_INDEX, // phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_key
+				'meta_key'       => $meta_key, // phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_key
 				'meta_value'     => $uri, // phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_value
+				'post_type'      => $post_types,
 				'posts_per_page' => 1,
 				'post_status'    => 'publish',
 				'has_password'   => false,

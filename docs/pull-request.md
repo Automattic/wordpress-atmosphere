@@ -123,12 +123,13 @@ Walk this checklist. Required checks are blocking.
 Use the template at `.github/PULL_REQUEST_TEMPLATE.md` — don't invent custom formatting.
 
 ```bash
-gh pr create --assignee @me
+gh pr create --assignee @me --reviewer Automattic/atmosphere
 ```
 
 Every PR must:
 
 - Be assigned to the author (`--assignee @me`).
+- Request review from the `Automattic/atmosphere` team (`--reviewer Automattic/atmosphere`). Copilot is requested automatically by the trunk branch ruleset.
 - Include a changelog file **or** the `Skip Changelog` label.
 - Have PHPCS + PHPUnit green.
 - Merge cleanly with `trunk`.

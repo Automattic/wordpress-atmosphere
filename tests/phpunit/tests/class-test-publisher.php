@@ -3,7 +3,7 @@
  * Tests for the Publisher class.
  *
  * Verifies publish, update, and delete flows including the
- * URI-based existence check and bsky cross-reference refresh.
+ * URI-based existence check and standard.site document strong refs.
  *
  * @package Atmosphere
  * @group atmosphere
@@ -13,6 +13,7 @@
 namespace Atmosphere\Tests;
 
 use WP_UnitTestCase;
+use Atmosphere\CID;
 use Atmosphere\Publisher;
 use Atmosphere\Reaction_Sync;
 use Atmosphere\OAuth\DPoP;
@@ -20,6 +21,7 @@ use Atmosphere\OAuth\Encryption;
 use Atmosphere\Transformer\Comment;
 use Atmosphere\Transformer\Document;
 use Atmosphere\Transformer\Post;
+use Atmosphere\Transformer\Publication;
 
 /**
  * Publisher tests.
@@ -44,8 +46,6 @@ class Test_Publisher extends WP_UnitTestCase {
 			)
 		);
 		\update_option( 'atmosphere_did', 'did:plc:test123' );
-
-		\add_filter( 'pre_http_request', array( $this, 'mock_document_ref_update' ), 10, 3 );
 	}
 
 	/**
@@ -55,43 +55,16 @@ class Test_Publisher extends WP_UnitTestCase {
 		\delete_option( 'atmosphere_connection' );
 		\delete_option( 'atmosphere_did' );
 		\delete_option( 'atmosphere_publication_tid' );
+		\delete_option( 'atmosphere_publication_cid' );
 
 		\remove_all_filters( 'atmosphere_pre_apply_writes' );
 		\remove_all_filters( 'atmosphere_long_form_composition' );
 		\remove_all_filters( 'atmosphere_teaser_thread_posts' );
 		\remove_all_filters( 'atmosphere_transform_bsky_post' );
+		\remove_all_filters( 'atmosphere_transform_document' );
 		\remove_all_filters( 'atmosphere_is_short_form_post' );
-		\remove_filter( 'pre_http_request', array( $this, 'mock_document_ref_update' ), 10 );
 
 		parent::tear_down();
-	}
-
-	/**
-	 * Mock follow-up document putRecord calls.
-	 *
-	 * @param false|array|\WP_Error $response Preemptive HTTP response.
-	 * @param array                 $args     Request args.
-	 * @param string                $url      Request URL.
-	 * @return false|array|\WP_Error
-	 */
-	public function mock_document_ref_update( $response, array $args, string $url ) {
-		if ( false !== $response ) {
-			return $response;
-		}
-
-		if ( false === \strpos( $url, 'com.atproto.repo.putRecord' ) ) {
-			return $response;
-		}
-
-		return array(
-			'response' => array( 'code' => 200 ),
-			'body'     => \wp_json_encode(
-				array(
-					'uri' => 'at://did:plc:test123/site.standard.document/doc-ref',
-					'cid' => 'bafyreibdocref',
-				)
-			),
-		);
 	}
 
 	/**
@@ -528,12 +501,12 @@ class Test_Publisher extends WP_UnitTestCase {
 		\update_comment_meta( $c3, Comment::META_TID, 'stale-tid' );
 		// No META_URI — previously-failed publish; must not be in the delete batch.
 
-		$captured_body = null;
+		$captured_bodies = array();
 		\add_filter(
 			'pre_http_request',
-			static function ( $response, $args, $url ) use ( &$captured_body ) {
+			static function ( $response, $args, $url ) use ( &$captured_bodies ) {
 				if ( false !== \strpos( $url, 'applyWrites' ) ) {
-					$captured_body = \json_decode( $args['body'], true );
+					$captured_bodies[] = \json_decode( $args['body'], true );
 
 					return array(
 						'response' => array( 'code' => 200 ),
@@ -549,22 +522,120 @@ class Test_Publisher extends WP_UnitTestCase {
 		Publisher::delete_post( $post );
 		\remove_all_filters( 'pre_http_request' );
 
-		if ( null === $captured_body ) {
+		if ( empty( $captured_bodies ) ) {
 			$this->markTestSkipped( 'API layer rejected request before stub.' );
 		}
 
-		$rkeys = \array_column( $captured_body['writes'], 'rkey' );
-		$this->assertContains( 'post-tid', $rkeys );
-		$this->assertContains( 'doc-tid', $rkeys );
-		$this->assertContains( 'reply-tid-1', $rkeys );
-		$this->assertContains( 'reply-tid-2', $rkeys );
-		$this->assertNotContains( 'stale-tid', $rkeys, 'Stale TID without URI must not be included.' );
+		/*
+		 * The post + document deletes and the comment-reply deletes go out
+		 * as two decoupled batches (root first), so cleanup of the post
+		 * itself is never entangled with the comment cascade.
+		 */
+		$this->assertCount( 2, $captured_bodies, 'Root and comment deletes must be separate batches.' );
+
+		$root_rkeys    = \array_column( $captured_bodies[0]['writes'], 'rkey' );
+		$comment_rkeys = \array_column( $captured_bodies[1]['writes'], 'rkey' );
+
+		$this->assertContains( 'post-tid', $root_rkeys );
+		$this->assertContains( 'doc-tid', $root_rkeys );
+		$this->assertNotContains( 'reply-tid-1', $root_rkeys, 'Comment replies must not ride in the root batch.' );
+
+		$this->assertContains( 'reply-tid-1', $comment_rkeys );
+		$this->assertContains( 'reply-tid-2', $comment_rkeys );
+		$this->assertNotContains( 'stale-tid', $comment_rkeys, 'Stale TID without URI must not be included.' );
 
 		// Meta cleanup on both the post and the published replies.
 		$this->assertSame( '', \get_comment_meta( $c1, Comment::META_URI, true ) );
 		$this->assertSame( '', \get_comment_meta( $c2, Comment::META_TID, true ) );
 		// Stale comment's TID is left alone — we did not touch its record.
 		$this->assertSame( 'stale-tid', \get_comment_meta( $c3, Comment::META_TID, true ) );
+	}
+
+	/**
+	 * When the comment-reply batch fails, the post + document deletes are
+	 * already done, so their meta is cleared regardless — the decoupling
+	 * guarantee. The comment meta is left intact so a re-trash retries
+	 * just the replies. Without decoupling, a failing comment cascade
+	 * would strand the post in a published-looking state.
+	 */
+	public function test_delete_post_clears_root_meta_when_comment_batch_fails() {
+		$post = self::factory()->post->create_and_get(
+			array( 'post_status' => 'trash' )
+		);
+		\update_post_meta( $post->ID, Post::META_TID, 'post-tid' );
+		\update_post_meta( $post->ID, Post::META_URI, 'at://did:plc:test123/app.bsky.feed.post/post-tid' );
+		\update_post_meta( $post->ID, Post::META_CID, 'bafyreibpost' );
+		\update_post_meta( $post->ID, Document::META_TID, 'doc-tid' );
+		\update_post_meta( $post->ID, Document::META_URI, 'at://did:plc:test123/site.standard.document/doc-tid' );
+
+		$c1 = self::factory()->comment->create( array( 'comment_post_ID' => $post->ID ) );
+		\update_comment_meta( $c1, Comment::META_TID, 'reply-tid-1' );
+		\update_comment_meta( $c1, Comment::META_URI, 'at://did:plc:test123/app.bsky.feed.post/reply-tid-1' );
+
+		// Call 1 is the root batch (succeeds); call 2 is the comment batch (fails).
+		$this->fail_call_indexes = array(
+			2 => new \WP_Error( 'atmosphere_pds_500', 'PDS rejected comment batch.' ),
+		);
+		$this->register_capture( $post->ID );
+
+		$result = Publisher::delete_post( $post );
+
+		$this->assertWPError( $result );
+		$this->assertSame( 'atmosphere_pds_500', $result->get_error_code() );
+
+		// Two batches were attempted, root first.
+		$this->assertCount( 2, $this->captured_calls );
+
+		// Root batch succeeded → the full post + document meta surface is cleared.
+		$this->assertSame( '', \get_post_meta( $post->ID, Post::META_TID, true ) );
+		$this->assertSame( '', \get_post_meta( $post->ID, Post::META_URI, true ) );
+		$this->assertSame( '', \get_post_meta( $post->ID, Post::META_CID, true ) );
+		$this->assertSame( '', \get_post_meta( $post->ID, Document::META_TID, true ) );
+		$this->assertSame( '', \get_post_meta( $post->ID, Document::META_URI, true ) );
+
+		// Comment batch failed → its meta is retained for a retry.
+		$this->assertSame( 'reply-tid-1', \get_comment_meta( $c1, Comment::META_TID, true ) );
+		$this->assertSame(
+			'at://did:plc:test123/app.bsky.feed.post/reply-tid-1',
+			\get_comment_meta( $c1, Comment::META_URI, true )
+		);
+	}
+
+	/**
+	 * When the root (post + document) batch fails, nothing was removed
+	 * remotely: all meta stays intact and the comment-reply batch is not
+	 * even attempted, so a retry re-runs the whole cascade cleanly.
+	 */
+	public function test_delete_post_root_batch_failure_leaves_all_meta_intact() {
+		$post = self::factory()->post->create_and_get(
+			array( 'post_status' => 'trash' )
+		);
+		\update_post_meta( $post->ID, Post::META_TID, 'post-tid' );
+		\update_post_meta( $post->ID, Post::META_URI, 'at://did:plc:test123/app.bsky.feed.post/post-tid' );
+		\update_post_meta( $post->ID, Document::META_TID, 'doc-tid' );
+
+		$c1 = self::factory()->comment->create( array( 'comment_post_ID' => $post->ID ) );
+		\update_comment_meta( $c1, Comment::META_TID, 'reply-tid-1' );
+		\update_comment_meta( $c1, Comment::META_URI, 'at://did:plc:test123/app.bsky.feed.post/reply-tid-1' );
+
+		// Fail the root batch (call 1). The comment batch must not be attempted.
+		$this->fail_call_indexes = array(
+			1 => new \WP_Error( 'atmosphere_pds_500', 'PDS rejected root batch.' ),
+		);
+		$this->register_capture( $post->ID );
+
+		$result = Publisher::delete_post( $post );
+
+		$this->assertWPError( $result );
+		$this->assertSame( 'atmosphere_pds_500', $result->get_error_code() );
+
+		// Only the root batch was attempted; the comment batch was skipped.
+		$this->assertCount( 1, $this->captured_calls );
+
+		// Nothing removed remotely → every meta value intact.
+		$this->assertSame( 'post-tid', \get_post_meta( $post->ID, Post::META_TID, true ) );
+		$this->assertSame( 'doc-tid', \get_post_meta( $post->ID, Document::META_TID, true ) );
+		$this->assertSame( 'reply-tid-1', \get_comment_meta( $c1, Comment::META_TID, true ) );
 	}
 
 	/**
@@ -1057,6 +1128,22 @@ class Test_Publisher extends WP_UnitTestCase {
 		$this->assertSame( 'app.bsky.feed.post', $writes[0]['collection'] );
 		$this->assertSame( 'com.atproto.repo.applyWrites#create', $writes[1]['$type'] );
 		$this->assertSame( 'site.standard.document', $writes[1]['collection'] );
+		$this->assertArrayNotHasKey( 'bskyPostRef', $writes[1]['value'] );
+
+		$doc_cid = CID::from_record( $writes[1]['value'] );
+		$this->assertNotWPError( $doc_cid );
+
+		$refs    = $writes[0]['value']['embed']['external']['associatedRefs'] ?? array();
+		$doc_ref = null;
+		foreach ( $refs as $ref ) {
+			if ( false !== \strpos( $ref['uri'] ?? '', '/site.standard.document/' ) ) {
+				$doc_ref = $ref;
+				break;
+			}
+		}
+
+		$this->assertIsArray( $doc_ref );
+		$this->assertSame( $doc_cid, $doc_ref['cid'] );
 
 		$thread_records = \get_post_meta( $post->ID, Post::META_THREAD_RECORDS, true );
 		$this->assertIsArray( $thread_records );
@@ -1214,116 +1301,11 @@ class Test_Publisher extends WP_UnitTestCase {
 	}
 
 	/**
-	 * If the follow-up document update fails after the initial applyWrites,
-	 * publish returns the error while preserving meta for a retry.
+	 * A successful publish clears the legacy `META_DOC_REF_PENDING`
+	 * marker left by versions that tried to update the document after
+	 * publishing the Bluesky record.
 	 */
-	public function test_publish_surfaces_document_ref_update_failure() {
-		$post = self::factory()->post->create_and_get(
-			array(
-				'post_title'   => 'A Long-Form Post',
-				'post_content' => 'Body content.',
-			)
-		);
-
-		$put_record_failure = static function ( $response, $args, $url ) {
-			if ( false !== \strpos( $url, 'com.atproto.repo.putRecord' ) ) {
-				return new \WP_Error( 'atmosphere_doc_ref_failed', 'Document ref update failed.' );
-			}
-			return $response;
-		};
-
-		\add_filter( 'pre_http_request', $put_record_failure, 5, 3 );
-
-		try {
-			$this->fail_call_indexes = array();
-			$this->register_capture( $post->ID );
-
-			$result = Publisher::publish( $post );
-
-			$this->assertWPError( $result );
-			$this->assertSame( 'atmosphere_doc_ref_failed', $result->get_error_code() );
-
-			$thread_records = \get_post_meta( $post->ID, Post::META_THREAD_RECORDS, true );
-			$this->assertIsArray( $thread_records );
-			$this->assertCount( 1, $thread_records );
-			$this->assertNotEmpty( \get_post_meta( $post->ID, Document::META_URI, true ) );
-		} finally {
-			\remove_filter( 'pre_http_request', $put_record_failure, 5 );
-		}
-	}
-
-	/**
-	 * In a thread publish, a failure on the doc-ref `putRecord` between
-	 * step 1 (root + doc) and step 2+ (replies) must not abort the thread
-	 * — otherwise META_THREAD_RECORDS sticks at length=1 and the next
-	 * edit triggers a rewrite that replaces the already-published root
-	 * URI/TID, invalidating likes/reposts/external replies.
-	 *
-	 * Best-effort: log the doc-ref failure, then continue writing replies.
-	 */
-	public function test_publish_thread_continues_when_doc_ref_update_fails() {
-		$post = self::factory()->post->create_and_get(
-			array(
-				'post_title'   => 'A Long-Form Post',
-				'post_excerpt' => 'A curated excerpt long enough to compose a hook from.',
-				// Empty body: hook comes from the excerpt and there is no
-				// body chunk, so the default shape is [hook, cta] and the
-				// protocol assertions below expect a single reply write.
-				'post_content' => '',
-			)
-		);
-
-		\add_filter( 'atmosphere_long_form_composition', fn() => 'teaser-thread' );
-
-		$put_record_failure = static function ( $response, $args, $url ) {
-			if ( false !== \strpos( $url, 'com.atproto.repo.putRecord' ) ) {
-				return new \WP_Error( 'atmosphere_doc_ref_failed', 'Document ref update failed.' );
-			}
-			return $response;
-		};
-
-		\add_filter( 'pre_http_request', $put_record_failure, 5, 3 );
-
-		try {
-			$this->fail_call_indexes = array();
-			$this->register_capture( $post->ID );
-
-			$result = Publisher::publish( $post );
-
-			// Doc-ref failure is swallowed — overall publish succeeds.
-			$this->assertIsArray( $result );
-			$this->assertArrayHasKey( 'results', $result );
-
-			// Both root + reply applyWrites batches went through (call 1 = root+doc, call 2 = reply).
-			$this->assertCount( 2, $this->captured_calls );
-
-			$thread_records = \get_post_meta( $post->ID, Post::META_THREAD_RECORDS, true );
-			$this->assertIsArray( $thread_records );
-			$this->assertCount( 2, $thread_records );
-			foreach ( $thread_records as $record ) {
-				$this->assertNotEmpty( $record['uri'] );
-				$this->assertNotEmpty( $record['cid'] );
-			}
-
-			// Pending-doc-ref marker is persisted so admin / Site Health
-			// can surface the gap; logs are not the only signal.
-			$pending = \get_post_meta( $post->ID, Post::META_DOC_REF_PENDING, true );
-			$this->assertIsArray( $pending );
-			$this->assertSame( 'atmosphere_doc_ref_failed', $pending['code'] );
-			$this->assertNotEmpty( $pending['stamp'] );
-			$this->assertNotEmpty( $pending['message'] );
-		} finally {
-			\remove_filter( 'pre_http_request', $put_record_failure, 5 );
-		}
-	}
-
-	/**
-	 * A successful `update_document_bsky_ref` clears any prior
-	 * `META_DOC_REF_PENDING` marker — typical recovery path is the user
-	 * re-saves the post (any `Publisher::update*` flow ends at
-	 * `update_document_bsky_ref`).
-	 */
-	public function test_publish_clears_doc_ref_pending_on_successful_doc_ref() {
+	public function test_publish_clears_legacy_doc_ref_pending_marker() {
 		$post = self::factory()->post->create_and_get(
 			array(
 				'post_title'   => 'A Long-Form Post',
@@ -1508,6 +1490,7 @@ class Test_Publisher extends WP_UnitTestCase {
 		\update_post_meta( $post->ID, Post::META_CID, 'bafyreibstored' );
 		\update_post_meta( $post->ID, Document::META_URI, 'at://did:plc:test123/site.standard.document/doc-rkey-1' );
 		\update_post_meta( $post->ID, Document::META_TID, 'doc-rkey-1' );
+		\update_post_meta( $post->ID, Document::META_CID, 'bafyreibstaledoc' );
 
 		$this->fail_call_indexes = array();
 		$this->register_capture( $post->ID );
@@ -1523,6 +1506,75 @@ class Test_Publisher extends WP_UnitTestCase {
 		$this->assertSame( 'stored-rkey-1', $writes[0]['rkey'] );
 		$this->assertSame( 'com.atproto.repo.applyWrites#update', $writes[1]['$type'] );
 		$this->assertSame( 'doc-rkey-1', $writes[1]['rkey'] );
+		$this->assertArrayNotHasKey( 'bskyPostRef', $writes[1]['value'] );
+
+		$doc_cid = CID::from_record( $writes[1]['value'] );
+		$this->assertNotWPError( $doc_cid );
+
+		$refs    = $writes[0]['value']['embed']['external']['associatedRefs'] ?? array();
+		$doc_ref = null;
+		foreach ( $refs as $ref ) {
+			if ( false !== \strpos( $ref['uri'] ?? '', '/site.standard.document/' ) ) {
+				$doc_ref = $ref;
+				break;
+			}
+		}
+
+		$this->assertIsArray( $doc_ref );
+		$this->assertSame( $doc_cid, $doc_ref['cid'] );
+		$this->assertNotSame( 'bafyreibstaledoc', $doc_ref['cid'] );
+	}
+
+	/**
+	 * If the current document payload cannot be locally encoded, update
+	 * must not fall back to advertising the previous document CID.
+	 */
+	public function test_update_suppresses_document_ref_when_doc_cid_precompute_fails() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'A Long-Form Post',
+				'post_content' => 'Body.',
+				'post_excerpt' => 'Teaser excerpt.',
+			)
+		);
+
+		$root_uri = 'at://did:plc:test123/app.bsky.feed.post/stored-rkey-1';
+		\update_post_meta(
+			$post->ID,
+			Post::META_THREAD_RECORDS,
+			array(
+				array(
+					'uri' => $root_uri,
+					'cid' => 'bafyreibstored',
+					'tid' => 'stored-rkey-1',
+				),
+			)
+		);
+		\update_post_meta( $post->ID, Post::META_URI, $root_uri );
+		\update_post_meta( $post->ID, Post::META_TID, 'stored-rkey-1' );
+		\update_post_meta( $post->ID, Post::META_CID, 'bafyreibstored' );
+		\update_post_meta( $post->ID, Document::META_URI, 'at://did:plc:test123/site.standard.document/doc-rkey-1' );
+		\update_post_meta( $post->ID, Document::META_TID, 'doc-rkey-1' );
+		\update_post_meta( $post->ID, Document::META_CID, 'bafyreibstaledoc' );
+
+		\add_filter(
+			'atmosphere_transform_document',
+			static function ( array $record ): array {
+				$record['unsupported'] = new \stdClass();
+				return $record;
+			}
+		);
+
+		$this->fail_call_indexes = array();
+		$this->register_capture( $post->ID );
+
+		$result = Publisher::update( $post );
+
+		$this->assertIsArray( $result );
+
+		$writes = $this->captured_calls[0]['writes'];
+		$this->assertArrayHasKey( 'unsupported', $writes[1]['value'] );
+		$this->assertArrayNotHasKey( 'associatedRefs', $writes[0]['value']['embed']['external'] );
 	}
 
 	/**
@@ -2089,6 +2141,9 @@ class Test_Publisher extends WP_UnitTestCase {
 	 * `applyWrites` calls. The lexicon caps a single batch at 200 writes;
 	 * a high-traffic post with hundreds of outbound comment replies must
 	 * still clean up cleanly rather than failing the whole cascade.
+	 *
+	 * The root (post + document) deletes are their own batch, so the
+	 * 250-reply tail chunks independently of them.
 	 */
 	public function test_delete_post_by_tids_chunks_oversized_batches() {
 		$this->fail_call_indexes = array();
@@ -2106,8 +2161,12 @@ class Test_Publisher extends WP_UnitTestCase {
 		);
 
 		$this->assertIsArray( $result );
-		// 252 total writes / 100 per chunk = 3 calls.
-		$this->assertCount( 3, $this->captured_calls );
+		// Root batch (1 call: root-tid + doc-tid) + 250 replies / 100 (3 calls) = 4 calls.
+		$this->assertCount( 4, $this->captured_calls );
+
+		// First call is the decoupled root batch: just the post + document.
+		$root_rkeys = \array_column( $this->captured_calls[0]['writes'], 'rkey' );
+		$this->assertSame( array( 'root-tid', 'doc-tid' ), $root_rkeys );
 
 		$total_writes = 0;
 		foreach ( $this->captured_calls as $call ) {
@@ -2124,8 +2183,14 @@ class Test_Publisher extends WP_UnitTestCase {
 	 * it as a clean failure.
 	 */
 	public function test_delete_post_by_tids_chunked_failure_carries_progress_data() {
+		/*
+		 * Call 1 is the root batch (root-tid + doc-tid); calls 2-4 are the
+		 * three comment chunks. Fail the second comment chunk (call 3) so
+		 * the progress data is reported relative to the comment batch:
+		 * chunk index 1 of 3, with 1 chunk already succeeded.
+		 */
 		$this->fail_call_indexes = array(
-			2 => new \WP_Error( 'atmosphere_pds_500', 'PDS rejected batch.' ),
+			3 => new \WP_Error( 'atmosphere_pds_500', 'PDS rejected batch.' ),
 		);
 		$this->register_capture( 0 );
 
@@ -2151,10 +2216,11 @@ class Test_Publisher extends WP_UnitTestCase {
 	}
 
 	/**
-	 * Small batches (<= chunk size) take the single-call path and do
-	 * not touch the chunking layer's results-merging.
+	 * Even a small batch is split into a decoupled root batch (post +
+	 * document) and a comment batch, so the post's own cleanup never
+	 * shares an `applyWrites` call with the comment cascade.
 	 */
-	public function test_delete_post_by_tids_small_batch_uses_single_call() {
+	public function test_delete_post_by_tids_decouples_root_and_comment_batches() {
 		$this->fail_call_indexes = array();
 		$this->register_capture( 0 );
 
@@ -2165,8 +2231,38 @@ class Test_Publisher extends WP_UnitTestCase {
 		);
 
 		$this->assertIsArray( $result );
-		$this->assertCount( 1, $this->captured_calls );
-		$this->assertCount( 4, $this->captured_calls[0]['writes'] );
+		$this->assertCount( 2, $this->captured_calls );
+
+		$this->assertSame(
+			array( 'root-tid', 'doc-tid' ),
+			\array_column( $this->captured_calls[0]['writes'], 'rkey' )
+		);
+		$this->assertSame(
+			array( 'reply-1', 'reply-2' ),
+			\array_column( $this->captured_calls[1]['writes'], 'rkey' )
+		);
+	}
+
+	/**
+	 * If the root batch fails on the permanent-delete path, the comment
+	 * batch is not attempted — the failure short-circuits before the
+	 * comment cascade, mirroring the trash path.
+	 */
+	public function test_delete_post_by_tids_skips_comment_batch_when_root_fails() {
+		$this->fail_call_indexes = array(
+			1 => new \WP_Error( 'atmosphere_pds_500', 'PDS rejected root batch.' ),
+		);
+		$this->register_capture( 0 );
+
+		$result = Publisher::delete_post_by_tids(
+			array( 'root-tid' ),
+			'doc-tid',
+			array( 'reply-1', 'reply-2' )
+		);
+
+		$this->assertWPError( $result );
+		$this->assertSame( 'atmosphere_pds_500', $result->get_error_code() );
+		$this->assertCount( 1, $this->captured_calls, 'Comment batch must be skipped when the root batch fails.' );
 	}
 
 	/**
@@ -2369,5 +2465,118 @@ class Test_Publisher extends WP_UnitTestCase {
 
 		$this->assertWPError( $result );
 		$this->assertSame( 'atmosphere_not_connected', $result->get_error_code() );
+	}
+
+	/**
+	 * A publication record that has drifted from the current transform
+	 * (e.g. after the URL normalization shipped this release, which no
+	 * settings hook fires for) is re-synced on the next publish, and the
+	 * post's publication strongRef points at the refreshed CID rather
+	 * than the stale one.
+	 */
+	public function test_publish_heals_drifted_publication() {
+		\update_option( Publication::OPTION_TID, '3kpub00000000', false );
+		\update_option( Publication::OPTION_CID, 'bafyreistalepublication00000000000000000000000000000000000000', false );
+
+		$put_calls  = array();
+		$fresh_cid  = 'bafyreifreshpublication00000000000000000000000000000000000000';
+		$put_filter = function ( $response, $args, $url ) use ( &$put_calls, $fresh_cid ) {
+			if ( false === \strpos( $url, 'com.atproto.repo.putRecord' ) ) {
+				return $response;
+			}
+
+			$put_calls[] = \json_decode( $args['body'] ?? '{}', true );
+
+			return array(
+				'response' => array( 'code' => 200 ),
+				'body'     => \wp_json_encode(
+					array(
+						'uri' => 'at://did:plc:test123/site.standard.publication/3kpub00000000',
+						'cid' => $fresh_cid,
+					)
+				),
+			);
+		};
+		\add_filter( 'pre_http_request', $put_filter, 10, 3 );
+
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'A Long-Form Post',
+				'post_content' => 'Body content.',
+			)
+		);
+
+		$this->fail_call_indexes = array();
+		$this->register_capture( $post->ID );
+
+		try {
+			$result = Publisher::publish( $post );
+		} finally {
+			\remove_filter( 'pre_http_request', $put_filter, 10 );
+		}
+
+		$this->assertIsArray( $result );
+
+		// Exactly one publication putRecord fired (the heal).
+		$this->assertCount( 1, $put_calls );
+		$this->assertSame( 'site.standard.publication', $put_calls[0]['collection'] );
+
+		// OPTION_CID was refreshed from the sync response.
+		$this->assertSame( $fresh_cid, \get_option( Publication::OPTION_CID ) );
+
+		// The post's publication strongRef points at the refreshed CID.
+		$writes  = $this->captured_calls[0]['writes'];
+		$refs    = $writes[0]['value']['embed']['external']['associatedRefs'] ?? array();
+		$pub_ref = null;
+		foreach ( $refs as $ref ) {
+			if ( false !== \strpos( $ref['uri'] ?? '', '/site.standard.publication/' ) ) {
+				$pub_ref = $ref;
+				break;
+			}
+		}
+
+		$this->assertIsArray( $pub_ref );
+		$this->assertSame( $fresh_cid, $pub_ref['cid'] );
+	}
+
+	/**
+	 * When the stored publication CID already matches the current
+	 * transform, publishing must not fire a redundant publication
+	 * putRecord.
+	 */
+	public function test_publish_skips_publication_sync_when_in_sync() {
+		$current_cid = CID::from_record( ( new Publication( null ) )->transform() );
+		$this->assertNotWPError( $current_cid );
+
+		\update_option( Publication::OPTION_TID, '3kpub00000000', false );
+		\update_option( Publication::OPTION_CID, $current_cid, false );
+
+		$put_calls  = array();
+		$put_filter = function ( $response, $args, $url ) use ( &$put_calls ) {
+			if ( false !== \strpos( $url, 'com.atproto.repo.putRecord' ) ) {
+				$put_calls[] = $url;
+			}
+			return $response;
+		};
+		\add_filter( 'pre_http_request', $put_filter, 10, 3 );
+
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'A Long-Form Post',
+				'post_content' => 'Body content.',
+			)
+		);
+
+		$this->fail_call_indexes = array();
+		$this->register_capture( $post->ID );
+
+		try {
+			$result = Publisher::publish( $post );
+		} finally {
+			\remove_filter( 'pre_http_request', $put_filter, 10 );
+		}
+
+		$this->assertIsArray( $result );
+		$this->assertCount( 0, $put_calls );
 	}
 }

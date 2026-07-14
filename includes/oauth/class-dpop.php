@@ -23,9 +23,11 @@ class DPoP {
 	/**
 	 * Generate an ES256 key pair suitable for DPoP.
 	 *
-	 * @return array JWK array with private key material.
+	 * @return array|\WP_Error JWK array with private key material, or a
+	 *                         WP_Error when the host's OpenSSL build cannot
+	 *                         produce the P-256 (EC) key DPoP requires.
 	 */
-	public static function generate_key(): array {
+	public static function generate_key(): array|\WP_Error {
 		$key = \openssl_pkey_new(
 			array(
 				'curve_name'       => 'prime256v1',
@@ -33,9 +35,21 @@ class DPoP {
 			)
 		);
 
-		\openssl_pkey_export( $key, $pem );
+		/*
+		 * Some OpenSSL builds (FIPS-restricted, stripped, or WebAssembly
+		 * runtimes like WordPress Playground) cannot generate EC keys and
+		 * return false here. Bail with a clear error instead of passing
+		 * false to openssl_pkey_get_details(), which fatals on PHP 8.
+		 */
+		if ( false === $key ) {
+			return self::keygen_error();
+		}
+
 		$details = \openssl_pkey_get_details( $key );
-		$ec      = $details['ec'];
+		if ( false === $details || ! isset( $details['ec'] ) ) {
+			return self::keygen_error();
+		}
+		$ec = $details['ec'];
 
 		return array(
 			'kty' => 'EC',
@@ -43,6 +57,21 @@ class DPoP {
 			'x'   => self::base64url( $ec['x'] ),
 			'y'   => self::base64url( $ec['y'] ),
 			'd'   => self::base64url( $ec['d'] ),
+		);
+	}
+
+	/**
+	 * Build the error returned when EC key generation is unavailable.
+	 *
+	 * Shared by both failure branches in generate_key() so the code and
+	 * message stay in sync.
+	 *
+	 * @return \WP_Error
+	 */
+	private static function keygen_error(): \WP_Error {
+		return new \WP_Error(
+			'atmosphere_dpop_keygen_failed',
+			\__( 'Could not create the secure key needed to connect to Bluesky. Your site\'s server is missing OpenSSL elliptic-curve (EC) support — please ask your host to enable it.', 'atmosphere' )
 		);
 	}
 
@@ -106,9 +135,27 @@ class DPoP {
 
 			return self::sign_es256( $header, $payload, $jwk );
 		} catch ( \Throwable $e ) {
-			\wp_trigger_error( __METHOD__, 'DPoP proof generation failed: ' . $e->getMessage() );
+			// wp_trigger_error() requires WP 6.4; the plugin supports 6.2.
+			if ( \function_exists( 'wp_trigger_error' ) ) {
+				\wp_trigger_error( __METHOD__, 'DPoP proof generation failed: ' . self::describe_throwable( $e ) );
+			}
 			return false;
 		}
+	}
+
+	/**
+	 * Summarize a throwable for logging without its message.
+	 *
+	 * Signing failures are thrown with the private-key JWK in scope,
+	 * and OpenSSL error strings are not guaranteed to be free of key
+	 * material — so only the class name and throw site are safe to
+	 * log. Never add getMessage() here.
+	 *
+	 * @param \Throwable $e Caught throwable.
+	 * @return string Class name plus file:line of the throw site.
+	 */
+	private static function describe_throwable( \Throwable $e ): string {
+		return \sprintf( '%s at %s:%d', $e::class, \basename( $e->getFile() ), $e->getLine() );
 	}
 
 	/**

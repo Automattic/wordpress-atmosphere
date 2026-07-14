@@ -26,6 +26,7 @@ class Test_DPoP extends WP_UnitTestCase {
 	public function test_generate_key_produces_valid_jwk() {
 		$jwk = DPoP::generate_key();
 
+		$this->assertNotWPError( $jwk, 'Healthy OpenSSL builds must return a JWK, not an error.' );
 		$this->assertIsArray( $jwk );
 		$this->assertSame( 'EC', $jwk['kty'] );
 		$this->assertSame( 'P-256', $jwk['crv'] );
@@ -123,6 +124,60 @@ class Test_DPoP extends WP_UnitTestCase {
 		);
 
 		$this->assertFalse( $result );
+	}
+
+	/**
+	 * Test that create_proof() returns false when its try block throws.
+	 *
+	 * Omitting the nonce argument routes create_proof() through the
+	 * Nonce_Storage transient lookup inside its try block — the only
+	 * injectable throw site — so the short-circuit filter below forces
+	 * the catch path to run.
+	 */
+	public function test_create_proof_returns_false_when_nonce_lookup_throws() {
+		$jwk = DPoP::generate_key();
+		$url = 'https://pds.example.com/xrpc/test';
+
+		\add_filter(
+			'pre_transient_atmo_dpop_nonce_' . \md5( \Atmosphere\get_did() . '|' . $url ),
+			static function () {
+				throw new \RuntimeException( 'boom' );
+			}
+		);
+
+		// Swallow the E_USER_NOTICE wp_trigger_error() raises under WP_DEBUG.
+		\set_error_handler( '__return_true', E_USER_NOTICE ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_set_error_handler
+		try {
+			$result = DPoP::create_proof( $jwk, 'POST', $url );
+		} finally {
+			\restore_error_handler();
+		}
+
+		$this->assertFalse( $result );
+	}
+
+	/**
+	 * Test that the logged throwable summary never includes the message.
+	 *
+	 * The create_proof() catch block runs with the private-key JWK in
+	 * scope, so the line it logs must carry only the exception class and
+	 * throw site — never the exception message, which is not guaranteed
+	 * to be free of key material.
+	 */
+	public function test_throwable_log_description_omits_message() {
+		$marker    = 'd=base64url-private-key-material';
+		$exception = new \RuntimeException( $marker );
+
+		$method      = new \ReflectionMethod( DPoP::class, 'describe_throwable' );
+		$description = $method->invoke( null, $exception );
+
+		$this->assertStringContainsString( 'RuntimeException', $description );
+		$this->assertStringContainsString( \basename( __FILE__ ) . ':', $description );
+		$this->assertStringNotContainsString(
+			$marker,
+			$description,
+			'Exception messages must never reach the log from the DPoP signing path.'
+		);
 	}
 
 	/**

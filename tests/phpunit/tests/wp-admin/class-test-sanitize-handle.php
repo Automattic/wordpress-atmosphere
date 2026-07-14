@@ -1,6 +1,6 @@
 <?php
 /**
- * Tests for `Admin::sanitize_handle()` redirect contract.
+ * Tests for `Sanitize::handle()` redirect contract.
  *
  * The method is the front-door entry to the OAuth flow: an admin
  * types a handle, this method runs as a `register_setting()`
@@ -20,7 +20,7 @@
 
 namespace Atmosphere\Tests\WP_Admin;
 
-use Atmosphere\WP_Admin\Admin;
+use Atmosphere\Sanitize;
 use WP_UnitTestCase;
 use WPDieException;
 
@@ -159,7 +159,7 @@ class Test_Sanitize_Handle extends WP_UnitTestCase {
 
 	/**
 	 * A non-HTTPS auth URL (poisoned auth-server metadata) is caught
-	 * by `sanitize_handle()`'s defence-in-depth scheme check — surfaces
+	 * by `Sanitize::handle()`'s defence-in-depth scheme check — surfaces
 	 * a settings error and never reaches `wp_safe_redirect`.
 	 */
 	public function test_http_auth_url_surfaces_error_and_does_not_redirect(): void {
@@ -175,12 +175,12 @@ class Test_Sanitize_Handle extends WP_UnitTestCase {
 			}
 		);
 
-		Admin::sanitize_handle( 'alice.bsky-test-handle.io' );
+		Sanitize::handle( 'alice.bsky-test-handle.io' );
 
-		$this->assertFalse( $redirected, 'sanitize_handle must not redirect on a non-HTTPS auth URL.' );
+		$this->assertFalse( $redirected, 'Sanitize::handle must not redirect on a non-HTTPS auth URL.' );
 
 		$errors = \get_settings_errors( 'atmosphere' );
-		$this->assertNotEmpty( $errors, 'sanitize_handle must add a settings error on a non-HTTPS auth URL.' );
+		$this->assertNotEmpty( $errors, 'Sanitize::handle must add a settings error on a non-HTTPS auth URL.' );
 		$this->assertSame( 'auth_failed', $errors[0]['code'] );
 	}
 
@@ -204,9 +204,9 @@ class Test_Sanitize_Handle extends WP_UnitTestCase {
 			}
 		);
 
-		Admin::sanitize_handle( 'alice.bsky-test-handle.io' );
+		Sanitize::handle( 'alice.bsky-test-handle.io' );
 
-		$this->assertFalse( $redirected, 'sanitize_handle must not redirect when authorize() returns WP_Error.' );
+		$this->assertFalse( $redirected, 'Sanitize::handle must not redirect when authorize() returns WP_Error.' );
 
 		$errors = \get_settings_errors( 'atmosphere' );
 		$this->assertNotEmpty( $errors );
@@ -236,7 +236,7 @@ class Test_Sanitize_Handle extends WP_UnitTestCase {
 		);
 
 		try {
-			Admin::sanitize_handle( 'alice.bsky-test-handle.io' );
+			Sanitize::handle( 'alice.bsky-test-handle.io' );
 			$this->fail( 'Expected redirect to be intercepted.' );
 		} catch ( WPDieException $e ) {
 			$this->assertSame( 'redirect_intercepted', $e->getMessage() );
@@ -251,5 +251,70 @@ class Test_Sanitize_Handle extends WP_UnitTestCase {
 			$captured_hosts,
 			'auth-server host must be in allowed_redirect_hosts during wp_safe_redirect.'
 		);
+	}
+
+	/**
+	 * A throwing `wp_redirect` filter must not leave the auth-server
+	 * host attached to `allowed_redirect_hosts` for the rest of the
+	 * request. The redirect is wrapped in try/finally so the scoped
+	 * filter is detached on the exception path, too.
+	 */
+	public function test_allowed_redirect_hosts_filter_is_removed_when_redirect_throws(): void {
+		$this->become_admin();
+		$this->stub_resolver_chain( 'https://auth.example.com/oauth/authorize' );
+
+		$this->add_filter_tracked(
+			'wp_redirect',
+			static function () {
+				throw new WPDieException( 'redirect_intercepted' );
+			}
+		);
+
+		try {
+			Sanitize::handle( 'alice.bsky-test-handle.io' );
+			$this->fail( 'Expected redirect to be intercepted.' );
+		} catch ( WPDieException $e ) {
+			$this->assertSame( 'redirect_intercepted', $e->getMessage() );
+		}
+
+		$this->assertNotContains(
+			'auth.example.com',
+			\apply_filters( 'allowed_redirect_hosts', array(), '' ),
+			'The scoped allowed_redirect_hosts filter must be detached even when the redirect throws.'
+		);
+	}
+
+	/**
+	 * A leading "@" is stripped before resolution. People copy handles
+	 * from Bluesky as "@alice.bsky.social", but the resolver rejects the
+	 * "@"-prefixed form as an invalid DNS-style identifier. If the "@"
+	 * survived, `Client::authorize()` would short-circuit to a WP_Error
+	 * and never redirect — so a successful redirect proves the strip ran.
+	 */
+	public function test_leading_at_is_stripped_before_resolution(): void {
+		$this->become_admin();
+		$this->stub_resolver_chain( 'https://auth.example.com/oauth/authorize' );
+
+		$captured_target = null;
+		$this->add_filter_tracked(
+			'wp_redirect',
+			static function ( $location ) use ( &$captured_target ) {
+				$captured_target = $location;
+				throw new WPDieException( 'redirect_intercepted' );
+			}
+		);
+
+		try {
+			Sanitize::handle( '@alice.bsky-test-handle.io' );
+			$this->fail( 'Expected redirect to be intercepted.' );
+		} catch ( WPDieException $e ) {
+			$this->assertSame( 'redirect_intercepted', $e->getMessage() );
+		}
+
+		$this->assertIsString(
+			$captured_target,
+			'A leading "@" must be stripped so the handle resolves and redirects.'
+		);
+		$this->assertStringStartsWith( 'https://auth.example.com/oauth/authorize', $captured_target );
 	}
 }

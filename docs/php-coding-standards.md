@@ -209,20 +209,29 @@ use function Atmosphere\is_connected;
 
 **Content / composition filters:**
 ```php
-\apply_filters( 'atmosphere_content_parser',        $parser, $post );        // Return a Content_Parser instance.
+\apply_filters( 'atmosphere_content_parser',        $parser, $post );        // Deprecated; use Registry::register().
 \apply_filters( 'atmosphere_document_content',      $content, $post, $parser );
+\apply_filters( 'atmosphere_document_links',        null, $post );
+\apply_filters( 'atmosphere_document_labels',       null, $post );
+\apply_filters( 'atmosphere_document_contributors', null, $post );
+\apply_filters( 'atmosphere_publication_labels',    null );
+\apply_filters( 'atmosphere_publication_show_in_discover', (bool) \get_option( 'blog_public', 1 ) );
 \apply_filters( 'atmosphere_long_form_composition', $composition, $post );
 \apply_filters( 'atmosphere_teaser_thread_posts',   $max_posts, $post );
+\apply_filters( 'atmosphere_atproto_preview_transformers', $transformers, $post ); // Add a transformer to the ?atproto={$type} preview.
 ```
 
 **Behaviour / gating filters:**
 ```php
-\apply_filters( 'atmosphere_syncable_post_types',     array( 'post' ) );
-\apply_filters( 'atmosphere_should_publish_comment',  $bool, $comment );
-\apply_filters( 'atmosphere_should_sync_reply',       $bool, $notification, $post_id );
-\apply_filters( 'atmosphere_backfill_limit',          50 );
-\apply_filters( 'atmosphere_oauth_redirect_uri',      $uri );
-\apply_filters( 'atmosphere_client_metadata',         $metadata );
+\apply_filters( 'atmosphere_syncable_post_types',         array( 'post' ) );
+\apply_filters( 'atmosphere_should_publish_comment',      $bool, $comment );
+\apply_filters( 'atmosphere_should_sync_reply',           $bool, $notification, $post_id );
+\apply_filters( 'atmosphere_backfill_query_chunk_size',   500 );
+\apply_filters( 'atmosphere_publish_retry_delays',        array( 60, 300, 900 ) ); // Backoff ladder for failed publish/update cron workers; length = retry budget; empty array disables retries.
+\apply_filters( 'atmosphere_oauth_redirect_uri',          $uri );
+\apply_filters( 'atmosphere_client_metadata',             $metadata );
+\apply_filters( 'atmosphere_appview_host',                'bsky.app', $path, $context ); // Host/subpath for appview web links; normalized; $context keys: type|did|handle|rkey|tag.
+\apply_filters( 'atmosphere_appview_url',                 $url, $path, $context );        // Whole assembled appview link; rewrite the route from $context.
 ```
 
 **Actions:**
@@ -237,7 +246,8 @@ use function Atmosphere\is_connected;
 
 **Test-only short-circuit:**
 ```php
-\apply_filters( 'atmosphere_pre_apply_writes', null, $writes );
+\apply_filters( 'atmosphere_pre_apply_writes', null, $writes );                    // Short-circuit / observe an applyWrites batch.
+\apply_filters( 'atmosphere_pre_upload_blob', null, $file_path, $mime_type );      // Short-circuit / observe a blob upload.
 ```
 
 ## Documentation Standards
@@ -502,11 +512,18 @@ if ( $errors->has_errors() ) {
 try {
     $result = self::risky_operation();
 } catch ( \Exception $e ) {
-    // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log -- log for operators.
-    \error_log( '[atmosphere] ' . $e->getMessage() );
+    \Atmosphere\debug_log( $e->getMessage() );
     return new \WP_Error( 'atmosphere_exception', $e->getMessage(), array( 'code' => $e->getCode() ) );
 }
 ```
+
+### Logging
+
+Never call `\error_log()` directly. Route every log line through `Atmosphere\debug_log( string $message )` (`includes/functions.php`). `error_log()` honours the server's `log_errors` / `error_log` directives independently of `WP_DEBUG`, so unconditional calls land in production logs on any site with PHP error logging enabled. `debug_log()`:
+
+- No-ops unless `WP_DEBUG` is true, so production stays quiet by default.
+- Adds the `[atmosphere]` prefix and collapses CRLF (PDS-supplied error strings can carry attacker-controlled newlines / forged prefixes) in one place — pass the message **without** the prefix and **without** pre-stripping newlines.
+- Exposes the `atmosphere_debug_log` filter (`bool $enabled, string $message`) so operators can opt into the genuine anomaly breadcrumbs — failed cron PDS writes, thread-rollback orphans — without enabling `WP_DEBUG` site-wide.
 
 ## Cron-Specific Rules
 
@@ -528,7 +545,7 @@ This pattern was extracted in PR #32; see review by @kraftbj for the cross-insta
 
 ### Never Swallow `WP_Error`
 
-Cron handlers in `register_async_hooks()` MUST surface `Publisher::*` errors via `error_log()` — typically through `log_cron_error()`. `wp_schedule_single_event` does not retry, so a silent drop loses the only signal operators have for transient PDS failures, expired refresh tokens, or DPoP nonce drift.
+Cron handlers in `register_async_hooks()` MUST surface `Publisher::*` errors via `debug_log()` — typically through `log_cron_error()`. `wp_schedule_single_event` does not retry, so a silent drop loses the only signal operators have for transient PDS failures, expired refresh tokens, or DPoP nonce drift. The line is gated behind `WP_DEBUG` by default; operators who need these breadcrumbs on production without enabling debugging site-wide can opt in via the `atmosphere_debug_log` filter (see [Logging](#logging)).
 
 When the handler operates on records the caller has already lost local state for (e.g. `atmosphere_delete_comment_record` after the WP comment row is gone), include the TID/identifier in the log line so the orphan is recoverable manually.
 

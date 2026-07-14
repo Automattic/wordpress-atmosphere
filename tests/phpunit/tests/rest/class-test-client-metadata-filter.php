@@ -9,13 +9,14 @@
  *
  * @package Atmosphere
  * @group atmosphere
- * @group wp-admin
+ * @group rest
  */
 
-namespace Atmosphere\Tests\WP_Admin;
+namespace Atmosphere\Tests\Rest;
 
 use WP_UnitTestCase;
-use Atmosphere\WP_Admin\Admin;
+use Atmosphere\OAuth\Client;
+use Atmosphere\Rest\Client_Metadata_Controller;
 
 /**
  * Client metadata filter validation tests.
@@ -27,6 +28,7 @@ class Test_Client_Metadata_Filter extends WP_UnitTestCase {
 	 */
 	public function tear_down(): void {
 		\remove_all_filters( 'atmosphere_client_metadata' );
+		\remove_all_filters( 'pre_option_blogname' );
 		parent::tear_down();
 	}
 
@@ -35,7 +37,7 @@ class Test_Client_Metadata_Filter extends WP_UnitTestCase {
 	 * required OAuth fields are present and the right shape.
 	 */
 	public function test_default_metadata_is_well_formed() {
-		$response = Admin::serve_client_metadata();
+		$response = ( new Client_Metadata_Controller() )->get_metadata();
 		$data     = $response->get_data();
 
 		$this->assertIsArray( $data );
@@ -43,6 +45,22 @@ class Test_Client_Metadata_Filter extends WP_UnitTestCase {
 		$this->assertNotEmpty( $data['client_id'] );
 		$this->assertIsArray( $data['redirect_uris'] );
 		$this->assertNotEmpty( $data['redirect_uris'] );
+		$this->assertSame( Client::scopes(), $data['scope'] );
+		$this->assertStringNotContainsString( 'transition:generic', $data['scope'] );
+		$this->assertStringContainsString( 'repo:app.bsky.feed.post', $data['scope'] );
+		$this->assertStringContainsString( 'repo:site.standard.document', $data['scope'] );
+		$this->assertStringContainsString( 'repo:site.standard.publication', $data['scope'] );
+		$this->assertStringContainsString( 'blob:image/*', $data['scope'] );
+		$this->assertStringContainsString(
+			'rpc:app.bsky.actor.getProfile?aud=did:web:api.bsky.app%23bsky_appview',
+			$data['scope']
+		);
+		$this->assertStringContainsString(
+			'rpc:app.bsky.notification.listNotifications?aud=did:web:api.bsky.app%23bsky_appview',
+			$data['scope']
+		);
+		$this->assertStringContainsString( 'identity:handle', $data['scope'] );
+		$this->assertStringContainsString( 'include:site.standard.authFull', $data['scope'] );
 	}
 
 	/**
@@ -52,7 +70,7 @@ class Test_Client_Metadata_Filter extends WP_UnitTestCase {
 	 * Regression for Copilot inline finding on class-admin.php:836.
 	 */
 	public function test_scalar_redirect_uris_falls_back_to_default() {
-		$this->setExpectedIncorrectUsage( 'Atmosphere\\WP_Admin\\Admin::serve_client_metadata' );
+		$this->setExpectedIncorrectUsage( 'Atmosphere\\Rest\\Client_Metadata_Controller::get_metadata' );
 
 		\add_filter(
 			'atmosphere_client_metadata',
@@ -62,7 +80,7 @@ class Test_Client_Metadata_Filter extends WP_UnitTestCase {
 			}
 		);
 
-		$response = Admin::serve_client_metadata();
+		$response = ( new Client_Metadata_Controller() )->get_metadata();
 		$data     = $response->get_data();
 
 		$this->assertIsArray( $data['redirect_uris'] );
@@ -73,7 +91,7 @@ class Test_Client_Metadata_Filter extends WP_UnitTestCase {
 	 * A filter that returns a non-string `client_id` is rejected.
 	 */
 	public function test_non_string_client_id_falls_back_to_default() {
-		$this->setExpectedIncorrectUsage( 'Atmosphere\\WP_Admin\\Admin::serve_client_metadata' );
+		$this->setExpectedIncorrectUsage( 'Atmosphere\\Rest\\Client_Metadata_Controller::get_metadata' );
 
 		\add_filter(
 			'atmosphere_client_metadata',
@@ -83,7 +101,7 @@ class Test_Client_Metadata_Filter extends WP_UnitTestCase {
 			}
 		);
 
-		$response = Admin::serve_client_metadata();
+		$response = ( new Client_Metadata_Controller() )->get_metadata();
 		$data     = $response->get_data();
 
 		$this->assertIsString( $data['client_id'] );
@@ -93,11 +111,11 @@ class Test_Client_Metadata_Filter extends WP_UnitTestCase {
 	 * A filter that returns a non-array entirely is rejected.
 	 */
 	public function test_non_array_filter_return_falls_back_to_default() {
-		$this->setExpectedIncorrectUsage( 'Atmosphere\\WP_Admin\\Admin::serve_client_metadata' );
+		$this->setExpectedIncorrectUsage( 'Atmosphere\\Rest\\Client_Metadata_Controller::get_metadata' );
 
 		\add_filter( 'atmosphere_client_metadata', static fn() => 'string-instead-of-array' );
 
-		$response = Admin::serve_client_metadata();
+		$response = ( new Client_Metadata_Controller() )->get_metadata();
 		$data     = $response->get_data();
 
 		$this->assertIsArray( $data );
@@ -111,7 +129,7 @@ class Test_Client_Metadata_Filter extends WP_UnitTestCase {
 	 * off-site URI would be a token-leak primitive.
 	 */
 	public function test_offsite_redirect_uri_falls_back_to_default() {
-		$this->setExpectedIncorrectUsage( 'Atmosphere\\WP_Admin\\Admin::serve_client_metadata' );
+		$this->setExpectedIncorrectUsage( 'Atmosphere\\Rest\\Client_Metadata_Controller::get_metadata' );
 
 		\add_filter(
 			'atmosphere_client_metadata',
@@ -121,7 +139,7 @@ class Test_Client_Metadata_Filter extends WP_UnitTestCase {
 			}
 		);
 
-		$response = Admin::serve_client_metadata();
+		$response = ( new Client_Metadata_Controller() )->get_metadata();
 		$data     = $response->get_data();
 
 		$this->assertStringStartsWith( \admin_url( '', 'https' ), $data['redirect_uris'][0] );
@@ -133,7 +151,7 @@ class Test_Client_Metadata_Filter extends WP_UnitTestCase {
 	 * server would otherwise deliver the OAuth code over cleartext.
 	 */
 	public function test_http_scheme_redirect_uri_falls_back_to_default() {
-		$this->setExpectedIncorrectUsage( 'Atmosphere\\WP_Admin\\Admin::serve_client_metadata' );
+		$this->setExpectedIncorrectUsage( 'Atmosphere\\Rest\\Client_Metadata_Controller::get_metadata' );
 
 		\add_filter(
 			'atmosphere_client_metadata',
@@ -145,7 +163,7 @@ class Test_Client_Metadata_Filter extends WP_UnitTestCase {
 			}
 		);
 
-		$response = Admin::serve_client_metadata();
+		$response = ( new Client_Metadata_Controller() )->get_metadata();
 		$data     = $response->get_data();
 
 		$this->assertCount( 1, $data['redirect_uris'] );
@@ -158,7 +176,7 @@ class Test_Client_Metadata_Filter extends WP_UnitTestCase {
 	 * not "partial use the valid ones."
 	 */
 	public function test_mixed_valid_invalid_redirect_uris_falls_back_to_default() {
-		$this->setExpectedIncorrectUsage( 'Atmosphere\\WP_Admin\\Admin::serve_client_metadata' );
+		$this->setExpectedIncorrectUsage( 'Atmosphere\\Rest\\Client_Metadata_Controller::get_metadata' );
 
 		\add_filter(
 			'atmosphere_client_metadata',
@@ -171,7 +189,7 @@ class Test_Client_Metadata_Filter extends WP_UnitTestCase {
 			}
 		);
 
-		$response = Admin::serve_client_metadata();
+		$response = ( new Client_Metadata_Controller() )->get_metadata();
 		$data     = $response->get_data();
 
 		// Should be the default single-entry list, not a 2-entry list.
@@ -185,7 +203,7 @@ class Test_Client_Metadata_Filter extends WP_UnitTestCase {
 	 * the parent array because the array itself has one element.
 	 */
 	public function test_empty_string_redirect_uri_falls_back_to_default() {
-		$this->setExpectedIncorrectUsage( 'Atmosphere\\WP_Admin\\Admin::serve_client_metadata' );
+		$this->setExpectedIncorrectUsage( 'Atmosphere\\Rest\\Client_Metadata_Controller::get_metadata' );
 
 		\add_filter(
 			'atmosphere_client_metadata',
@@ -195,7 +213,7 @@ class Test_Client_Metadata_Filter extends WP_UnitTestCase {
 			}
 		);
 
-		$response = Admin::serve_client_metadata();
+		$response = ( new Client_Metadata_Controller() )->get_metadata();
 		$data     = $response->get_data();
 
 		$this->assertNotEmpty( $data['redirect_uris'][0] );
@@ -210,7 +228,7 @@ class Test_Client_Metadata_Filter extends WP_UnitTestCase {
 	 * @param mixed $bad_entry Entry to inject.
 	 */
 	public function test_non_string_redirect_uri_entry_falls_back_to_default( $bad_entry ) {
-		$this->setExpectedIncorrectUsage( 'Atmosphere\\WP_Admin\\Admin::serve_client_metadata' );
+		$this->setExpectedIncorrectUsage( 'Atmosphere\\Rest\\Client_Metadata_Controller::get_metadata' );
 
 		\add_filter(
 			'atmosphere_client_metadata',
@@ -220,7 +238,7 @@ class Test_Client_Metadata_Filter extends WP_UnitTestCase {
 			}
 		);
 
-		$response = Admin::serve_client_metadata();
+		$response = ( new Client_Metadata_Controller() )->get_metadata();
 		$data     = $response->get_data();
 
 		$this->assertIsString( $data['redirect_uris'][0] );
@@ -241,6 +259,21 @@ class Test_Client_Metadata_Filter extends WP_UnitTestCase {
 	}
 
 	/**
+	 * The OAuth client name is HTML-entity decoded. WordPress stores
+	 * `blogname` entity-encoded (esc_html at save time), so without
+	 * decoding the consent screen would render raw codes like `&#039;`.
+	 */
+	public function test_client_name_decodes_html_entities() {
+		// Covers both a numeric entity (&#039;) and a named entity (&amp;).
+		\add_filter( 'pre_option_blogname', static fn() => 'Tom &amp; Toni&#039;s blog' );
+
+		$response = ( new Client_Metadata_Controller() )->get_metadata();
+		$data     = $response->get_data();
+
+		$this->assertSame( "Tom & Toni's blog (ATmosphere)", $data['client_name'] );
+	}
+
+	/**
 	 * A filter that returns a properly-shaped array IS applied —
 	 * the validation must not block the legitimate extension point.
 	 */
@@ -253,7 +286,7 @@ class Test_Client_Metadata_Filter extends WP_UnitTestCase {
 			}
 		);
 
-		$response = Admin::serve_client_metadata();
+		$response = ( new Client_Metadata_Controller() )->get_metadata();
 		$data     = $response->get_data();
 
 		$this->assertSame( 'Custom Name', $data['client_name'] );

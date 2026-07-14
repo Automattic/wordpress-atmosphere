@@ -91,6 +91,43 @@ class Test_Comment extends WP_UnitTestCase {
 	}
 
 	/**
+	 * A @mention in commenter-supplied content is not resolved: no outbound
+	 * DNS/HTTP lookup fires and no #mention facet is emitted, while link facets
+	 * (which never touch the network) are still produced. This keeps an approved
+	 * comment from steering the server's egress at an arbitrary host.
+	 *
+	 * @covers ::transform
+	 */
+	public function test_comment_mention_is_not_resolved() {
+		// Tripwire: any handle-resolution lookup on the comment path is a failure.
+		\add_filter(
+			'pre_http_request',
+			static function () {
+				throw new \RuntimeException( 'Comment mentions must not resolve over the network.' );
+			},
+			1
+		);
+
+		$comment_id = self::factory()->comment->create(
+			array(
+				'comment_post_ID' => $this->post_id,
+				'comment_content' => 'Ping @alice.bsky.social see https://example.com',
+				'user_id'         => 1,
+			)
+		);
+
+		$record = ( new Comment( \get_comment( $comment_id ) ) )->transform();
+
+		$types = \array_map(
+			static fn( $facet ) => $facet['features'][0]['$type'] ?? '',
+			$record['facets'] ?? array()
+		);
+
+		$this->assertNotContains( 'app.bsky.richtext.facet#mention', $types, 'Comment mentions must not be resolved into facets.' );
+		$this->assertContains( 'app.bsky.richtext.facet#link', $types, 'Link facets should still be emitted on the comment path.' );
+	}
+
+	/**
 	 * A reply to a locally-published sibling comment uses the sibling's
 	 * AT record as the parent ref.
 	 *

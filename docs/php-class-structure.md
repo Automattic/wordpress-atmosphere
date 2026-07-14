@@ -18,15 +18,22 @@ wordpress-atmosphere/
 ├── includes/                       # Core plugin code.
 │   ├── class-atmosphere.php        # Plugin orchestration; rewrite rules + well-known handlers; cron registration.
 │   ├── class-api.php               # DPoP-authenticated PDS request layer with nonce retry.
-│   ├── class-autoloader.php        # Custom classmap autoloader.
+│   ├── class-autoloader.php        # Custom WordPress-style autoloader.
 │   ├── class-backfill.php          # Bulk re-sync of existing posts.
+│   ├── class-block-editor.php      # Enqueues the block-editor panels (share toggle + pre-publish).
 │   ├── class-handle.php            # Domain-handle setup helper (writes /.well-known/atproto-did).
 │   ├── class-post-types.php        # Supported post-type discovery and option storage.
 │   ├── class-publisher.php         # Atomic applyWrites for both Bluesky post + standard.site document.
 │   ├── class-reaction-sync.php     # Mirrors Bluesky reactions back to WordPress comments.
-│   ├── functions.php               # Helper functions (loaded via Composer `files`).
+│   ├── functions.php               # Helper functions (loaded directly from atmosphere.php).
 │   │
 │   ├── content-parser/             # Pluggable content formats for site.standard.document.
+│   │   ├── class-html.php
+│   │   ├── class-leaflet.php
+│   │   ├── class-markpub.php
+│   │   ├── class-parser-base.php
+│   │   ├── class-pckt.php
+│   │   ├── class-registry.php
 │   │   └── interface-content-parser.php
 │   │
 │   ├── oauth/                      # Native OAuth flow (PKCE + DPoP + PAR).
@@ -35,6 +42,11 @@ wordpress-atmosphere/
 │   │   ├── class-encryption.php    # libsodium token / key encryption at rest.
 │   │   ├── class-nonce-storage.php # DPoP nonce persistence.
 │   │   └── class-resolver.php      # handle → DID → PDS → auth server resolution chain.
+│   │
+│   ├── rest/                       # REST API controllers (WP_REST_Controller subclasses).
+│   │   ├── class-client-metadata-controller.php  # Public OAuth client-metadata endpoint.
+│   │   └── admin/                  # Authenticated, editor-only controllers.
+│   │       └── class-pre-publish-controller.php   # Pre-publish projection for the editor panel.
 │   │
 │   ├── transformer/                # WordPress → AT Protocol record transformers.
 │   │   ├── class-base.php          # Abstract base.
@@ -45,8 +57,9 @@ wordpress-atmosphere/
 │   │   ├── class-publication.php   # Site → site.standard.publication.
 │   │   └── class-tid.php           # AT Protocol Timestamp ID generation.
 │   │
-│   └── wp-admin/                   # Admin functionality.
-│       └── class-admin.php         # Settings page, sidebar panel, REST handlers.
+│   └── wp-admin/                   # Admin screens.
+│       ├── class-admin.php         # Settings page, OAuth callback, menu wiring.
+│       └── class-settings-fields.php  # Settings API field rendering.
 │
 ├── integrations/                   # Third-party plugin integrations.
 │   └── class-load.php              # Integration loader stub.
@@ -141,7 +154,9 @@ Periodically polls the PDS for notifications and self-collections (`app.bsky.fee
 
 ### Content Parser (`includes/content-parser/`)
 
-Provides the `Atmosphere\Content_Parser\Content_Parser` interface for plugins that want to populate the `content` field of `site.standard.document` records (see [`docs/content-formats.md`](content-formats.md)). The plugin ships only the interface — concrete parsers register through the `atmosphere_content_parser` filter from `integrations/` or third-party plugins.
+Provides the parser registry for the singular `content` field of `site.standard.document` records (see [`docs/content-formats.md`](content-formats.md)). Built-in parsers live in this directory (`Html`, `Markpub`, `Leaflet`, `Pckt`) and integrations register additional `Content_Parser` instances with `Atmosphere\Content_Parser\Registry::register()`.
+
+`Content_Parser` stays intentionally small: `get_type()` and `parse()`. Parsers that need WordPress helpers should extend `Parser_Base`, which provides block-tree access, rendered HTML, image blob helpers, grapheme truncation, and an optional `applies_to()` method the registry understands. Parsers without `applies_to()` are treated as applicable for third-party compatibility.
 
 ## Namespace Organization
 
@@ -154,6 +169,8 @@ namespace Atmosphere\OAuth;
 namespace Atmosphere\Transformer;
 namespace Atmosphere\Content_Parser;
 namespace Atmosphere\Integrations;
+namespace Atmosphere\Rest;        // Public REST controllers.
+namespace Atmosphere\Rest\Admin;  // Authenticated, editor-only REST controllers.
 namespace Atmosphere\WP_Admin;
 namespace Atmosphere\Tests;
 ```
@@ -204,7 +221,9 @@ class Publisher {
 | AT Protocol record transformers | `includes/transformer/` | `Atmosphere\Transformer` |
 | OAuth flow components | `includes/oauth/` | `Atmosphere\OAuth` |
 | Content parsers (NSID-typed `content` producers) | `includes/content-parser/` | `Atmosphere\Content_Parser` |
-| Admin screens / REST handlers | `includes/wp-admin/` | `Atmosphere\WP_Admin` |
+| Public REST controllers (`WP_REST_Controller`) | `includes/rest/` | `Atmosphere\Rest` |
+| Authenticated/editor-only REST controllers | `includes/rest/admin/` | `Atmosphere\Rest\Admin` |
+| Admin screens | `includes/wp-admin/` | `Atmosphere\WP_Admin` |
 | Third-party plugin integrations | `integrations/` | `Atmosphere\Integrations` |
 
 ### Creating a New Subdirectory
@@ -215,9 +234,27 @@ Add one when you have:
 - A clear domain boundary (e.g. all OAuth-flow concerns live in `oauth/`).
 - A reason to keep the concerns from leaking into surrounding files.
 
-After adding or renaming a class file, run `composer dump-autoload` so the Composer classmap picks it up.
+After adding or renaming a class file under the `Atmosphere` namespace, no Composer autoload step is needed. The runtime autoloader in `includes/class-autoloader.php` maps namespace segments to WordPress-style filenames such as `class-parser-base.php` and `interface-content-parser.php`.
 
 ## Architectural Patterns
+
+### REST Controllers
+
+Every REST endpoint is a `WP_REST_Controller` subclass under `includes/rest/`
+(public) or `includes/rest/admin/` (authenticated / editor-only), mirroring
+the wordpress-activitypub plugin's layout. Each controller declares its route
+via `register_routes()`; they are all instantiated together in
+`Atmosphere::register_rest_controllers()` on `rest_api_init`.
+
+Route namespaces are versioned deliberately:
+
+- **`atmosphere/v1`** — the public OAuth `client-metadata` endpoint. Its URL is
+  the OAuth `client_id`, an external contract, so the version string is frozen
+  and must not change.
+- **`atmosphere/1.0`** — admin/editor routes (e.g. the pre-publish preview).
+
+New admin routes should use `atmosphere/1.0`, set `show_in_index => false`, and
+gate access with a `permission_callback`.
 
 ### Transformer Pattern
 
@@ -326,4 +363,4 @@ class Load {
 }
 ```
 
-See [`integrations/README.md`](../integrations/README.md) for the full pattern, including how `atmosphere_content_parser` and `atmosphere_document_content` filters compose.
+See [`integrations/README.md`](../integrations/README.md) for the full registry pattern and the remaining `atmosphere_document_content` filter.

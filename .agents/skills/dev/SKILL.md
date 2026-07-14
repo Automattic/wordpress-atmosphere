@@ -23,7 +23,6 @@ composer test                               # Local (needs MySQL).
 # Code quality.
 composer lint                # PHPCS check.
 composer lint:fix            # PHPCS auto-fix.
-composer dump-autoload       # Regenerate classmap after adding/renaming classes.
 
 # Release.
 npm run release              # Interactive release script. See the release skill.
@@ -39,23 +38,23 @@ npm run release              # Interactive release script. See the release skill
 
 ```bash
 # 1. Make changes.
-# 2. If a class file was added/renamed:
-composer dump-autoload
-
-# 3. Run relevant tests + lint.
+# 2. Run relevant tests + lint.
 npm run env-test -- --filter=FeatureName
 composer lint
 
-# 4. Commit.
+# 3. Commit.
 ```
 
 ## WP-CLI Inside wp-env
 
+There is no `env` npm script — call `wp-env` directly via `npx`:
+
 ```bash
-npm run env -- run cli wp plugin list
-npm run env -- run cli wp option get atmosphere_settings
-npm run env -- run cli wp transient delete --all
-npm run env -- run cli wp db cli
+npx wp-env run cli -- wp plugin list
+npx wp-env run cli -- wp option get atmosphere_identity
+npx wp-env run cli -- wp post create --post_title='Test' --post_status=publish --porcelain
+npx wp-env run cli -- wp transient delete --all
+npx wp-env run tests-cli -- wp option list     # Same, against the tests instance (:8885).
 ```
 
 ## When to Read the Full Docs

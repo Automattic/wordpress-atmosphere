@@ -24,13 +24,16 @@ class API {
 	/**
 	 * Send a DPoP-authenticated request to the connected PDS.
 	 *
-	 * @param string      $method   HTTP method.
-	 * @param string      $endpoint XRPC path, e.g. /xrpc/com.atproto.repo.createRecord.
-	 * @param array       $args     wp_safe_remote_request() arguments.
-	 * @param string|null $nonce    Explicit DPoP nonce (used on retry).
+	 * @param string      $method       HTTP method.
+	 * @param string      $endpoint     XRPC path, e.g. /xrpc/com.atproto.repo.createRecord.
+	 * @param array       $args         wp_safe_remote_request() arguments.
+	 * @param string|null $nonce        Explicit DPoP nonce (used on retry).
+	 * @param bool        $auth_retried Internal marker: set on the recursive call after a
+	 *                                  proactive refresh so a still-failing token does not
+	 *                                  loop.
 	 * @return array|\WP_Error Decoded JSON body or error.
 	 */
-	public static function request( string $method, string $endpoint, array $args = array(), ?string $nonce = null ): array|\WP_Error {
+	public static function request( string $method, string $endpoint, array $args = array(), ?string $nonce = null, bool $auth_retried = false ): array|\WP_Error {
 		$original_args = $args;
 
 		$access_token = Client::access_token();
@@ -39,6 +42,23 @@ class API {
 		}
 
 		$conn = \get_option( 'atmosphere_connection', array() );
+
+		/*
+		 * Snapshot the access-token ciphertext we are about to use,
+		 * BEFORE the HTTP round-trip. If the request comes back 401
+		 * and a concurrent worker rotated the token while our HTTP
+		 * call was in-flight, the rotated ciphertext will already be
+		 * in `atmosphere_connection` by the time we read it again
+		 * inside the 401 branch — and a snapshot taken there would
+		 * equal the rotated value, defeating
+		 * `Client::wait_for_token_refresh($snapshot)`'s "wait until
+		 * the ciphertext differs from snapshot" semantics. Capturing
+		 * here pins the comparison value to the token that ACTUALLY
+		 * went on the wire, so any rotation that happened during the
+		 * round-trip (or that lands during the wait) trips the
+		 * differs-from-snapshot check correctly.
+		 */
+		$access_token_snapshot = (string) ( $conn['access_token'] ?? '' );
 
 		$dpop_jwk_json = Encryption::decrypt( $conn['dpop_jwk'] ?? '' );
 		if ( false === $dpop_jwk_json ) {
@@ -58,16 +78,18 @@ class API {
 		}
 
 		$defaults = array(
-			'method'  => $method,
-			'headers' => array(
+			'method'      => $method,
+			'headers'     => array(
 				'Authorization' => 'DPoP ' . $access_token,
 				'Content-Type'  => $content_type,
 				'DPoP'          => $dpop_proof,
 			),
-			'timeout' => 30,
+			'timeout'     => 30,
+			'redirection' => 0,
 		);
 
-		$args = \wp_parse_args( $args, $defaults );
+		$args                = \wp_parse_args( $args, $defaults );
+		$args['redirection'] = 0;
 
 		if ( ! empty( $args['body'] ) && \is_array( $args['body'] ) ) {
 			$args['body'] = \wp_json_encode( $args['body'] );
@@ -97,10 +119,84 @@ class API {
 			&& \in_array( $status, array( 400, 401 ), true )
 			&& ( $body['error'] ?? '' ) === 'use_dpop_nonce'
 		) {
-			return self::request( $method, $endpoint, $original_args, $response_nonce );
+			return self::request( $method, $endpoint, $original_args, $response_nonce, $auth_retried );
 		}
 
-		if ( $status >= 400 ) {
+		/*
+		 * Retry once after a proactive token refresh when the PDS rejects
+		 * the access token as expired or invalid. The previous behaviour
+		 * surfaced these as a hard `atmosphere_pds` error even though a
+		 * refresh-then-retry would have recovered the request — the most
+		 * common reason for hitting this branch is an access token that
+		 * `Client::access_token()` considered fresh (because `expires_at`
+		 * was still in the future) but the auth server has revoked or
+		 * rotated under us.
+		 *
+		 * Only recurse if the refresh either succeeded or is racing
+		 * another worker (`atmosphere_refresh_locked`, in which case the
+		 * recursive `Client::access_token()` will wait for that worker to
+		 * land a new token). On any other refresh error — missing refresh
+		 * token, decrypt failure, transient network blip — surface that
+		 * error instead of retrying with the same stale access token; the
+		 * second PDS call would just hit the same 401 and mask the more
+		 * actionable upstream cause.
+		 */
+		if ( ! $auth_retried
+			&& 401 === $status
+			&& \in_array(
+				$body['error'] ?? '',
+				array( 'InvalidToken', 'ExpiredToken', 'AuthenticationRequired' ),
+				true
+			)
+		) {
+			/*
+			 * `$access_token_snapshot` was captured at the top of this
+			 * function, BEFORE the HTTP request — see the comment
+			 * there for why post-request snapshotting would race
+			 * a concurrent rotation. The retry must run against a
+			 * rotated token, and the ciphertext-comparison is the
+			 * only signal that reliably distinguishes "we still hold
+			 * the version that just got rejected" from "someone
+			 * already rotated":
+			 *
+			 *   - `Client::refresh()` short-circuits with `true` when
+			 *     another worker holds the lock AND the local
+			 *     `expires_at` is still in the future. Without the
+			 *     ciphertext check we would retry immediately with
+			 *     the same stale token.
+			 *   - `Client::refresh()` returns `atmosphere_refresh_locked`
+			 *     because another worker is mid-flight. The wait must
+			 *     block until that worker writes a fresh token, not
+			 *     just until the existing `expires_at` re-clears the
+			 *     5-minute window.
+			 */
+			$refresh = Client::refresh();
+			if ( \is_wp_error( $refresh ) && 'atmosphere_refresh_locked' !== $refresh->get_error_code() ) {
+				return $refresh;
+			}
+
+			/*
+			 * Whether `refresh()` returned `true` (we acquired the
+			 * lock and rotated, or another worker just finished
+			 * rotating), short-circuited to `true` on a locally-fresh
+			 * `expires_at`, or returned `atmosphere_refresh_locked`,
+			 * the same wait covers all three: it blocks until the
+			 * stored access-token ciphertext differs from the
+			 * snapshot above (or until `needs_reauth` flips, or
+			 * until the lock TTL elapses). On the
+			 * we-rotated-ourselves path this returns almost
+			 * immediately on the first poll; on the concurrent-worker
+			 * path it waits for their write to land.
+			 */
+			$waited = Client::wait_for_token_refresh( $access_token_snapshot );
+			if ( \is_wp_error( $waited ) ) {
+				return $waited;
+			}
+
+			return self::request( $method, $endpoint, $original_args, null, true );
+		}
+
+		if ( ! is_success_status( $status ) ) {
 			$msg = $body['message'] ?? ( $body['error'] ?? \__( 'PDS request failed.', 'atmosphere' ) );
 			return new \WP_Error( 'atmosphere_pds', $msg, array( 'status' => $status ) );
 		}
@@ -142,6 +238,34 @@ class API {
 	 * @return array|\WP_Error Blob reference from PDS.
 	 */
 	public static function upload_blob( string $file_path, string $mime_type ): array|\WP_Error {
+		/**
+		 * Short-circuits the uploadBlob call before it reaches the PDS.
+		 *
+		 * Return a non-null array (the PDS success shape, e.g.
+		 * `[ 'blob' => [...] ]`) or a `WP_Error` to bypass the real HTTP
+		 * round-trip. Mirrors `atmosphere_pre_apply_writes`: the real
+		 * upload runs inside `wp_safe_remote_request` after a DPoP proof
+		 * has been built, so test environments and the FOSSE harness use
+		 * this filter to observe or mock the upload without a live PDS.
+		 *
+		 * @param null|array|\WP_Error $short_circuit Short-circuit value. Return null to skip.
+		 * @param string               $file_path     Local path of the file about to be uploaded.
+		 * @param string               $mime_type     MIME type of the file.
+		 */
+		$short_circuit = \apply_filters( 'atmosphere_pre_upload_blob', null, $file_path, $mime_type );
+		if ( \is_array( $short_circuit ) || \is_wp_error( $short_circuit ) ) {
+			return $short_circuit;
+		}
+		if ( null !== $short_circuit ) {
+			// Malformed filter return (scalar / object / etc). Surface as a
+			// WP_Error instead of letting PHP fatal on the `array|\WP_Error`
+			// return type. Mirrors `atmosphere_pre_apply_writes`.
+			return new \WP_Error(
+				'atmosphere_invalid_pre_upload_blob_return',
+				\__( 'atmosphere_pre_upload_blob must return null, an array, or a WP_Error.', 'atmosphere' )
+			);
+		}
+
 		if ( ! \is_readable( $file_path ) ) {
 			return new \WP_Error( 'atmosphere_file', \__( 'File not found or not readable.', 'atmosphere' ) );
 		}

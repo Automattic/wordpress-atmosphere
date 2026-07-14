@@ -30,9 +30,14 @@ class Nonce_Storage {
 	/**
 	 * Time-to-live in seconds.
 	 *
+	 * Must stay shorter than the auth server's own DPoP nonce lifetime
+	 * (atproto-oauth-provider uses 180s) so we expire stored nonces
+	 * before the server starts rejecting them as stale and forcing an
+	 * extra `use_dpop_nonce` round-trip on every DPoP-bound request.
+	 *
 	 * @var int
 	 */
-	private const TTL = 300;
+	private const TTL = 150;
 
 	/**
 	 * Retrieve a stored nonce for a URL.
