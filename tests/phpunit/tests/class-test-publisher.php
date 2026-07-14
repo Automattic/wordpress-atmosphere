@@ -3,7 +3,7 @@
  * Tests for the Publisher class.
  *
  * Verifies publish, update, and delete flows including the
- * URI-based existence check and bsky cross-reference refresh.
+ * URI-based existence check and standard.site document strong refs.
  *
  * @package Atmosphere
  * @group atmosphere
@@ -13,6 +13,7 @@
 namespace Atmosphere\Tests;
 
 use WP_UnitTestCase;
+use Atmosphere\CID;
 use Atmosphere\Publisher;
 use Atmosphere\Reaction_Sync;
 use Atmosphere\OAuth\DPoP;
@@ -20,6 +21,7 @@ use Atmosphere\OAuth\Encryption;
 use Atmosphere\Transformer\Comment;
 use Atmosphere\Transformer\Document;
 use Atmosphere\Transformer\Post;
+use Atmosphere\Transformer\Publication;
 
 /**
  * Publisher tests.
@@ -44,8 +46,6 @@ class Test_Publisher extends WP_UnitTestCase {
 			)
 		);
 		\update_option( 'atmosphere_did', 'did:plc:test123' );
-
-		\add_filter( 'pre_http_request', array( $this, 'mock_document_ref_update' ), 10, 3 );
 	}
 
 	/**
@@ -55,43 +55,16 @@ class Test_Publisher extends WP_UnitTestCase {
 		\delete_option( 'atmosphere_connection' );
 		\delete_option( 'atmosphere_did' );
 		\delete_option( 'atmosphere_publication_tid' );
+		\delete_option( 'atmosphere_publication_cid' );
 
 		\remove_all_filters( 'atmosphere_pre_apply_writes' );
 		\remove_all_filters( 'atmosphere_long_form_composition' );
 		\remove_all_filters( 'atmosphere_teaser_thread_posts' );
 		\remove_all_filters( 'atmosphere_transform_bsky_post' );
+		\remove_all_filters( 'atmosphere_transform_document' );
 		\remove_all_filters( 'atmosphere_is_short_form_post' );
-		\remove_filter( 'pre_http_request', array( $this, 'mock_document_ref_update' ), 10 );
 
 		parent::tear_down();
-	}
-
-	/**
-	 * Mock follow-up document putRecord calls.
-	 *
-	 * @param false|array|\WP_Error $response Preemptive HTTP response.
-	 * @param array                 $args     Request args.
-	 * @param string                $url      Request URL.
-	 * @return false|array|\WP_Error
-	 */
-	public function mock_document_ref_update( $response, array $args, string $url ) {
-		if ( false !== $response ) {
-			return $response;
-		}
-
-		if ( false === \strpos( $url, 'com.atproto.repo.putRecord' ) ) {
-			return $response;
-		}
-
-		return array(
-			'response' => array( 'code' => 200 ),
-			'body'     => \wp_json_encode(
-				array(
-					'uri' => 'at://did:plc:test123/site.standard.document/doc-ref',
-					'cid' => 'bafyreibdocref',
-				)
-			),
-		);
 	}
 
 	/**
@@ -1155,6 +1128,22 @@ class Test_Publisher extends WP_UnitTestCase {
 		$this->assertSame( 'app.bsky.feed.post', $writes[0]['collection'] );
 		$this->assertSame( 'com.atproto.repo.applyWrites#create', $writes[1]['$type'] );
 		$this->assertSame( 'site.standard.document', $writes[1]['collection'] );
+		$this->assertArrayNotHasKey( 'bskyPostRef', $writes[1]['value'] );
+
+		$doc_cid = CID::from_record( $writes[1]['value'] );
+		$this->assertNotWPError( $doc_cid );
+
+		$refs    = $writes[0]['value']['embed']['external']['associatedRefs'] ?? array();
+		$doc_ref = null;
+		foreach ( $refs as $ref ) {
+			if ( false !== \strpos( $ref['uri'] ?? '', '/site.standard.document/' ) ) {
+				$doc_ref = $ref;
+				break;
+			}
+		}
+
+		$this->assertIsArray( $doc_ref );
+		$this->assertSame( $doc_cid, $doc_ref['cid'] );
 
 		$thread_records = \get_post_meta( $post->ID, Post::META_THREAD_RECORDS, true );
 		$this->assertIsArray( $thread_records );
@@ -1312,116 +1301,11 @@ class Test_Publisher extends WP_UnitTestCase {
 	}
 
 	/**
-	 * If the follow-up document update fails after the initial applyWrites,
-	 * publish returns the error while preserving meta for a retry.
+	 * A successful publish clears the legacy `META_DOC_REF_PENDING`
+	 * marker left by versions that tried to update the document after
+	 * publishing the Bluesky record.
 	 */
-	public function test_publish_surfaces_document_ref_update_failure() {
-		$post = self::factory()->post->create_and_get(
-			array(
-				'post_title'   => 'A Long-Form Post',
-				'post_content' => 'Body content.',
-			)
-		);
-
-		$put_record_failure = static function ( $response, $args, $url ) {
-			if ( false !== \strpos( $url, 'com.atproto.repo.putRecord' ) ) {
-				return new \WP_Error( 'atmosphere_doc_ref_failed', 'Document ref update failed.' );
-			}
-			return $response;
-		};
-
-		\add_filter( 'pre_http_request', $put_record_failure, 5, 3 );
-
-		try {
-			$this->fail_call_indexes = array();
-			$this->register_capture( $post->ID );
-
-			$result = Publisher::publish( $post );
-
-			$this->assertWPError( $result );
-			$this->assertSame( 'atmosphere_doc_ref_failed', $result->get_error_code() );
-
-			$thread_records = \get_post_meta( $post->ID, Post::META_THREAD_RECORDS, true );
-			$this->assertIsArray( $thread_records );
-			$this->assertCount( 1, $thread_records );
-			$this->assertNotEmpty( \get_post_meta( $post->ID, Document::META_URI, true ) );
-		} finally {
-			\remove_filter( 'pre_http_request', $put_record_failure, 5 );
-		}
-	}
-
-	/**
-	 * In a thread publish, a failure on the doc-ref `putRecord` between
-	 * step 1 (root + doc) and step 2+ (replies) must not abort the thread
-	 * — otherwise META_THREAD_RECORDS sticks at length=1 and the next
-	 * edit triggers a rewrite that replaces the already-published root
-	 * URI/TID, invalidating likes/reposts/external replies.
-	 *
-	 * Best-effort: log the doc-ref failure, then continue writing replies.
-	 */
-	public function test_publish_thread_continues_when_doc_ref_update_fails() {
-		$post = self::factory()->post->create_and_get(
-			array(
-				'post_title'   => 'A Long-Form Post',
-				'post_excerpt' => 'A curated excerpt long enough to compose a hook from.',
-				// Empty body: hook comes from the excerpt and there is no
-				// body chunk, so the default shape is [hook, cta] and the
-				// protocol assertions below expect a single reply write.
-				'post_content' => '',
-			)
-		);
-
-		\add_filter( 'atmosphere_long_form_composition', fn() => 'teaser-thread' );
-
-		$put_record_failure = static function ( $response, $args, $url ) {
-			if ( false !== \strpos( $url, 'com.atproto.repo.putRecord' ) ) {
-				return new \WP_Error( 'atmosphere_doc_ref_failed', 'Document ref update failed.' );
-			}
-			return $response;
-		};
-
-		\add_filter( 'pre_http_request', $put_record_failure, 5, 3 );
-
-		try {
-			$this->fail_call_indexes = array();
-			$this->register_capture( $post->ID );
-
-			$result = Publisher::publish( $post );
-
-			// Doc-ref failure is swallowed — overall publish succeeds.
-			$this->assertIsArray( $result );
-			$this->assertArrayHasKey( 'results', $result );
-
-			// Both root + reply applyWrites batches went through (call 1 = root+doc, call 2 = reply).
-			$this->assertCount( 2, $this->captured_calls );
-
-			$thread_records = \get_post_meta( $post->ID, Post::META_THREAD_RECORDS, true );
-			$this->assertIsArray( $thread_records );
-			$this->assertCount( 2, $thread_records );
-			foreach ( $thread_records as $record ) {
-				$this->assertNotEmpty( $record['uri'] );
-				$this->assertNotEmpty( $record['cid'] );
-			}
-
-			// Pending-doc-ref marker is persisted so admin / Site Health
-			// can surface the gap; logs are not the only signal.
-			$pending = \get_post_meta( $post->ID, Post::META_DOC_REF_PENDING, true );
-			$this->assertIsArray( $pending );
-			$this->assertSame( 'atmosphere_doc_ref_failed', $pending['code'] );
-			$this->assertNotEmpty( $pending['stamp'] );
-			$this->assertNotEmpty( $pending['message'] );
-		} finally {
-			\remove_filter( 'pre_http_request', $put_record_failure, 5 );
-		}
-	}
-
-	/**
-	 * A successful `update_document_bsky_ref` clears any prior
-	 * `META_DOC_REF_PENDING` marker — typical recovery path is the user
-	 * re-saves the post (any `Publisher::update*` flow ends at
-	 * `update_document_bsky_ref`).
-	 */
-	public function test_publish_clears_doc_ref_pending_on_successful_doc_ref() {
+	public function test_publish_clears_legacy_doc_ref_pending_marker() {
 		$post = self::factory()->post->create_and_get(
 			array(
 				'post_title'   => 'A Long-Form Post',
@@ -1606,6 +1490,7 @@ class Test_Publisher extends WP_UnitTestCase {
 		\update_post_meta( $post->ID, Post::META_CID, 'bafyreibstored' );
 		\update_post_meta( $post->ID, Document::META_URI, 'at://did:plc:test123/site.standard.document/doc-rkey-1' );
 		\update_post_meta( $post->ID, Document::META_TID, 'doc-rkey-1' );
+		\update_post_meta( $post->ID, Document::META_CID, 'bafyreibstaledoc' );
 
 		$this->fail_call_indexes = array();
 		$this->register_capture( $post->ID );
@@ -1621,6 +1506,75 @@ class Test_Publisher extends WP_UnitTestCase {
 		$this->assertSame( 'stored-rkey-1', $writes[0]['rkey'] );
 		$this->assertSame( 'com.atproto.repo.applyWrites#update', $writes[1]['$type'] );
 		$this->assertSame( 'doc-rkey-1', $writes[1]['rkey'] );
+		$this->assertArrayNotHasKey( 'bskyPostRef', $writes[1]['value'] );
+
+		$doc_cid = CID::from_record( $writes[1]['value'] );
+		$this->assertNotWPError( $doc_cid );
+
+		$refs    = $writes[0]['value']['embed']['external']['associatedRefs'] ?? array();
+		$doc_ref = null;
+		foreach ( $refs as $ref ) {
+			if ( false !== \strpos( $ref['uri'] ?? '', '/site.standard.document/' ) ) {
+				$doc_ref = $ref;
+				break;
+			}
+		}
+
+		$this->assertIsArray( $doc_ref );
+		$this->assertSame( $doc_cid, $doc_ref['cid'] );
+		$this->assertNotSame( 'bafyreibstaledoc', $doc_ref['cid'] );
+	}
+
+	/**
+	 * If the current document payload cannot be locally encoded, update
+	 * must not fall back to advertising the previous document CID.
+	 */
+	public function test_update_suppresses_document_ref_when_doc_cid_precompute_fails() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'A Long-Form Post',
+				'post_content' => 'Body.',
+				'post_excerpt' => 'Teaser excerpt.',
+			)
+		);
+
+		$root_uri = 'at://did:plc:test123/app.bsky.feed.post/stored-rkey-1';
+		\update_post_meta(
+			$post->ID,
+			Post::META_THREAD_RECORDS,
+			array(
+				array(
+					'uri' => $root_uri,
+					'cid' => 'bafyreibstored',
+					'tid' => 'stored-rkey-1',
+				),
+			)
+		);
+		\update_post_meta( $post->ID, Post::META_URI, $root_uri );
+		\update_post_meta( $post->ID, Post::META_TID, 'stored-rkey-1' );
+		\update_post_meta( $post->ID, Post::META_CID, 'bafyreibstored' );
+		\update_post_meta( $post->ID, Document::META_URI, 'at://did:plc:test123/site.standard.document/doc-rkey-1' );
+		\update_post_meta( $post->ID, Document::META_TID, 'doc-rkey-1' );
+		\update_post_meta( $post->ID, Document::META_CID, 'bafyreibstaledoc' );
+
+		\add_filter(
+			'atmosphere_transform_document',
+			static function ( array $record ): array {
+				$record['unsupported'] = new \stdClass();
+				return $record;
+			}
+		);
+
+		$this->fail_call_indexes = array();
+		$this->register_capture( $post->ID );
+
+		$result = Publisher::update( $post );
+
+		$this->assertIsArray( $result );
+
+		$writes = $this->captured_calls[0]['writes'];
+		$this->assertArrayHasKey( 'unsupported', $writes[1]['value'] );
+		$this->assertArrayNotHasKey( 'associatedRefs', $writes[0]['value']['embed']['external'] );
 	}
 
 	/**
@@ -2511,5 +2465,118 @@ class Test_Publisher extends WP_UnitTestCase {
 
 		$this->assertWPError( $result );
 		$this->assertSame( 'atmosphere_not_connected', $result->get_error_code() );
+	}
+
+	/**
+	 * A publication record that has drifted from the current transform
+	 * (e.g. after the URL normalization shipped this release, which no
+	 * settings hook fires for) is re-synced on the next publish, and the
+	 * post's publication strongRef points at the refreshed CID rather
+	 * than the stale one.
+	 */
+	public function test_publish_heals_drifted_publication() {
+		\update_option( Publication::OPTION_TID, '3kpub00000000', false );
+		\update_option( Publication::OPTION_CID, 'bafyreistalepublication00000000000000000000000000000000000000', false );
+
+		$put_calls  = array();
+		$fresh_cid  = 'bafyreifreshpublication00000000000000000000000000000000000000';
+		$put_filter = function ( $response, $args, $url ) use ( &$put_calls, $fresh_cid ) {
+			if ( false === \strpos( $url, 'com.atproto.repo.putRecord' ) ) {
+				return $response;
+			}
+
+			$put_calls[] = \json_decode( $args['body'] ?? '{}', true );
+
+			return array(
+				'response' => array( 'code' => 200 ),
+				'body'     => \wp_json_encode(
+					array(
+						'uri' => 'at://did:plc:test123/site.standard.publication/3kpub00000000',
+						'cid' => $fresh_cid,
+					)
+				),
+			);
+		};
+		\add_filter( 'pre_http_request', $put_filter, 10, 3 );
+
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'A Long-Form Post',
+				'post_content' => 'Body content.',
+			)
+		);
+
+		$this->fail_call_indexes = array();
+		$this->register_capture( $post->ID );
+
+		try {
+			$result = Publisher::publish( $post );
+		} finally {
+			\remove_filter( 'pre_http_request', $put_filter, 10 );
+		}
+
+		$this->assertIsArray( $result );
+
+		// Exactly one publication putRecord fired (the heal).
+		$this->assertCount( 1, $put_calls );
+		$this->assertSame( 'site.standard.publication', $put_calls[0]['collection'] );
+
+		// OPTION_CID was refreshed from the sync response.
+		$this->assertSame( $fresh_cid, \get_option( Publication::OPTION_CID ) );
+
+		// The post's publication strongRef points at the refreshed CID.
+		$writes  = $this->captured_calls[0]['writes'];
+		$refs    = $writes[0]['value']['embed']['external']['associatedRefs'] ?? array();
+		$pub_ref = null;
+		foreach ( $refs as $ref ) {
+			if ( false !== \strpos( $ref['uri'] ?? '', '/site.standard.publication/' ) ) {
+				$pub_ref = $ref;
+				break;
+			}
+		}
+
+		$this->assertIsArray( $pub_ref );
+		$this->assertSame( $fresh_cid, $pub_ref['cid'] );
+	}
+
+	/**
+	 * When the stored publication CID already matches the current
+	 * transform, publishing must not fire a redundant publication
+	 * putRecord.
+	 */
+	public function test_publish_skips_publication_sync_when_in_sync() {
+		$current_cid = CID::from_record( ( new Publication( null ) )->transform() );
+		$this->assertNotWPError( $current_cid );
+
+		\update_option( Publication::OPTION_TID, '3kpub00000000', false );
+		\update_option( Publication::OPTION_CID, $current_cid, false );
+
+		$put_calls  = array();
+		$put_filter = function ( $response, $args, $url ) use ( &$put_calls ) {
+			if ( false !== \strpos( $url, 'com.atproto.repo.putRecord' ) ) {
+				$put_calls[] = $url;
+			}
+			return $response;
+		};
+		\add_filter( 'pre_http_request', $put_filter, 10, 3 );
+
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'A Long-Form Post',
+				'post_content' => 'Body content.',
+			)
+		);
+
+		$this->fail_call_indexes = array();
+		$this->register_capture( $post->ID );
+
+		try {
+			$result = Publisher::publish( $post );
+		} finally {
+			\remove_filter( 'pre_http_request', $put_filter, 10 );
+		}
+
+		$this->assertIsArray( $result );
+		$this->assertCount( 0, $put_calls );
 	}
 }

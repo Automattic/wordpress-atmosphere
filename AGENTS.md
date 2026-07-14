@@ -72,6 +72,8 @@ Text domain: always `'atmosphere'`.
 
 **MUST** use `use` imports for cross-namespace references — no inline `\Namespace\Class`.
 
+**MUST** build any front-end-displayed Bluesky/appview web link (`profile`, `post`, `hashtag`, `mention`) through `Atmosphere\appview_url( $path, $context )` in `includes/functions.php` — never hardcode `https://bsky.app/...`. The helper centralizes the host and makes it filterable (`atmosphere_appview_host` / `atmosphere_appview_url`). Keep escaping at the call site (`\esc_url()` for HTML, `\esc_url_raw()` for storage); the helper returns an unescaped URL on purpose. This applies to display links only, not to AT Protocol records being published.
+
 ## Autoloading
 
 Uses the custom `Atmosphere\Autoloader` in `includes/class-autoloader.php`, which respects WordPress filename conventions (`class-foo.php`, lowercase, hyphenated). `composer.json` declares an empty `autoload` block — Composer is only used for dev tooling (PHPUnit, PHPCS, Changelogger). Helper functions in `includes/functions.php` are loaded via a direct `require_once` from `atmosphere.php`.

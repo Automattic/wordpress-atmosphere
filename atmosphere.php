@@ -3,7 +3,7 @@
  * Plugin Name: ATmosphere
  * Plugin URI: https://github.com/pfefferle/atmosphere
  * Description: Publish WordPress posts to AT Protocol (Bluesky + standard.site) via native OAuth.
- * Version: 1.2.0
+ * Version: 2.0.0
  * Author: Automattic
  * Author URI: https://automattic.com
  * License: GPL-2.0-or-later
@@ -19,7 +19,7 @@ namespace Atmosphere;
 
 \defined( 'ABSPATH' ) || exit;
 
-\define( 'ATMOSPHERE_VERSION', '1.2.0' );
+\define( 'ATMOSPHERE_VERSION', '2.0.0' );
 \define( 'ATMOSPHERE_PLUGIN_DIR', \plugin_dir_path( __FILE__ ) );
 \define( 'ATMOSPHERE_PLUGIN_URL', \plugin_dir_url( __FILE__ ) );
 \define( 'ATMOSPHERE_PLUGIN_FILE', __FILE__ );
@@ -32,6 +32,18 @@ namespace Atmosphere;
  * off for this post; absent/empty means the default — sharing is on.
  */
 \define( 'ATMOSPHERE_META_DISABLED', 'atmosphere_disabled' );
+
+/**
+ * Post meta key: per-post custom text for the Bluesky post.
+ *
+ * Stored as a registered, REST-exposed string so the block-editor panel
+ * can bind a textarea to it. When set, this exact text is posted to
+ * Bluesky (with a link card back to the post) instead of the text the
+ * normal short-form / long-form composition would generate — the
+ * Bluesky equivalent of the post excerpt. Empty means the default
+ * composition runs unchanged.
+ */
+\define( 'ATMOSPHERE_META_CUSTOM_TEXT', 'atmosphere_custom_text' );
 
 /*
  * Custom autoloader for Atmosphere classes — maps the Atmosphere

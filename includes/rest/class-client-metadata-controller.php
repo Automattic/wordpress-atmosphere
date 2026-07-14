@@ -96,7 +96,7 @@ class Client_Metadata_Controller extends \WP_REST_Controller {
 			 * request scope against the metadata; a drift here
 			 * silently downgrades to the smaller of the two.
 			 */
-			'scope'                      => 'atproto transition:generic identity:handle',
+			'scope'                      => Client::scopes(),
 			'dpop_bound_access_tokens'   => true,
 			'application_type'           => 'web',
 		);

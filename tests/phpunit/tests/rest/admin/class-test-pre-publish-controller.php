@@ -74,6 +74,7 @@ class Test_Pre_Publish_Controller extends WP_UnitTestCase {
 		$request->set_param( 'status', $overrides['status'] ?? 'publish' );
 		$request->set_param( 'password', $overrides['password'] ?? '' );
 		$request->set_param( 'disabled', $overrides['disabled'] ?? false );
+		$request->set_param( 'customText', $overrides['customText'] ?? '' );
 
 		return $request;
 	}
@@ -199,6 +200,65 @@ class Test_Pre_Publish_Controller extends WP_UnitTestCase {
 
 		$this->assertGreaterThan( 300, $data['records'][0]['characters'] );
 		$this->assertTrue( $data['records'][0]['over_limit'] );
+	}
+
+	/**
+	 * Unsaved custom text drives the preview: the projector reports the
+	 * `custom-text` strategy and counts the typed text, not the saved body.
+	 *
+	 * @covers ::get_preview
+	 */
+	public function test_preview_uses_unsaved_custom_text() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'A Titled Post',
+				'post_content' => 'The saved body.',
+			)
+		);
+
+		$data = $this->controller->get_preview(
+			$this->make_request(
+				$post->ID,
+				array(
+					'content'    => 'The saved body.',
+					'customText' => 'My own Bluesky words.',
+				)
+			)
+		)->get_data();
+
+		$this->assertTrue( $data['will_publish'] );
+		$this->assertSame( 'custom-text', $data['strategy'] );
+		$this->assertCount( 1, $data['records'] );
+		$this->assertSame( 21, $data['records'][0]['characters'] );
+	}
+
+	/**
+	 * When the request omits `customText` (e.g. an older/cached editor that
+	 * predates the field), the projector falls back to the saved meta rather
+	 * than forcing the default composition with a cast-from-missing empty
+	 * string — so a post with saved custom text still previews as custom text.
+	 *
+	 * @covers ::get_preview
+	 */
+	public function test_preview_without_custom_text_param_reads_saved_meta() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'A Titled Post',
+				'post_content' => 'Body.',
+			)
+		);
+		\update_post_meta( $post->ID, ATMOSPHERE_META_CUSTOM_TEXT, 'Saved custom words.' );
+
+		// Build a request that deliberately omits the customText param.
+		$request = new WP_REST_Request( 'POST', '/atmosphere/1.0/admin/pre-publish-preview' );
+		$request->set_param( 'id', $post->ID );
+		$request->set_param( 'title', 'A Titled Post' );
+		$request->set_param( 'content', 'Body.' );
+		$request->set_param( 'status', 'publish' );
+
+		$data = $this->controller->get_preview( $request )->get_data();
+
+		$this->assertSame( 'custom-text', $data['strategy'] );
 	}
 
 	/**

@@ -21,6 +21,8 @@ export function strategyLabel( strategy ) {
 			return __( 'Text with link', 'atmosphere' );
 		case 'teaser-thread':
 			return __( 'Teaser thread', 'atmosphere' );
+		case 'custom-text':
+			return __( 'Custom text', 'atmosphere' );
 		// Password-protected posts; the panel shows a reason instead, so
 		// this label is a defensive fallback for custom consumers.
 		case 'redacted':

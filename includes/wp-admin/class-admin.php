@@ -14,6 +14,8 @@ use Atmosphere\Handle;
 use Atmosphere\OAuth\Client;
 use Atmosphere\Publisher;
 use function Atmosphere\get_connection;
+use function Atmosphere\get_supported_post_types;
+use function Atmosphere\has_identity;
 use function Atmosphere\needs_reauth;
 
 /**
@@ -38,6 +40,7 @@ class Admin {
 		\add_action( 'admin_init', array( self::class, 'maybe_set_domain_handle' ) );
 		\add_action( 'admin_enqueue_scripts', array( self::class, 'enqueue_assets' ) );
 		\add_action( 'admin_notices', array( self::class, 'maybe_render_reauth_notice' ) );
+		\add_action( 'load-settings_page_atmosphere', array( self::class, 'maybe_warn_missing_post_types' ) );
 
 		\add_action( 'admin_post_atmosphere_disconnect', array( self::class, 'handle_disconnect' ) );
 	}
@@ -275,5 +278,42 @@ class Admin {
 			</p>
 		</div>
 		<?php
+	}
+
+	/**
+	 * Warn when auto-publish is on but no post type will ever publish.
+	 *
+	 * Auto-publish defaults on and the Post types list is easy to miss, so
+	 * a user can end up "publishing" with everything unticked and nothing
+	 * eligible to send. Registered as a settings error so it surfaces at
+	 * the top of the page via `options-head.php`.
+	 *
+	 * Gated on `has_identity()` to match the publishing section's own
+	 * visibility, and on the effective `get_supported_post_types()` list so
+	 * a native `add_post_type_support()` opt-in does not trip a false alarm.
+	 */
+	public static function maybe_warn_missing_post_types(): void {
+		if ( ! \current_user_can( 'manage_options' ) ) {
+			return;
+		}
+
+		if ( ! has_identity() ) {
+			return;
+		}
+
+		if ( '1' !== \get_option( 'atmosphere_auto_publish', '1' ) ) {
+			return;
+		}
+
+		if ( ! empty( get_supported_post_types() ) ) {
+			return;
+		}
+
+		\add_settings_error(
+			'atmosphere',
+			'no_post_types',
+			\__( 'Auto-publish is on, but no post types are selected, so nothing will be published. Select one or more post types under “Post types” below to start publishing.', 'atmosphere' ),
+			'warning'
+		);
 	}
 }

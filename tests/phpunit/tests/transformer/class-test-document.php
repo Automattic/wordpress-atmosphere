@@ -43,6 +43,9 @@ class Test_Document extends \WP_UnitTestCase {
 		Registry::reset();
 		Parser_Base::flush_block_cache();
 		\delete_option( Registry::OPTION_FORMAT );
+		\remove_all_filters( 'atmosphere_document_links' );
+		\remove_all_filters( 'atmosphere_document_labels' );
+		\remove_all_filters( 'atmosphere_document_contributors' );
 		Atmosphere::register_default_content_parsers();
 		parent::tear_down();
 	}
@@ -191,6 +194,26 @@ class Test_Document extends \WP_UnitTestCase {
 		} finally {
 			\remove_filter( 'the_content', $filter, \PHP_INT_MAX );
 		}
+	}
+
+	/**
+	 * Public document records do not include a Bluesky back-reference.
+	 */
+	public function test_document_omits_bsky_post_ref() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_status'  => 'publish',
+				'post_title'   => 'Public post',
+				'post_content' => 'Public body.',
+			)
+		);
+
+		\update_post_meta( $post->ID, Post::META_URI, 'at://did:plc:test/app.bsky.feed.post/public' );
+		\update_post_meta( $post->ID, Post::META_CID, 'bafypublic' );
+
+		$record = ( new Document( $post ) )->transform();
+
+		$this->assertArrayNotHasKey( 'bskyPostRef', $record );
 	}
 
 	/**
@@ -502,6 +525,81 @@ class Test_Document extends \WP_UnitTestCase {
 	}
 
 	/**
+	 * Extensions can add a typed links union to document records.
+	 */
+	public function test_document_links_filter_adds_typed_union() {
+		\add_filter(
+			'atmosphere_document_links',
+			static fn() => array(
+				'$type' => 'example.links',
+				'items' => array(
+					array(
+						'uri'   => 'https://example.com/source',
+						'label' => 'Source',
+					),
+				),
+			)
+		);
+
+		$post   = self::factory()->post->create_and_get();
+		$record = ( new Document( $post ) )->transform();
+
+		$this->assertSame( 'example.links', $record['links']['$type'] );
+		$this->assertSame( 'https://example.com/source', $record['links']['items'][0]['uri'] );
+	}
+
+	/**
+	 * Extensions can add standard self-labels to document records.
+	 */
+	public function test_document_labels_filter_adds_self_labels() {
+		\add_filter(
+			'atmosphere_document_labels',
+			static fn() => array(
+				'$type'  => 'com.atproto.label.defs#selfLabels',
+				'values' => array(
+					array( 'val' => 'nudity' ),
+				),
+			)
+		);
+
+		$post   = self::factory()->post->create_and_get();
+		$record = ( new Document( $post ) )->transform();
+
+		$this->assertSame( 'com.atproto.label.defs#selfLabels', $record['labels']['$type'] );
+		$this->assertSame( 'nudity', $record['labels']['values'][0]['val'] );
+	}
+
+	/**
+	 * Extensions can add sanitized contributor records.
+	 */
+	public function test_document_contributors_filter_adds_sanitized_contributors() {
+		\add_filter(
+			'atmosphere_document_contributors',
+			static fn() => array(
+				array(
+					'did'         => 'did:plc:editor123',
+					'role'        => '<b>Editor</b>',
+					'displayName' => 'Jane &amp; Team',
+				),
+			)
+		);
+
+		$post   = self::factory()->post->create_and_get();
+		$record = ( new Document( $post ) )->transform();
+
+		$this->assertSame(
+			array(
+				array(
+					'did'         => 'did:plc:editor123',
+					'role'        => 'Editor',
+					'displayName' => 'Jane & Team',
+				),
+			),
+			$record['contributors']
+		);
+	}
+
+	/**
 	 * Test the collection NSID.
 	 */
 	public function test_collection() {
@@ -509,5 +607,114 @@ class Test_Document extends \WP_UnitTestCase {
 		$transformer = new Document( $post );
 
 		$this->assertSame( 'site.standard.document', $transformer->get_collection() );
+	}
+
+	/**
+	 * The standard.site document's rich HTML content keeps @mention links —
+	 * the document parser path renders through the_content and is NOT covered
+	 * by the Bluesky-text suppression guard.
+	 */
+	public function test_document_content_linkifies_mentions() {
+		\Atmosphere\Mention::init();
+		Registry::register( new Html() );
+
+		$post = self::factory()->post->create_and_get(
+			array( 'post_content' => 'Hello @alice.bsky.social!' )
+		);
+
+		$record = ( new Document( $post ) )->transform();
+
+		$this->assertArrayHasKey( 'content', $record );
+		$this->assertSame( Html::TYPE, $record['content']['$type'] );
+		$this->assertStringContainsString(
+			'class="atmosphere-mention"',
+			$record['content']['html']
+		);
+	}
+
+	/**
+	 * Preview projections must stay read-only: a featured image whose
+	 * blob has never been uploaded is omitted from the previewed record
+	 * instead of triggering a PDS blob upload (and a blob-ref meta
+	 * write) as a side effect of a preview GET.
+	 */
+	public function test_preview_records_do_not_upload_uncached_cover_image() {
+		$upload_dir = \wp_upload_dir();
+		$path       = $upload_dir['basedir'] . '/atmosphere-doc-preview-test.jpg';
+		\file_put_contents( $path, 'LOCAL-IMAGE-BYTES' ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents
+
+		$attachment_id = self::factory()->attachment->create_object(
+			$path,
+			0,
+			array( 'post_mime_type' => 'image/jpeg' )
+		);
+
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'A Titled Post',
+				'post_content' => 'Long-form blog body.',
+			)
+		);
+		\set_post_thumbnail( $post->ID, $attachment_id );
+
+		$attempted     = false;
+		$short_circuit = static function () use ( &$attempted ) {
+			$attempted = true;
+			return array( 'blob' => array( 'cid' => 'bafyupload' ) );
+		};
+		\add_filter( 'atmosphere_pre_upload_blob', $short_circuit );
+
+		$records = ( new Document( $post ) )->get_preview_records();
+
+		\remove_filter( 'atmosphere_pre_upload_blob', $short_circuit );
+		\wp_delete_file( $path );
+
+		$this->assertFalse( $attempted, 'Previewing must not upload blobs.' );
+		$this->assertArrayNotHasKey( 'coverImage', $records[0] );
+		$this->assertSame( '', (string) \get_post_meta( $attachment_id, '_atmosphere_blob_ref', true ) );
+	}
+
+	/**
+	 * A previously-uploaded cover image blob is reused from its cached
+	 * ref in preview projections, so the previewed record — and any CID
+	 * computed from it — matches what a publish would write, without a
+	 * network round-trip.
+	 */
+	public function test_preview_records_use_cached_cover_image_blob() {
+		$attachment_id = self::factory()->attachment->create_object(
+			'2026/06/cached-cover.jpg',
+			0,
+			array( 'post_mime_type' => 'image/jpeg' )
+		);
+
+		$cached_ref = array(
+			'$type'    => 'blob',
+			'ref'      => array( '$link' => 'bafycachedcover' ),
+			'mimeType' => 'image/jpeg',
+			'size'     => 123,
+		);
+		\update_post_meta( $attachment_id, '_atmosphere_blob_ref', $cached_ref );
+
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'A Titled Post',
+				'post_content' => 'Long-form blog body.',
+			)
+		);
+		\set_post_thumbnail( $post->ID, $attachment_id );
+
+		$attempted     = false;
+		$short_circuit = static function () use ( &$attempted ) {
+			$attempted = true;
+			return array( 'blob' => array( 'cid' => 'bafyupload' ) );
+		};
+		\add_filter( 'atmosphere_pre_upload_blob', $short_circuit );
+
+		$records = ( new Document( $post ) )->get_preview_records();
+
+		\remove_filter( 'atmosphere_pre_upload_blob', $short_circuit );
+
+		$this->assertFalse( $attempted, 'A cached blob ref must not trigger an upload.' );
+		$this->assertSame( $cached_ref, $records[0]['coverImage'] );
 	}
 }

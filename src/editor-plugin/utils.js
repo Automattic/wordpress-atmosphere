@@ -5,7 +5,7 @@
  * editor component.
  */
 
-import { META_KEY } from '../config';
+import { DISABLED_META_KEY } from '../config';
 
 /**
  * Whether sharing is enabled for the post, given its meta.
@@ -17,5 +17,5 @@ import { META_KEY } from '../config';
  * @return {boolean} True when the post will be shared.
  */
 export function isSharingEnabled( meta ) {
-	return ! ( meta && meta[ META_KEY ] );
+	return ! ( meta && meta[ DISABLED_META_KEY ] );
 }

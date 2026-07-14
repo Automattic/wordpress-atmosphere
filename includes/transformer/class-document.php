@@ -3,8 +3,7 @@
  * Transforms a WordPress post into a site.standard.document record.
  *
  * Documents carry full structured metadata: title, path, description,
- * cover image, plain-text content, tags, and a cross-reference to
- * the corresponding Bluesky post.
+ * cover image, plain-text content, and tags.
  *
  * @package Atmosphere
  */
@@ -18,6 +17,7 @@ use Atmosphere\Content_Parser\Registry;
 use function Atmosphere\build_at_uri;
 use function Atmosphere\get_did;
 use function Atmosphere\sanitize_text;
+use function Atmosphere\truncate_graphemes;
 
 /**
  * Standard.site document transformer.
@@ -56,6 +56,35 @@ class Document extends Base {
 	 * @var string
 	 */
 	public const META_CID = '_atmosphere_doc_cid';
+
+	/**
+	 * Whether the current transform is a read-only preview projection.
+	 *
+	 * Set for the duration of {@see self::get_preview_records()}. In
+	 * projection mode the cover image comes from the cached blob ref
+	 * only ({@see Post::cached_image_blob()}) — an uncached image is
+	 * omitted rather than uploaded, so a preview GET never writes to
+	 * the PDS or to attachment meta. Mirrors `Post::$projecting`.
+	 *
+	 * @var bool
+	 */
+	private bool $projecting = false;
+
+	/**
+	 * {@inheritDoc}
+	 *
+	 * Projects in read-only mode ({@see self::$projecting}) so no blobs
+	 * are uploaded and no meta is written by a preview request.
+	 */
+	public function get_preview_records(): array {
+		$this->projecting = true;
+
+		try {
+			return array( $this->transform() );
+		} finally {
+			$this->projecting = false;
+		}
+	}
 
 	/**
 	 * Transform the post into a document record.
@@ -102,10 +131,13 @@ class Document extends Base {
 				$record['description'] = $excerpt;
 			}
 
-			// Cover image.
+			// Cover image. Projections reuse the cached blob ref (or omit
+			// the image) instead of uploading — see self::$projecting.
 			$thumb_id = \get_post_thumbnail_id( $this->object );
 			if ( $thumb_id ) {
-				$blob = Post::upload_thumbnail( $thumb_id );
+				$blob = $this->projecting
+					? Post::cached_image_blob( $thumb_id )
+					: Post::upload_thumbnail( $thumb_id );
 				if ( $blob ) {
 					$record['coverImage'] = $blob;
 				}
@@ -129,14 +161,63 @@ class Document extends Base {
 				$record['tags'] = $tags;
 			}
 
-			// Bluesky cross-reference (populated after initial publish).
-			$bsky_uri = \get_post_meta( $this->object->ID, Post::META_URI, true );
-			$bsky_cid = \get_post_meta( $this->object->ID, Post::META_CID, true );
-			if ( $bsky_uri && $bsky_cid ) {
-				$record['bskyPostRef'] = array(
-					'uri' => $bsky_uri,
-					'cid' => $bsky_cid,
-				);
+			/**
+			 * Filters the site.standard.document links union.
+			 *
+			 * Return an array with a non-empty string `$type` field to add
+			 * the `links` field. Return null or an empty array to omit it.
+			 *
+			 * @since 2.0.0
+			 *
+			 * @param array|null $links Links union object, or null to omit.
+			 * @param \WP_Post   $post  WordPress post.
+			 */
+			$links = self::validate_open_union(
+				\apply_filters( 'atmosphere_document_links', null, $this->object ),
+				__METHOD__,
+				\__( 'atmosphere_document_links must return an array with a non-empty string $type field; omitting the links field.', 'atmosphere' )
+			);
+			if ( null !== $links ) {
+				$record['links'] = $links;
+			}
+
+			/**
+			 * Filters the site.standard.document self-labels object.
+			 *
+			 * Return a com.atproto.label.defs#selfLabels object to add
+			 * content-warning labels. Return null or an empty array to omit it.
+			 *
+			 * @since 2.0.0
+			 *
+			 * @param array|null $labels Self-labels object, or null to omit.
+			 * @param \WP_Post   $post   WordPress post.
+			 */
+			$labels = self::validate_self_labels(
+				\apply_filters( 'atmosphere_document_labels', null, $this->object ),
+				__METHOD__
+			);
+			if ( null !== $labels ) {
+				$record['labels'] = $labels;
+			}
+
+			/**
+			 * Filters the site.standard.document contributor list.
+			 *
+			 * Return an array of contributor objects. Each contributor must
+			 * include a DID; optional role and displayName values are
+			 * sanitized and capped to the lexicon's 100-grapheme limit.
+			 * Return null or an empty array to omit the field.
+			 *
+			 * @since 2.0.0
+			 *
+			 * @param array|null $contributors Contributor list, or null to omit.
+			 * @param \WP_Post   $post         WordPress post.
+			 */
+			$contributors = self::sanitize_contributors(
+				\apply_filters( 'atmosphere_document_contributors', null, $this->object )
+			);
+			if ( null !== $contributors ) {
+				$record['contributors'] = $contributors;
 			}
 
 			// Updated timestamp.
@@ -170,6 +251,59 @@ class Document extends Base {
 		}
 
 		return $filtered;
+	}
+
+	/**
+	 * Sanitize a document contributor list.
+	 *
+	 * @param mixed $contributors Filter return value.
+	 * @return array|null Contributor list, or null when omitted/invalid.
+	 */
+	private static function sanitize_contributors( $contributors ): ?array {
+		if ( null === $contributors || array() === $contributors ) {
+			return null;
+		}
+
+		if ( ! \is_array( $contributors ) ) {
+			\_doing_it_wrong(
+				__METHOD__,
+				\esc_html__( 'atmosphere_document_contributors must return an array of contributor objects; omitting the contributors field.', 'atmosphere' ),
+				'unreleased'
+			);
+			return null;
+		}
+
+		$sanitized = array();
+		foreach ( $contributors as $contributor ) {
+			if ( ! \is_array( $contributor ) || empty( $contributor['did'] ) || ! \is_string( $contributor['did'] ) || ! \str_starts_with( $contributor['did'], 'did:' ) ) {
+				\_doing_it_wrong(
+					__METHOD__,
+					\esc_html__( 'Document contributors must include a non-empty DID string; omitting the contributors field.', 'atmosphere' ),
+					'unreleased'
+				);
+				return null;
+			}
+
+			$item = array( 'did' => $contributor['did'] );
+
+			if ( isset( $contributor['role'] ) && \is_string( $contributor['role'] ) ) {
+				$role = truncate_graphemes( sanitize_text( $contributor['role'] ), 100 );
+				if ( '' !== $role ) {
+					$item['role'] = $role;
+				}
+			}
+
+			if ( isset( $contributor['displayName'] ) && \is_string( $contributor['displayName'] ) ) {
+				$display_name = truncate_graphemes( sanitize_text( $contributor['displayName'] ), 100 );
+				if ( '' !== $display_name ) {
+					$item['displayName'] = $display_name;
+				}
+			}
+
+			$sanitized[] = $item;
+		}
+
+		return array() === $sanitized ? null : $sanitized;
 	}
 
 	/**

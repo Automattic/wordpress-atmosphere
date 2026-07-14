@@ -18,6 +18,7 @@ use Atmosphere\OAuth\Client;
 use Atmosphere\Transformer\Comment;
 use Atmosphere\Transformer\Document;
 use Atmosphere\Transformer\Post;
+use Atmosphere\Transformer\Preview;
 use Atmosphere\Transformer\Publication;
 use Atmosphere\Integrations\Load;
 use Atmosphere\Rest\Admin\Pre_Publish_Controller;
@@ -44,6 +45,51 @@ class Atmosphere {
 	 * @var string
 	 */
 	private const META_PUBLISH_ATTEMPTS = '_atmosphere_publish_attempts';
+
+	/**
+	 * Post meta key tracking how many delayed retries a failed
+	 * publish/update cron worker has scheduled for the post.
+	 *
+	 * Deleted on success, on a permanent (non-retryable) failure, and
+	 * when the retry ladder is exhausted, so the next fresh save always
+	 * starts with a full retry budget.
+	 *
+	 * @var string
+	 */
+	private const META_PUBLISH_RETRIES = '_atmosphere_publish_retries';
+
+	/**
+	 * Post meta key holding the most recent publish/update failure.
+	 *
+	 * Written by the cron workers when an attempt fails, cleared on the
+	 * next success. Shape: `code`, `message` (sanitized + truncated —
+	 * PDS-supplied strings can carry hostile bytes), `retrying` (whether
+	 * the backoff ladder scheduled another attempt), `time`. Exposed to
+	 * the block editor via the read-only `atmosphere_publish_error`
+	 * REST field so authors can see that a share failed instead of the
+	 * failure vanishing into a WP_DEBUG-gated log line.
+	 *
+	 * @var string
+	 */
+	private const META_LAST_PUBLISH_ERROR = '_atmosphere_last_publish_error';
+
+	/**
+	 * Backoff ladder for transient publish/update failures, in seconds.
+	 *
+	 * `wp_schedule_single_event()` is one-shot: without a re-queue, a
+	 * single PDS 5xx / rate limit / network blip permanently drops the
+	 * post from Bluesky with no operator-visible trace. One entry per
+	 * retry — three attempts spread over ~21 minutes rides out PDS
+	 * restarts and rate-limit windows without hammering a struggling
+	 * server.
+	 *
+	 * @var int[]
+	 */
+	private const PUBLISH_RETRY_DELAYS = array(
+		MINUTE_IN_SECONDS,
+		5 * MINUTE_IN_SECONDS,
+		15 * MINUTE_IN_SECONDS,
+	);
 
 	/**
 	 * Post meta marker set when remote records were removed because a
@@ -118,6 +164,13 @@ class Atmosphere {
 		\add_action( 'init', array( Settings_Fields::class, 'init' ), 5 );
 
 		/*
+		 * Display-side @handle.tld mention auto-linking. Self-registers on
+		 * init so the_content (priority 100) is wired for both front-end
+		 * rendering and the site.standard.document content parsers.
+		 */
+		\add_action( 'init', array( Mention::class, 'init' ), 5 );
+
+		/*
 		 * Seed the long-form composition strategy from the user's
 		 * setting. Priority 1 so any downstream filter at the default
 		 * priority can still override it per post.
@@ -139,14 +192,15 @@ class Atmosphere {
 		// off when the ActivityPub plugin is active.
 		Blocks::register();
 
-		// Per-post "share to Bluesky" toggle meta (REST-exposed for the editor panel).
+		// Per-post "share to Bluesky" toggle + custom-text meta (REST-exposed for the editor panel).
 		\add_action( 'init', array( $this, 'register_share_meta' ) );
 
 		/*
-		 * Reconcile when the share toggle itself changes. `transition_post_status`
-		 * alone is fragile here: the editor writes the meta *after* the post
-		 * update fires the transition, and a meta-only save fires no transition
-		 * at all — so react to the committed meta write directly.
+		 * Reconcile when the share toggle or custom text changes.
+		 * `transition_post_status` alone is fragile here: the editor writes the
+		 * meta *after* the post update fires the transition, and a meta-only
+		 * save fires no transition at all — so react to the committed meta
+		 * write directly.
 		 */
 		\add_action( 'added_post_meta', array( $this, 'on_share_meta_changed' ), 10, 3 );
 		\add_action( 'updated_post_meta', array( $this, 'on_share_meta_changed' ), 10, 3 );
@@ -159,10 +213,11 @@ class Atmosphere {
 		\add_action( 'wp_head', array( $this, 'output_document_link' ) );
 		\add_action( 'wp_head', array( $this, 'output_publication_link' ) );
 
-		// Well-known endpoints.
+		// Well-known endpoints and front-end query vars.
 		\add_action( 'init', array( $this, 'register_wellknown_rewrite' ) );
-		\add_action( 'template_redirect', array( $this, 'serve_wellknown_atproto_did' ) );
-		\add_action( 'template_redirect', array( $this, 'serve_wellknown_publication' ) );
+		\add_filter( 'query_vars', array( $this, 'register_query_vars' ) );
+		\add_action( 'template_redirect', array( $this, 'serve_wellknown_atproto_did' ), 0 );
+		\add_action( 'template_redirect', array( $this, 'serve_wellknown_publication' ), 0 );
 
 		// Register the built-in content parsers.
 		self::register_default_content_parsers();
@@ -171,7 +226,7 @@ class Atmosphere {
 		Load::init();
 
 		// JSON preview for AT Protocol records.
-		\add_action( 'template_redirect', array( $this, 'preview' ) );
+		\add_action( 'template_redirect', array( Preview::class, 'render' ) );
 
 		// Post lifecycle hooks.
 		\add_action( 'transition_post_status', array( $this, 'on_status_change' ), 10, 3 );
@@ -333,9 +388,9 @@ class Atmosphere {
 	 * - Singular publishable posts, so a resolver landing on an article
 	 *   URL can find the parent publication directly without first
 	 *   fetching the document record.
-	 * - The WordPress front page, since the publication record's `url`
-	 *   field is `home_url('/')`. Lets a resolver verify the page <->
-	 *   publication binding by matching AT-URIs, sparing the
+	 * - The WordPress front page, which is the local page represented
+	 *   by the normalized publication URL. Lets a resolver verify the
+	 *   page <-> publication binding by matching AT-URIs, sparing the
 	 *   `.well-known/site.standard.publication` round-trip.
 	 *
 	 * Gated on `has_identity()` (not `is_connected()`) so the
@@ -422,8 +477,8 @@ class Atmosphere {
 	 * @var array<string, string>
 	 */
 	private const WELLKNOWN_REWRITE_PATTERNS = array(
-		'^\.well-known/atproto-did$'                 => 'index.php?atmosphere_wellknown=atproto-did',
-		'^\.well-known/site\.standard\.publication$' => 'index.php?atmosphere_wellknown=publication',
+		'^\.well-known/atproto-did/?$'                 => 'index.php?atmosphere_wellknown=atproto-did',
+		'^\.well-known/site\.standard\.publication/?$' => 'index.php?atmosphere_wellknown=publication',
 	);
 
 	/**
@@ -433,14 +488,19 @@ class Atmosphere {
 		foreach ( self::WELLKNOWN_REWRITE_PATTERNS as $pattern => $target ) {
 			\add_rewrite_rule( $pattern, $target, 'top' );
 		}
+	}
 
-		\add_filter(
-			'query_vars',
-			static function ( array $vars ): array {
-				$vars[] = 'atmosphere_wellknown';
-				return $vars;
-			}
-		);
+	/**
+	 * Register public query vars used by front-end endpoints.
+	 *
+	 * @param string[] $vars Public query vars.
+	 * @return string[] Public query vars.
+	 */
+	public function register_query_vars( array $vars ): array {
+		$vars[] = 'atmosphere_wellknown';
+		$vars[] = 'atproto';
+
+		return $vars;
 	}
 
 	/**
@@ -612,43 +672,6 @@ class Atmosphere {
 	}
 
 	/**
-	 * Serve a JSON preview of the AT Protocol record for a post.
-	 *
-	 * Append ?atproto to a singular post URL to see the document
-	 * record JSON. Requires the edit_posts capability.
-	 */
-	public function preview(): void {
-		// phpcs:ignore WordPress.Security.NonceVerification.Recommended
-		if ( ! isset( $_GET['atproto'] ) || ! \is_singular() ) {
-			return;
-		}
-
-		if ( ! \current_user_can( 'edit_posts' ) ) {
-			return;
-		}
-
-		$post = \get_queried_object();
-
-		if ( ! $post instanceof \WP_Post ) {
-			return;
-		}
-
-		if ( ! is_supported_post_type( $post->post_type ) ) {
-			\status_header( 404 );
-			exit;
-		}
-
-		$transformer = new Document( $post );
-		$record      = $transformer->transform();
-
-		\status_header( 200 );
-		\header( 'Content-Type: application/json; charset=utf-8' );
-		// phpcs:ignore WordPress.WP.AlternativeFunctions.json_encode_json_encode
-		echo \wp_json_encode( $record, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE );
-		exit;
-	}
-
-	/**
 	 * Handle post status transitions.
 	 *
 	 * @param string   $new_status New status.
@@ -707,6 +730,20 @@ class Atmosphere {
 		 */
 		try {
 			\do_action( 'atmosphere_publishing', $post );
+
+			/*
+			 * A status transition is fresh user intent, so it starts a
+			 * new retry budget. Without this, a counter stranded by a
+			 * dead retry event (disconnect cleared the queue, the post
+			 * was trashed mid-ladder, a cron event was lost) would
+			 * silently shrink — or zero out — the ladder of the next
+			 * publish attempt. The stale failure record goes with it:
+			 * on a cleanup transition the delete worker never routes
+			 * through the retry helper, so an old "share failed" notice
+			 * would otherwise stick to a post that is no longer shared.
+			 */
+			\delete_post_meta( $post->ID, self::META_PUBLISH_RETRIES );
+			\delete_post_meta( $post->ID, self::META_LAST_PUBLISH_ERROR );
 
 			if ( $is_publishable ) {
 				\wp_clear_scheduled_hook( 'atmosphere_delete_post', array( $post->ID ) );
@@ -1324,7 +1361,7 @@ class Atmosphere {
 	}
 
 	/**
-	 * React to the per-post share toggle being changed.
+	 * React to the per-post share toggle or custom text being changed.
 	 *
 	 * Fires on `added_/updated_/deleted_post_meta`, after the value is
 	 * committed, so the reconcile runs against fresh meta. It schedules the
@@ -1343,7 +1380,7 @@ class Atmosphere {
 	 * @param string    $meta_key Meta key that changed.
 	 */
 	public function on_share_meta_changed( $meta_id, $post_id, $meta_key ): void {
-		if ( ATMOSPHERE_META_DISABLED !== $meta_key ) {
+		if ( ! \in_array( $meta_key, array( ATMOSPHERE_META_DISABLED, ATMOSPHERE_META_CUSTOM_TEXT ), true ) ) {
 			return;
 		}
 
@@ -1361,13 +1398,19 @@ class Atmosphere {
 	}
 
 	/**
-	 * Register the per-post "share to Bluesky" toggle meta.
+	 * Register the per-post "share to Bluesky" toggle and custom-text meta.
 	 *
 	 * Registered for every supported post type with `show_in_rest` so the
-	 * block-editor document panel can bind a toggle to it via the core
-	 * entity store. Writing it requires `edit_post` on the post.
+	 * block-editor document panel can bind a toggle and a textarea to them
+	 * via the core entity store. Writing either requires `edit_post` on the
+	 * post.
 	 */
 	public function register_share_meta(): void {
+		$auth_callback = static function ( $allowed, $meta_key, $post_id ) {
+			// Respect any prior denial rather than widening access.
+			return $allowed && \current_user_can( 'edit_post', $post_id );
+		};
+
 		foreach ( get_supported_post_types() as $post_type ) {
 			\register_post_meta(
 				$post_type,
@@ -1378,21 +1421,35 @@ class Atmosphere {
 					'default'           => false,
 					'show_in_rest'      => true,
 					'sanitize_callback' => 'rest_sanitize_boolean',
-					'auth_callback'     => static function ( $allowed, $meta_key, $post_id ) {
-						// Respect any prior denial rather than widening access.
-						return $allowed && \current_user_can( 'edit_post', $post_id );
-					},
+					'auth_callback'     => $auth_callback,
+				)
+			);
+
+			\register_post_meta(
+				$post_type,
+				ATMOSPHERE_META_CUSTOM_TEXT,
+				array(
+					'type'              => 'string',
+					'single'            => true,
+					'default'           => '',
+					'show_in_rest'      => true,
+					'sanitize_callback' => 'sanitize_textarea_field',
+					'auth_callback'     => $auth_callback,
 				)
 			);
 		}
 	}
 
 	/**
-	 * Register a read-only REST field with the published post's Bluesky URL.
+	 * Register the read-only REST fields backing the editor panel.
 	 *
-	 * Lets the block-editor panel show a "View on Bluesky" link once the
-	 * post has been shared, without exposing internal AT-URI meta keys.
-	 * Empty until the post has a Bluesky record.
+	 * `atmosphere_url` lets the panel show a "View on Bluesky" link once
+	 * the post has been shared, without exposing internal AT-URI meta
+	 * keys (empty until the post has a Bluesky record).
+	 * `atmosphere_publish_error` carries the most recent share failure
+	 * (null when the last attempt succeeded) so the panel can tell the
+	 * author a share failed instead of the failure vanishing into a
+	 * WP_DEBUG-gated log line. Both are edit-context only.
 	 */
 	public function register_share_status_field(): void {
 		foreach ( get_supported_post_types() as $post_type ) {
@@ -1413,15 +1470,61 @@ class Atmosphere {
 					),
 				)
 			);
+
+			\register_rest_field(
+				$post_type,
+				'atmosphere_publish_error',
+				array(
+					'get_callback'    => static function ( $post_arr ) {
+						$error = \get_post_meta( (int) $post_arr['id'], self::META_LAST_PUBLISH_ERROR, true );
+
+						if ( ! \is_array( $error ) || empty( $error['code'] ) ) {
+							return null;
+						}
+
+						return array(
+							'code'     => (string) $error['code'],
+							'message'  => (string) ( $error['message'] ?? '' ),
+							'retrying' => ! empty( $error['retrying'] ),
+							'time'     => (int) ( $error['time'] ?? 0 ),
+						);
+					},
+					'update_callback' => null,
+					'schema'          => array(
+						'type'        => array( 'object', 'null' ),
+						'description' => \__( 'The most recent Bluesky sharing failure for this post, null when the last attempt succeeded.', 'atmosphere' ),
+						'context'     => array( 'edit' ),
+						'properties'  => array(
+							'code'     => array(
+								'type'        => 'string',
+								'description' => \__( 'Machine-readable failure code.', 'atmosphere' ),
+							),
+							'message'  => array(
+								'type'        => 'string',
+								'description' => \__( 'Human-readable failure message.', 'atmosphere' ),
+							),
+							'retrying' => array(
+								'type'        => 'boolean',
+								'description' => \__( 'Whether another automatic attempt is scheduled.', 'atmosphere' ),
+							),
+							'time'     => array(
+								'type'        => 'integer',
+								'description' => \__( 'Unix timestamp of the failed attempt.', 'atmosphere' ),
+							),
+						),
+					),
+				)
+			);
 		}
 	}
 
 	/**
-	 * Build the bsky.app web URL for one of our own post AT-URIs.
+	 * Build the appview web URL for one of our own post AT-URIs.
 	 *
 	 * `at://<did>/app.bsky.feed.post/<rkey>` →
-	 * `https://bsky.app/profile/<did>/post/<rkey>`. bsky.app resolves the
-	 * DID form, so no handle lookup is needed.
+	 * `https://<appview-host>/profile/<did>/post/<rkey>`. The appview resolves
+	 * the DID form, so no handle lookup is needed. The host defaults to
+	 * `bsky.app` and is filterable via `atmosphere_appview_host`.
 	 *
 	 * @param string $uri AT-URI from `Post::META_URI`.
 	 * @return string Web URL, or '' when the URI shape is unexpected.
@@ -1431,7 +1534,16 @@ class Atmosphere {
 			return '';
 		}
 
-		return \esc_url_raw( 'https://bsky.app/profile/' . $matches['did'] . '/post/' . $matches['rkey'] );
+		return \esc_url_raw(
+			appview_url(
+				'profile/' . $matches['did'] . '/post/' . $matches['rkey'],
+				array(
+					'type' => 'post',
+					'did'  => $matches['did'],
+					'rkey' => $matches['rkey'],
+				)
+			)
+		);
 	}
 
 	/**
@@ -1460,6 +1572,7 @@ class Atmosphere {
 						? Publisher::update_post( $post )
 						: Publisher::publish_post( $post );
 					self::log_cron_error( 'publish_post', $post_id, $result );
+					self::maybe_schedule_publish_retry( 'atmosphere_publish_post', $post_id, $result );
 					if ( ! \is_wp_error( $result ) ) {
 						self::clear_visibility_cleanup_marker( $post );
 					}
@@ -1484,6 +1597,7 @@ class Atmosphere {
 						? Publisher::update_post( $post )
 						: Publisher::publish_post( $post );
 					self::log_cron_error( 'update_post', $post_id, $result );
+					self::maybe_schedule_publish_retry( 'atmosphere_update_post', $post_id, $result );
 					if ( ! \is_wp_error( $result ) ) {
 						self::clear_visibility_cleanup_marker( $post );
 					}
@@ -1506,6 +1620,15 @@ class Atmosphere {
 							? Publisher::update_post( $post )
 							: Publisher::publish_post( $post );
 						self::log_cron_error( 'delete_post_publishable_reconcile', $post_id, $result );
+
+						/*
+						 * Same lifecycle as the publish/update workers: a
+						 * successful reconcile clears the retry counter and
+						 * the stale failure record, and a transient failure
+						 * re-queues (as an update — the worker re-checks
+						 * state when the retry fires).
+						 */
+						self::maybe_schedule_publish_retry( 'atmosphere_update_post', $post_id, $result );
 						if ( ! \is_wp_error( $result ) ) {
 							self::clear_visibility_cleanup_marker( $post );
 						}
@@ -1852,6 +1975,176 @@ class Atmosphere {
 	 */
 	public static function log_reconcile_cleanup_error( int $post_id, $result ): void {
 		self::log_cron_error( 'reconcile_cleanup', $post_id, $result );
+	}
+
+	/**
+	 * Re-queue a failed publish/update cron worker with backoff.
+	 *
+	 * Mirrors the comment parent-defer pattern ({@see self::defer_for_parent()}):
+	 * a per-object attempt counter in meta, a bounded ladder, and a
+	 * one-shot re-schedule of the same hook + args. The worker re-checks
+	 * post state when the retry fires, so a post that was unpublished or
+	 * disabled in the meantime routes to cleanup instead of publishing.
+	 *
+	 * Success and permanent failures clear the counter so the next
+	 * fresh save starts with a full retry budget.
+	 *
+	 * @param string $hook    Cron hook to re-schedule (`atmosphere_publish_post` or `atmosphere_update_post`).
+	 * @param int    $post_id Post ID the worker ran for.
+	 * @param mixed  $result  Publisher result: array on success, `WP_Error` on failure.
+	 */
+	private static function maybe_schedule_publish_retry( string $hook, int $post_id, $result ): void {
+		if ( ! \is_wp_error( $result ) ) {
+			\delete_post_meta( $post_id, self::META_PUBLISH_RETRIES );
+			\delete_post_meta( $post_id, self::META_LAST_PUBLISH_ERROR );
+			return;
+		}
+
+		if ( ! self::is_transient_publish_error( $result ) ) {
+			self::record_publish_error( $post_id, $result, false );
+			\delete_post_meta( $post_id, self::META_PUBLISH_RETRIES );
+			return;
+		}
+
+		/**
+		 * Filters the backoff ladder for transient publish/update failures.
+		 *
+		 * One entry per retry, in seconds — the ladder's length IS the
+		 * retry budget. Return an empty array to disable retries, or a
+		 * longer array to raise the budget (the same knob covers both,
+		 * so the delay schedule and the attempt cap cannot contradict
+		 * each other).
+		 *
+		 * @since 2.0.0
+		 *
+		 * @param int[] $delays Retry delays in seconds. Default 60, 300, 900.
+		 */
+		$delays = \apply_filters( 'atmosphere_publish_retry_delays', self::PUBLISH_RETRY_DELAYS );
+		$delays = \array_values(
+			\array_filter(
+				\array_map( 'intval', (array) $delays ),
+				static fn( int $delay ): bool => $delay > 0
+			)
+		);
+
+		$attempts = (int) \get_post_meta( $post_id, self::META_PUBLISH_RETRIES, true );
+
+		if ( $attempts >= \count( $delays ) ) {
+			/*
+			 * Ladder exhausted. Clear the counter so a future fresh save
+			 * gets a new budget, and leave a breadcrumb — this is the
+			 * point where a post has definitively failed to reach the
+			 * PDS despite retries. No breadcrumb when the filter
+			 * disabled retries outright: "giving up after 0 retries"
+			 * would misread as a failure of the ladder the operator
+			 * deliberately switched off.
+			 */
+			self::record_publish_error( $post_id, $result, false );
+			\delete_post_meta( $post_id, self::META_PUBLISH_RETRIES );
+
+			if ( ! empty( $delays ) ) {
+				debug_log(
+					\sprintf(
+						'%s %d: giving up after %d retries (%s)',
+						$hook,
+						$post_id,
+						$attempts,
+						$result->get_error_code()
+					)
+				);
+			}
+			return;
+		}
+
+		self::record_publish_error( $post_id, $result, true );
+		\update_post_meta( $post_id, self::META_PUBLISH_RETRIES, $attempts + 1 );
+		\wp_schedule_single_event(
+			\time() + $delays[ $attempts ],
+			$hook,
+			array( $post_id )
+		);
+	}
+
+	/**
+	 * Persist a publish failure to post meta for the editor to surface.
+	 *
+	 * The message flows from `WP_Error::get_error_message()` and can carry
+	 * PDS-supplied bytes, so it is sanitized and truncated before storage
+	 * — same caution as `log_cron_error()`, but for a value that ends up
+	 * rendered in the block editor rather than a log line.
+	 *
+	 * @param int       $post_id  Post the attempt ran for.
+	 * @param \WP_Error $error    The failure.
+	 * @param bool      $retrying Whether the backoff ladder scheduled another attempt.
+	 */
+	private static function record_publish_error( int $post_id, \WP_Error $error, bool $retrying ): void {
+		\update_post_meta(
+			$post_id,
+			self::META_LAST_PUBLISH_ERROR,
+			array(
+				'code'     => (string) $error->get_error_code(),
+				'message'  => truncate_text( sanitize_text( $error->get_error_message() ), 300 ),
+				'retrying' => $retrying,
+				'time'     => \time(),
+			)
+		);
+	}
+
+	/**
+	 * Whether a publish failure is worth retrying.
+	 *
+	 * Retry-by-default with a bounded ladder: a wrongly-retried
+	 * permanent error costs at most three extra requests, while a
+	 * wrongly-dropped transient error silently loses the post. Only
+	 * failures that are deterministic — locally-generated preconditions
+	 * or a PDS 4xx that will reject the identical payload again — are
+	 * excluded.
+	 *
+	 * @param \WP_Error $error Failure returned by the Publisher.
+	 * @return bool True when a retry has a chance of succeeding.
+	 */
+	private static function is_transient_publish_error( \WP_Error $error ): bool {
+		$permanent_codes = array(
+			'atmosphere_post_not_publishable',
+			'atmosphere_not_connected',
+			'atmosphere_needs_reauth',
+			'atmosphere_missing_tid',
+			'atmosphere_invalid_pre_apply_writes_return',
+			'atmosphere_invalid_pre_apply_writes_response',
+			'atmosphere_invalid_pre_upload_blob_return',
+			'atmosphere_decrypt',
+			'atmosphere_did_mismatch',
+
+			/*
+			 * Never retry a failed thread rollback: the orphan manifest
+			 * records live partial records on the PDS, and a retried
+			 * publish would mint fresh TIDs next to them — a duplicate,
+			 * user-visible copy of the post. This state needs operator
+			 * attention (see Post::META_ORPHAN_RECORDS), not another
+			 * attempt.
+			 */
+			'atmosphere_thread_rollback_failed',
+		);
+
+		if ( \in_array( $error->get_error_code(), $permanent_codes, true ) ) {
+			return false;
+		}
+
+		$data   = $error->get_error_data();
+		$status = \is_array( $data ) && isset( $data['status'] ) ? (int) $data['status'] : 0;
+
+		/*
+		 * No status means the request never completed (DNS, TLS,
+		 * timeout) — the classic transient class. 408/429/5xx are the
+		 * server-side equivalents. Any other 4xx is a deterministic
+		 * rejection of this exact payload and would fail identically
+		 * on every attempt.
+		 */
+		if ( 0 === $status ) {
+			return true;
+		}
+
+		return 408 === $status || 429 === $status || $status >= 500;
 	}
 
 	/**
