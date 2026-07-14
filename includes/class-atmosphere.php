@@ -1482,11 +1482,29 @@ class Atmosphere {
 							return null;
 						}
 
+						$reconnect_class = \in_array( (string) $error['code'], self::RECONNECT_ERROR_CODES, true );
+						$needs_reconnect = $reconnect_class && ! is_connected();
+
+						/*
+						 * The stored code says whether the failure was
+						 * reconnect-class; the live connection check drops
+						 * the flag once the operator has reconnected, so a
+						 * stale per-post error can't keep claiming the site
+						 * is disconnected. The stored message of a
+						 * reconnect-class failure is that same claim in
+						 * prose ("Reconnect your Bluesky account …"), so it
+						 * is suppressed on the same condition — the panel
+						 * would otherwise say "update the post to try
+						 * again" and "reconnect your account" at once.
+						 */
 						return array(
-							'code'     => (string) $error['code'],
-							'message'  => (string) ( $error['message'] ?? '' ),
-							'retrying' => ! empty( $error['retrying'] ),
-							'time'     => (int) ( $error['time'] ?? 0 ),
+							'code'            => (string) $error['code'],
+							'message'         => $reconnect_class && ! $needs_reconnect
+								? ''
+								: (string) ( $error['message'] ?? '' ),
+							'retrying'        => ! empty( $error['retrying'] ),
+							'needs_reconnect' => $needs_reconnect,
+							'time'            => (int) ( $error['time'] ?? 0 ),
 						);
 					},
 					'update_callback' => null,
@@ -1495,19 +1513,23 @@ class Atmosphere {
 						'description' => \__( 'The most recent Bluesky sharing failure for this post, null when the last attempt succeeded.', 'atmosphere' ),
 						'context'     => array( 'edit' ),
 						'properties'  => array(
-							'code'     => array(
+							'code'            => array(
 								'type'        => 'string',
 								'description' => \__( 'Machine-readable failure code.', 'atmosphere' ),
 							),
-							'message'  => array(
+							'message'         => array(
 								'type'        => 'string',
 								'description' => \__( 'Human-readable failure message.', 'atmosphere' ),
 							),
-							'retrying' => array(
+							'retrying'        => array(
 								'type'        => 'boolean',
 								'description' => \__( 'Whether another automatic attempt is scheduled.', 'atmosphere' ),
 							),
-							'time'     => array(
+							'needs_reconnect' => array(
+								'type'        => 'boolean',
+								'description' => \__( 'Whether reconnecting the Bluesky account is still required before sharing can succeed.', 'atmosphere' ),
+							),
+							'time'            => array(
 								'type'        => 'integer',
 								'description' => \__( 'Unix timestamp of the failed attempt.', 'atmosphere' ),
 							),
@@ -2091,6 +2113,28 @@ class Atmosphere {
 	}
 
 	/**
+	 * Failure codes resolvable only by reconnecting the Bluesky account.
+	 *
+	 * Consumed by the `atmosphere_publish_error` REST field as the
+	 * `needs_reconnect` flag (combined with the live connection state,
+	 * so the flag drops once the operator reconnects) — the editor
+	 * panel never keeps its own copy of this judgment. Folded into the
+	 * permanent codes of
+	 * {@see self::is_transient_publish_error()}, so each reconnect-class
+	 * code is declared exactly once. Deliberately without
+	 * `atmosphere_did_mismatch`, which reconnecting to the current
+	 * account does not fix.
+	 *
+	 * @var string[]
+	 */
+	private const RECONNECT_ERROR_CODES = array(
+		'atmosphere_key_changed',
+		'atmosphere_decrypt',
+		'atmosphere_needs_reauth',
+		'atmosphere_not_connected',
+	);
+
+	/**
 	 * Whether a publish failure is worth retrying.
 	 *
 	 * Retry-by-default with a bounded ladder: a wrongly-retried
@@ -2104,26 +2148,27 @@ class Atmosphere {
 	 * @return bool True when a retry has a chance of succeeding.
 	 */
 	private static function is_transient_publish_error( \WP_Error $error ): bool {
-		$permanent_codes = array(
-			'atmosphere_post_not_publishable',
-			'atmosphere_not_connected',
-			'atmosphere_needs_reauth',
-			'atmosphere_missing_tid',
-			'atmosphere_invalid_pre_apply_writes_return',
-			'atmosphere_invalid_pre_apply_writes_response',
-			'atmosphere_invalid_pre_upload_blob_return',
-			'atmosphere_decrypt',
-			'atmosphere_did_mismatch',
+		$permanent_codes = \array_merge(
+			// Reconnect-class failures are permanent by definition.
+			self::RECONNECT_ERROR_CODES,
+			array(
+				'atmosphere_post_not_publishable',
+				'atmosphere_missing_tid',
+				'atmosphere_invalid_pre_apply_writes_return',
+				'atmosphere_invalid_pre_apply_writes_response',
+				'atmosphere_invalid_pre_upload_blob_return',
+				'atmosphere_did_mismatch',
 
-			/*
-			 * Never retry a failed thread rollback: the orphan manifest
-			 * records live partial records on the PDS, and a retried
-			 * publish would mint fresh TIDs next to them — a duplicate,
-			 * user-visible copy of the post. This state needs operator
-			 * attention (see Post::META_ORPHAN_RECORDS), not another
-			 * attempt.
-			 */
-			'atmosphere_thread_rollback_failed',
+				/*
+				 * Never retry a failed thread rollback: the orphan manifest
+				 * records live partial records on the PDS, and a retried
+				 * publish would mint fresh TIDs next to them — a duplicate,
+				 * user-visible copy of the post. This state needs operator
+				 * attention (see Post::META_ORPHAN_RECORDS), not another
+				 * attempt.
+				 */
+				'atmosphere_thread_rollback_failed',
+			)
 		);
 
 		if ( \in_array( $error->get_error_code(), $permanent_codes, true ) ) {

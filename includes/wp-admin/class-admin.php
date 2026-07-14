@@ -13,7 +13,9 @@ use Atmosphere\Atmosphere;
 use Atmosphere\Handle;
 use Atmosphere\OAuth\Client;
 use Atmosphere\Publisher;
-use function Atmosphere\get_connection;
+use function Atmosphere\get_reauth_reason;
+use function Atmosphere\is_operator_disconnected;
+use function Atmosphere\settings_url;
 use function Atmosphere\get_supported_post_types;
 use function Atmosphere\has_identity;
 use function Atmosphere\needs_reauth;
@@ -142,7 +144,7 @@ class Admin {
 		);
 		\set_transient( 'settings_errors', \get_settings_errors(), 30 );
 
-		\wp_safe_redirect( \admin_url( 'options-general.php?page=atmosphere&connected=1' ) );
+		\wp_safe_redirect( \add_query_arg( 'connected', '1', settings_url() ) );
 		exit;
 	}
 
@@ -209,7 +211,7 @@ class Admin {
 		);
 		\set_transient( 'settings_errors', \get_settings_errors(), 30 );
 
-		\wp_safe_redirect( \admin_url( 'options-general.php?page=atmosphere' ) );
+		\wp_safe_redirect( settings_url() );
 		exit;
 	}
 
@@ -235,33 +237,35 @@ class Admin {
 			return;
 		}
 
-		$settings_url = \admin_url( 'options-general.php?page=atmosphere' );
+		$heading = \__( 'ATmosphere: reconnection required', 'atmosphere' );
+		$reason  = get_reauth_reason();
 
 		/*
-		 * Treat the explicit-disconnect marker as authoritative only
-		 * when the connection row is genuinely empty. `Client::disconnect()`
-		 * deletes `atmosphere_connection` before any other admin request
-		 * can land, so a missing connection alongside the marker is a
-		 * true operator-initiated disconnect. After a refresh failure,
-		 * the connection row stays put (with `needs_reauth = true` and
-		 * an emptied access_token) — if a stale marker from an earlier
-		 * disconnect survived (e.g. `handle_callback()`'s `delete_option`
-		 * silently failed at a cache layer), the connection's presence
-		 * outs the marker as stale and the gate falls through to the
-		 * "session expired" copy, which is the accurate framing for the
-		 * actual failure mode.
+		 * Each branch supplies only its lead sentence; the shared tail
+		 * (what stops working + the reconnect link) is composed below so
+		 * copy edits and translations happen once. The disconnect gate's
+		 * stale-marker rationale lives in `is_operator_disconnected()`.
 		 */
-		$disconnected = \get_option( Client::DISCONNECTED_OPTION, false ) && empty( get_connection() );
-
-		if ( $disconnected ) {
+		if ( is_operator_disconnected() ) {
 			$heading = \__( 'ATmosphere: disconnected', 'atmosphere' );
-			/* translators: %s: URL to the ATmosphere settings page. */
-			$message = \__( 'ATmosphere is disconnected from AT Protocol. New posts and comments will not publish until you <a href="%s">reconnect on the settings page</a>. Your publishing preferences and verification headers stay in place in the meantime.', 'atmosphere' );
+			$lead    = \__( 'ATmosphere is disconnected from Bluesky.', 'atmosphere' );
+		} elseif ( Client::REAUTH_REASON_KEY_CHANGED === $reason ) {
+			$lead = \__( 'Your site’s security keys have changed — this can happen after a migration, or when a security plugin rotates them on a schedule — so ATmosphere can no longer read its saved Bluesky login.', 'atmosphere' );
+		} elseif ( Client::REAUTH_REASON_DECRYPT_FAILED === $reason ) {
+			$lead = \__( 'ATmosphere can no longer read its saved Bluesky login.', 'atmosphere' );
 		} else {
-			$heading = \__( 'ATmosphere: reconnection required', 'atmosphere' );
-			/* translators: %s: URL to the ATmosphere settings page. */
-			$message = \__( 'Your AT Protocol session has expired. New posts and comments will not publish until you <a href="%s">reconnect on the settings page</a>. Your publishing preferences and verification headers stay in place in the meantime.', 'atmosphere' );
+			$lead = \__( 'Your Bluesky session has expired.', 'atmosphere' );
 		}
+
+		/* translators: %s: URL to the ATmosphere settings page. */
+		$tail = \__( 'New posts and comments will not publish until you <a href="%s">reconnect on the settings page</a>. Your publishing preferences and verification headers stay in place in the meantime.', 'atmosphere' );
+
+		/*
+		 * Only the tail goes through sprintf: a lead translation
+		 * containing a stray `%` must not be able to corrupt the
+		 * placeholder substitution (PHP 8 throws on missing arguments).
+		 */
+		$message = $lead . ' ' . \sprintf( $tail, \esc_url( settings_url() ) );
 
 		?>
 		<div class="notice notice-warning is-dismissible">
@@ -271,7 +275,7 @@ class Admin {
 			<p>
 				<?php
 				echo \wp_kses(
-					\sprintf( $message, \esc_url( $settings_url ) ),
+					$message,
 					array( 'a' => array( 'href' => array() ) )
 				);
 				?>

@@ -94,7 +94,7 @@ class Test_Reauth_Notice extends WP_UnitTestCase {
 			'Operator-initiated disconnect must render the "disconnected" heading, not the session-expired heading.'
 		);
 		$this->assertStringContainsString(
-			'ATmosphere is disconnected from AT Protocol.',
+			'ATmosphere is disconnected from Bluesky.',
 			$html,
 			'Operator-initiated disconnect must render the disconnect body copy.'
 		);

@@ -136,6 +136,31 @@ class Client {
 	public const DISCONNECTED_OPTION = 'atmosphere_disconnected';
 
 	/**
+	 * `reauth_reason` marker: the encryption key material changed under
+	 * the stored tokens (salt rotation, regenerated wp-config.php).
+	 *
+	 * Written by {@see self::flag_decrypt_failure()}; read by the admin
+	 * reauth notice, whose copy explains the cause. A mistyped
+	 * comparison fails soft (falls through to generic expiry copy), so
+	 * consumers MUST use these constants.
+	 *
+	 * @since unreleased
+	 *
+	 * @var string
+	 */
+	public const REAUTH_REASON_KEY_CHANGED = 'key_changed';
+
+	/**
+	 * `reauth_reason` marker: tokens unreadable although the key
+	 * fingerprint still matches (corrupted ciphertext).
+	 *
+	 * @since unreleased
+	 *
+	 * @var string
+	 */
+	public const REAUTH_REASON_DECRYPT_FAILED = 'decrypt_failed';
+
+	/**
 	 * Get the client_id URL (= client metadata endpoint).
 	 *
 	 * @return string
@@ -621,6 +646,7 @@ class Client {
 			'access_token'        => Encryption::encrypt( $data['access_token'] ),
 			'refresh_token'       => ! empty( $data['refresh_token'] ) ? Encryption::encrypt( $data['refresh_token'] ) : '',
 			'dpop_jwk'            => Encryption::encrypt( (string) \wp_json_encode( $dpop_jwk ) ),
+			'key_fingerprint'     => Encryption::key_fingerprint(),
 			'expires_at'          => \time() + ( $data['expires_in'] ?? 3600 ),
 			'needs_reauth'        => false,
 		);
@@ -770,12 +796,12 @@ class Client {
 	private static function refresh_locked( array $conn ): true|\WP_Error {
 		$refresh_token = Encryption::decrypt( $conn['refresh_token'] );
 		if ( false === $refresh_token ) {
-			return new \WP_Error( 'atmosphere_decrypt', \__( 'Failed to decrypt refresh token.', 'atmosphere' ) );
+			return self::flag_decrypt_failure( $conn, 'refresh_token' );
 		}
 
 		$dpop_jwk_json = Encryption::decrypt( $conn['dpop_jwk'] );
 		if ( false === $dpop_jwk_json ) {
-			return new \WP_Error( 'atmosphere_decrypt', \__( 'Failed to decrypt DPoP key.', 'atmosphere' ) );
+			return self::flag_decrypt_failure( $conn, 'dpop_jwk' );
 		}
 
 		$dpop_jwk       = \json_decode( $dpop_jwk_json, true );
@@ -886,32 +912,7 @@ class Client {
 			 */
 			$error = $data['error'] ?? '';
 			if ( \in_array( $error, array( 'invalid_grant', 'invalid_client', 'unauthorized_client' ), true ) ) {
-				/*
-				 * Re-read the connection before writing, and only stamp
-				 * `needs_reauth` if the row STILL holds the same
-				 * refresh-token ciphertext we read at lock-acquisition
-				 * time. Two races close here:
-				 *
-				 *   - Admin disconnected mid-flight: the row is gone
-				 *     and the `refresh_token` check below fails.
-				 *   - Admin disconnected + reconnected to a different
-				 *     account mid-flight: the row exists but the
-				 *     `refresh_token` ciphertext is different (libsodium
-				 *     re-encrypts with a fresh nonce). Stamping
-				 *     `needs_reauth` on the NEW account because the
-				 *     OLD account's refresh failed would be wrong.
-				 */
-				$current = \get_option( 'atmosphere_connection', array() );
-				if ( \is_array( $current )
-					&& ! empty( $current['refresh_token'] )
-					&& isset( $conn['refresh_token'] )
-					&& \hash_equals( (string) $conn['refresh_token'], (string) $current['refresh_token'] )
-				) {
-					$current['needs_reauth'] = true;
-					$current['access_token'] = '';
-					unset( $current['expires_at'] );
-					\update_option( 'atmosphere_connection', $current, false );
-				}
+				self::mark_needs_reauth( $conn, 'refresh_token' );
 			}
 
 			return new \WP_Error( 'atmosphere_refresh', $msg, array( 'status' => $status ) );
@@ -954,6 +955,14 @@ class Client {
 		$current['access_token'] = Encryption::encrypt( $data['access_token'] );
 		$current['expires_at']   = \time() + ( $data['expires_in'] ?? 3600 );
 		$current['needs_reauth'] = false;
+		unset( $current['reauth_reason'] );
+
+		/*
+		 * Opportunistic backfill for rows connected before fingerprints
+		 * existed: the refresh token just decrypted with the current key,
+		 * so the current fingerprint is the right one for this row.
+		 */
+		$current['key_fingerprint'] = Encryption::key_fingerprint();
 
 		if ( ! empty( $data['refresh_token'] ) ) {
 			$current['refresh_token'] = Encryption::encrypt( $data['refresh_token'] );
@@ -962,6 +971,120 @@ class Client {
 		\update_option( 'atmosphere_connection', $current, false );
 
 		return true;
+	}
+
+	/**
+	 * Build the error for an undecryptable connection credential and
+	 * flag the connection for reauth.
+	 *
+	 * A decrypt failure is never transient: the ciphertext can only be
+	 * read with the exact key material it was written under, so every
+	 * subsequent attempt fails identically until the user reconnects.
+	 * The key fingerprint stored at connect/refresh time classifies the
+	 * failure — a mismatch means the site's security keys changed (salt
+	 * rotation, regenerated `wp-config.php`), while a match (or a
+	 * pre-fingerprint row) points at corrupted data. Either way the row
+	 * is flagged `needs_reauth` so publishing short-circuits and the
+	 * admin reconnect notice appears, instead of every save failing
+	 * again with a retry hint that can never succeed.
+	 *
+	 * @since unreleased
+	 *
+	 * @param array  $conn  Connection row the failed decrypt ran against.
+	 * @param string $field Connection field that failed to decrypt
+	 *                      (`access_token`, `refresh_token`, `dpop_jwk`).
+	 *                      The reauth stamp is guarded on this field's
+	 *                      ciphertext so a concurrent worker that already
+	 *                      repaired it (e.g. a refresh rewriting
+	 *                      `access_token`) is left alone.
+	 * @return \WP_Error `atmosphere_key_changed` when the stored
+	 *                   fingerprint mismatches the current key,
+	 *                   `atmosphere_decrypt` otherwise.
+	 */
+	public static function flag_decrypt_failure( array $conn, string $field ): \WP_Error {
+		$stored = (string) ( $conn['key_fingerprint'] ?? '' );
+
+		/*
+		 * Only a well-formed stored fingerprint (32 hex chars, exactly
+		 * what `Encryption::key_fingerprint()` writes) is authoritative
+		 * for the "key changed" diagnosis. A mangled row proves only
+		 * that the row is corrupt, so it falls back to the generic
+		 * classification below — like a pre-fingerprint row.
+		 */
+		$key_changed = \preg_match( '/^[0-9a-f]{32}$/', $stored )
+			&& ! \hash_equals( Encryption::key_fingerprint(), $stored );
+
+		self::mark_needs_reauth(
+			$conn,
+			$field,
+			$key_changed ? self::REAUTH_REASON_KEY_CHANGED : self::REAUTH_REASON_DECRYPT_FAILED
+		);
+
+		if ( $key_changed ) {
+			return new \WP_Error(
+				'atmosphere_key_changed',
+				\__( 'Your site’s security keys have changed, so the saved Bluesky login can no longer be read. Reconnect your Bluesky account to resume sharing.', 'atmosphere' )
+			);
+		}
+
+		return new \WP_Error(
+			'atmosphere_decrypt',
+			\__( 'The saved Bluesky login could not be read. Reconnect your Bluesky account to resume sharing.', 'atmosphere' )
+		);
+	}
+
+	/**
+	 * Stamp `needs_reauth` on the stored connection, guarded against a
+	 * concurrent disconnect or reconnect.
+	 *
+	 * Re-reads the row and only writes when it still holds the same
+	 * token ciphertext the caller read. Two races close here:
+	 *
+	 *   - Admin disconnected mid-flight: the row is gone and the
+	 *     ciphertext check below fails.
+	 *   - Admin disconnected + reconnected to a different account
+	 *     mid-flight: the row exists but the ciphertext is different
+	 *     (libsodium re-encrypts with a fresh nonce). Stamping
+	 *     `needs_reauth` on the NEW account because the OLD account's
+	 *     credentials failed would be wrong.
+	 *
+	 * @param array  $conn   Connection as read by the caller.
+	 * @param string $field  Ciphertext field the guard compares — the one
+	 *                       the caller's failure was observed on, so a
+	 *                       concurrent worker that already rewrote it
+	 *                       doesn't get its repair wiped.
+	 * @param string $reason Optional machine-readable marker stored as
+	 *                       `reauth_reason` so the admin notice can
+	 *                       explain the failure (e.g. `key_changed`).
+	 *                       An empty reason clears any stale marker, so
+	 *                       a later session-expiry stamp is not
+	 *                       explained with an earlier failure's cause.
+	 */
+	private static function mark_needs_reauth( array $conn, string $field, string $reason = '' ): void {
+		if ( empty( $conn[ $field ] ) ) {
+			return;
+		}
+
+		$current = \get_option( 'atmosphere_connection', array() );
+
+		if ( ! \is_array( $current )
+			|| empty( $current[ $field ] )
+			|| ! \hash_equals( (string) $conn[ $field ], (string) $current[ $field ] )
+		) {
+			return;
+		}
+
+		$current['needs_reauth'] = true;
+		$current['access_token'] = '';
+		unset( $current['expires_at'] );
+
+		if ( '' !== $reason ) {
+			$current['reauth_reason'] = $reason;
+		} else {
+			unset( $current['reauth_reason'] );
+		}
+
+		\update_option( 'atmosphere_connection', $current, false );
 	}
 
 	/**
@@ -1224,7 +1347,7 @@ class Client {
 
 		$token = Encryption::decrypt( $conn['access_token'] );
 		if ( false === $token ) {
-			return new \WP_Error( 'atmosphere_decrypt', \__( 'Failed to decrypt access token.', 'atmosphere' ) );
+			return self::flag_decrypt_failure( $conn, 'access_token' );
 		}
 
 		return $token;
