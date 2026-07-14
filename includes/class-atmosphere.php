@@ -1482,19 +1482,28 @@ class Atmosphere {
 							return null;
 						}
 
+						$reconnect_class = \in_array( (string) $error['code'], self::RECONNECT_ERROR_CODES, true );
+						$needs_reconnect = $reconnect_class && ! is_connected();
+
 						/*
 						 * The stored code says whether the failure was
 						 * reconnect-class; the live connection check drops
 						 * the flag once the operator has reconnected, so a
 						 * stale per-post error can't keep claiming the site
-						 * is disconnected.
+						 * is disconnected. The stored message of a
+						 * reconnect-class failure is that same claim in
+						 * prose ("Reconnect your Bluesky account …"), so it
+						 * is suppressed on the same condition — the panel
+						 * would otherwise say "update the post to try
+						 * again" and "reconnect your account" at once.
 						 */
 						return array(
 							'code'            => (string) $error['code'],
-							'message'         => (string) ( $error['message'] ?? '' ),
+							'message'         => $reconnect_class && ! $needs_reconnect
+								? ''
+								: (string) ( $error['message'] ?? '' ),
 							'retrying'        => ! empty( $error['retrying'] ),
-							'needs_reconnect' => \in_array( (string) $error['code'], self::RECONNECT_ERROR_CODES, true )
-								&& ! is_connected(),
+							'needs_reconnect' => $needs_reconnect,
 							'time'            => (int) ( $error['time'] ?? 0 ),
 						);
 					},

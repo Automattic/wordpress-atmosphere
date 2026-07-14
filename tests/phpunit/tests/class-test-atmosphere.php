@@ -2916,18 +2916,32 @@ class Test_Atmosphere extends WP_UnitTestCase {
 		$conn['needs_reauth'] = true;
 		\update_option( 'atmosphere_connection', $conn, false );
 
+		$error = $this->rest_get_publish_error( $post_id );
+
 		$this->assertTrue(
-			$this->rest_get_publish_error( $post_id )['needs_reconnect'],
+			$error['needs_reconnect'],
 			'A reconnect-class error on a disconnected site must raise needs_reconnect.'
+		);
+		$this->assertSame(
+			'Session expired',
+			$error['message'],
+			'While disconnected, the stored reconnect instruction is accurate and must surface.'
 		);
 
 		/* The operator reconnected: flag cleared, token present again. */
 		$conn['needs_reauth'] = false;
 		\update_option( 'atmosphere_connection', $conn, false );
 
+		$error = $this->rest_get_publish_error( $post_id );
+
 		$this->assertFalse(
-			$this->rest_get_publish_error( $post_id )['needs_reconnect'],
+			$error['needs_reconnect'],
 			'Once the site is reconnected the stale error must not claim otherwise.'
+		);
+		$this->assertSame(
+			'',
+			$error['message'],
+			'The stored reconnect instruction is stale prose once reconnected and must be suppressed.'
 		);
 	}
 
