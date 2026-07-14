@@ -290,8 +290,15 @@ control what a cross-post looks like before it happens:
 
 | Meta key | Constant | Effect |
 |----------|----------|--------|
-| `atmosphere_disabled` | `ATMOSPHERE_META_DISABLED` | Sharing is opt-out: `'1'` excludes the post from cross-posting (and removes already-published remote records). |
+| `atmosphere_disabled` | `ATMOSPHERE_META_DISABLED` | Sharing is opt-out: `'1'` excludes the post from cross-posting. |
 | `atmosphere_custom_text` | `ATMOSPHERE_META_CUSTOM_TEXT` | Replaces the derived Bluesky post text for this post. |
+
+While the automatic save-flow is active, changing either meta schedules a
+reconcile that publishes, updates, or removes the remote records to match.
+Integrations that disable `atmosphere_auto_publish` (below) must run that
+reconcile themselves by calling `\Atmosphere\Publisher::update_post()`
+after changing the metas — setting `atmosphere_disabled` alone does not
+remove already-published records.
 
 ### Taking over the publish flow
 
@@ -315,8 +322,11 @@ type](#custom-post-type-support), and not opted out via
 `atmosphere_disabled`. It fires
 [`atmosphere_publish_post_result`](#public-hooks) once with the final
 outcome, and returns the `applyWrites` response(s) or a `WP_Error`.
-`Publisher::update_post()` and `Publisher::delete_post()` complete the
-lifecycle.
+`\Atmosphere\Publisher::update_post()` and
+`\Atmosphere\Publisher::delete_post()` complete the lifecycle;
+`update_post()` doubles as the reconcile — when the post is no longer
+publishable (trashed, unpublished, or opted out via `atmosphere_disabled`)
+it removes the remote records.
 
 ### Reading back the published record
 
@@ -332,9 +342,13 @@ references:
 $at_uri = \get_post_meta( $post_id, \Atmosphere\Transformer\Post::META_URI, true );
 ```
 
-Replies and reposts synced back from Bluesky arrive as native WordPress
-comments (`protocol` comment meta `atproto`, source link in `source_url`);
-integrations can react to each via
+Replies, likes, and reposts synced back from Bluesky arrive as native
+WordPress comments (comment types `comment`, `like`, and `repost`, all
+with `protocol` comment meta `atproto`). Replies carry a link to the
+reply's Bluesky page in `source_url`; likes and reposts have no Bluesky
+landing page, so their `source_url` is intentionally empty and
+`comment_author_url` (the author's profile) is the outbound link.
+Integrations can react to each via
 [`atmosphere_reaction_synced`](#public-hooks).
 
 ## Templates and Admin UI
