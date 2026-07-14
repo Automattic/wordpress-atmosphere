@@ -25,6 +25,7 @@ use Atmosphere\Rest\Admin\Pre_Publish_Controller;
 use Atmosphere\Rest\Client_Metadata_Controller;
 use Atmosphere\Rest\Reactions_Controller;
 use Atmosphere\WP_Admin\Admin;
+use Atmosphere\WP_Admin\Health_Check;
 use Atmosphere\WP_Admin\Settings_Fields;
 
 /**
@@ -162,6 +163,17 @@ class Atmosphere {
 		 */
 		\add_action( 'init', array( Options::class, 'init' ), 5 );
 		\add_action( 'init', array( Settings_Fields::class, 'init' ), 5 );
+
+		/*
+		 * Site Health status test + debug information. Registered
+		 * directly on the pull filters (no context gate, no `init`
+		 * indirection): they only fire on Site Health surfaces — the
+		 * screen, the weekly scheduled check, WP-CLI — so the class is
+		 * autoloaded only there and every other request just stores two
+		 * callables.
+		 */
+		\add_filter( 'site_status_tests', array( Health_Check::class, 'add_tests' ) );
+		\add_filter( 'debug_information', array( Health_Check::class, 'debug_information' ) );
 
 		/*
 		 * Display-side @handle.tld mention auto-linking. Self-registers on
@@ -1482,7 +1494,7 @@ class Atmosphere {
 							return null;
 						}
 
-						$reconnect_class = \in_array( (string) $error['code'], self::RECONNECT_ERROR_CODES, true );
+						$reconnect_class = Client::is_reconnect_error( (string) $error['code'] );
 						$needs_reconnect = $reconnect_class && ! is_connected();
 
 						/*
@@ -2113,28 +2125,6 @@ class Atmosphere {
 	}
 
 	/**
-	 * Failure codes resolvable only by reconnecting the Bluesky account.
-	 *
-	 * Consumed by the `atmosphere_publish_error` REST field as the
-	 * `needs_reconnect` flag (combined with the live connection state,
-	 * so the flag drops once the operator reconnects) — the editor
-	 * panel never keeps its own copy of this judgment. Folded into the
-	 * permanent codes of
-	 * {@see self::is_transient_publish_error()}, so each reconnect-class
-	 * code is declared exactly once. Deliberately without
-	 * `atmosphere_did_mismatch`, which reconnecting to the current
-	 * account does not fix.
-	 *
-	 * @var string[]
-	 */
-	private const RECONNECT_ERROR_CODES = array(
-		'atmosphere_key_changed',
-		'atmosphere_decrypt',
-		'atmosphere_needs_reauth',
-		'atmosphere_not_connected',
-	);
-
-	/**
 	 * Whether a publish failure is worth retrying.
 	 *
 	 * Retry-by-default with a bounded ladder: a wrongly-retried
@@ -2148,27 +2138,32 @@ class Atmosphere {
 	 * @return bool True when a retry has a chance of succeeding.
 	 */
 	private static function is_transient_publish_error( \WP_Error $error ): bool {
-		$permanent_codes = \array_merge(
-			// Reconnect-class failures are permanent by definition.
-			self::RECONNECT_ERROR_CODES,
-			array(
-				'atmosphere_post_not_publishable',
-				'atmosphere_missing_tid',
-				'atmosphere_invalid_pre_apply_writes_return',
-				'atmosphere_invalid_pre_apply_writes_response',
-				'atmosphere_invalid_pre_upload_blob_return',
-				'atmosphere_did_mismatch',
+		/*
+		 * Reconnect-class failures are permanent by definition; the code
+		 * list lives in {@see Client::is_reconnect_error()}, next to the
+		 * paths that mint those codes, so each code is declared once.
+		 */
+		if ( Client::is_reconnect_error( (string) $error->get_error_code() ) ) {
+			return false;
+		}
 
-				/*
-				 * Never retry a failed thread rollback: the orphan manifest
-				 * records live partial records on the PDS, and a retried
-				 * publish would mint fresh TIDs next to them — a duplicate,
-				 * user-visible copy of the post. This state needs operator
-				 * attention (see Post::META_ORPHAN_RECORDS), not another
-				 * attempt.
-				 */
-				'atmosphere_thread_rollback_failed',
-			)
+		$permanent_codes = array(
+			'atmosphere_post_not_publishable',
+			'atmosphere_missing_tid',
+			'atmosphere_invalid_pre_apply_writes_return',
+			'atmosphere_invalid_pre_apply_writes_response',
+			'atmosphere_invalid_pre_upload_blob_return',
+			'atmosphere_did_mismatch',
+
+			/*
+			 * Never retry a failed thread rollback: the orphan manifest
+			 * records live partial records on the PDS, and a retried
+			 * publish would mint fresh TIDs next to them — a duplicate,
+			 * user-visible copy of the post. This state needs operator
+			 * attention (see Post::META_ORPHAN_RECORDS), not another
+			 * attempt.
+			 */
+			'atmosphere_thread_rollback_failed',
 		);
 
 		if ( \in_array( $error->get_error_code(), $permanent_codes, true ) ) {

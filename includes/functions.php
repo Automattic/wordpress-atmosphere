@@ -505,6 +505,30 @@ function get_reauth_reason(): string {
 }
 
 /**
+ * Lead sentence explaining why the connection needs a reconnect.
+ *
+ * Single source for the cause copy so every surface that reads the
+ * `reauth_reason` marker — the admin reconnect notice and the Site
+ * Health test — explains the same failure with the same words. Each
+ * caller appends its own consequence/action tail; copy edits and
+ * translations happen once, here.
+ *
+ * @since unreleased
+ *
+ * @return string Translated, unescaped sentence.
+ */
+function reauth_reason_lead(): string {
+	switch ( get_reauth_reason() ) {
+		case Client::REAUTH_REASON_KEY_CHANGED:
+			return \__( 'Your site’s security keys have changed — this can happen after a migration, or when a security plugin rotates them on a schedule — so ATmosphere can no longer read its saved Bluesky login.', 'atmosphere' );
+		case Client::REAUTH_REASON_DECRYPT_FAILED:
+			return \__( 'ATmosphere can no longer read its saved Bluesky login.', 'atmosphere' );
+		default:
+			return \__( 'Your Bluesky session has expired.', 'atmosphere' );
+	}
+}
+
+/**
  * URL of the ATmosphere settings page.
  *
  * Single source for the settings-page location so reconnect prompts and
