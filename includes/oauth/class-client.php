@@ -140,9 +140,9 @@ class Client {
 	 * the stored tokens (salt rotation, regenerated wp-config.php).
 	 *
 	 * Written by {@see self::flag_decrypt_failure()}; read by the admin
-	 * reauth notice and Site Health, whose copy explains the cause. A
-	 * mistyped comparison fails soft (falls through to generic expiry
-	 * copy), so consumers MUST use these constants.
+	 * reauth notice, whose copy explains the cause. A mistyped
+	 * comparison fails soft (falls through to generic expiry copy), so
+	 * consumers MUST use these constants.
 	 *
 	 * @since unreleased
 	 *

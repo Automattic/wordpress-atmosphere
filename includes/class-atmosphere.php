@@ -2100,8 +2100,9 @@ class Atmosphere {
 	 *
 	 * Consumed by the `atmosphere_publish_error` REST field as the
 	 * `needs_reconnect` flag so the editor panel never keeps its own
-	 * copy of this judgment. A curated subset of the permanent codes in
-	 * {@see self::is_transient_publish_error()} — deliberately without
+	 * copy of this judgment. Folded into the permanent codes of
+	 * {@see self::is_transient_publish_error()}, so each reconnect-class
+	 * code is declared exactly once. Deliberately without
 	 * `atmosphere_did_mismatch`, which reconnecting to the current
 	 * account does not fix.
 	 *
@@ -2128,27 +2129,27 @@ class Atmosphere {
 	 * @return bool True when a retry has a chance of succeeding.
 	 */
 	private static function is_transient_publish_error( \WP_Error $error ): bool {
-		$permanent_codes = array(
-			'atmosphere_post_not_publishable',
-			'atmosphere_not_connected',
-			'atmosphere_needs_reauth',
-			'atmosphere_missing_tid',
-			'atmosphere_invalid_pre_apply_writes_return',
-			'atmosphere_invalid_pre_apply_writes_response',
-			'atmosphere_invalid_pre_upload_blob_return',
-			'atmosphere_decrypt',
-			'atmosphere_key_changed',
-			'atmosphere_did_mismatch',
+		$permanent_codes = \array_merge(
+			// Reconnect-class failures are permanent by definition.
+			self::RECONNECT_ERROR_CODES,
+			array(
+				'atmosphere_post_not_publishable',
+				'atmosphere_missing_tid',
+				'atmosphere_invalid_pre_apply_writes_return',
+				'atmosphere_invalid_pre_apply_writes_response',
+				'atmosphere_invalid_pre_upload_blob_return',
+				'atmosphere_did_mismatch',
 
-			/*
-			 * Never retry a failed thread rollback: the orphan manifest
-			 * records live partial records on the PDS, and a retried
-			 * publish would mint fresh TIDs next to them — a duplicate,
-			 * user-visible copy of the post. This state needs operator
-			 * attention (see Post::META_ORPHAN_RECORDS), not another
-			 * attempt.
-			 */
-			'atmosphere_thread_rollback_failed',
+				/*
+				 * Never retry a failed thread rollback: the orphan manifest
+				 * records live partial records on the PDS, and a retried
+				 * publish would mint fresh TIDs next to them — a duplicate,
+				 * user-visible copy of the post. This state needs operator
+				 * attention (see Post::META_ORPHAN_RECORDS), not another
+				 * attempt.
+				 */
+				'atmosphere_thread_rollback_failed',
+			)
 		);
 
 		if ( \in_array( $error->get_error_code(), $permanent_codes, true ) ) {

@@ -144,7 +144,7 @@ class Admin {
 		);
 		\set_transient( 'settings_errors', \get_settings_errors(), 30 );
 
-		\wp_safe_redirect( \admin_url( 'options-general.php?page=atmosphere&connected=1' ) );
+		\wp_safe_redirect( \add_query_arg( 'connected', '1', settings_url() ) );
 		exit;
 	}
 
@@ -211,7 +211,7 @@ class Admin {
 		);
 		\set_transient( 'settings_errors', \get_settings_errors(), 30 );
 
-		\wp_safe_redirect( \admin_url( 'options-general.php?page=atmosphere' ) );
+		\wp_safe_redirect( settings_url() );
 		exit;
 	}
 
