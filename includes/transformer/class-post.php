@@ -14,8 +14,14 @@ namespace Atmosphere\Transformer;
 \defined( 'ABSPATH' ) || exit;
 
 use Atmosphere\API;
+use Atmosphere\CID;
+use Atmosphere\Mention;
+use function Atmosphere\build_at_uri;
 use function Atmosphere\debug_log;
+use function Atmosphere\get_did;
+use function Atmosphere\grapheme_length;
 use function Atmosphere\sanitize_text;
+use function Atmosphere\truncate_graphemes;
 use function Atmosphere\truncate_text;
 
 /**
@@ -103,19 +109,13 @@ class Post extends Base {
 	public const META_ORPHAN_RECORDS = '_atmosphere_bsky_orphan_records';
 
 	/**
-	 * Tracks a deferred `update_document_bsky_ref` failure.
+	 * Legacy post meta key for deferred document back-reference failures.
 	 *
-	 * Set by Publisher when the doc-ref `putRecord` fails after the
-	 * thread root + document have already been written, so the bsky
-	 * post(s) and the document are both live on the PDS but the
-	 * document's `bskyPostRef` is missing or stale. The publish itself
-	 * is treated as successful (replies still ship; rewriting the root
-	 * on the next edit would be worse) and this meta records the gap so
-	 * an operator or admin/Site Health surface can spot it.
-	 *
-	 * Cleared the next time `update_document_bsky_ref` succeeds for the
-	 * post (typical recovery path: any subsequent edit retries the
-	 * follow-up putRecord). Value: `[ stamp, code, message ]`.
+	 * Kept so cleanup paths remove markers left by older versions that
+	 * attempted a follow-up document `putRecord` after publishing the
+	 * Bluesky post. New writes no longer set this marker because the
+	 * document record is now the stable target of the Bluesky
+	 * `associatedRefs` strong reference.
 	 *
 	 * @var string
 	 */
@@ -165,14 +165,25 @@ class Post extends Base {
 	 * `source` / `associatedProfiles` enrichment).
 	 *
 	 * Null on a fresh transformer; reset whenever a fresh Post object
-	 * is constructed. Subsequent publishes of the same post
-	 * (`update_post()` flow) do not inject — by then
-	 * `Document::META_URI` / `Document::META_CID` are populated and
-	 * {@see self::build_embed()} reads the ref from meta instead.
+	 * is constructed. When no ref is injected and meta fallback is
+	 * enabled, {@see self::build_embed()} reads from `Document::META_*`.
 	 *
 	 * @var array{$type: string, uri: string, cid: string}|null
 	 */
 	private ?array $document_strong_ref = null;
+
+	/**
+	 * Whether the embed builder may fall back to the stored document ref.
+	 *
+	 * The Publisher disables this after it attempted to compute the
+	 * current document CID but failed. In that case `Document::META_CID`
+	 * points at the previous document version, while the same batch is
+	 * about to write a new document record, so advertising the meta ref
+	 * would preserve the stale-CID bug this guard exists to avoid.
+	 *
+	 * @var bool
+	 */
+	private bool $document_meta_strong_ref_enabled = true;
 
 	/**
 	 * Memoized short-form verdict for this post.
@@ -203,6 +214,16 @@ class Post extends Base {
 	private ?string $custom_text_override = null;
 
 	/**
+	 * Memoized classification of the post body's @mentions.
+	 *
+	 * Cached result of {@see Mention::classify_handles()} so the carry-over and
+	 * the publish-time mention deny-set share a single HTML walk per transform.
+	 *
+	 * @var array{linkable:array<string,string>,protected:array<string,true>}|null
+	 */
+	private ?array $classified_body_handles = null;
+
+	/**
 	 * Whether the transformer is running in projection mode.
 	 *
 	 * Projection mode ({@see self::project()}) reproduces the exact text
@@ -217,8 +238,15 @@ class Post extends Base {
 	 * Facet extraction is likewise skipped: it resolves @-mentions over
 	 * DNS, and running that per keystroke on unsaved, caller-supplied text
 	 * would turn the preview endpoint into a DNS-egress amplifier. Facets
-	 * annotate the text without changing it, so the grapheme count the
-	 * preview reports is identical either way.
+	 * annotate the text without changing it, so the grapheme count is
+	 * unaffected by their absence.
+	 *
+	 * The body-mention *carry-over*, however, does change the composed text
+	 * (it inserts a `@handle` line), so skipping it entirely would make the
+	 * preview under-report a record the publisher will lengthen. Projection
+	 * therefore still sizes the carry-over, but from the *syntactic* body
+	 * handles ({@see self::body_mentions()}) rather than resolved ones — no
+	 * DNS, and an upper bound so the reported count is never short.
 	 *
 	 * @var bool
 	 */
@@ -234,9 +262,10 @@ class Post extends Base {
 	 * touched.
 	 *
 	 * Counts are reported in the same unit the publish path clamps on —
-	 * code points (`mb_strlen`), as used by `truncate_text()` — so the
-	 * preview never says "within limit" for text the publisher would
-	 * shorten. They are measured against the user's *untruncated* text: a
+	 * graphemes, as used by `truncate_text()` and Bluesky's own composer — so
+	 * the preview's "X / 300" matches what the author sees on Bluesky and
+	 * never says "within limit" for text the publisher would shorten. They
+	 * are measured against the user's *untruncated* text: a
 	 * short-form post longer than the limit still publishes a clamped
 	 * record, but the panel surfaces the real length (e.g. "340 / 300") so
 	 * the author knows truncation will happen before they publish. Composed
@@ -297,7 +326,7 @@ class Post extends Base {
 				$measured = (string) ( $record['text'] ?? '' );
 			}
 
-			$characters  = \mb_strlen( $measured );
+			$characters  = grapheme_length( $measured );
 			$projected[] = array(
 				'characters' => $characters,
 				'over_limit' => $characters > $limit,
@@ -309,6 +338,87 @@ class Post extends Base {
 			'strategy'      => $strategy,
 			'limit'         => $limit,
 			'records'       => $projected,
+		);
+	}
+
+	/**
+	 * Build the Bluesky record(s) that would be published for this post.
+	 *
+	 * Overrides {@see Base::get_preview_records()} to mirror the publish
+	 * branch used by Publisher without writing blobs or touching post meta:
+	 * a long-form post may project to a thread of several records.
+	 *
+	 * @return array<int,array> Bsky post records, in publish order.
+	 */
+	public function get_preview_records(): array {
+		$this->projecting = true;
+
+		try {
+			if ( $this->is_short_form_post() ) {
+				return array( $this->transform() );
+			}
+
+			$this->inject_preview_document_ref();
+
+			return $this->build_long_form_records();
+		} finally {
+			$this->projecting = false;
+		}
+	}
+
+	/**
+	 * Mirror the Publisher's document strongRef precompute for previews.
+	 *
+	 * The publish path transforms the document, computes its CID locally,
+	 * and injects the resulting strongRef before composing the post
+	 * ({@see \Atmosphere\Publisher::publish_post()}). Without the same
+	 * step a preview falls back to `Document::META_*`, which goes stale
+	 * as soon as the document changes — so the projected `associatedRefs`
+	 * would not match what the Publisher writes on the next update.
+	 *
+	 * Stays strictly read-only: `Document::get_rkey()` would reserve
+	 * `META_TID`, a publish-state marker `Publisher::update_post()` keys
+	 * off, so the reserved TID is read straight from meta instead. A
+	 * never-published post has no rkey to read — the ref only exists
+	 * once publish reserves one, so the preview omits it rather than
+	 * minting a placeholder URI.
+	 */
+	private function inject_preview_document_ref(): void {
+		if ( null !== $this->document_strong_ref ) {
+			return;
+		}
+
+		$did = get_did();
+
+		if ( '' === $did ) {
+			return;
+		}
+
+		$rkey = (string) \get_post_meta( $this->object->ID, Document::META_TID, true );
+
+		if ( '' === $rkey ) {
+			return;
+		}
+
+		/*
+		 * Hash the *projected* document record — the same JSON the
+		 * `?atproto` document selector serves — so the projection stays
+		 * read-only (no blob uploads; see Document::get_preview_records())
+		 * and the injected CID matches the displayed document preview.
+		 */
+		$doc_cid = CID::from_record( ( new Document( $this->object ) )->get_preview_records()[0] );
+
+		if ( \is_wp_error( $doc_cid ) ) {
+			// Same degradation as the publish path: no ref beats a stale one.
+			$this->set_document_strong_ref( null );
+			return;
+		}
+
+		$this->set_document_strong_ref(
+			array(
+				'uri' => build_at_uri( $did, 'site.standard.document', $rkey ),
+				'cid' => $doc_cid,
+			)
 		);
 	}
 
@@ -341,11 +451,20 @@ class Post extends Base {
 	 * See {@see self::$document_strong_ref} for the why. Passing an
 	 * empty array or a malformed shape (missing `uri` / `cid`) clears
 	 * the injection and the embed builder falls back to reading from
-	 * `Document::META_*`.
+	 * `Document::META_*`. Passing null clears the injection and
+	 * suppresses that fallback for this transformer instance.
 	 *
-	 * @param array $ref StrongRef to advertise (keys: optional `$type`, required `uri` and `cid`).
+	 * @param array|null $ref StrongRef to advertise (keys: optional `$type`, required `uri` and `cid`).
 	 */
-	public function set_document_strong_ref( array $ref ): void {
+	public function set_document_strong_ref( ?array $ref ): void {
+		if ( null === $ref ) {
+			$this->document_strong_ref              = null;
+			$this->document_meta_strong_ref_enabled = false;
+			return;
+		}
+
+		$this->document_meta_strong_ref_enabled = true;
+
 		if ( empty( $ref['uri'] ) || empty( $ref['cid'] ) ) {
 			$this->document_strong_ref = null;
 			return;
@@ -425,10 +544,10 @@ class Post extends Base {
 	/**
 	 * The custom text shaped into a Bluesky post body.
 	 *
-	 * Hard-clamped toward Bluesky's 300-grapheme limit via `truncate_text()`,
-	 * which clamps by `mb_strlen()` code points (conservative — every grapheme
-	 * is at least one code point), the same clamp the short-form path uses, so
-	 * an over-long custom text is shortened rather than rejected.
+	 * Hard-clamped to Bluesky's 300-grapheme limit via `truncate_text()`,
+	 * which counts graphemes the way Bluesky's composer does — the same clamp
+	 * the short-form path uses, so an over-long custom text is shortened
+	 * rather than rejected.
 	 *
 	 * @return string
 	 */
@@ -524,7 +643,10 @@ class Post extends Base {
 			// Skip DNS-resolving facet extraction in projection mode (see $projecting).
 			$facets = array();
 		} else {
-			$facets = $this->merge_link_facets( $link_facets, Facet::extract( $text ) );
+			$facets = $this->merge_link_facets(
+				$link_facets,
+				Facet::extract( $text, $this->mentions_enabled(), $this->blocked_mention_handles() )
+			);
 		}
 		if ( ! empty( $facets ) ) {
 			$record['facets'] = $facets;
@@ -663,12 +785,16 @@ class Post extends Base {
 		$parts = \array_filter( array( $title, $excerpt, $permalink ) );
 		$text  = \implode( "\n\n", $parts );
 
-		if ( \mb_strlen( $text ) <= self::BLUESKY_MAX_GRAPHEMES ) {
-			return $text;
+		if ( grapheme_length( $text ) <= self::BLUESKY_MAX_GRAPHEMES ) {
+			return $this->carry_body_mentions( $text, $permalink );
 		}
 
-		// Reserve space for permalink + separators.
-		$reserved  = \mb_strlen( $permalink ) + 4;
+		/*
+		 * Reserve space for the permalink plus the one "\n\n" separator that
+		 * joins it to the prose below (the title/excerpt separator is already
+		 * inside $prose).
+		 */
+		$reserved  = grapheme_length( $permalink ) + 2;
 		$available = self::BLUESKY_MAX_GRAPHEMES - $reserved;
 
 		if ( $available <= 0 ) {
@@ -684,7 +810,318 @@ class Post extends Base {
 
 		$prose = truncate_text( $prose, $available );
 
-		return $prose . "\n\n" . $permalink;
+		return $this->carry_body_mentions( $prose . "\n\n" . $permalink, $permalink );
+	}
+
+	/**
+	 * Resolvable `@handle.tld` mentions found in the post body.
+	 *
+	 * Returns a map of handle => DID, first-appearance order. Empty for
+	 * redacted posts.
+	 *
+	 * The body is scanned as HTML through {@see Mention::classify_handles()},
+	 * which shares the display linkifier's tokenizer, so only handles the front
+	 * end would actually link are collected — a handle inside a `<code>` sample
+	 * or an existing `<a href>` link is *not*. Otherwise publish and display
+	 * would disagree: a handle the linkifier leaves as plain text would still be
+	 * carried into the Bluesky post and mint a `#mention` facet + notification.
+	 *
+	 * In projection mode the preview must not resolve mentions over DNS (see
+	 * {@see self::$projecting}), but the carry-over still lengthens the composed
+	 * record at publish. So the preview returns the *syntactic* linkable
+	 * handles (no lookups) with empty DIDs — an upper bound, since some may not
+	 * resolve — so the carry-over sizing, and therefore the reported grapheme
+	 * count, never under-reports the record the publisher will write.
+	 *
+	 * @return array<string,string>
+	 */
+	private function body_mentions(): array {
+		if ( $this->is_redacted() ) {
+			return array();
+		}
+
+		$linkable = $this->classified_body_handles()['linkable'];
+
+		if ( empty( $linkable ) ) {
+			return array();
+		}
+
+		if ( $this->projecting ) {
+			return \array_fill_keys( \array_values( $linkable ), '' );
+		}
+
+		return Facet::resolve_handle_list( \array_values( $linkable ) );
+	}
+
+	/**
+	 * Classify the post body's @mentions once per transform.
+	 *
+	 * Memoizes {@see Mention::classify_handles()} over the rendered body so the
+	 * carry-over ({@see self::body_mentions()}) and the publish-time mention
+	 * deny-set ({@see self::blocked_mention_handles()}) share one HTML walk.
+	 *
+	 * @return array{linkable:array<string,string>,protected:array<string,true>}
+	 */
+	private function classified_body_handles(): array {
+		if ( null === $this->classified_body_handles ) {
+			$this->classified_body_handles = Mention::classify_handles(
+				$this->render_post_content_html( $this->object )
+			);
+		}
+
+		return $this->classified_body_handles;
+	}
+
+	/**
+	 * Handles that must never mint a `#mention` facet for this post.
+	 *
+	 * The set of body handles that appear *only* inside a protected region (a
+	 * `<code>`/`<pre>` sample or an existing `<a href>` link) and nowhere the
+	 * front end would linkify. {@see Facet::extract()} skips these, so a handle
+	 * buried in a code sample never notifies anyone even when it leaks into the
+	 * excerpt — keeping every record's `#mention` facets in lockstep with what
+	 * the site's own page renders as a link.
+	 *
+	 * @return array<string,true> Lowercased handles.
+	 */
+	private function blocked_mention_handles(): array {
+		$classified = $this->classified_body_handles();
+
+		$blocked = array();
+		foreach ( $classified['protected'] as $key => $unused ) {
+			if ( ! isset( $classified['linkable'][ $key ] ) ) {
+				$blocked[ $key ] = true;
+			}
+		}
+
+		return $blocked;
+	}
+
+	/**
+	 * Whether this post's records may resolve and mint `#mention` facets.
+	 *
+	 * False for a redacted post (no body to mention from) and for a body so
+	 * large the linkifier bails ({@see Mention::the_content()} leaves >1 MB
+	 * content unlinked), so the publish path mints nothing the front end would
+	 * not have linked.
+	 *
+	 * @return bool
+	 */
+	private function mentions_enabled(): bool {
+		return ! $this->is_redacted()
+			&& \strlen( $this->render_post_content_html( $this->object ) ) <= MB_IN_BYTES;
+	}
+
+	/**
+	 * Carry resolvable body @mentions into a long-form post text.
+	 *
+	 * No-op when the post has no resolvable body mentions, so a mention-free
+	 * record composes byte-identically to the un-carried text. Otherwise the
+	 * resolvable body handles not already present in the text are appended as
+	 * a single space-separated line placed immediately before the trailing
+	 * permalink, so {@see Facet::extract()} attaches a `#mention` facet and
+	 * Bluesky notifies the mentioned accounts even when the mention lived deep
+	 * in the post body.
+	 *
+	 * The permalink is preserved in full (it is the load-bearing link); as
+	 * many handles as fit are kept; the prose shrinks last to stay within the
+	 * 300-grapheme cap. Shrinking the prose can truncate away a handle that was
+	 * visible before the carry line was added, so the fit is computed to a
+	 * fixpoint: any such handle is pulled into the carried line rather than
+	 * silently lost. Handles that still don't fit are dropped and logged.
+	 *
+	 * @param string $text      Composed post text (may end with `\n\n$permalink`).
+	 * @param string $permalink Post permalink, or '' when the text carries no
+	 *                          trailing link.
+	 * @return string
+	 */
+	private function carry_body_mentions( string $text, string $permalink ): string {
+		$handles = $this->body_mentions();
+		if ( empty( $handles ) ) {
+			return $text;
+		}
+
+		$sep = "\n\n";
+		$max = self::BLUESKY_MAX_GRAPHEMES;
+
+		// Peel a trailing permalink off the prose so the mention line lands
+		// before it.
+		$suffix = '';
+		$prose  = $text;
+		if ( '' !== $permalink && \str_ends_with( $text, $sep . $permalink ) ) {
+			$suffix = $sep . $permalink;
+			$prose  = \substr( $text, 0, \strlen( $text ) - \strlen( $suffix ) );
+		} elseif ( '' !== $permalink && $text === $permalink ) {
+			// Carry the separator with the permalink so the mention line lands
+			// before it with a `\n\n` gap; without it the kept handle glues
+			// straight onto the URL (`@handle.tldhttps://…`), which over-extends
+			// MENTION_PATTERN and drops the #mention facet entirely.
+			$suffix = $sep . $permalink;
+			$prose  = '';
+		}
+
+		// Every resolvable body handle, as an `@mention`, keyed by lowercased
+		// handle so membership tests compare on token boundaries, not by
+		// substring: a plain `mb_stripos` would treat `@alice.com` as present
+		// inside `@alice.company` and silently skip carrying (and notifying) it.
+		$all = array();
+		foreach ( $handles as $handle => $did ) {
+			$all[ \strtolower( $handle ) ] = '@' . $handle;
+		}
+
+		$suffix_len  = grapheme_length( $suffix );
+		$kept        = '';
+		$prose_final = $prose;
+		$carried     = array(); // Lowercased handles now in the carried line.
+		$dropped     = array(); // Lowercased handles that fit nowhere.
+
+		/*
+		 * Fit handles into a carried line, then shrink the prose to make room —
+		 * but which handles need carrying depends on which survive in the
+		 * shrunken prose, and that depends on how long the carried line is.
+		 * Iterate to a fixpoint: a handle assumed visible in the prose but then
+		 * truncated away is pulled into the carried line on the next pass, so a
+		 * mention is never silently lost between the presence check and the
+		 * truncation. Each pass only shrinks the prose, so it converges in at
+		 * most one pass per handle.
+		 */
+		for ( $pass = 0, $limit = \count( $all ) + 1; $pass <= $limit; $pass++ ) {
+			$present = Facet::handles_in( $prose_final );
+
+			$need = array();
+			foreach ( $all as $key => $mention ) {
+				// Skip handles already visible in the surviving prose, already
+				// carried, or already given up on.
+				if ( isset( $present[ $key ] ) || isset( $carried[ $key ] ) || isset( $dropped[ $key ] ) ) {
+					continue;
+				}
+				$need[ $key ] = $mention;
+			}
+
+			if ( empty( $need ) ) {
+				break;
+			}
+
+			// Greedily add the needed handles to the carried line. A handle that
+			// cannot fit even against an empty prose is dropped (and logged).
+			foreach ( $need as $key => $mention ) {
+				$candidate = '' === $kept ? $mention : $kept . ' ' . $mention;
+				// Worst case needs a separator before the line; reserve one.
+				if ( grapheme_length( $candidate ) + grapheme_length( $sep ) + $suffix_len > $max ) {
+					$dropped[ $key ] = true;
+					continue;
+				}
+				$kept            = $candidate;
+				$carried[ $key ] = true;
+			}
+
+			if ( '' === $kept ) {
+				$prose_final = $prose;
+				break;
+			}
+
+			// Reshrink the prose to whatever room the carried line leaves.
+			$line_sep     = '' !== $prose ? grapheme_length( $sep ) : 0;
+			$prose_budget = $max - grapheme_length( $kept ) - $line_sep - $suffix_len;
+
+			if ( $prose_budget <= 0 ) {
+				$prose_final = '';
+			} elseif ( grapheme_length( $prose ) > $prose_budget ) {
+				$prose_final = truncate_text( $prose, $prose_budget );
+			} else {
+				$prose_final = $prose;
+			}
+		}
+
+		if ( ! empty( $dropped ) ) {
+			debug_log(
+				\sprintf(
+					'post %d: %d body mention(s) dropped from the Bluesky post — no room within the %d-character limit',
+					$this->object->ID,
+					\count( $dropped ),
+					$max
+				)
+			);
+		}
+
+		if ( '' === $kept ) {
+			return $text;
+		}
+
+		$head = '' !== $prose_final ? $prose_final . $sep : '';
+
+		return $head . $kept . $suffix;
+	}
+
+	/**
+	 * Prepend resolvable body @mentions absent from a teaser thread into its
+	 * terminal CTA entry, before the permalink.
+	 *
+	 * A mention already shipping in any thread entry (hook or body chunk)
+	 * already notifies, so only handles absent from every entry are carried.
+	 * They are prepended to the CTA (the entry that holds the permalink),
+	 * dropping any that don't fit the 300-grapheme cap; the CTA text is never
+	 * trimmed. No-op when the post has no resolvable body mentions.
+	 *
+	 * @param string[] $texts Thread entry texts, in order (CTA last).
+	 * @return string[]
+	 */
+	private function carry_mentions_into_teaser( array $texts ): array {
+		$handles = $this->body_mentions();
+		if ( empty( $handles ) || \count( $texts ) < 1 ) {
+			return $texts;
+		}
+
+		$shipped = \implode( "\n", $texts );
+
+		// Token-boundary membership, not substring: see carry_body_mentions().
+		$present = Facet::handles_in( $shipped );
+		$missing = array();
+		foreach ( $handles as $handle => $did ) {
+			if ( ! isset( $present[ \strtolower( $handle ) ] ) ) {
+				$missing[] = '@' . $handle;
+			}
+		}
+		if ( empty( $missing ) ) {
+			return $texts;
+		}
+
+		$last = \count( $texts ) - 1;
+		$cta  = $texts[ $last ];
+		$sep  = "\n\n";
+		$room = self::BLUESKY_MAX_GRAPHEMES - grapheme_length( $cta ) - grapheme_length( $sep );
+
+		$kept    = '';
+		$dropped = 0;
+		foreach ( $missing as $mention ) {
+			$candidate = '' === $kept ? $mention : $kept . ' ' . $mention;
+			// Skip this handle rather than stop: a longer handle may not fit
+			// where a later, shorter one still would.
+			if ( grapheme_length( $candidate ) > $room ) {
+				++$dropped;
+				continue;
+			}
+			$kept = $candidate;
+		}
+
+		if ( $dropped > 0 ) {
+			debug_log(
+				\sprintf(
+					'post %d: %d body mention(s) dropped from the Bluesky teaser thread — no room within the %d-character limit',
+					$this->object->ID,
+					$dropped,
+					self::BLUESKY_MAX_GRAPHEMES
+				)
+			);
+		}
+
+		if ( '' === $kept ) {
+			return $texts;
+		}
+
+		$texts[ $last ] = $kept . $sep . $cta;
+
+		return $texts;
 	}
 
 	/**
@@ -897,17 +1334,15 @@ class Post extends Base {
 		 * record has been written.
 		 *
 		 * Document ref has two sources:
-		 *   - On the *initial* publish, the Publisher precomputes the
-		 *     document's CID locally via DAG-CBOR and injects via
-		 *     `set_document_strong_ref()`. Without this, the document
-		 *     ref could only be added after the atomic write returned
-		 *     — and Bluesky's AppView ignores subsequent
-		 *     `applyWrites#update` for the purposes of indexing
-		 *     `source` / `associatedProfiles` enrichment.
-		 *   - On an *update* publish, the injection is absent but
-		 *     `Document::META_*` are already populated by the
-		 *     previous publish's `store_document_meta()`, so reading
-		 *     from meta produces an equivalent ref.
+		 *   - The Publisher precomputes the document's CID locally via
+		 *     DAG-CBOR and injects via `set_document_strong_ref()`.
+		 *     Without this, the document ref could only be added after
+		 *     the atomic write returned — and Bluesky's AppView ignores
+		 *     subsequent `applyWrites#update` for the purposes of
+		 *     indexing `source` / `associatedProfiles` enrichment.
+		 *   - Read-only or legacy paths may omit injection and fall back
+		 *     to `Document::META_*`, which represents the last document
+		 *     record known to have been written.
 		 *
 		 * The injection wins if both sources are present — it
 		 * reflects what the Publisher is *about* to write, the meta
@@ -922,7 +1357,7 @@ class Post extends Base {
 
 		if ( null !== $this->document_strong_ref ) {
 			$associated_refs[] = $this->document_strong_ref;
-		} else {
+		} elseif ( $this->document_meta_strong_ref_enabled ) {
 			$doc_uri = (string) \get_post_meta( $this->object->ID, Document::META_URI, true );
 			$doc_cid = (string) \get_post_meta( $this->object->ID, Document::META_CID, true );
 			if ( '' !== $doc_uri && '' !== $doc_cid ) {
@@ -965,8 +1400,8 @@ class Post extends Base {
 	 */
 	public static function upload_image_blob( int $attachment_id ): ?array {
 		// Check cache first.
-		$cached = \get_post_meta( $attachment_id, '_atmosphere_blob_ref', true );
-		if ( ! empty( $cached ) ) {
+		$cached = self::cached_image_blob( $attachment_id );
+		if ( null !== $cached ) {
 			return $cached;
 		}
 
@@ -1385,6 +1820,24 @@ class Post extends Base {
 	}
 
 	/**
+	 * Read a previously-uploaded image blob ref from cache, never uploading.
+	 *
+	 * Read-only companion to {@see self::upload_image_blob()} for preview
+	 * projections: a blob that already landed on the PDS is reused (so the
+	 * projected record matches what a publish would write), while an
+	 * uncached image yields null instead of a network upload and a meta
+	 * write from a GET request.
+	 *
+	 * @param int $attachment_id WordPress attachment ID.
+	 * @return array|null Cached blob reference or null.
+	 */
+	public static function cached_image_blob( int $attachment_id ): ?array {
+		$cached = \get_post_meta( $attachment_id, '_atmosphere_blob_ref', true );
+
+		return empty( $cached ) ? null : $cached;
+	}
+
+	/**
 	 * Log an image blob upload failure before returning null to callers.
 	 *
 	 * Callers intentionally degrade differently (skip image, hotlink the
@@ -1582,7 +2035,7 @@ class Post extends Base {
 	 * cannot fit is not really "short", and routing it to the long-form
 	 * composition (excerpt + permalink + external card) gives the reader a
 	 * teaser plus a route back to the original instead of a sentence fragment
-	 * with no link home. The overflow length is measured with `mb_strlen` to
+	 * with no link home. The overflow length is measured in graphemes to
 	 * match `build_short_form_text()`'s own `truncate_text()` cap, so the gate
 	 * and the truncation it avoids agree.
 	 *
@@ -1600,7 +2053,7 @@ class Post extends Base {
 			return false;
 		}
 
-		if ( \mb_strlen( $this->render_post_content_plain( $post ) ) <= self::BLUESKY_MAX_GRAPHEMES ) {
+		if ( grapheme_length( $this->render_post_content_plain( $post ) ) <= self::BLUESKY_MAX_GRAPHEMES ) {
 			return true;
 		}
 
@@ -1629,7 +2082,9 @@ class Post extends Base {
 			);
 		}
 
-		$html = \apply_filters( 'the_content', $this->object->post_content ); // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Core WordPress filter.
+		$html = Mention::without_links(
+			fn() => \apply_filters( 'the_content', $this->object->post_content ) // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Core WordPress filter.
+		);
 
 		/*
 		 * Fast path: no anchors, so the plain render is the whole story.
@@ -2063,6 +2518,7 @@ class Post extends Base {
 				}
 
 				$texts   = $this->build_teaser_thread( $default_texts );
+				$texts   = $this->carry_mentions_into_teaser( $texts );
 				$records = array();
 				$last    = \count( $texts ) - 1;
 				// Attach an `app.bsky.embed.external` link card to the
@@ -2121,14 +2577,14 @@ class Post extends Base {
 	 *   3. Hard cap: `$max - 1` chars + trailing ellipsis (a single
 	 *      unbroken token longer than the budget).
 	 *
-	 * Character length uses `mb_strlen`, matching the convention of
-	 * the existing `truncate_text()` helper. Preg offsets are byte
-	 * offsets against the `mb_substr`-clamped string; substr on a
-	 * match's byte-end is UTF-8-safe because matches end on valid
-	 * sequence boundaries.
+	 * Character length is measured in graphemes, matching the convention of
+	 * the `truncate_text()` helper and Bluesky's 300-character cap. Preg
+	 * offsets are byte offsets against the grapheme-clamped string; substr on
+	 * a match's byte-end is UTF-8-safe because matches end on valid sequence
+	 * boundaries.
 	 *
 	 * @param string $text            Input text.
-	 * @param int    $max             Maximum character length (mb_strlen).
+	 * @param int    $max             Maximum length in graphemes.
 	 * @param bool   $prefer_sentence Prefer a sentence boundary over a word boundary.
 	 * @return string
 	 */
@@ -2137,7 +2593,7 @@ class Post extends Base {
 			return '';
 		}
 
-		if ( \mb_strlen( $text ) <= $max ) {
+		if ( grapheme_length( $text ) <= $max ) {
 			return $text;
 		}
 
@@ -2145,7 +2601,7 @@ class Post extends Base {
 			return '…';
 		}
 
-		$clamped = \mb_substr( $text, 0, $max );
+		$clamped = truncate_graphemes( $text, $max );
 
 		if ( $prefer_sentence
 			&& \preg_match_all(
@@ -2165,8 +2621,8 @@ class Post extends Base {
 			return $word_cut;
 		}
 
-		// Hard cap. Reserve one character for the ellipsis.
-		return \mb_substr( $text, 0, \max( 1, $max - 1 ) ) . '…';
+		// Hard cap. Reserve one grapheme for the ellipsis.
+		return truncate_graphemes( $text, \max( 1, $max - 1 ) ) . '…';
 	}
 
 	/**
@@ -2178,7 +2634,7 @@ class Post extends Base {
 	 * @return bool
 	 */
 	private function requires_link_card_for_long_permalink(): bool {
-		return \mb_strlen( \get_permalink( $this->object ) ) >= self::BLUESKY_MAX_GRAPHEMES;
+		return grapheme_length( \get_permalink( $this->object ) ) >= self::BLUESKY_MAX_GRAPHEMES;
 	}
 
 	/**
@@ -2194,7 +2650,7 @@ class Post extends Base {
 	 * @return bool
 	 */
 	private function requires_link_card_for_teaser_thread(): bool {
-		return \mb_strlen( $this->teaser_thread_cta_text() ) > self::BLUESKY_MAX_GRAPHEMES;
+		return grapheme_length( $this->teaser_thread_cta_text() ) > self::BLUESKY_MAX_GRAPHEMES;
 	}
 
 	/**
@@ -2230,19 +2686,19 @@ class Post extends Base {
 		$permalink  = \get_permalink( $this->object );
 		$plain      = $this->render_post_content_plain( $this->object );
 
-		if ( \mb_strlen( $permalink ) >= $max_length ) {
+		if ( grapheme_length( $permalink ) >= $max_length ) {
 			return $this->truncate_to_budget( $permalink, $max_length, false );
 		}
 
-		$budget = $max_length - \mb_strlen( $permalink );
+		$budget = $max_length - grapheme_length( $permalink );
 
-		if ( $budget <= \mb_strlen( $separator ) ) {
+		if ( $budget <= grapheme_length( $separator ) ) {
 			return $permalink;
 		}
 
-		$body = $this->truncate_to_budget( $plain, $budget - \mb_strlen( $separator ), false );
+		$body = $this->truncate_to_budget( $plain, $budget - grapheme_length( $separator ), false );
 
-		return $body . $separator . $permalink;
+		return $this->carry_body_mentions( $body . $separator . $permalink, $permalink );
 	}
 
 	/**
@@ -2497,9 +2953,10 @@ class Post extends Base {
 
 		// Confirm the hook IS the whole body, not a truncated prefix.
 		// 280 mirrors `compute_default_teaser_thread()`'s body-as-hook
-		// budget; for a body at or below that length the hook
-		// equals the body verbatim and `chunk_source` is empty.
-		return \mb_strlen( $this->render_post_content_plain( $this->object ) ) <= 280;
+		// budget, which `truncate_to_budget()` measures in graphemes; for a
+		// body at or below that length the hook equals the body verbatim and
+		// `chunk_source` is empty.
+		return grapheme_length( $this->render_post_content_plain( $this->object ) ) <= 280;
 	}
 
 	/**
@@ -2535,7 +2992,9 @@ class Post extends Base {
 		);
 
 		// Skip DNS-resolving facet extraction in projection mode (see $projecting).
-		$facets = $this->projecting ? array() : Facet::extract( $text );
+		$facets = $this->projecting
+			? array()
+			: Facet::extract( $text, $this->mentions_enabled(), $this->blocked_mention_handles() );
 		if ( ! empty( $facets ) ) {
 			$record['facets'] = $facets;
 		}
@@ -2607,7 +3066,9 @@ class Post extends Base {
 		);
 
 		// Skip DNS-resolving facet extraction in projection mode (see $projecting).
-		$facets = $this->projecting ? array() : Facet::extract( $text );
+		$facets = $this->projecting
+			? array()
+			: Facet::extract( $text, $this->mentions_enabled(), $this->blocked_mention_handles() );
 		if ( ! empty( $facets ) ) {
 			$record['facets'] = $facets;
 		}

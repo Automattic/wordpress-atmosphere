@@ -5,6 +5,40 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0] - 2026-07-08
+### Added
+- Add an ATmosphere Reactions block that shows the Bluesky likes and reposts that your posts have received, as a facepile of avatars with a count. [#148]
+- Add filters so links to Bluesky can point at an alternative AT Protocol appview, including ones hosted on a subdomain or subpath. [#159]
+- Before publishing, the editor now shows whether a post will be shared to Bluesky, how it will appear, and how its text measures against Bluesky’s character limit. [#139]
+- Failed attempts to share a post to Bluesky are now retried automatically for about twenty minutes, so a brief network or server hiccup no longer means the post silently never appears. [#182]
+- Mention a Bluesky account with @handle.tld in your post: the mention now links to their profile on your site, and they are notified on Bluesky even on longer posts. [#165]
+- Preview AT Protocol output by record type, including an all-record view for comparing records in the current page context. [#170]
+- The editor's Bluesky panel now has a custom text field: write your own message for Bluesky and it is posted with a link back to your post, instead of the automatically composed text. [#152]
+- The editor's Bluesky panel now has a switch to turn sharing on or off for an individual post; switching it off after a post was shared removes it from Bluesky. [#139]
+- The editor now shows a notice when sharing a post to Bluesky fails, including whether it will be retried automatically or needs the post to be updated again. [#183]
+- The settings page now warns you when auto-publishing is on but no post types are selected, so nothing would be published. [#174]
+
+### Changed
+- ATmosphere now requires WordPress 6.5 or later. [#148]
+- Standard.site records and OAuth permissions are now more compatible with current long-form publishing tools and discovery. [#167]
+
+### Fixed
+- Bluesky replies that quote another post now keep a link to the quoted post when imported as comments, instead of dropping it. [#157]
+- Deleting a post now reliably removes it from Bluesky even when it has a large number of replies to clean up. [#138]
+- Disconnecting or deactivating now reliably removes all pending background tasks, so a task queued under a previous connection can no longer run against a newly connected account. [#182]
+- Emoji now count as a single character against Bluesky's 300-character limit, the same way Bluesky's own composer counts them. Posts with emoji are no longer trimmed earlier than necessary, and the editor's character count matches what you would see on Bluesky. [#156]
+- Hardened the security of connections to your Bluesky account. [#171]
+- Import Bluesky likes, reposts, and replies on all your published content types. Previously these interactions were only brought back for standard posts, so likes and replies on pages and other content published to Bluesky were quietly missed. [#185]
+- Kept standard.site document references in Bluesky posts pointing at the current document record and made discovery URLs resolve more consistently.
+- Links in Bluesky replies now keep their full web address when imported as comments, instead of showing a shortened, unclickable preview. [#134]
+- Links inside short posts shared to Bluesky now stay clickable, instead of being flattened to plain text with the link dropped. [#146]
+- Long posts without a title are now shared to Bluesky as a summary with a link back to the original, instead of being cut off mid-sentence with no way to reach the full post. [#145]
+- Reliably import nested Bluesky replies. Reactions are now processed oldest-first within each sync, so a reply threads under its parent comment in the same run instead of being dropped when a whole thread arrives between syncs. [#186]
+- Send private, no-cache headers on the record preview so a caching layer cannot store a logged-in preview and show it to other visitors. [#187]
+- Shared posts on Bluesky now keep your site's publication details up to date automatically when you publish, so Standard.site readers always see current information. [#167]
+- The AT Protocol record preview no longer shows sharing buttons or other theme and plugin extras that are not part of the published record. [#170]
+- Your site's theme colours now display correctly in enhanced link cards on Bluesky and other apps, instead of being dropped because the publication record failed validation. [#154]
+
 ## [1.2.0] - 2026-06-15
 ### Security
 - Hardened error logging so details from cryptographic failures are never written to the log. [#128]
@@ -113,6 +147,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Remove a comment reply from Bluesky if the comment was deleted or unapproved while it was being published, instead of leaving an orphan reply behind. [#32]
 - Short posts under the long-form teaser-thread strategy no longer ship a redundant "continue reading" reply when the entire body already fits in a single Bluesky post. The link-back is preserved as a card on the same post. [#51]
 
+[2.0.0]: https://github.com/Automattic/wordpress-atmosphere/compare/1.2.0...2.0.0
 [1.2.0]: https://github.com/Automattic/wordpress-atmosphere/compare/1.1.1...1.2.0
 [1.1.1]: https://github.com/Automattic/wordpress-atmosphere/compare/1.1.0...1.1.1
 [1.1.0]: https://github.com/Automattic/wordpress-atmosphere/compare/1.0.0...1.1.0

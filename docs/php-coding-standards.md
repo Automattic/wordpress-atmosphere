@@ -211,8 +211,14 @@ use function Atmosphere\is_connected;
 ```php
 \apply_filters( 'atmosphere_content_parser',        $parser, $post );        // Deprecated; use Registry::register().
 \apply_filters( 'atmosphere_document_content',      $content, $post, $parser );
+\apply_filters( 'atmosphere_document_links',        null, $post );
+\apply_filters( 'atmosphere_document_labels',       null, $post );
+\apply_filters( 'atmosphere_document_contributors', null, $post );
+\apply_filters( 'atmosphere_publication_labels',    null );
+\apply_filters( 'atmosphere_publication_show_in_discover', (bool) \get_option( 'blog_public', 1 ) );
 \apply_filters( 'atmosphere_long_form_composition', $composition, $post );
 \apply_filters( 'atmosphere_teaser_thread_posts',   $max_posts, $post );
+\apply_filters( 'atmosphere_atproto_preview_transformers', $transformers, $post ); // Add a transformer to the ?atproto={$type} preview.
 ```
 
 **Behaviour / gating filters:**
@@ -221,8 +227,11 @@ use function Atmosphere\is_connected;
 \apply_filters( 'atmosphere_should_publish_comment',      $bool, $comment );
 \apply_filters( 'atmosphere_should_sync_reply',           $bool, $notification, $post_id );
 \apply_filters( 'atmosphere_backfill_query_chunk_size',   500 );
+\apply_filters( 'atmosphere_publish_retry_delays',        array( 60, 300, 900 ) ); // Backoff ladder for failed publish/update cron workers; length = retry budget; empty array disables retries.
 \apply_filters( 'atmosphere_oauth_redirect_uri',          $uri );
 \apply_filters( 'atmosphere_client_metadata',             $metadata );
+\apply_filters( 'atmosphere_appview_host',                'bsky.app', $path, $context ); // Host/subpath for appview web links; normalized; $context keys: type|did|handle|rkey|tag.
+\apply_filters( 'atmosphere_appview_url',                 $url, $path, $context );        // Whole assembled appview link; rewrite the route from $context.
 ```
 
 **Actions:**

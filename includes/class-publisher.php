@@ -105,6 +105,10 @@ class Publisher {
 			return $result;
 		}
 
+		// Heal a drifted publication record before composing the post,
+		// so the embedded publication strongRef points at the current CID.
+		self::maybe_heal_publication();
+
 		$result = self::attempt_publish_post( $post );
 
 		/*
@@ -216,6 +220,8 @@ class Publisher {
 					)
 				);
 			} else {
+				$bsky_transformer->set_document_strong_ref( null );
+
 				/*
 				 * Encoder hit a record shape it could not handle.
 				 * Surfacing the post error here would abort an
@@ -430,10 +436,7 @@ class Publisher {
 			)
 		);
 
-		$doc_ref_result = self::update_document_bsky_ref( $post, $doc_transformer );
-		if ( \is_wp_error( $doc_ref_result ) ) {
-			return $doc_ref_result;
-		}
+		\delete_post_meta( $post->ID, Post::META_DOC_REF_PENDING );
 
 		return $result;
 	}
@@ -530,19 +533,7 @@ class Publisher {
 		self::store_document_meta( $post->ID, $root_result, $doc_transformer );
 		self::mirror_thread_records_meta( $post->ID, $thread_records );
 
-		// Best-effort: a doc-ref update failure must not abort thread
-		// publishing after the root + document are already created.
-		// Bailing here leaves META_THREAD_RECORDS at length=1, and a
-		// subsequent edit treats that as a shape change and rewrites
-		// the (already-published) root — invalidating likes/reposts/
-		// external replies pointing at it. Persist the gap to
-		// META_DOC_REF_PENDING so operators (and any admin/Site Health
-		// surface) can see it; the next edit retries the doc-ref via
-		// update_*'s normal call to update_document_bsky_ref.
-		$doc_ref_result = self::update_document_bsky_ref( $post, $doc_transformer );
-		if ( \is_wp_error( $doc_ref_result ) ) {
-			self::record_doc_ref_pending( $post->ID, $doc_ref_result );
-		}
+		\delete_post_meta( $post->ID, Post::META_DOC_REF_PENDING );
 
 		$aggregated_results = $root_result['results'] ?? array();
 
@@ -835,6 +826,12 @@ class Publisher {
 			return self::publish_post( $post );
 		}
 
+		// In-place update path: heal a drifted publication record before
+		// composing the post so the embedded publication strongRef points
+		// at the current CID. The fresh-publish branch above already heals
+		// through its own `publish_post()` call.
+		self::maybe_heal_publication();
+
 		foreach ( $stored as $entry ) {
 			if ( empty( $entry['tid'] ) ) {
 				return new \WP_Error(
@@ -866,6 +863,41 @@ class Publisher {
 
 		$bsky_transformer = new Post( $post );
 		$doc_transformer  = new Document( $post );
+		$is_short         = $bsky_transformer->is_short_form_post();
+		$doc_record       = null;
+
+		/*
+		 * Updates have the same strong-ref requirement as initial
+		 * publishes: build the document record once, compute the CID from
+		 * that exact payload, inject it before composing the Bluesky record,
+		 * then write the same document payload in the applyWrites batch.
+		 * Reading Document::META_CID here would use the previous document
+		 * version, and the updated document write would immediately make the
+		 * Bluesky associatedRef stale.
+		 */
+		if ( ! $is_short ) {
+			$doc_record = $doc_transformer->transform();
+			$doc_cid    = CID::from_record( $doc_record );
+
+			if ( ! \is_wp_error( $doc_cid ) ) {
+				$bsky_transformer->set_document_strong_ref(
+					array(
+						'uri' => build_at_uri( get_did(), 'site.standard.document', $doc_transformer->get_rkey() ),
+						'cid' => $doc_cid,
+					)
+				);
+			} else {
+				$bsky_transformer->set_document_strong_ref( null );
+
+				debug_log(
+					\sprintf(
+						'post %d: document CID precompute failed during update (%s) — updating without document associatedRef',
+						$post->ID,
+						$doc_cid->get_error_code()
+					)
+				);
+			}
+		}
 
 		// Pass the stored count to `build_long_form_records()` so the
 		// transformer can preserve the existing thread shape on update
@@ -874,7 +906,7 @@ class Publisher {
 		// — that path would re-mint the root URI and orphan external
 		// engagement on the original. New posts (no stored records) get
 		// the optimised shape; live posts keep theirs forever.
-		$new_records = $bsky_transformer->is_short_form_post()
+		$new_records = $is_short
 			? array( $bsky_transformer->transform() )
 			: $bsky_transformer->build_long_form_records( \count( $stored ) );
 
@@ -892,7 +924,8 @@ class Publisher {
 					$new_records[0],
 					$bsky_transformer,
 					$doc_transformer,
-					$doc_tid
+					$doc_tid,
+					$doc_record
 				);
 			}
 
@@ -901,7 +934,8 @@ class Publisher {
 				$stored,
 				$new_records,
 				$doc_transformer,
-				$doc_tid
+				$doc_tid,
+				$doc_record
 			);
 		}
 
@@ -914,12 +948,17 @@ class Publisher {
 	 * update path. Extended only to refresh `META_THREAD_RECORDS` with the
 	 * post-update CID.
 	 *
-	 * @param \WP_Post $post             WordPress post.
-	 * @param array    $stored_root      The single stored {uri, cid, tid} triple.
-	 * @param array    $new_bsky_record  Freshly composed bsky record.
-	 * @param Post     $bsky_transformer Bsky transformer instance.
-	 * @param Document $doc_transformer  Document transformer instance.
-	 * @param string   $doc_tid          Document record TID.
+	 * @param \WP_Post   $post             WordPress post.
+	 * @param array      $stored_root      The single stored {uri, cid, tid} triple.
+	 * @param array      $new_bsky_record  Freshly composed bsky record.
+	 * @param Post       $bsky_transformer Bsky transformer instance.
+	 * @param Document   $doc_transformer  Document transformer instance.
+	 * @param string     $doc_tid          Document record TID.
+	 * @param array|null $doc_record     Pre-computed document record from
+	 *                                   `update_post()`. Reused as the write
+	 *                                   payload so the injected document
+	 *                                   strongRef points at the updated
+	 *                                   document record's CID.
 	 * @return array|\WP_Error
 	 */
 	private static function update_single(
@@ -928,10 +967,15 @@ class Publisher {
 		array $new_bsky_record,
 		Post $bsky_transformer,
 		Document $doc_transformer,
-		string $doc_tid
+		string $doc_tid,
+		?array $doc_record = null
 	): array|\WP_Error {
 		if ( empty( $new_bsky_record['createdAt'] ) ) {
 			$new_bsky_record['createdAt'] = to_iso8601( $post->post_date_gmt );
+		}
+
+		if ( null === $doc_record ) {
+			$doc_record = $doc_transformer->transform();
 		}
 
 		$writes = array(
@@ -945,7 +989,7 @@ class Publisher {
 				'$type'      => 'com.atproto.repo.applyWrites#update',
 				'collection' => 'site.standard.document',
 				'rkey'       => $doc_tid,
-				'value'      => $doc_transformer->transform(),
+				'value'      => $doc_record,
 			),
 		);
 
@@ -968,10 +1012,7 @@ class Publisher {
 			)
 		);
 
-		$doc_ref_result = self::update_document_bsky_ref( $post, $doc_transformer );
-		if ( \is_wp_error( $doc_ref_result ) ) {
-			return $doc_ref_result;
-		}
+		\delete_post_meta( $post->ID, Post::META_DOC_REF_PENDING );
 
 		return self::reconcile_post_after_write( $post, $result );
 	}
@@ -990,11 +1031,16 @@ class Publisher {
 	 * After the write, `META_THREAD_RECORDS` is refreshed with the new
 	 * CIDs from the response so future updates chain from current CIDs.
 	 *
-	 * @param \WP_Post $post            WordPress post.
-	 * @param array[]  $stored          Current {uri, cid, tid} triples in order.
-	 * @param array[]  $new_records     Freshly composed bsky records, same count.
-	 * @param Document $doc_transformer Document transformer.
-	 * @param string   $doc_tid         Document record TID.
+	 * @param \WP_Post   $post            WordPress post.
+	 * @param array[]    $stored          Current {uri, cid, tid} triples in order.
+	 * @param array[]    $new_records     Freshly composed bsky records, same count.
+	 * @param Document   $doc_transformer Document transformer.
+	 * @param string     $doc_tid         Document record TID.
+	 * @param array|null $doc_record    Pre-computed document record from
+	 *                                  `update_post()`. Reused as the write
+	 *                                  payload so the injected document
+	 *                                  strongRef points at the updated
+	 *                                  document record's CID.
 	 * @return array|\WP_Error
 	 */
 	private static function update_thread_in_place(
@@ -1002,12 +1048,17 @@ class Publisher {
 		array $stored,
 		array $new_records,
 		Document $doc_transformer,
-		string $doc_tid
+		string $doc_tid,
+		?array $doc_record = null
 	): array|\WP_Error {
 		$root       = $stored[0];
 		$created_at = to_iso8601( $post->post_date_gmt );
 		$writes     = array();
 		$bsky_count = \count( $new_records );
+
+		if ( null === $doc_record ) {
+			$doc_record = $doc_transformer->transform();
+		}
 
 		foreach ( $new_records as $i => $record ) {
 			if ( empty( $record['createdAt'] ) ) {
@@ -1039,7 +1090,7 @@ class Publisher {
 			'$type'      => 'com.atproto.repo.applyWrites#update',
 			'collection' => 'site.standard.document',
 			'rkey'       => $doc_tid,
-			'value'      => $doc_transformer->transform(),
+			'value'      => $doc_record,
 		);
 
 		$result = API::apply_writes( $writes );
@@ -1069,10 +1120,7 @@ class Publisher {
 			\update_post_meta( $post->ID, Document::META_CID, $doc_entry['cid'] );
 		}
 
-		$doc_ref_result = self::update_document_bsky_ref( $post, $doc_transformer );
-		if ( \is_wp_error( $doc_ref_result ) ) {
-			return $doc_ref_result;
-		}
+		\delete_post_meta( $post->ID, Post::META_DOC_REF_PENDING );
 
 		return self::reconcile_post_after_write( $post, $result );
 	}
@@ -1640,6 +1688,57 @@ class Publisher {
 	}
 
 	/**
+	 * Re-sync the publication record when it has drifted from the
+	 * record the current transform would produce.
+	 *
+	 * `sync_publication()` otherwise only runs on a handful of settings
+	 * hooks (site title, tagline, icon, theme — {@see Atmosphere::schedule_publication_sync()}).
+	 * A change that doesn't fire one of those never reaches the PDS: a
+	 * plugin update that alters the record shape, a newly-registered
+	 * `atmosphere_transform_publication` / `atmosphere_publication_*`
+	 * filter, or the publication-URL normalisation shipped in this
+	 * release. The live publication record — and the publication
+	 * strongRef every long-form post embeds in `associatedRefs` — would
+	 * stay frozen at the last settings-triggered sync, leaving the
+	 * Bluesky post pointing at a stale publication CID and standard.site
+	 * unable to verify the document against the publication URL.
+	 *
+	 * Detect that drift on the publish path and heal it before the
+	 * post's `associatedRefs` are built, so the post points at the
+	 * refreshed publication CID. Cheap when already in sync: one local
+	 * transform plus a DAG-CBOR encode, no network. A putRecord only
+	 * fires when the locally-computed CID diverges from the last synced
+	 * CID, and the sync's response refreshes `OPTION_CID` so the next
+	 * publish sees no drift.
+	 */
+	private static function maybe_heal_publication(): void {
+		if ( '' === get_did() ) {
+			return;
+		}
+
+		/*
+		 * No publication has ever been created for this site — there is
+		 * nothing to heal yet. The first write happens through the
+		 * connect / settings-save flow, which mints the TID.
+		 */
+		if ( '' === (string) \get_option( Publication::OPTION_TID, '' ) ) {
+			return;
+		}
+
+		$current = CID::from_record( ( new Publication( null ) )->transform() );
+
+		if ( \is_wp_error( $current ) ) {
+			return;
+		}
+
+		if ( (string) \get_option( Publication::OPTION_CID, '' ) === $current ) {
+			return;
+		}
+
+		self::sync_publication();
+	}
+
+	/**
 	 * Publish a WordPress comment as an app.bsky.feed.post reply.
 	 *
 	 * Fires `atmosphere_publish_comment_result` once with the final outcome.
@@ -1876,92 +1975,6 @@ class Publisher {
 		}
 
 		return true;
-	}
-
-	/**
-	 * Update the document record with the bsky root strong reference.
-	 *
-	 * After the initial applyWrites, the bsky root's CID is known, so
-	 * we re-transform the document (which picks up the ref via its
-	 * own read of `Post::META_URI` / `META_CID`) and persist via
-	 * `putRecord`. Called once per publish — the doc always references
-	 * the thread root, regardless of thread length.
-	 *
-	 * @param \WP_Post $post            WordPress post.
-	 * @param Document $doc_transformer Document transformer.
-	 * @return array|\WP_Error|null
-	 */
-	private static function update_document_bsky_ref( \WP_Post $post, Document $doc_transformer ): array|\WP_Error|null {
-		$bsky_uri = \get_post_meta( $post->ID, Post::META_URI, true );
-		$bsky_cid = \get_post_meta( $post->ID, Post::META_CID, true );
-
-		if ( ! $bsky_uri || ! $bsky_cid ) {
-			return null;
-		}
-
-		// `transform()` reads Post::META_URI / META_CID fresh from post
-		// meta on every call, so the existing transformer picks up the
-		// values just persisted by mirror_thread_records_meta() above —
-		// no need for a new instance.
-		$record = $doc_transformer->transform();
-
-		$result = API::post(
-			'/xrpc/com.atproto.repo.putRecord',
-			array(
-				'repo'       => get_did(),
-				'collection' => 'site.standard.document',
-				'rkey'       => $doc_transformer->get_rkey(),
-				'record'     => $record,
-			)
-		);
-
-		// Clear any previous deferred-failure marker on success so
-		// subsequent edits stop reporting the post as pending.
-		if ( ! \is_wp_error( $result ) ) {
-			\delete_post_meta( $post->ID, Post::META_DOC_REF_PENDING );
-		}
-
-		return $result;
-	}
-
-	/**
-	 * Persist a deferred `update_document_bsky_ref` failure.
-	 *
-	 * Called from `publish_thread()` when the follow-up `putRecord`
-	 * fails after the bsky thread root and document records have
-	 * already been created. The publish itself is treated as a success
-	 * (replies still ship; rewriting the root on the next edit would
-	 * be the worse failure mode), but the gap is recorded here so
-	 * operators / admin surfaces can see that the document's
-	 * `bskyPostRef` is stale and that the post should be re-saved to
-	 * trigger a retry.
-	 *
-	 * Cleared by a subsequent successful `update_document_bsky_ref`.
-	 *
-	 * TODO: surface in admin / Site Health alongside META_ORPHAN_RECORDS
-	 * (issue 44).
-	 *
-	 * @param int       $post_id WordPress post ID.
-	 * @param \WP_Error $error   The doc-ref failure to record.
-	 */
-	private static function record_doc_ref_pending( int $post_id, \WP_Error $error ): void {
-		\update_post_meta(
-			$post_id,
-			Post::META_DOC_REF_PENDING,
-			array(
-				'stamp'   => \gmdate( 'Y-m-d\TH:i:s.000\Z' ),
-				'code'    => $error->get_error_code(),
-				'message' => $error->get_error_message(),
-			)
-		);
-
-		debug_log(
-			\sprintf(
-				'post %d: doc-ref update failed during thread publish (%s); continuing with replies',
-				$post_id,
-				$error->get_error_code()
-			)
-		);
 	}
 
 	/**

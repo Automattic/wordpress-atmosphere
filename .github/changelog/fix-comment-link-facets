@@ -1,4 +1,0 @@
-Significance: patch
-Type: fixed
-
-Links in Bluesky replies now keep their full web address when imported as comments, instead of showing a shortened, unclickable preview.

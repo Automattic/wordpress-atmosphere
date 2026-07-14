@@ -61,11 +61,12 @@ const atmosphereIcon = (
  * @return {React.JSX.Element|null} The panel, or null for sync blocks.
  */
 const EditorPlugin = () => {
-	const { postType, sharedUrl } = useSelect( ( select ) => {
+	const { postType, sharedUrl, publishError } = useSelect( ( select ) => {
 		const editor = select( editorStore );
 		return {
 			postType: editor.getCurrentPostType(),
 			sharedUrl: editor.getCurrentPost()?.atmosphere_url,
+			publishError: editor.getCurrentPost()?.atmosphere_publish_error,
 		};
 	}, [] );
 
@@ -144,6 +145,30 @@ const EditorPlugin = () => {
 					{ __(
 						'Sharing is off, but this post is still on Bluesky. It will be removed the next time your site syncs.',
 						'atmosphere'
+					) }
+				</Notice>
+			) }
+
+			{ /* The last share attempt failed. The record comes from the
+			     `atmosphere_publish_error` REST field (cleared server-side on
+			     the next success), so the notice disappears once a share goes
+			     through. Retrying=true means the backoff ladder has another
+			     attempt queued; otherwise the author's update is the retry. */ }
+			{ publishError && enabled && (
+				<Notice status="error" isDismissible={ false }>
+					{ publishError.retrying
+						? __(
+								'Sharing to Bluesky failed. Your site will retry automatically.',
+								'atmosphere'
+						  )
+						: __(
+								'Sharing to Bluesky failed. Update the post to try again.',
+								'atmosphere'
+						  ) }
+					{ publishError.message && (
+						<p style={ { marginBottom: 0 } }>
+							<small>{ publishError.message }</small>
+						</p>
 					) }
 				</Notice>
 			) }

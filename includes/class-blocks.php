@@ -17,7 +17,7 @@ class Blocks {
 	/**
 	 * Wire block registration on `init`.
 	 *
-	 * @since unreleased
+	 * @since 2.0.0
 	 *
 	 * @return void
 	 */
@@ -32,7 +32,7 @@ class Blocks {
 	 * already renders the same Bluesky reactions (stored as WordPress
 	 * comments in the shared shape), so registering ours too would double up.
 	 *
-	 * @since unreleased
+	 * @since 2.0.0
 	 *
 	 * @return void
 	 */
@@ -46,7 +46,7 @@ class Blocks {
 		 * already renders these reactions. Return true to force the block on
 		 * regardless, or false to suppress it.
 		 *
-		 * @since unreleased
+		 * @since 2.0.0
 		 *
 		 * @param bool $register Whether to register the reactions block.
 		 */
@@ -65,7 +65,7 @@ class Blocks {
 	 * overlay/frame/close wiring binds to the modal store created by
 	 * `src/shared/modal`.
 	 *
-	 * @since unreleased
+	 * @since 2.0.0
 	 *
 	 * @param array $args {
 	 *     Optional. Modal arguments.

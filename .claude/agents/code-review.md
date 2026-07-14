@@ -50,6 +50,10 @@ Apply the **code-style** skill standards when reviewing. In addition, check for:
 - URL-safety checks must reject IP-literal hosts (`FILTER_VALIDATE_IP`, IPv6 brackets stripped) — `wp_safe_remote_*` is IPv4-centric, and a URL that doesn't go through that gate (e.g. a `wp_redirect()` target) has no other fallback.
 - Distinct failure modes get distinct error codes. One `WP_Error` code reused across "expired", "legacy session shape", and "decrypt OK but plaintext malformed" leaves support unable to triage.
 - Crypto output computed BEFORE writing partial state — `Encryption::encrypt()` can throw, so inlining it into a `set_transient()` call can leave earlier transients orphaned.
+- Per-object data served behind a blanket capability (`edit_posts` where `edit_post` + post ID is the real boundary) is a cross-author disclosure — mirror the gate the equivalent REST controller uses.
+- GET-serving paths through the transformers (previews, projections) must be read-only: no blob uploads, no meta writes, no TID reservation, no DNS/HTTPS resolution. Publish-state meta written from a GET corrupts create-vs-update detection.
+- Egress caps must bound the *publish*, not one function call — a per-call cap multiplies by thread entries/retries; misses need caching just like hits.
+- When publish output and front-end display both interpret the same content (mentions, links), they must share one tokenizer — separate implementations drift and the two surfaces disagree.
 
 ### Code Quality
 - No unused variables, imports, or dead code
@@ -66,7 +70,7 @@ Apply the **code-style** skill standards when reviewing. In addition, check for:
 
 ### Compatibility
 - PHP 8.2+ compatible syntax (matches `Requires PHP` in `atmosphere.php` and `composer.json`).
-- WordPress 6.2+ compatible (matches `Requires at least` in `readme.txt`).
+- WordPress 6.5+ compatible (matches `Requires at least` in `readme.txt` — verify against the file, it moves).
 - No breaking changes to public APIs (filters, actions, REST shape) without a deprecation path.
 
 ### Tests

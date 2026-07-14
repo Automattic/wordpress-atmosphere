@@ -46,6 +46,115 @@ function build_at_uri( string $did, string $collection, string $rkey ): string {
 }
 
 /**
+ * Build a web URL pointing at an AT Protocol appview.
+ *
+ * Returns an UNESCAPED URL. Callers MUST escape at the point of use
+ * (\esc_url() for HTML output, \esc_url_raw() for storage/redirects), as
+ * late as possible and in the right context.
+ *
+ * @param string $path    Path after the host, with no leading slash, e.g.
+ *                        'profile/<did>/post/<rkey>' or 'hashtag/<tag>'.
+ *                        Callers are responsible for encoding path segments.
+ * @param array  $context Optional parts the caller has on hand. Recognised
+ *                        keys: 'type' (profile|post|mention|hashtag), 'did',
+ *                        'handle', 'rkey', 'tag'.
+ * @return string Unescaped URL, e.g. 'https://bsky.app/profile/<did>'.
+ */
+function appview_url( string $path, array $context = array() ): string {
+	/**
+	 * Filters the base of AT Protocol appview web links.
+	 *
+	 * The base is everything before the path: scheme, host, and an optional
+	 * path prefix. The returned value may be a bare host ('deer.social'), a
+	 * host with a path prefix ('something.social/atblue'), and may include a
+	 * scheme and/or trailing slash — it is normalized before use, so appviews
+	 * hosted on a subdomain or a subpath work cleanly. Defaults to 'bsky.app',
+	 * the Bluesky appview. To rewrite the path itself (e.g. a custom route),
+	 * use the {@see 'atmosphere_appview_url'} filter instead.
+	 *
+	 * @since 2.0.0
+	 *
+	 * @param string $host    Default appview host ('bsky.app').
+	 * @param string $path    Path being built, e.g. 'profile/<did>'.
+	 * @param array  $context Available parts: type, did, handle, rkey, tag.
+	 */
+	$base = \apply_filters( 'atmosphere_appview_host', 'bsky.app', $path, $context );
+
+	$url = appview_base_url( $base ) . '/' . \ltrim( $path, '/' );
+
+	/**
+	 * Filters the fully assembled AT Protocol appview web URL.
+	 *
+	 * Use this to rewrite the entire URL — including the route, e.g.
+	 * '/account/<did>' instead of '/profile/<did>', or a custom hashtag
+	 * route — by rebuilding it from the parts in $context. Return a complete
+	 * URL; it is escaped by the caller, not here.
+	 *
+	 * @since 2.0.0
+	 *
+	 * @param string $url     Assembled URL, e.g. 'https://bsky.app/profile/<did>'.
+	 * @param string $path    Path that was appended, e.g. 'profile/<did>'.
+	 * @param array  $context Available parts: type, did, handle, rkey, tag.
+	 */
+	return \apply_filters( 'atmosphere_appview_url', $url, $path, $context );
+}
+
+/**
+ * Normalize a filtered appview base into a clean 'scheme://host[:port][/prefix]'.
+ *
+ * Accepts a bare host, a host with a path prefix, with or without a scheme or
+ * trailing slash, and rebuilds it without empty or doubled segments. The host is
+ * lower-cased and the scheme is clamped to http/https. An empty value falls back
+ * to 'https://bsky.app' silently; a non-empty value that yields no host falls
+ * back too, but flags `_doing_it_wrong` since the callback returned something
+ * unusable.
+ *
+ * These URLs are display links — rendered for users to click, or stored as
+ * comment author/source links — and are always escaped at the call site. They
+ * are never fetched server-side, so there is no SSRF surface, and IP-literal or
+ * localhost hosts are intentionally allowed for self-hosted appviews. The value
+ * comes from a site-owner filter callback, not from external request input.
+ *
+ * @param string $base Filtered base value, e.g. 'something.social/atblue/'.
+ * @return string Clean base with no trailing slash, e.g. 'https://something.social/atblue'.
+ */
+function appview_base_url( string $base ): string {
+	$base = \trim( $base );
+
+	// An empty value just means "use the default appview" — nothing to flag.
+	if ( '' === $base ) {
+		return 'https://bsky.app';
+	}
+
+	// Ensure a scheme so wp_parse_url splits the host from any path prefix.
+	if ( ! \preg_match( '#^[a-z][a-z0-9+.-]*://#i', $base ) ) {
+		$base = 'https://' . \ltrim( $base, '/' );
+	}
+
+	$parts = \wp_parse_url( $base );
+	$host  = \is_array( $parts ) ? \strtolower( $parts['host'] ?? '' ) : '';
+
+	if ( '' === $host ) {
+		\_doing_it_wrong(
+			__FUNCTION__,
+			\esc_html__( 'atmosphere_appview_host must return a host (optionally with a scheme and path prefix); falling back to bsky.app.', 'atmosphere' ),
+			'unreleased'
+		);
+		return 'https://bsky.app';
+	}
+
+	$scheme = \strtolower( $parts['scheme'] ?? 'https' );
+	if ( 'http' !== $scheme && 'https' !== $scheme ) {
+		$scheme = 'https';
+	}
+
+	$port   = isset( $parts['port'] ) ? ':' . $parts['port'] : '';
+	$prefix = \trim( $parts['path'] ?? '', '/' );
+
+	return $scheme . '://' . $host . $port . ( '' !== $prefix ? '/' . $prefix : '' );
+}
+
+/**
  * Decode entities, strip HTML, normalise whitespace.
  *
  * @param string $text Raw text.
@@ -130,14 +239,84 @@ function truncate_graphemes( string $text, int $max_graphemes ): string {
 }
 
 /**
- * Truncate text to a character limit, breaking at word boundaries.
+ * Count the graphemes in a string the way Bluesky's composer does.
+ *
+ * Bluesky measures its 300-character post cap in graphemes, so a ZWJ
+ * family emoji (`👨‍👩‍👧‍👦`, many code points) counts as one. Falls back to
+ * `mb_strlen()` (code points) when the `intl` extension is missing or the
+ * string is invalid UTF-8 — code points are always >= graphemes, so the
+ * fallback stays conservative and never under-counts a real grapheme.
+ *
+ * @param string $text Text to measure.
+ * @return int Grapheme count.
+ */
+function grapheme_length( string $text ): int {
+	if ( \function_exists( 'grapheme_strlen' ) ) {
+		$length = \grapheme_strlen( $text );
+		if ( \is_int( $length ) ) {
+			return $length;
+		}
+	}
+
+	return \mb_strlen( $text );
+}
+
+/**
+ * Truncate text to a grapheme limit, breaking at word boundaries.
+ *
+ * Counts graphemes (not code points), so the cut matches Bluesky's own
+ * 300-character measurement — a multi-code-point cluster like a ZWJ emoji
+ * costs one against the limit and is never split into mojibake. Falls back
+ * to code-point counting when `intl` is unavailable or the string is
+ * invalid UTF-8.
  *
  * @param string $text   Text to truncate.
- * @param int    $limit  Maximum characters (mb_strlen code points).
+ * @param int    $limit  Maximum length in graphemes.
  * @param string $marker Ellipsis marker.
  * @return string
  */
 function truncate_text( string $text, int $limit = 300, string $marker = '...' ): string {
+	if ( $limit <= 0 ) {
+		return '';
+	}
+
+	/*
+	 * No room for the marker (e.g. a 1-grapheme budget with a "..." marker):
+	 * hard-clamp to the limit without one. Skipping this guard would leave
+	 * the cut length below negative, and `grapheme_substr()` / `mb_substr()`
+	 * read a negative length as "drop the last N" — returning almost the
+	 * whole string and overshooting the limit.
+	 */
+	if ( $limit <= grapheme_length( $marker ) ) {
+		return truncate_graphemes( $text, $limit );
+	}
+
+	if ( \function_exists( 'grapheme_strlen' ) ) {
+		$length = \grapheme_strlen( $text );
+
+		if ( \is_int( $length ) ) {
+			if ( $length <= $limit ) {
+				return $text;
+			}
+
+			$cut = \grapheme_substr( $text, 0, $limit - grapheme_length( $marker ) );
+
+			if ( \is_string( $cut ) ) {
+				$last_word = \grapheme_strrpos( $cut, ' ' );
+
+				if ( false !== $last_word && $last_word > $limit * 0.8 ) {
+					$clipped = \grapheme_substr( $cut, 0, $last_word );
+					if ( \is_string( $clipped ) ) {
+						$cut = $clipped;
+					}
+				}
+
+				return $cut . $marker;
+			}
+		}
+	}
+
+	// Fallback: code-point counting (intl missing or invalid UTF-8).
 	if ( \mb_strlen( $text ) <= $limit ) {
 		return $text;
 	}
@@ -351,7 +530,14 @@ function get_cron_hooks(): array {
  */
 function clear_scheduled_hooks(): void {
 	foreach ( get_cron_hooks() as $hook ) {
-		\wp_clear_scheduled_hook( $hook );
+		/*
+		 * `wp_unschedule_hook()`, not `wp_clear_scheduled_hook()`: the
+		 * latter only removes events whose args match the given array
+		 * (default: empty), so an argless call would leave every queued
+		 * per-post/per-comment event (`[ $post_id ]`) in place — exactly
+		 * the events that must not fire against a different connection.
+		 */
+		\wp_unschedule_hook( $hook );
 	}
 }
 
@@ -365,7 +551,10 @@ function clear_scheduled_hooks(): void {
  */
 function clear_scheduled_hooks_all(): void {
 	clear_scheduled_hooks();
-	\wp_clear_scheduled_hook( 'atmosphere_revoke_refresh_token' );
+
+	// The revoke event always carries args (the encrypted token payload),
+	// so it likewise needs the args-agnostic unschedule.
+	\wp_unschedule_hook( 'atmosphere_revoke_refresh_token' );
 }
 
 /**
@@ -470,4 +659,24 @@ function debug_log( string $message ): void {
 
 	// phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
 	\error_log( '[atmosphere] ' . $message );
+}
+
+/**
+ * Whether an HTTP status code is in the Success (2xx) class.
+ *
+ * "Success" is the IANA registry name for the 2xx range
+ * ({@link https://www.iana.org/assignments/http-status-codes/http-status-codes.xhtml}).
+ * AT Protocol OAuth and PDS requests disable redirects, so any non-2xx
+ * status (including a 3xx the server would have redirected) is treated
+ * as a failure. Centralizes that check for the OAuth and API callers.
+ *
+ * @since 2.0.0
+ *
+ * @param mixed $status HTTP status code (int, or '' when the request failed).
+ * @return bool True for 200-299, false otherwise.
+ */
+function is_success_status( $status ): bool {
+	$status = (int) $status;
+
+	return $status >= 200 && $status < 300;
 }

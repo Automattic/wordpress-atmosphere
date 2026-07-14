@@ -10,7 +10,9 @@
 namespace Atmosphere\Tests\Transformer;
 
 use WP_UnitTestCase;
+use Atmosphere\CID;
 use Atmosphere\Transformer\Document;
+use Atmosphere\Transformer\Facet;
 use Atmosphere\Transformer\Post;
 use Atmosphere\Transformer\Publication;
 
@@ -31,7 +33,48 @@ class Test_Post extends WP_UnitTestCase {
 		\remove_all_filters( 'atmosphere_transform_bsky_post' );
 		\remove_all_filters( 'atmosphere_post_embed' );
 		\remove_all_actions( 'atmosphere_long_form_strategy_downgraded' );
+
+		// Drop any handle-resolution HTTP stub mock_handle_resolution() set.
+		\remove_all_filters( 'pre_http_request' );
+
+		// Mention resolution memoizes into a static; clear it between tests.
+		$cache = new \ReflectionProperty( Facet::class, 'resolution_cache' );
+		$cache->setAccessible( true );
+		$cache->setValue( null, array() );
+
 		parent::tear_down();
+	}
+
+	/**
+	 * Stub AT Protocol handle resolution over the HTTPS well-known
+	 * endpoint so mention tests stay offline and deterministic.
+	 *
+	 * Mirrors the helper in the Facet test: handles resolve via
+	 * `_atproto.<handle>` DNS first (empty for these fixtures) and then
+	 * `https://<handle>/.well-known/atproto-did`, which this short-circuits.
+	 *
+	 * @param array<string,string> $map Handle => DID to return.
+	 */
+	private function mock_handle_resolution( array $map ) {
+		\add_filter(
+			'pre_http_request',
+			static function ( $pre, $args, $url ) use ( $map ) {
+				foreach ( $map as $handle => $did ) {
+					if ( 'https://' . $handle . '/.well-known/atproto-did' === $url ) {
+						return array(
+							'body'     => $did,
+							'response' => array(
+								'code'    => 200,
+								'message' => 'OK',
+							),
+						);
+					}
+				}
+				return $pre;
+			},
+			10,
+			3
+		);
 	}
 
 	/**
@@ -58,8 +101,6 @@ class Test_Post extends WP_UnitTestCase {
 		\ob_start();
 		$encoder( $image );
 		$bytes = (string) \ob_get_clean();
-
-		\imagedestroy( $image );
 
 		return $bytes;
 	}
@@ -104,6 +145,30 @@ class Test_Post extends WP_UnitTestCase {
 		$this->assertStringContainsString( 'A Titled Post', $record['text'] );
 		$this->assertArrayHasKey( 'embed', $record );
 		$this->assertSame( 'app.bsky.embed.external', $record['embed']['$type'] );
+	}
+
+	/**
+	 * When the composed title + excerpt + permalink overflows 300 characters,
+	 * the link-card text is truncated to fit and still ends with the full
+	 * permalink. Exercises `build_text()`'s overflow/reservation branch.
+	 *
+	 * @covers ::transform
+	 */
+	public function test_long_form_link_card_text_truncates_within_limit() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => \str_repeat( 'word ', 80 ), // ~400 chars, overflows on its own.
+				'post_content' => '',
+				'post_excerpt' => '',
+			)
+		);
+
+		$record    = ( new Post( $post ) )->transform();
+		$permalink = \get_permalink( $post );
+
+		// ASCII body, so code points and graphemes coincide.
+		$this->assertLessThanOrEqual( 300, \mb_strlen( $record['text'] ) );
+		$this->assertStringEndsWith( $permalink, $record['text'] );
 	}
 
 	/**
@@ -289,6 +354,89 @@ class Test_Post extends WP_UnitTestCase {
 		$this->assertLessThanOrEqual( 300, \mb_strlen( $record['text'] ) );
 		$this->assertNotContains( 'https://example.com/x', $this->facet_link_uris( $record ), 'The straddling link must be dropped, not clipped.' );
 		$this->assertFacetsWithinText( $record );
+	}
+
+	/**
+	 * An emoji-heavy short-form body whose code-point count exceeds 300 but
+	 * whose grapheme count stays under it is published whole — Bluesky's cap
+	 * is 300 graphemes, so a ZWJ family emoji counts as one, not five.
+	 *
+	 * @covers ::transform
+	 */
+	public function test_short_form_keeps_emoji_body_within_grapheme_limit() {
+		if ( ! \function_exists( 'grapheme_strlen' ) ) {
+			$this->markTestSkipped( 'intl extension required for grapheme counting.' );
+		}
+
+		// 70 family emoji: 70 graphemes, but 350 code points.
+		$family = "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}";
+		$post   = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => '',
+				'post_content' => \str_repeat( $family, 70 ),
+			)
+		);
+
+		$record = ( new Post( $post ) )->transform();
+
+		// Whole body survives: 70 graphemes, no ellipsis, no cluster split.
+		$this->assertSame( 70, \grapheme_strlen( $record['text'] ) );
+		$this->assertStringNotContainsString( '...', $record['text'] );
+	}
+
+	/**
+	 * An inline link preceded by enough emoji to push the code-point count
+	 * past 300 — but not the grapheme count — keeps its facet. Counting code
+	 * points here would truncate the body and drop the link.
+	 *
+	 * @covers ::transform
+	 */
+	public function test_short_form_keeps_link_facet_after_emoji_overflow() {
+		if ( ! \function_exists( 'grapheme_strlen' ) ) {
+			$this->markTestSkipped( 'intl extension required for grapheme counting.' );
+		}
+
+		// 70 family emoji (350 code points / 70 graphemes), then a link.
+		$family = "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}";
+		$post   = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => '',
+				'post_content' => \str_repeat( $family, 70 ) . ' Read <a href="https://example.com/page">the source</a>.',
+			)
+		);
+
+		$record = ( new Post( $post ) )->transform();
+
+		$this->assertLessThanOrEqual( 300, \grapheme_strlen( $record['text'] ) );
+		$this->assertContains( 'https://example.com/page', $this->facet_link_uris( $record ), 'The link must survive emoji overflow.' );
+		$this->assertFacetsWithinText( $record );
+	}
+
+	/**
+	 * The pre-publish projection counts graphemes, so its "X / 300" matches
+	 * the number Bluesky's own composer shows — a family emoji is one, not
+	 * five code points.
+	 *
+	 * @covers ::project
+	 */
+	public function test_project_counts_emoji_body_as_graphemes() {
+		if ( ! \function_exists( 'grapheme_strlen' ) ) {
+			$this->markTestSkipped( 'intl extension required for grapheme counting.' );
+		}
+
+		// 50 family emoji: 50 graphemes, 250 code points.
+		$family = "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}";
+		$post   = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => '',
+				'post_content' => \str_repeat( $family, 50 ),
+			)
+		);
+
+		$projection = ( new Post( $post ) )->project();
+
+		$this->assertSame( 50, $projection['records'][0]['characters'] );
+		$this->assertFalse( $projection['records'][0]['over_limit'] );
 	}
 
 	/**
@@ -887,6 +1035,26 @@ class Test_Post extends WP_UnitTestCase {
 		$this->assertSame( 10, \mb_strlen( $cut ) );
 		$this->assertSame( '…', \mb_substr( $cut, -1 ) );
 		$this->assertNotSame( '', $cut );
+	}
+
+	/**
+	 * The hard-cap path measures in graphemes: an unbroken run of ZWJ family
+	 * emoji past the budget is clamped to whole clusters plus an ellipsis,
+	 * never split into mojibake.
+	 */
+	public function test_truncate_to_budget_hard_cap_counts_graphemes() {
+		if ( ! \function_exists( 'grapheme_strlen' ) ) {
+			$this->markTestSkipped( 'intl extension required for grapheme counting.' );
+		}
+
+		// A single unbroken token (no spaces): 50 family emoji, 250 code points.
+		$family = "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}";
+		$cut    = $this->truncate( \str_repeat( $family, 50 ), 10, true );
+
+		// 9 family clusters + the ellipsis: 10 graphemes, no split cluster.
+		$this->assertSame( 10, \grapheme_strlen( $cut ) );
+		$this->assertSame( '…', \mb_substr( $cut, -1 ) );
+		$this->assertSame( \str_repeat( $family, 9 ) . '…', $cut );
 	}
 
 	/*
@@ -1498,6 +1666,40 @@ class Test_Post extends WP_UnitTestCase {
 		$this->assertArrayHasKey( 'embed', $records[0] );
 		$this->assertSame( 'app.bsky.embed.external', $records[0]['embed']['$type'] );
 		$this->assertSame( \get_permalink( $post ), $records[0]['embed']['external']['uri'] );
+	}
+
+	/**
+	 * An emoji-only body within the 280-grapheme hook budget — but well over
+	 * it in code points — still collapses to a single record. The hook is the
+	 * whole body, so the redundancy gate, which measures in graphemes, fires
+	 * just as it does for an equivalent ASCII body.
+	 *
+	 * @covers ::build_long_form_records
+	 */
+	public function test_build_long_form_records_teaser_thread_emoji_body_collapses_to_single_record() {
+		if ( ! \function_exists( 'grapheme_strlen' ) ) {
+			$this->markTestSkipped( 'intl extension required for grapheme counting.' );
+		}
+
+		// 200 family emoji: 200 graphemes (under the 280 hook budget) but
+		// 1,000 code points (over it). Counting code points here would read
+		// the hook as a truncated prefix and ship a needless 2-entry thread.
+		$family = "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}";
+		$post   = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'Titled',
+				'post_content' => \str_repeat( $family, 200 ),
+				'post_excerpt' => '',
+			)
+		);
+
+		\add_filter( 'atmosphere_long_form_composition', fn() => 'teaser-thread' );
+
+		$records = ( new Post( $post ) )->build_long_form_records();
+
+		$this->assertCount( 1, $records );
+		$this->assertSame( 200, \grapheme_strlen( $records[0]['text'] ) );
+		$this->assertSame( 'app.bsky.embed.external', $records[0]['embed']['$type'] );
 	}
 
 	/**
@@ -3830,6 +4032,40 @@ class Test_Post extends WP_UnitTestCase {
 	}
 
 	/**
+	 * Passing null explicitly suppresses the document-meta fallback.
+	 *
+	 * @covers ::transform
+	 */
+	public function test_long_form_embed_can_suppress_document_meta_fallback() {
+		\update_option( 'atmosphere_identity', array( 'did' => 'did:plc:test123' ), false );
+		\update_option( Publication::OPTION_TID, '3kpub00000000', false );
+		\update_option( Publication::OPTION_CID, 'bafyreipublication0000000000000000000000000000000000000000000', false );
+
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'A Titled Post',
+				'post_content' => 'Long-form blog body.',
+			)
+		);
+
+		\update_post_meta( $post->ID, Document::META_URI, 'at://did:plc:test123/site.standard.document/stale' );
+		\update_post_meta( $post->ID, Document::META_CID, 'bafyreistalestalestalestalestalestalestalestalestalestalestale' );
+
+		$transformer = new Post( $post );
+		$transformer->set_document_strong_ref( null );
+
+		$record = $transformer->transform();
+
+		$refs = $record['embed']['external']['associatedRefs'];
+		$this->assertCount( 1, $refs );
+		$this->assertSame( 'at://did:plc:test123/site.standard.publication/3kpub00000000', $refs[0]['uri'] );
+
+		\delete_option( 'atmosphere_identity' );
+		\delete_option( Publication::OPTION_TID );
+		\delete_option( Publication::OPTION_CID );
+	}
+
+	/**
 	 * Short-form posts (`app.bsky.embed.images`, or no embed) never
 	 * carry `associatedRefs` — that field is defined only on
 	 * `app.bsky.embed.external#external`. Even with both publication
@@ -3865,6 +4101,125 @@ class Test_Post extends WP_UnitTestCase {
 		\delete_option( 'atmosphere_identity' );
 		\delete_option( Publication::OPTION_TID );
 		\delete_option( Publication::OPTION_CID );
+	}
+
+	/**
+	 * A never-published long-form post previews without a document ref:
+	 * the real rkey is only reserved when the post is first published,
+	 * and the preview must not reserve it — `Document::META_TID` is a
+	 * publish-state marker `Publisher::update_post()` keys off. The ref
+	 * appears once the post has been published (see the stale-meta test
+	 * below).
+	 *
+	 * @covers ::get_preview_records
+	 */
+	public function test_preview_records_omit_document_ref_for_unpublished_post() {
+		\update_option( 'atmosphere_identity', array( 'did' => 'did:plc:test123' ), false );
+
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'A Titled Post',
+				'post_content' => 'Long-form blog body.',
+			)
+		);
+
+		$records = ( new Post( $post ) )->get_preview_records();
+
+		$refs = $records[0]['embed']['external']['associatedRefs'] ?? array();
+		$this->assertSame( array(), $refs );
+
+		$this->assertSame( '', (string) \get_post_meta( $post->ID, Document::META_TID, true ) );
+
+		\delete_option( 'atmosphere_identity' );
+	}
+
+	/**
+	 * A post whose document changed since the last publish previews with
+	 * a freshly computed CID at the reserved rkey — not the stale
+	 * `Document::META_CID` from the previous write, which is what the
+	 * meta fallback would surface.
+	 *
+	 * @covers ::get_preview_records
+	 */
+	public function test_preview_records_recompute_document_cid_over_stale_meta() {
+		\update_option( 'atmosphere_identity', array( 'did' => 'did:plc:test123' ), false );
+
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'A Titled Post',
+				'post_content' => 'Long-form blog body, edited since the last publish.',
+			)
+		);
+
+		\update_post_meta( $post->ID, Document::META_TID, '3kdoc00000000' );
+		\update_post_meta( $post->ID, Document::META_URI, 'at://did:plc:test123/site.standard.document/3kdoc00000000' );
+		\update_post_meta( $post->ID, Document::META_CID, 'bafyreistalestalestalestalestalestalestalestalestalestalestale' );
+
+		$expected_cid = CID::from_record( ( new Document( $post ) )->transform() );
+		$this->assertIsString( $expected_cid );
+
+		$records = ( new Post( $post ) )->get_preview_records();
+
+		$refs = $records[0]['embed']['external']['associatedRefs'] ?? array();
+		$this->assertCount( 1, $refs );
+		$this->assertSame( $expected_cid, $refs[0]['cid'] );
+		$this->assertNotSame( 'bafyreistalestalestalestalestalestalestalestalestalestalestale', $refs[0]['cid'] );
+		$this->assertSame( 'at://did:plc:test123/site.standard.document/3kdoc00000000', $refs[0]['uri'] );
+
+		\delete_option( 'atmosphere_identity' );
+	}
+
+	/**
+	 * The document strongRef precompute stays read-only end to end:
+	 * previewing the Bluesky record for a published post with an
+	 * uncached featured image must not upload the blob, and the injected
+	 * CID matches the projected document preview record — the same JSON
+	 * the `?atproto` document selector shows.
+	 *
+	 * @covers ::get_preview_records
+	 */
+	public function test_preview_document_ref_does_not_upload_uncached_thumbnail() {
+		\update_option( 'atmosphere_identity', array( 'did' => 'did:plc:test123' ), false );
+
+		$upload_dir = \wp_upload_dir();
+		$path       = $upload_dir['basedir'] . '/atmosphere-ref-preview-test.jpg';
+		\file_put_contents( $path, 'LOCAL-IMAGE-BYTES' ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents
+
+		$attachment_id = self::factory()->attachment->create_object(
+			$path,
+			0,
+			array( 'post_mime_type' => 'image/jpeg' )
+		);
+
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'A Titled Post',
+				'post_content' => 'Long-form blog body.',
+			)
+		);
+		\set_post_thumbnail( $post->ID, $attachment_id );
+		\update_post_meta( $post->ID, Document::META_TID, '3kdoc00000000' );
+
+		$attempted     = false;
+		$short_circuit = static function () use ( &$attempted ) {
+			$attempted = true;
+			return array( 'blob' => array( 'cid' => 'bafyupload' ) );
+		};
+		\add_filter( 'atmosphere_pre_upload_blob', $short_circuit );
+
+		$records = ( new Post( $post ) )->get_preview_records();
+
+		\remove_filter( 'atmosphere_pre_upload_blob', $short_circuit );
+		\wp_delete_file( $path );
+
+		$this->assertFalse( $attempted, 'Previewing must not upload blobs.' );
+
+		$expected_cid = CID::from_record( ( new Document( $post ) )->get_preview_records()[0] );
+		$refs         = $records[0]['embed']['external']['associatedRefs'] ?? array();
+		$this->assertCount( 1, $refs );
+		$this->assertSame( $expected_cid, $refs[0]['cid'] );
+
+		\delete_option( 'atmosphere_identity' );
 	}
 
 	/**
@@ -4040,5 +4395,379 @@ class Test_Post extends WP_UnitTestCase {
 		$this->assertSame( 'short-form', $projection['strategy'] );
 		$this->assertSame( 0, $http_calls, 'Projection must not make HTTP requests.' );
 		$this->assertSame( '', \get_post_meta( $attachment_id, '_atmosphere_blob_ref', true ) );
+	}
+
+	/**
+	 * A @mention deep in the body of a long-form (link-card) post is carried
+	 * into the Bluesky post text before the permalink, producing a #mention
+	 * facet so the account is notified.
+	 */
+	public function test_link_card_carries_body_mention_before_permalink() {
+		$this->mock_handle_resolution( array( 'alice.bsky.social' => 'did:plc:alice' ) );
+
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'A normal long-form title',
+				'post_excerpt' => 'A short teaser excerpt.',
+				'post_content' => 'Intro paragraph with no handle.' . \str_repeat( ' filler', 60 ) . ' Shout-out to @alice.bsky.social near the end.',
+			)
+		);
+
+		$record    = ( new Post( $post ) )->transform();
+		$permalink = \get_permalink( $post );
+
+		$this->assertStringContainsString( '@alice.bsky.social', $record['text'] );
+		$this->assertStringEndsWith( "\n\n" . $permalink, $record['text'] );
+		$this->assertStringContainsString( "@alice.bsky.social\n\n" . $permalink, $record['text'] );
+		$this->assertLessThanOrEqual( 300, \mb_strlen( $record['text'] ) );
+
+		$mention_facets = \array_filter(
+			$record['facets'] ?? array(),
+			static fn( $facet ) => 'app.bsky.richtext.facet#mention' === ( $facet['features'][0]['$type'] ?? '' )
+		);
+		$this->assertCount( 1, $mention_facets );
+	}
+
+	/**
+	 * A mention already visible in the composed text (title/excerpt) is not
+	 * duplicated by the carry-over.
+	 */
+	public function test_link_card_does_not_duplicate_visible_mention() {
+		$this->mock_handle_resolution( array( 'alice.bsky.social' => 'did:plc:alice' ) );
+
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'Thanks @alice.bsky.social for the help',
+				'post_content' => 'Body that also names @alice.bsky.social again.',
+			)
+		);
+
+		$record = ( new Post( $post ) )->transform();
+
+		$this->assertSame( 1, \substr_count( $record['text'], '@alice.bsky.social' ) );
+	}
+
+	/**
+	 * A post with no body mentions composes byte-identically to before
+	 * (carry-over is a no-op).
+	 */
+	public function test_link_card_without_mentions_is_unchanged() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'Plain title',
+				'post_excerpt' => 'Plain excerpt.',
+				'post_content' => 'Body with no handles at all.',
+			)
+		);
+
+		$record    = ( new Post( $post ) )->transform();
+		$permalink = \get_permalink( $post );
+
+		$this->assertSame( "Plain title\n\nPlain excerpt.\n\n" . $permalink, $record['text'] );
+	}
+
+	/**
+	 * A teaser-thread carries a body mention (absent from hook and chunk) into
+	 * the terminal CTA entry, before the permalink, producing a #mention facet.
+	 */
+	public function test_teaser_thread_carries_body_mention_into_cta() {
+		$this->mock_handle_resolution( array( 'alice.bsky.social' => 'did:plc:alice' ) );
+
+		\add_filter( 'atmosphere_long_form_composition', static fn() => 'teaser-thread' );
+
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'A long teaser-thread post',
+				'post_excerpt' => 'Curated excerpt that becomes the hook.',
+				'post_content' => 'Opening body paragraph.' . \str_repeat( ' more body', 80 ) . ' Final shout-out to @alice.bsky.social here.',
+			)
+		);
+
+		$records = ( new Post( $post ) )->build_long_form_records();
+
+		\remove_all_filters( 'atmosphere_long_form_composition' );
+
+		$cta = \end( $records );
+		$this->assertStringContainsString( '@alice.bsky.social', $cta['text'] );
+		$this->assertStringContainsString( 'Continue reading', $cta['text'] );
+		$this->assertLessThanOrEqual( 300, \mb_strlen( $cta['text'] ) );
+
+		$mention_facets = \array_filter(
+			$cta['facets'] ?? array(),
+			static fn( $facet ) => 'app.bsky.richtext.facet#mention' === ( $facet['features'][0]['$type'] ?? '' )
+		);
+		$this->assertCount( 1, $mention_facets );
+	}
+
+	/**
+	 * A body handle that is a token prefix of a handle already visible in the
+	 * composed text is still carried. A substring "already present" test treated
+	 * `@alice.com` as present inside `@alice.company` and silently dropped it —
+	 * the account was never notified, defeating the feature's core promise.
+	 */
+	public function test_link_card_carries_prefix_collision_mention() {
+		$this->mock_handle_resolution(
+			array(
+				'alice.company' => 'did:plc:company',
+				'alice.com'     => 'did:plc:com',
+			)
+		);
+
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'News about @alice.company today',
+				'post_excerpt' => 'A short teaser.',
+				'post_content' => 'Intro paragraph.' . \str_repeat( ' filler', 60 ) . ' Shout-out to @alice.com near the end.',
+			)
+		);
+
+		$record    = ( new Post( $post ) )->transform();
+		$permalink = \get_permalink( $post );
+
+		// The prefix handle is carried as its own line before the permalink.
+		$this->assertStringContainsString( "@alice.com\n\n" . $permalink, $record['text'] );
+		$this->assertLessThanOrEqual( 300, \mb_strlen( $record['text'] ) );
+
+		// Both handles resolve to distinct #mention facets.
+		$mention_dids = \array_map(
+			static fn( $facet ) => $facet['features'][0]['did'] ?? '',
+			\array_filter(
+				$record['facets'] ?? array(),
+				static fn( $facet ) => 'app.bsky.richtext.facet#mention' === ( $facet['features'][0]['$type'] ?? '' )
+			)
+		);
+		$this->assertContains( 'did:plc:company', $mention_dids );
+		$this->assertContains( 'did:plc:com', $mention_dids );
+	}
+
+	/**
+	 * A body handle that only appears inside a protected tag (`<code>`, an
+	 * existing link) is not carried into the Bluesky post, matching the display
+	 * linkifier — otherwise publish and display would disagree on what counts as
+	 * a mention and an account named only in a code sample would be notified.
+	 */
+	public function test_link_card_does_not_carry_mention_inside_protected_tag() {
+		$this->mock_handle_resolution( array( 'buried.example.com' => 'did:plc:buried' ) );
+
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'A normal long-form title',
+				'post_excerpt' => 'A short teaser excerpt.',
+				'post_content' => 'Intro paragraph.' . \str_repeat( ' filler', 60 ) . ' Sample: <code>@buried.example.com</code> done.',
+			)
+		);
+
+		$record = ( new Post( $post ) )->transform();
+
+		$this->assertStringNotContainsString( '@buried.example.com', $record['text'] );
+
+		$mention_facets = \array_filter(
+			$record['facets'] ?? array(),
+			static fn( $facet ) => 'app.bsky.richtext.facet#mention' === ( $facet['features'][0]['$type'] ?? '' )
+		);
+		$this->assertCount( 0, $mention_facets );
+	}
+
+	/**
+	 * A short-form post whose body ships verbatim must not mint a `#mention`
+	 * facet for a handle that lives only inside a protected tag (`<code>`): the
+	 * front end leaves it unlinked, so publishing a notification for it would
+	 * break publish/display parity. A visible handle in the same body still
+	 * notifies.
+	 */
+	public function test_short_form_does_not_mint_mention_inside_protected_tag() {
+		$this->mock_handle_resolution(
+			array(
+				'alice.bsky.social'  => 'did:plc:alice',
+				'buried.example.com' => 'did:plc:buried',
+			)
+		);
+
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => '',
+				'post_content' => 'Hi @alice.bsky.social — see <code>@buried.example.com</code> for the sample.',
+			)
+		);
+
+		$record = ( new Post( $post ) )->transform();
+
+		$dids = \array_map(
+			static fn( $facet ) => $facet['features'][0]['did'] ?? '',
+			\array_filter(
+				$record['facets'] ?? array(),
+				static fn( $facet ) => 'app.bsky.richtext.facet#mention' === ( $facet['features'][0]['$type'] ?? '' )
+			)
+		);
+
+		$this->assertContains( 'did:plc:alice', $dids, 'A visible body mention still notifies.' );
+		$this->assertNotContains( 'did:plc:buried', $dids, 'A code-buried handle must not mint a mention facet.' );
+	}
+
+	/**
+	 * Shrinking the prose to fit a carried mention line must not silently drop a
+	 * handle that was visible in the prose before the shrink. Here the excerpt
+	 * ends with @alice (present) and the body also names @carol (absent from the
+	 * excerpt); carrying @carol shrinks the excerpt past @alice, so @alice must
+	 * be rescued into the carried line rather than lost.
+	 */
+	public function test_carry_rescues_mention_truncated_by_shrink() {
+		$this->mock_handle_resolution(
+			array(
+				'alice.bsky.social' => 'did:plc:alice',
+				'carol.example.com' => 'did:plc:carol',
+			)
+		);
+
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'T',
+				'post_content' => 'Intro naming @alice.bsky.social and @carol.example.com up top.',
+			)
+		);
+
+		/*
+		 * Size the excerpt against the real permalink so the scenario is exact:
+		 * make the composed title + excerpt + permalink land at 298 graphemes
+		 * (just under the 300 cap, so the whole-text carry path runs), with
+		 * @alice at the very end of the excerpt. Carrying @carol then shrinks the
+		 * excerpt by 15 graphemes — enough to cut @alice, which must be rescued.
+		 */
+		$permalink   = \get_permalink( $post );
+		$plen        = \Atmosphere\grapheme_length( $permalink );
+		$handle      = '@alice.bsky.social';
+		$excerpt_len = 293 - $plen; // 1 (title) + 2 + excerpt + 2 + permalink = 298.
+		$fill_len    = $excerpt_len - \strlen( $handle ) - 1;
+		$excerpt     = \str_repeat( 'w', \max( 1, $fill_len ) ) . ' ' . $handle;
+
+		\wp_update_post(
+			array(
+				'ID'           => $post->ID,
+				'post_excerpt' => $excerpt,
+			)
+		);
+		\clean_post_cache( $post->ID );
+
+		$record = ( new Post( \get_post( $post->ID ) ) )->transform();
+
+		$this->assertLessThanOrEqual( 300, \Atmosphere\grapheme_length( $record['text'] ), 'Record stays within the cap.' );
+		$this->assertStringContainsString( '@carol.example.com', $record['text'] );
+		$this->assertStringContainsString( '@alice.bsky.social', $record['text'], 'The truncated-away mention is rescued, not lost.' );
+
+		$dids = \array_map(
+			static fn( $facet ) => $facet['features'][0]['did'] ?? '',
+			\array_filter(
+				$record['facets'] ?? array(),
+				static fn( $facet ) => 'app.bsky.richtext.facet#mention' === ( $facet['features'][0]['$type'] ?? '' )
+			)
+		);
+		$this->assertContains( 'did:plc:alice', $dids );
+		$this->assertContains( 'did:plc:carol', $dids );
+	}
+
+	/**
+	 * The pre-publish projection sizes the body-mention carry-over (from
+	 * syntactic candidates, no DNS) so its reported grapheme count matches the
+	 * record the publisher actually writes, rather than under-reporting a
+	 * composed record the carry-over will lengthen.
+	 */
+	public function test_projection_accounts_for_carried_body_mention() {
+		$this->mock_handle_resolution( array( 'alice.bsky.social' => 'did:plc:alice' ) );
+
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'A normal long-form title',
+				'post_excerpt' => 'A short teaser excerpt.',
+				'post_content' => 'Intro paragraph.' . \str_repeat( ' filler', 60 ) . ' Shout-out to @alice.bsky.social near the end.',
+			)
+		);
+
+		$projection = ( new Post( $post ) )->project();
+		$record     = ( new Post( $post ) )->transform();
+
+		$this->assertStringContainsString( '@alice.bsky.social', $record['text'] );
+		$this->assertSame(
+			\mb_strlen( $record['text'] ),
+			$projection['records'][0]['characters'],
+			'Projection must count the carried mention line the publisher adds.'
+		);
+	}
+
+	/**
+	 * A short-form post with a body @mention still produces a #mention facet
+	 * (not a #link facet) even though the display linkifier is active — the
+	 * Bluesky-text builders are guarded against it.
+	 */
+	public function test_short_form_mention_stays_mention_facet_with_linkifier_active() {
+		$this->mock_handle_resolution( array( 'alice.bsky.social' => 'did:plc:alice' ) );
+
+		\Atmosphere\Mention::init();
+
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => '',
+				'post_content' => 'Quick note to @alice.bsky.social about the plan.',
+			)
+		);
+
+		$record = ( new Post( $post ) )->transform();
+
+		$mention_facets = \array_filter(
+			$record['facets'] ?? array(),
+			static fn( $facet ) => 'app.bsky.richtext.facet#mention' === ( $facet['features'][0]['$type'] ?? '' )
+		);
+		$link_facets    = \array_filter(
+			$record['facets'] ?? array(),
+			static fn( $facet ) => 'app.bsky.richtext.facet#link' === ( $facet['features'][0]['$type'] ?? '' )
+		);
+
+		$this->assertCount( 1, $mention_facets, 'Body mention must remain a #mention facet.' );
+		$this->assertCount( 0, $link_facets, 'Body mention must not become a #link facet.' );
+		$this->assertStringNotContainsString( '<a', $record['text'] );
+	}
+
+	/**
+	 * When the composed link-card text collapses to just the permalink (empty
+	 * title and excerpt), a carried body @mention is still separated from the
+	 * URL by a `\n\n`, so MENTION_PATTERN does not over-extend into the link and
+	 * the #mention facet survives.
+	 *
+	 * Regression: the bare-permalink branch dropped the separator, gluing
+	 * `@handle.tldhttps://…` together and silently losing the notification.
+	 */
+	public function test_bare_permalink_carries_body_mention_with_separator() {
+		$this->mock_handle_resolution( array( 'alice.bsky.social' => 'did:plc:alice' ) );
+
+		// Empty title + an excerpt that sanitises to nothing collapse
+		// build_text()'s $parts to just the permalink. The raw body is a bare
+		// HTML comment: non-empty (so WordPress accepts the insert) but stripped
+		// to '' by the excerpt builder. A the_content filter expands the
+		// *rendered* body past the 300-grapheme cap (routing the post to the
+		// link-card path) and plants the mention there, so body_mentions()
+		// discovers it while the excerpt stays empty.
+		$inject = static fn( $content ) => $content . \str_repeat( 'word ', 80 ) . 'Shout-out to @alice.bsky.social.';
+		\add_filter( 'the_content', $inject );
+
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => '',
+				'post_excerpt' => '',
+				'post_content' => '<!-- placeholder -->',
+			)
+		);
+
+		$record    = ( new Post( $post ) )->transform();
+		$permalink = \get_permalink( $post );
+
+		\remove_filter( 'the_content', $inject );
+
+		$this->assertStringContainsString( "@alice.bsky.social\n\n" . $permalink, $record['text'] );
+		$this->assertStringNotContainsString( '@alice.bsky.social' . $permalink, $record['text'] );
+
+		$mention_facets = \array_filter(
+			$record['facets'] ?? array(),
+			static fn( $facet ) => 'app.bsky.richtext.facet#mention' === ( $facet['features'][0]['$type'] ?? '' )
+		);
+		$this->assertCount( 1, $mention_facets, 'Bare-permalink post must still emit a #mention facet.' );
 	}
 }

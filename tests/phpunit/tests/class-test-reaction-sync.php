@@ -19,6 +19,19 @@ use Atmosphere\Transformer\Post as BskyPost;
 class Test_Reaction_Sync extends WP_UnitTestCase {
 
 	/**
+	 * Reset post-type support state leaked by the resolver tests.
+	 */
+	public function tear_down(): void {
+		\delete_option( 'atmosphere_support_post_types' );
+
+		if ( \post_type_exists( 'atmos_hidden_cpt' ) ) {
+			\unregister_post_type( 'atmos_hidden_cpt' );
+		}
+
+		parent::tear_down();
+	}
+
+	/**
 	 * Test that find_post_by_bsky_uri returns the correct post.
 	 */
 	public function test_find_post_by_bsky_uri() {
@@ -73,6 +86,146 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 		$method = new \ReflectionMethod( Reaction_Sync::class, 'find_post_by_bsky_uri' );
 
 		$this->assertFalse( $method->invoke( null, 'at://did:plc:unknown/app.bsky.feed.post/xyz' ) );
+	}
+
+	/**
+	 * A reaction targeting a supported non-`post` post type must resolve.
+	 *
+	 * Regression: `find_post_by_bsky_uri()` called `get_posts()` without a
+	 * `post_type`, so WordPress defaulted the query to `post_type => 'post'`.
+	 * Every like/repost/reply on a supported page or custom post type then
+	 * resolved to nothing and was dropped silently — no comment row, no
+	 * error, no log. Fails before the resolver is scoped to the federated
+	 * post types.
+	 */
+	public function test_find_post_by_bsky_uri_resolves_supported_non_default_post_type() {
+		\update_option( 'atmosphere_support_post_types', array( 'post', 'page' ) );
+
+		$post_id = self::factory()->post->create(
+			array(
+				'post_type'   => 'page',
+				'post_status' => 'publish',
+			)
+		);
+		$uri     = 'at://did:plc:test123/app.bsky.feed.post/page123';
+
+		\update_post_meta( $post_id, BskyPost::META_URI, $uri );
+
+		$method = new \ReflectionMethod( Reaction_Sync::class, 'find_post_by_bsky_uri' );
+
+		$this->assertSame( $post_id, $method->invoke( null, $uri ) );
+	}
+
+	/**
+	 * A supported CPT registered with `exclude_from_search` must resolve too.
+	 *
+	 * This is why the resolver scopes to `get_supported_post_types()` rather
+	 * than the `post_type => 'any'` shortcut: `'any'` omits post types flagged
+	 * `exclude_from_search`, so a naive `'any'` fix would still drop reactions
+	 * on such a type. Fails both before the fix and under an `'any'`-based fix.
+	 */
+	public function test_find_post_by_bsky_uri_resolves_supported_exclude_from_search_cpt() {
+		\register_post_type(
+			'atmos_hidden_cpt',
+			array(
+				'public'              => true,
+				'exclude_from_search' => true,
+			)
+		);
+		\update_option( 'atmosphere_support_post_types', array( 'post', 'atmos_hidden_cpt' ) );
+
+		$post_id = self::factory()->post->create(
+			array(
+				'post_type'   => 'atmos_hidden_cpt',
+				'post_status' => 'publish',
+			)
+		);
+		$uri     = 'at://did:plc:test123/app.bsky.feed.post/hidden123';
+
+		\update_post_meta( $post_id, BskyPost::META_URI, $uri );
+
+		$method = new \ReflectionMethod( Reaction_Sync::class, 'find_post_by_bsky_uri' );
+
+		$this->assertSame( $post_id, $method->invoke( null, $uri ) );
+	}
+
+	/**
+	 * The thread-index fallback must also resolve a supported non-`post` type.
+	 *
+	 * `find_post_by_bsky_uri()` scopes BOTH lookups — the single-record
+	 * `META_URI` key and the `META_URI_INDEX` thread fallback Publisher
+	 * populates for every teaser-thread reply. The other regression tests
+	 * only seed `META_URI`, so they never reach the second query. This one
+	 * seeds only the index key on a `page` to guard the fallback branch
+	 * against a future change that drops its `post_type` scope.
+	 */
+	public function test_find_post_by_bsky_uri_thread_index_resolves_supported_non_default_post_type() {
+		\update_option( 'atmosphere_support_post_types', array( 'post', 'page' ) );
+
+		$post_id   = self::factory()->post->create(
+			array(
+				'post_type'   => 'page',
+				'post_status' => 'publish',
+			)
+		);
+		$reply_uri = 'at://did:plc:test123/app.bsky.feed.post/pagereply123';
+
+		\add_post_meta( $post_id, BskyPost::META_URI_INDEX, $reply_uri );
+
+		$method = new \ReflectionMethod( Reaction_Sync::class, 'find_post_by_bsky_uri' );
+
+		$this->assertSame( $post_id, $method->invoke( null, $reply_uri ) );
+	}
+
+	/**
+	 * A reaction on an unsupported post type must NOT resolve.
+	 *
+	 * Pins the upper bound of the scoping: the resolver covers exactly the
+	 * federated types, no more. Without this, a future widening back to
+	 * `post_type => 'any'` would silently start importing reactions onto
+	 * content the site never federated, and every positive test would still
+	 * pass. Here `page` carries matching meta but is absent from the
+	 * supported list, so the lookup must miss.
+	 */
+	public function test_find_post_by_bsky_uri_ignores_unsupported_post_type() {
+		\update_option( 'atmosphere_support_post_types', array( 'post' ) );
+
+		$post_id = self::factory()->post->create(
+			array(
+				'post_type'   => 'page',
+				'post_status' => 'publish',
+			)
+		);
+		$uri     = 'at://did:plc:test123/app.bsky.feed.post/unsupported123';
+
+		\update_post_meta( $post_id, BskyPost::META_URI, $uri );
+
+		$method = new \ReflectionMethod( Reaction_Sync::class, 'find_post_by_bsky_uri' );
+
+		$this->assertFalse( $method->invoke( null, $uri ) );
+	}
+
+	/**
+	 * An empty supported-types list must resolve nothing, not fall back to `post`.
+	 *
+	 * When a site owner unticks every type, the option is stored as an empty
+	 * array. Passing `post_type => array()` to `get_posts()` silently defaults
+	 * to `post_type => 'post'`, which would reintroduce the original miss (and
+	 * resolve reactions onto content the Publisher no longer federates). The
+	 * resolver must short-circuit to false instead: a matching `post` exists
+	 * here, yet nothing is federated, so nothing should resolve.
+	 */
+	public function test_find_post_by_bsky_uri_returns_false_when_no_supported_types() {
+		\update_option( 'atmosphere_support_post_types', array() );
+
+		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		$uri     = 'at://did:plc:test123/app.bsky.feed.post/notypes123';
+
+		\update_post_meta( $post_id, BskyPost::META_URI, $uri );
+
+		$method = new \ReflectionMethod( Reaction_Sync::class, 'find_post_by_bsky_uri' );
+
+		$this->assertFalse( $method->invoke( null, $uri ) );
 	}
 
 	/**
@@ -246,6 +399,389 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 		);
 		// The plain-text portion survives intact.
 		$this->assertStringContainsString( 'An exact copy of my post :)', $comment->comment_content );
+	}
+
+	/**
+	 * A reply that quotes another post carries the quoted post's AT-URI in
+	 * the record's `embed` (app.bsky.embed.record), not in `text`. The
+	 * imported comment must surface it as a linked blockquote pointing at
+	 * the quoted post's bsky.app page. Regression test for issue #133.
+	 */
+	public function test_process_reply_appends_quote_post_embed() {
+		$post_id  = self::factory()->post->create();
+		$post_uri = 'at://did:plc:me/app.bsky.feed.post/mypost';
+
+		\update_post_meta( $post_id, BskyPost::META_URI, $post_uri );
+
+		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_reply' );
+
+		$notification = array(
+			'uri'    => 'at://did:plc:replier/app.bsky.feed.post/quotereply',
+			'cid'    => 'bafyreiquote',
+			'record' => array(
+				'text'      => 'Look at this!',
+				'createdAt' => '2026-06-20T12:00:00.000Z',
+				'embed'     => array(
+					'$type'  => 'app.bsky.embed.record',
+					'record' => array(
+						'cid' => 'bafyreifz7yief4dwg7wgyotql3zkknx4nolwcl2ukio6jdld4ejn7wclfm',
+						'uri' => 'at://did:plc:quoted/app.bsky.feed.post/3mnzu7nvcss2e',
+					),
+				),
+				'reply'     => array(
+					'parent' => array( 'uri' => $post_uri ),
+					'root'   => array( 'uri' => $post_uri ),
+				),
+			),
+			'author' => array(
+				'did'    => 'did:plc:replier',
+				'handle' => 'replier.bsky.social',
+			),
+		);
+
+		$comment_id = $method->invoke( null, $notification );
+
+		$this->assertIsInt( $comment_id );
+
+		$comment = \get_comment( $comment_id );
+
+		// The original reply text survives.
+		$this->assertStringContainsString( 'Look at this!', $comment->comment_content );
+		// A blockquote links to the quoted post on bsky.app (DID form).
+		$this->assertStringContainsString( '<blockquote', $comment->comment_content );
+		$this->assertStringContainsString(
+			'href="https://bsky.app/profile/did:plc:quoted/post/3mnzu7nvcss2e"',
+			$comment->comment_content
+		);
+	}
+
+	/**
+	 * A quote that also carries media uses app.bsky.embed.recordWithMedia,
+	 * which nests the quoted record one level deeper. The quoted post must
+	 * still be surfaced. Regression test for issue #133.
+	 */
+	public function test_process_reply_appends_quote_from_record_with_media() {
+		$post_id  = self::factory()->post->create();
+		$post_uri = 'at://did:plc:me/app.bsky.feed.post/mypost';
+
+		\update_post_meta( $post_id, BskyPost::META_URI, $post_uri );
+
+		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_reply' );
+
+		$notification = array(
+			'uri'    => 'at://did:plc:replier/app.bsky.feed.post/quotemedia',
+			'cid'    => 'bafyreiquotemedia',
+			'record' => array(
+				'text'      => 'Quote with an image.',
+				'createdAt' => '2026-06-20T12:00:00.000Z',
+				'embed'     => array(
+					'$type'  => 'app.bsky.embed.recordWithMedia',
+					'record' => array(
+						'$type'  => 'app.bsky.embed.record',
+						'record' => array(
+							'cid' => 'bafyreinested',
+							'uri' => 'at://did:plc:quoted/app.bsky.feed.post/withmedia',
+						),
+					),
+					'media'  => array(
+						'$type'  => 'app.bsky.embed.images',
+						'images' => array(),
+					),
+				),
+				'reply'     => array(
+					'parent' => array( 'uri' => $post_uri ),
+					'root'   => array( 'uri' => $post_uri ),
+				),
+			),
+			'author' => array(
+				'did'    => 'did:plc:replier',
+				'handle' => 'replier.bsky.social',
+			),
+		);
+
+		$comment_id = $method->invoke( null, $notification );
+
+		$this->assertIsInt( $comment_id );
+
+		$comment = \get_comment( $comment_id );
+
+		$this->assertStringContainsString( 'Quote with an image.', $comment->comment_content );
+		$this->assertStringContainsString(
+			'href="https://bsky.app/profile/did:plc:quoted/post/withmedia"',
+			$comment->comment_content
+		);
+	}
+
+	/**
+	 * A reply that is *only* a quote (empty text) must still import as a
+	 * comment carrying the quote blockquote, rather than being dropped by
+	 * the empty-text gate. Regression test for issue #133.
+	 */
+	public function test_process_reply_imports_quote_only_reply() {
+		$post_id  = self::factory()->post->create();
+		$post_uri = 'at://did:plc:me/app.bsky.feed.post/mypost';
+
+		\update_post_meta( $post_id, BskyPost::META_URI, $post_uri );
+
+		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_reply' );
+
+		$notification = array(
+			'uri'    => 'at://did:plc:replier/app.bsky.feed.post/quoteonly',
+			'cid'    => 'bafyreiquoteonly',
+			'record' => array(
+				'text'      => '',
+				'createdAt' => '2026-06-20T12:00:00.000Z',
+				'embed'     => array(
+					'$type'  => 'app.bsky.embed.record',
+					'record' => array(
+						'uri' => 'at://did:plc:quoted/app.bsky.feed.post/onlyquote',
+					),
+				),
+				'reply'     => array(
+					'parent' => array( 'uri' => $post_uri ),
+					'root'   => array( 'uri' => $post_uri ),
+				),
+			),
+			'author' => array(
+				'did'    => 'did:plc:replier',
+				'handle' => 'replier.bsky.social',
+			),
+		);
+
+		$comment_id = $method->invoke( null, $notification );
+
+		$this->assertIsInt( $comment_id );
+
+		$comment = \get_comment( $comment_id );
+
+		$this->assertStringContainsString(
+			'href="https://bsky.app/profile/did:plc:quoted/post/onlyquote"',
+			$comment->comment_content
+		);
+	}
+
+	/**
+	 * Only quoted `app.bsky.feed.post` records get a bsky.app post link;
+	 * a quoted record of another collection (e.g. a feed generator or
+	 * list) has no post page, so no blockquote is added — but the reply
+	 * text still imports normally.
+	 */
+	public function test_process_reply_ignores_non_post_quote_embed() {
+		$post_id  = self::factory()->post->create();
+		$post_uri = 'at://did:plc:me/app.bsky.feed.post/mypost';
+
+		\update_post_meta( $post_id, BskyPost::META_URI, $post_uri );
+
+		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_reply' );
+
+		$notification = array(
+			'uri'    => 'at://did:plc:replier/app.bsky.feed.post/quotelist',
+			'cid'    => 'bafyreiquotelist',
+			'record' => array(
+				'text'      => 'Quoting a list.',
+				'createdAt' => '2026-06-20T12:00:00.000Z',
+				'embed'     => array(
+					'$type'  => 'app.bsky.embed.record',
+					'record' => array(
+						'uri' => 'at://did:plc:quoted/app.bsky.graph.list/somelist',
+					),
+				),
+				'reply'     => array(
+					'parent' => array( 'uri' => $post_uri ),
+					'root'   => array( 'uri' => $post_uri ),
+				),
+			),
+			'author' => array(
+				'did'    => 'did:plc:replier',
+				'handle' => 'replier.bsky.social',
+			),
+		);
+
+		$comment_id = $method->invoke( null, $notification );
+
+		$this->assertIsInt( $comment_id );
+
+		$comment = \get_comment( $comment_id );
+
+		$this->assertSame( 'Quoting a list.', $comment->comment_content );
+		$this->assertStringNotContainsString( '<blockquote', $comment->comment_content );
+	}
+
+	/**
+	 * The hydrated `app.bsky.embed.record#view` shape (returned by feed /
+	 * thread views) carries the quoted post's URI at the same `record.uri`
+	 * path as the raw record form, and the `$type` prefix match must accept
+	 * it. Locks in the documented `#view` support.
+	 */
+	public function test_process_reply_appends_quote_from_record_view() {
+		$post_id  = self::factory()->post->create();
+		$post_uri = 'at://did:plc:me/app.bsky.feed.post/mypost';
+
+		\update_post_meta( $post_id, BskyPost::META_URI, $post_uri );
+
+		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_reply' );
+
+		$notification = array(
+			'uri'    => 'at://did:plc:replier/app.bsky.feed.post/quoteview',
+			'cid'    => 'bafyreiquoteview',
+			'record' => array(
+				'text'      => 'Quoting from a view.',
+				'createdAt' => '2026-06-20T12:00:00.000Z',
+				'embed'     => array(
+					'$type'  => 'app.bsky.embed.record#view',
+					'record' => array(
+						'$type' => 'app.bsky.embed.record#viewRecord',
+						'uri'   => 'at://did:plc:quoted/app.bsky.feed.post/viewquote',
+					),
+				),
+				'reply'     => array(
+					'parent' => array( 'uri' => $post_uri ),
+					'root'   => array( 'uri' => $post_uri ),
+				),
+			),
+			'author' => array(
+				'did'    => 'did:plc:replier',
+				'handle' => 'replier.bsky.social',
+			),
+		);
+
+		$comment_id = $method->invoke( null, $notification );
+
+		$this->assertIsInt( $comment_id );
+
+		$comment = \get_comment( $comment_id );
+
+		$this->assertStringContainsString(
+			'href="https://bsky.app/profile/did:plc:quoted/post/viewquote"',
+			$comment->comment_content
+		);
+	}
+
+	/**
+	 * The quote link is built through `appview_url()`, so a site that swaps
+	 * its appview host via `atmosphere_appview_host` gets the quote link
+	 * pointed at that host too — it must not be the lone hardcoded `bsky.app`.
+	 */
+	public function test_process_reply_quote_honors_appview_host_filter() {
+		$post_id  = self::factory()->post->create();
+		$post_uri = 'at://did:plc:me/app.bsky.feed.post/mypost';
+
+		\update_post_meta( $post_id, BskyPost::META_URI, $post_uri );
+
+		$filter = static fn() => 'deer.social';
+		\add_filter( 'atmosphere_appview_host', $filter );
+
+		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_reply' );
+
+		$notification = array(
+			'uri'    => 'at://did:plc:replier/app.bsky.feed.post/quotefiltered',
+			'cid'    => 'bafyreiquotefiltered',
+			'record' => array(
+				'text'      => 'Quoting on a custom appview.',
+				'createdAt' => '2026-06-20T12:00:00.000Z',
+				'embed'     => array(
+					'$type'  => 'app.bsky.embed.record',
+					'record' => array(
+						'cid' => 'bafyreifiltered',
+						'uri' => 'at://did:plc:quoted/app.bsky.feed.post/filteredpost',
+					),
+				),
+				'reply'     => array(
+					'parent' => array( 'uri' => $post_uri ),
+					'root'   => array( 'uri' => $post_uri ),
+				),
+			),
+			'author' => array(
+				'did'    => 'did:plc:replier',
+				'handle' => 'replier.bsky.social',
+			),
+		);
+
+		$comment_id = $method->invoke( null, $notification );
+
+		\remove_filter( 'atmosphere_appview_host', $filter );
+
+		$this->assertIsInt( $comment_id );
+
+		$comment = \get_comment( $comment_id );
+
+		$this->assertStringContainsString(
+			'href="https://deer.social/profile/did:plc:quoted/post/filteredpost"',
+			$comment->comment_content
+		);
+		$this->assertStringNotContainsString( 'bsky.app', $comment->comment_content );
+	}
+
+	/**
+	 * A malformed `embed` value (untrusted PDS JSON) must not fatal the
+	 * cron sync; the reply still imports as a plain comment without a
+	 * blockquote. Covers a scalar embed and a record whose `uri` is the
+	 * wrong type — pinning the `is_array`/`is_string` guards.
+	 *
+	 * @dataProvider data_malformed_embeds
+	 * @param mixed $embed Malformed embed value.
+	 */
+	public function test_process_reply_tolerates_malformed_embed( $embed ) {
+		$post_id  = self::factory()->post->create();
+		$post_uri = 'at://did:plc:me/app.bsky.feed.post/mypost';
+
+		\update_post_meta( $post_id, BskyPost::META_URI, $post_uri );
+
+		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_reply' );
+
+		$notification = array(
+			'uri'    => 'at://did:plc:replier/app.bsky.feed.post/badembed-' . \uniqid(),
+			'cid'    => 'bafyreibadembed',
+			'record' => array(
+				'text'      => 'Plain reply with a broken embed.',
+				'createdAt' => '2026-06-20T12:00:00.000Z',
+				'embed'     => $embed,
+				'reply'     => array(
+					'parent' => array( 'uri' => $post_uri ),
+					'root'   => array( 'uri' => $post_uri ),
+				),
+			),
+			'author' => array(
+				'did'    => 'did:plc:replier',
+				'handle' => 'replier.bsky.social',
+			),
+		);
+
+		$comment_id = $method->invoke( null, $notification );
+
+		$this->assertIsInt( $comment_id );
+		$comment = \get_comment( $comment_id );
+		$this->assertSame( 'Plain reply with a broken embed.', $comment->comment_content );
+		$this->assertStringNotContainsString( '<blockquote', $comment->comment_content );
+	}
+
+	/**
+	 * Data provider for malformed `embed` shapes.
+	 *
+	 * @return array<string, array{0: mixed}>
+	 */
+	public function data_malformed_embeds(): array {
+		return array(
+			'scalar embed'       => array( 'not-an-array' ),
+			'non-array record'   => array(
+				array(
+					'$type'  => 'app.bsky.embed.record',
+					'record' => 'nope',
+				),
+			),
+			'non-string uri'     => array(
+				array(
+					'$type'  => 'app.bsky.embed.record',
+					'record' => array( 'uri' => array() ),
+				),
+			),
+			'unknown embed type' => array(
+				array(
+					'$type'  => 'app.bsky.embed.images',
+					'images' => array(),
+				),
+			),
+		);
 	}
 
 	/**
@@ -1083,7 +1619,9 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 
 		$this->invoke_paginate( $fetch, 'items', $option_key, $process );
 
-		$this->assertSame( array( 'at://a/1', 'at://a/2', 'at://a/3' ), $seen );
+		// Bluesky streams newest-first; paginate processes oldest-first so a
+		// reply's parent is synced before the reply that targets it.
+		$this->assertSame( array( 'at://a/3', 'at://a/2', 'at://a/1' ), $seen );
 		$this->assertSame( 'at://a/1', \get_option( $option_key ) );
 	}
 
@@ -1127,7 +1665,9 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 			'at://a/13',
 			'at://a/14',
 		);
-		$this->assertSame( $expected, $seen );
+		// $expected lists the collected set in stream order; paginate
+		// processes it oldest-first, so assert against the reverse.
+		$this->assertSame( \array_reverse( $expected ), $seen );
 		$this->assertSame( 'at://a/1', \get_option( $option_key ) );
 	}
 
@@ -1192,7 +1732,9 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 			'at://a/13',
 			'at://a/14',
 		);
-		$this->assertSame( $expected, $seen );
+		// $expected lists the collected set in stream order; paginate
+		// processes it oldest-first, so assert against the reverse.
+		$this->assertSame( \array_reverse( $expected ), $seen );
 		$this->assertSame( 'at://a/1', \get_option( $option_key ) );
 	}
 
@@ -1220,8 +1762,100 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 
 		$this->invoke_paginate( $fetch, 'items', $option_key, $process );
 
-		$this->assertSame( array( 'at://a/1', 'at://a/2', 'at://a/3', 'at://a/4' ), $seen );
+		// Processed oldest-first (reverse of the newest-first stream).
+		$this->assertSame( array( 'at://a/4', 'at://a/3', 'at://a/2', 'at://a/1' ), $seen );
 		$this->assertSame( 'at://a/1', \get_option( $option_key ) );
+	}
+
+	/**
+	 * A reply that arrives before the parent it targets — the normal case,
+	 * since Bluesky streams newest-first — must still thread correctly within
+	 * a single run.
+	 *
+	 * Before oldest-first processing, the child reply was reached first, its
+	 * parent comment did not yet exist, and process_reply() dropped it — left
+	 * to the next run's bounded WATERMARK_GRACE re-walk, which loses deeper or
+	 * bursty threads. Processing oldest-first syncs the parent reply first, so
+	 * the child resolves against it in the same run.
+	 */
+	public function test_nested_reply_arriving_before_parent_resolves_in_one_run() {
+		$post_id  = self::factory()->post->create();
+		$post_uri = 'at://did:plc:me/app.bsky.feed.post/rootpost';
+		\update_post_meta( $post_id, BskyPost::META_URI, $post_uri );
+
+		$parent_uri = 'at://did:plc:alice/app.bsky.feed.post/parentreply';
+		$child_uri  = 'at://did:plc:bob/app.bsky.feed.post/childreply';
+
+		// Keep resolve_author() off the network — cache both profiles.
+		\set_transient( 'atmosphere_profile_' . \md5( 'did:plc:alice' ), array( 'handle' => 'alice.bsky.social' ), \HOUR_IN_SECONDS );
+		\set_transient( 'atmosphere_profile_' . \md5( 'did:plc:bob' ), array( 'handle' => 'bob.bsky.social' ), \HOUR_IN_SECONDS );
+
+		// Stream order is newest-first: the child reply (later) comes before
+		// the parent reply (earlier) that it targets.
+		$notifications = array(
+			array(
+				'reason' => 'reply',
+				'uri'    => $child_uri,
+				'cid'    => 'cidchild',
+				'record' => array(
+					'text'      => 'Replying to Alice',
+					'createdAt' => '2026-03-21T12:05:00.000Z',
+					'reply'     => array(
+						'parent' => array( 'uri' => $parent_uri ),
+						'root'   => array( 'uri' => $post_uri ),
+					),
+				),
+				'author' => array(
+					'did'    => 'did:plc:bob',
+					'handle' => 'bob.bsky.social',
+				),
+			),
+			array(
+				'reason' => 'reply',
+				'uri'    => $parent_uri,
+				'cid'    => 'cidparent',
+				'record' => array(
+					'text'      => 'Replying to the post',
+					'createdAt' => '2026-03-21T12:00:00.000Z',
+					'reply'     => array(
+						'parent' => array( 'uri' => $post_uri ),
+						'root'   => array( 'uri' => $post_uri ),
+					),
+				),
+				'author' => array(
+					'did'    => 'did:plc:alice',
+					'handle' => 'alice.bsky.social',
+				),
+			),
+		);
+
+		$dispatch = new \ReflectionMethod( Reaction_Sync::class, 'process_notification' );
+		$process  = static function ( array $item ) use ( $dispatch ) {
+			$dispatch->invoke( null, $item );
+		};
+
+		$option_key = 'atmosphere_test_nested_reply';
+		\delete_option( $option_key );
+
+		$this->invoke_paginate(
+			static fn() => array( 'notifications' => $notifications ),
+			'notifications',
+			$option_key,
+			$process
+		);
+
+		$find      = new \ReflectionMethod( Reaction_Sync::class, 'find_comment_by_source_id' );
+		$parent_id = $find->invoke( null, $parent_uri );
+		$child_id  = $find->invoke( null, $child_uri );
+
+		$this->assertIsInt( $parent_id, 'parent reply synced' );
+		$this->assertIsInt( $child_id, 'child reply synced in the same run' );
+
+		$this->assertSame(
+			(string) $parent_id,
+			\get_comment( $child_id )->comment_parent,
+			'child reply threads under the parent reply, not the root post'
+		);
 	}
 
 	/**

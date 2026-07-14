@@ -1,4 +1,0 @@
-Significance: patch
-Type: fixed
-
-Deleting a post now reliably removes it from Bluesky even when it has a large number of replies to clean up.

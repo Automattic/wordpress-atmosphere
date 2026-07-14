@@ -12,7 +12,11 @@ namespace Atmosphere\Transformer;
 
 \defined( 'ABSPATH' ) || exit;
 
+use Atmosphere\OAuth\Resolver;
+
 use function Atmosphere\get_connection;
+use function Atmosphere\appview_url;
+use function Atmosphere\debug_log;
 
 /**
  * Extracts facets from plain text.
@@ -20,15 +24,98 @@ use function Atmosphere\get_connection;
 class Facet {
 
 	/**
+	 * Regex matching an AT Protocol `@handle.tld` mention.
+	 *
+	 * Capture group 1 is the bare handle (no leading `@`). Requires at
+	 * least two dot-separated labels, mirroring DNS-name handle syntax.
+	 * This is the single source of truth for "what is a Bluesky mention":
+	 * {@see self::mentions()}, {@see self::resolve_handles()}, and the
+	 * display-side {@see \Atmosphere\Mention::linkify()} all share it so the
+	 * publish path and the front-end linkifier can never drift apart.
+	 *
+	 * The leading `(?<![\w@])` boundary skips the domain half of an email
+	 * address (`bob@example.com`) or an ActivityPub `@user@domain.tld`
+	 * handle. The trailing `(?![\w@])` boundary rejects a WebFinger handle
+	 * whose user half is itself domain-shaped (`@notiz.blog@notiz.blog`):
+	 * without it the first `@notiz.blog` would be mistaken for a standalone
+	 * Bluesky handle. Both boundaries keep these false positives from driving
+	 * real DNS/HTTP resolution or minting a bogus `#mention` facet. A `.` is
+	 * deliberately left out of *both* classes: out of the trailing class so a
+	 * handle ending a sentence (`@bsky.app.`) still matches, and out of the
+	 * leading class so the Twitter-style dot-mention idiom
+	 * (`.@alice.bsky.social`) still resolves and links.
+	 *
+	 * @since 2.0.0
+	 *
+	 * @var string
+	 */
+	public const MENTION_PATTERN = '/(?<![\w@])@([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+)(?![\w@])/u';
+
+	/**
+	 * Hard cap on distinct handles resolved in a single {@see self::resolve_handles()} scan.
+	 *
+	 * `resolve_handles()` runs over the *entire* post body, and each distinct
+	 * handle costs a DNS TXT lookup plus an HTTPS `.well-known/atproto-did`
+	 * fallback ({@see Resolver::handle_to_did()}). Without a ceiling an author
+	 * could pack a body with thousands of distinct `@fake-N.example.com` tokens
+	 * and turn one publish (or a 500-post backfill chunk) into tens of thousands
+	 * of blocking outbound requests aimed at attacker-chosen hosts. A Bluesky
+	 * post is 300 graphemes, so only a handful of mentions can ever be carried
+	 * anyway; 20 is a generous headroom over any legitimate post while keeping
+	 * the egress bounded. Handles past the cap are ignored (and logged once).
+	 *
+	 * @since 2.0.0
+	 *
+	 * @var int
+	 */
+	private const MAX_RESOLVED_HANDLES = 20;
+
+	/**
+	 * Request-scoped memo of handle => DID resolutions.
+	 *
+	 * Broadening mention collection to the full post body resolves the same
+	 * handle more than once per publish (the carry-over detection pass and
+	 * the final {@see self::extract()} on the composed text). Memoizing the
+	 * resolved DID keeps that to one lookup per distinct handle per request,
+	 * bounding duplicate DNS/HTTP egress. Only successful resolutions are
+	 * cached — see {@see self::resolve_mention()} for why misses are not. Keyed
+	 * by lowercased handle.
+	 *
+	 * The self-handle short-circuit is intentionally evaluated outside this
+	 * cache, since it depends on the live connection option.
+	 *
+	 * @var array<string,string>
+	 */
+	private static array $resolution_cache = array();
+
+	/**
 	 * Extract all facet types from a piece of text.
 	 *
-	 * @param string $text Plain text.
+	 * `$with_mentions` gates the one facet type that performs network
+	 * resolution. Mention facets require a DID, so building them runs the full
+	 * handle-resolution chain (DNS + HTTPS) — see {@see self::resolve_mention()}.
+	 * Callers that feed lower-trust, third-party text (the comment-sync path
+	 * passes commenter-supplied content) pass `false` so an approved comment
+	 * mentioning `@target.example.com` can't make the server issue outbound
+	 * HTTPS to an arbitrary host. Those mentions simply stay as plain text in
+	 * the record. Link and hashtag facets, which never touch the network, are
+	 * unaffected.
+	 *
+	 * `$blocked` names handles that must never mint a `#mention` facet even
+	 * when they occur in `$text` — the post path passes the handles that live
+	 * only inside a protected region of the source (a `<code>` sample or an
+	 * existing `<a>`), which the front end leaves as plain text. Passing `null`
+	 * (the default) blocks nothing.
+	 *
+	 * @param string                  $text          Plain text.
+	 * @param bool                    $with_mentions Whether to resolve and emit `#mention` facets. Default true.
+	 * @param array<string,true>|null $blocked  Lowercased handles that must not mint a facet, or null.
 	 * @return array Sorted array of facet objects.
 	 */
-	public static function extract( string $text ): array {
+	public static function extract( string $text, bool $with_mentions = true, ?array $blocked = null ): array {
 		$facets = \array_merge(
 			self::links( $text ),
-			self::mentions( $text ),
+			$with_mentions ? self::mentions( $text, $blocked ) : array(),
 			self::hashtags( $text )
 		);
 
@@ -92,7 +179,7 @@ class Facet {
 	 * `wp_kses_post()` by the caller (as the reaction-sync path does), so
 	 * only the generated `href` attributes are escaped here.
 	 *
-	 * @since unreleased
+	 * @since 2.0.0
 	 *
 	 * @param string $text   Plain-text display string from the record.
 	 * @param array  $facets Facet array from the record, as stored on the PDS.
@@ -198,16 +285,36 @@ class Facet {
 			case 'app.bsky.richtext.facet#mention':
 				/*
 				 * The mention facet only carries the DID, so link by DID.
-				 * bsky.app/profile/{did} resolves the same as the handle
-				 * form used elsewhere in Reaction_Sync.
+				 * The appview's /profile/{did} resolves the same as the
+				 * handle form used elsewhere in Reaction_Sync.
 				 */
 				$did  = $feature['did'] ?? '';
-				$href = '' === $did ? '' : \esc_url( 'https://bsky.app/profile/' . $did );
+				$href = '' === $did
+					? ''
+					: \esc_url(
+						appview_url(
+							'profile/' . $did,
+							array(
+								'type' => 'mention',
+								'did'  => $did,
+							)
+						)
+					);
 				break;
 
 			case 'app.bsky.richtext.facet#tag':
 				$tag  = $feature['tag'] ?? '';
-				$href = '' === $tag ? '' : \esc_url( 'https://bsky.app/hashtag/' . \rawurlencode( $tag ) );
+				$href = '' === $tag
+					? ''
+					: \esc_url(
+						appview_url(
+							'hashtag/' . \rawurlencode( $tag ),
+							array(
+								'type' => 'hashtag',
+								'tag'  => $tag,
+							)
+						)
+					);
 				break;
 
 			default:
@@ -266,29 +373,57 @@ class Facet {
 	/**
 	 * Find @handle mentions and return mention facets.
 	 *
-	 * @param string $text Plain text.
+	 * Resolution is bounded the same way {@see self::resolve_handles()} bounds
+	 * the body scan: at most {@see self::MAX_RESOLVED_HANDLES} *distinct* new
+	 * handles are resolved per call, and a within-call miss is not retried, so a
+	 * record — or teaser-thread entry — packed with unresolvable tokens can't
+	 * fan out into an unbounded run of blocking DNS + HTTPS lookups. Every
+	 * occurrence of an already-resolved handle still mints its facet.
+	 *
+	 * @param string                  $text    Plain text.
+	 * @param array<string,true>|null $blocked Lowercased handles that must not mint a facet, or null.
 	 * @return array
 	 */
-	private static function mentions( string $text ): array {
-		$facets  = array();
-		$pattern = '/@([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+)/u';
+	private static function mentions( string $text, ?array $blocked = null ): array {
+		$facets = array();
 
-		if ( ! \preg_match_all( $pattern, $text, $matches, PREG_OFFSET_CAPTURE ) ) {
+		if ( ! \preg_match_all( self::MENTION_PATTERN, $text, $matches, PREG_OFFSET_CAPTURE ) ) {
 			return $facets;
 		}
+
+		$resolved = array(); // Lowercased handle => DID ('' marks a within-call miss).
+		$capped   = false;
 
 		foreach ( $matches[0] as $i => $match ) {
 			$full   = $match[0];
 			$handle = $matches[1][ $i ][0];
 			$start  = $match[1];
-
-			$did = self::resolve_mention( $handle );
+			$key    = \strtolower( $handle );
 
 			/*
-			 * `resolve_mention()` returns an empty string when the
-			 * handle fails its (defence-in-depth) syntax check. Skip
-			 * the facet entirely in that case — sending an empty
-			 * `did` to Bluesky would have the PDS reject the record.
+			 * A handle the display side would never linkify (it lives only
+			 * inside a protected region of the source) must not mint a
+			 * `#mention` facet or notify anyone — see Mention::classify_handles().
+			 */
+			if ( null !== $blocked && isset( $blocked[ $key ] ) ) {
+				continue;
+			}
+
+			if ( ! isset( $resolved[ $key ] ) ) {
+				if ( \count( $resolved ) >= self::MAX_RESOLVED_HANDLES ) {
+					$capped = true;
+					continue;
+				}
+				$resolved[ $key ] = self::resolve_mention( $handle );
+			}
+
+			$did = $resolved[ $key ];
+
+			/*
+			 * `resolve_mention()` returns an empty string when the handle fails
+			 * its (defence-in-depth) syntax check or cannot be resolved. Skip
+			 * the facet entirely in that case — sending an empty `did` to
+			 * Bluesky would have the PDS reject the record.
 			 */
 			if ( '' === $did ) {
 				continue;
@@ -308,7 +443,120 @@ class Facet {
 			);
 		}
 
+		if ( $capped ) {
+			debug_log(
+				\sprintf(
+					'Facet::mentions: text has more than %d distinct @mentions; the rest are left unresolved to bound DNS/HTTP lookups.',
+					self::MAX_RESOLVED_HANDLES
+				)
+			);
+		}
+
 		return $facets;
+	}
+
+	/**
+	 * Find resolvable `@handle.tld` mentions in a piece of text.
+	 *
+	 * Returns a map of handle => DID for every distinct, resolvable mention,
+	 * in first-appearance order. Handles that fail resolution (malformed, or
+	 * not a valid DNS name) are omitted, so a handle present in the result is
+	 * guaranteed to produce a `#mention` facet when it reaches a record's
+	 * `text`. Shares the regex and resolver used to build mention facets.
+	 *
+	 * @since 2.0.0
+	 *
+	 * @param string $text Plain text.
+	 * @return array<string,string> Map of handle => DID.
+	 */
+	public static function resolve_handles( string $text ): array {
+		if ( ! \preg_match_all( self::MENTION_PATTERN, $text, $matches ) ) {
+			return array();
+		}
+
+		return self::resolve_handle_list( $matches[1] );
+	}
+
+	/**
+	 * Resolve an explicit list of handles to a handle => DID map.
+	 *
+	 * The companion to {@see self::resolve_handles()} for callers that already
+	 * hold the handle list — the post path resolves the display-linkable set
+	 * from {@see \Atmosphere\Mention::classify_handles()} rather than re-scanning
+	 * flattened text, which would glue a handle to a preceding word across a
+	 * stripped tag and miss it. Deduplicates by lowercased handle, keeps
+	 * first-appearance order, drops handles that don't resolve, and applies the
+	 * same {@see self::MAX_RESOLVED_HANDLES} egress cap.
+	 *
+	 * @since 2.0.0
+	 *
+	 * @param string[] $handles Candidate handles (no leading `@`).
+	 * @return array<string,string> Map of handle => DID.
+	 */
+	public static function resolve_handle_list( array $handles ): array {
+		$resolved = array();
+		$seen     = array();
+
+		foreach ( $handles as $handle ) {
+			$key = \strtolower( $handle );
+			if ( isset( $seen[ $key ] ) ) {
+				continue;
+			}
+
+			/*
+			 * Stop resolving once the distinct-handle cap is reached: each new
+			 * handle past this point costs a fresh DNS + HTTPS lookup. See
+			 * self::MAX_RESOLVED_HANDLES for the threat this bounds.
+			 */
+			if ( \count( $seen ) >= self::MAX_RESOLVED_HANDLES ) {
+				debug_log(
+					\sprintf(
+						'Facet::resolve_handle_list: more than %d distinct @mentions; the rest are left unresolved to bound DNS/HTTP lookups.',
+						self::MAX_RESOLVED_HANDLES
+					)
+				);
+				break;
+			}
+
+			$seen[ $key ] = true;
+
+			$did = self::resolve_mention( $handle );
+			if ( '' === $did ) {
+				continue;
+			}
+
+			$resolved[ $handle ] = $did;
+		}
+
+		return $resolved;
+	}
+
+	/**
+	 * Collect the distinct `@handle.tld` mentions present in a piece of text.
+	 *
+	 * A resolution-free companion to {@see self::resolve_handles()}: it applies
+	 * the shared {@see self::MENTION_PATTERN} but performs no DNS/HTTP lookups,
+	 * returning a set keyed by lowercased handle (value `true`). Used to test
+	 * mention membership on token boundaries — a substring check would treat
+	 * `@alice.com` as already present inside `@alice.company` — and to size the
+	 * carry-over line in the DNS-free pre-publish preview.
+	 *
+	 * @since 2.0.0
+	 *
+	 * @param string $text Plain text.
+	 * @return array<string,true> Set of lowercased handles present in the text.
+	 */
+	public static function handles_in( string $text ): array {
+		if ( ! \preg_match_all( self::MENTION_PATTERN, $text, $matches ) ) {
+			return array();
+		}
+
+		$set = array();
+		foreach ( $matches[1] as $handle ) {
+			$set[ \strtolower( $handle ) ] = true;
+		}
+
+		return $set;
 	}
 
 	/**
@@ -350,25 +598,34 @@ class Facet {
 	/**
 	 * Resolve a handle to a DID for mention facets.
 	 *
-	 * Falls back to `did:web` if DNS resolution fails. The
-	 * `is_valid_handle()` gate below ensures only DNS-syntactically
-	 * valid handles reach `dns_get_record()` — that closes the
-	 * "malformed handle as DNS query smuggling" angle (e.g. control
-	 * characters or percent-encoded segments injected through a
-	 * regex relaxation), it does NOT block lookups against
-	 * attacker-controlled but well-formed domains.
+	 * Resolution uses the full AT Protocol handle-resolution chain (DNS
+	 * TXT, then the HTTPS `.well-known/atproto-did` fallback) via
+	 * {@see Resolver::handle_to_did()}. A handle that cannot be resolved
+	 * yields an empty string, so the mention is left as plain text rather
+	 * than fabricating a `did:web:<handle>` — the vast majority of handles
+	 * (anything `*.bsky.social`, for one) resolve over the well-known
+	 * endpoint, not DNS, so a `did:web` guess is almost always wrong and
+	 * produces a record that links to a non-existent profile.
 	 *
-	 * That broader exposure is by design: mention resolution requires
-	 * a DNS lookup against the mentioned handle's authoritative server,
-	 * and any user (commenter included) can mention any well-formed
-	 * domain. If that DNS-egress surface becomes a concern, the right
-	 * fix is at the threat-model layer (skip mention resolution on
-	 * the commenter path, allowlist mention authorities, or move to
-	 * DoH with a hard timeout) rather than tightening the syntactic
-	 * gate further.
+	 * The {@see Resolver::is_valid_handle()} gate ensures only DNS-syntactically
+	 * valid handles reach resolution (sharing the resolver's rules, including
+	 * its reserved-TLD rejection) — that closes the "malformed handle as DNS
+	 * query smuggling" angle (e.g. control characters or percent-encoded
+	 * segments injected through a regex relaxation). It does NOT block
+	 * lookups against attacker-controlled but well-formed domains; that
+	 * broader DNS/HTTP egress is by design, since mention resolution must
+	 * reach the mentioned handle's authoritative server (the HTTP fallback
+	 * uses `wp_safe_remote_get()`, which rejects internal hosts). The
+	 * lower-trust commenter path opts out of this resolution entirely by
+	 * passing `$with_mentions = false` to {@see self::extract()}; the
+	 * body-scan path bounds it with {@see self::MAX_RESOLVED_HANDLES}. If the
+	 * remaining egress surface becomes a concern, the right next step is at the
+	 * threat-model layer (allowlist mention authorities, or move to DoH with a
+	 * hard timeout) rather than tightening the syntactic gate further.
 	 *
 	 * @param string $handle AT Protocol handle.
-	 * @return string DID string, or empty string if the handle is malformed.
+	 * @return string DID string, or empty string if the handle is malformed
+	 *                or cannot be resolved.
 	 */
 	private static function resolve_mention( string $handle ): string {
 		$conn = get_connection();
@@ -376,40 +633,51 @@ class Facet {
 			return $conn['did'];
 		}
 
-		if ( ! self::is_valid_handle( $handle ) ) {
+		if ( ! Resolver::is_valid_handle( $handle ) ) {
 			return '';
 		}
 
-		$records = @\dns_get_record( '_atproto.' . $handle, DNS_TXT ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
-
-		if ( \is_array( $records ) ) {
-			foreach ( $records as $record ) {
-				if ( ! empty( $record['txt'] ) && \str_starts_with( $record['txt'], 'did=' ) ) {
-					return \substr( $record['txt'], 4 );
-				}
-			}
+		$key = \strtolower( $handle );
+		if ( isset( self::$resolution_cache[ $key ] ) ) {
+			return self::$resolution_cache[ $key ];
 		}
 
-		return 'did:web:' . $handle;
-	}
+		$did = Resolver::handle_to_did( $handle );
+		if ( \is_wp_error( $did ) ) {
+			/**
+			 * Filters whether an unresolvable handle falls back to `did:web:<handle>`.
+			 *
+			 * Resolution can fail either definitively (no `_atproto` DNS TXT
+			 * record and no `.well-known/atproto-did`) or transiently (a DNS or
+			 * HTTPS outage at publish time). By default the mention is left as
+			 * plain text: for the overwhelming majority of handles — every
+			 * `*.bsky.social`, for one — the true DID is a `did:plc:…` served
+			 * over the well-known endpoint, so a fabricated `did:web:<handle>`
+			 * would point the facet at a non-existent profile. A site that hosts
+			 * `did:web` accounts (where the handle *is* the DID authority) can
+			 * return true to restore the pre-1.0 fallback and keep the mention
+			 * even through a transient resolver blip.
+			 *
+			 * @since 2.0.0
+			 *
+			 * @param bool     $fallback Whether to fall back to `did:web:<handle>`. Default false.
+			 * @param string   $handle   The handle that failed to resolve.
+			 * @param \WP_Error $error    The resolver error (its code distinguishes a
+			 *                            definitive miss from a transient network failure).
+			 */
+			$fallback = \apply_filters( 'atmosphere_mention_didweb_fallback', false, $handle, $did );
 
-	/**
-	 * RFC 1035-style DNS-name validation, mirroring
-	 * `Resolver::is_valid_handle()`. Rejects empty strings, oversized
-	 * labels, leading/trailing hyphens, single-label hosts, and any
-	 * character outside `[A-Za-z0-9-]` — including percent-encoded
-	 * forms.
-	 *
-	 * @param string $host Handle to validate.
-	 * @return bool
-	 */
-	private static function is_valid_handle( string $host ): bool {
-		if ( '' === $host || \strlen( $host ) > 253 ) {
-			return false;
+			$did = $fallback ? 'did:web:' . $handle : '';
 		}
 
-		$label = '[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?';
+		// Cache successes only. Memoizing a miss would let a single transient
+		// DNS/HTTP blip suppress that handle's #mention facet across every later
+		// post in a long-lived WP-CLI / cron run; re-resolving a genuine miss
+		// (at most twice per post) is the cheaper trade.
+		if ( '' !== $did ) {
+			self::$resolution_cache[ $key ] = $did;
+		}
 
-		return (bool) \preg_match( '/^' . $label . '(?:\.' . $label . ')+$/', $host );
+		return $did;
 	}
 }
