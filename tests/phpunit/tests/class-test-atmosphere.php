@@ -2889,6 +2889,49 @@ class Test_Atmosphere extends WP_UnitTestCase {
 	}
 
 	/**
+	 * `needs_reconnect` reflects the live connection: a reconnect-class
+	 * stored error raises it only while the site is still disconnected,
+	 * so a stale per-post error cannot keep telling the author to
+	 * reconnect after the operator already has.
+	 */
+	public function test_publish_error_needs_reconnect_drops_after_reconnect() {
+		$admin = self::factory()->user->create( array( 'role' => 'administrator' ) );
+		\wp_set_current_user( $admin );
+
+		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
+
+		\update_post_meta(
+			$post_id,
+			'_atmosphere_last_publish_error',
+			array(
+				'code'     => 'atmosphere_needs_reauth',
+				'message'  => 'Session expired',
+				'retrying' => false,
+				'time'     => 1234567890,
+			)
+		);
+
+		/* The failure state: the connection is flagged for reauth. */
+		$conn                 = \get_option( 'atmosphere_connection' );
+		$conn['needs_reauth'] = true;
+		\update_option( 'atmosphere_connection', $conn, false );
+
+		$this->assertTrue(
+			$this->rest_get_publish_error( $post_id )['needs_reconnect'],
+			'A reconnect-class error on a disconnected site must raise needs_reconnect.'
+		);
+
+		/* The operator reconnected: flag cleared, token present again. */
+		$conn['needs_reauth'] = false;
+		\update_option( 'atmosphere_connection', $conn, false );
+
+		$this->assertFalse(
+			$this->rest_get_publish_error( $post_id )['needs_reconnect'],
+			'Once the site is reconnected the stale error must not claim otherwise.'
+		);
+	}
+
+	/**
 	 * The stored message is stripped of markup and truncated: PDS error
 	 * strings are attacker-influenced and end up rendered in the editor.
 	 */

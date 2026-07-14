@@ -248,19 +248,24 @@ class Admin {
 		 */
 		if ( is_operator_disconnected() ) {
 			$heading = \__( 'ATmosphere: disconnected', 'atmosphere' );
-			$lead    = \__( 'ATmosphere is disconnected from AT Protocol.', 'atmosphere' );
+			$lead    = \__( 'ATmosphere is disconnected from Bluesky.', 'atmosphere' );
 		} elseif ( Client::REAUTH_REASON_KEY_CHANGED === $reason ) {
 			$lead = \__( 'Your site’s security keys have changed — this can happen after a migration, or when a security plugin rotates them on a schedule — so ATmosphere can no longer read its saved Bluesky login.', 'atmosphere' );
 		} elseif ( Client::REAUTH_REASON_DECRYPT_FAILED === $reason ) {
 			$lead = \__( 'ATmosphere can no longer read its saved Bluesky login.', 'atmosphere' );
 		} else {
-			$lead = \__( 'Your AT Protocol session has expired.', 'atmosphere' );
+			$lead = \__( 'Your Bluesky session has expired.', 'atmosphere' );
 		}
 
 		/* translators: %s: URL to the ATmosphere settings page. */
 		$tail = \__( 'New posts and comments will not publish until you <a href="%s">reconnect on the settings page</a>. Your publishing preferences and verification headers stay in place in the meantime.', 'atmosphere' );
 
-		$message = $lead . ' ' . $tail;
+		/*
+		 * Only the tail goes through sprintf: a lead translation
+		 * containing a stray `%` must not be able to corrupt the
+		 * placeholder substitution (PHP 8 throws on missing arguments).
+		 */
+		$message = $lead . ' ' . \sprintf( $tail, \esc_url( settings_url() ) );
 
 		?>
 		<div class="notice notice-warning is-dismissible">
@@ -270,7 +275,7 @@ class Admin {
 			<p>
 				<?php
 				echo \wp_kses(
-					\sprintf( $message, \esc_url( settings_url() ) ),
+					$message,
 					array( 'a' => array( 'href' => array() ) )
 				);
 				?>

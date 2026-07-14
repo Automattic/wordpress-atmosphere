@@ -1047,6 +1047,9 @@ class Client {
 	 * @param string $reason Optional machine-readable marker stored as
 	 *                       `reauth_reason` so the admin notice can
 	 *                       explain the failure (e.g. `key_changed`).
+	 *                       An empty reason clears any stale marker, so
+	 *                       a later session-expiry stamp is not
+	 *                       explained with an earlier failure's cause.
 	 */
 	private static function mark_needs_reauth( array $conn, string $field, string $reason = '' ): void {
 		if ( empty( $conn[ $field ] ) ) {
@@ -1068,6 +1071,8 @@ class Client {
 
 		if ( '' !== $reason ) {
 			$current['reauth_reason'] = $reason;
+		} else {
+			unset( $current['reauth_reason'] );
 		}
 
 		\update_option( 'atmosphere_connection', $current, false );

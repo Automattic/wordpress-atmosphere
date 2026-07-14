@@ -175,4 +175,25 @@ class Test_Client_Decrypt extends WP_UnitTestCase {
 		$this->assertFalse( $stored['needs_reauth'] );
 		$this->assertSame( $repaired['access_token'], $stored['access_token'] );
 	}
+
+	/**
+	 * A later reason-less reauth stamp (the `invalid_grant` refresh path)
+	 * clears a stale `reauth_reason` left by an earlier decrypt failure,
+	 * so the admin notice explains the current cause, not a historic one.
+	 */
+	public function test_reasonless_reauth_stamp_clears_stale_reason() {
+		$conn = $this->seed_undecryptable_connection(
+			array(
+				'reauth_reason' => Client::REAUTH_REASON_KEY_CHANGED,
+			)
+		);
+
+		$method = new \ReflectionMethod( Client::class, 'mark_needs_reauth' );
+		$method->invoke( null, $conn, 'refresh_token' );
+
+		$stored = \get_option( 'atmosphere_connection' );
+
+		$this->assertTrue( $stored['needs_reauth'] );
+		$this->assertArrayNotHasKey( 'reauth_reason', $stored );
+	}
 }

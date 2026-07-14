@@ -1482,11 +1482,19 @@ class Atmosphere {
 							return null;
 						}
 
+						/*
+						 * The stored code says whether the failure was
+						 * reconnect-class; the live connection check drops
+						 * the flag once the operator has reconnected, so a
+						 * stale per-post error can't keep claiming the site
+						 * is disconnected.
+						 */
 						return array(
 							'code'            => (string) $error['code'],
 							'message'         => (string) ( $error['message'] ?? '' ),
 							'retrying'        => ! empty( $error['retrying'] ),
-							'needs_reconnect' => \in_array( (string) $error['code'], self::RECONNECT_ERROR_CODES, true ),
+							'needs_reconnect' => \in_array( (string) $error['code'], self::RECONNECT_ERROR_CODES, true )
+								&& ! is_connected(),
 							'time'            => (int) ( $error['time'] ?? 0 ),
 						);
 					},
@@ -1510,7 +1518,7 @@ class Atmosphere {
 							),
 							'needs_reconnect' => array(
 								'type'        => 'boolean',
-								'description' => \__( 'Whether the failure can only be resolved by reconnecting the Bluesky account.', 'atmosphere' ),
+								'description' => \__( 'Whether reconnecting the Bluesky account is still required before sharing can succeed.', 'atmosphere' ),
 							),
 							'time'            => array(
 								'type'        => 'integer',
@@ -2099,8 +2107,10 @@ class Atmosphere {
 	 * Failure codes resolvable only by reconnecting the Bluesky account.
 	 *
 	 * Consumed by the `atmosphere_publish_error` REST field as the
-	 * `needs_reconnect` flag so the editor panel never keeps its own
-	 * copy of this judgment. Folded into the permanent codes of
+	 * `needs_reconnect` flag (combined with the live connection state,
+	 * so the flag drops once the operator reconnects) — the editor
+	 * panel never keeps its own copy of this judgment. Folded into the
+	 * permanent codes of
 	 * {@see self::is_transient_publish_error()}, so each reconnect-class
 	 * code is declared exactly once. Deliberately without
 	 * `atmosphere_did_mismatch`, which reconnecting to the current
