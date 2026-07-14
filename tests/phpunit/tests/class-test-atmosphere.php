@@ -824,7 +824,7 @@ class Test_Atmosphere extends WP_UnitTestCase {
 
 	/**
 	 * Third parties can force-allow publication via filter (e.g.
-	 * overriding the author-capability guard for a specific integration).
+	 * overriding the core eligibility gates for a specific integration).
 	 */
 	public function test_comment_filter_can_force_publish() {
 		$comment = $this->make_eligible_comment( array( 'user_id' => 0 ) );
