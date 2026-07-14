@@ -20,6 +20,8 @@ use function Atmosphere\get_connection;
 use function Atmosphere\get_supported_post_types;
 use function Atmosphere\has_identity;
 use function Atmosphere\is_connected;
+use function Atmosphere\outgoing_reactions_disabled_by_constant;
+use function Atmosphere\outgoing_reactions_enabled;
 
 /**
  * Settings page UI assembly.
@@ -120,6 +122,14 @@ class Settings_Fields {
 			\__( 'Reactions', 'atmosphere' ),
 			array( self::class, 'render_reactions_section' ),
 			'atmosphere'
+		);
+
+		\add_settings_field(
+			'atmosphere_publish_reactions',
+			\__( 'Outgoing replies', 'atmosphere' ),
+			array( self::class, 'render_publish_reactions_field' ),
+			'atmosphere',
+			'atmosphere_reactions'
 		);
 
 		\add_settings_field(
@@ -518,7 +528,55 @@ class Settings_Fields {
 	 */
 	public static function render_reactions_section(): void {
 		?>
-		<p><?php \esc_html_e( 'Choose which Bluesky interactions are saved to your posts.', 'atmosphere' ); ?></p>
+		<p><?php \esc_html_e( 'Choose which interactions are sent to Bluesky and saved to WordPress.', 'atmosphere' ); ?></p>
+		<?php
+	}
+
+	/**
+	 * Render the outgoing WordPress comment toggle.
+	 */
+	public static function render_publish_reactions_field(): void {
+		$forced_disabled = outgoing_reactions_disabled_by_constant();
+		$saved_enabled   = '1' === (string) \get_option( 'atmosphere_publish_reactions', '1' );
+
+		if ( $forced_disabled ) {
+			/*
+			 * Disabled controls are not submitted by browsers. Preserve the
+			 * saved preference so changing an unrelated setting while the
+			 * constant is active does not silently overwrite it.
+			 */
+			?>
+			<input
+				type="hidden"
+				name="atmosphere_publish_reactions"
+				value="<?php echo \esc_attr( $saved_enabled ? '1' : '' ); ?>"
+			>
+			<?php
+		}
+		?>
+		<label>
+			<input
+				type="checkbox"
+				name="atmosphere_publish_reactions"
+				value="1"
+				<?php \checked( outgoing_reactions_enabled() ); ?>
+				<?php \disabled( $forced_disabled ); ?>
+			>
+			<?php \esc_html_e( 'Publish eligible WordPress comments as Bluesky replies', 'atmosphere' ); ?>
+		</label>
+		<?php if ( $forced_disabled ) : ?>
+			<p class="description">
+				<?php
+				\esc_html_e( 'Outgoing replies are disabled by ATMOSPHERE_DISABLE_OUTGOING_REACTIONS in the site configuration. The saved preference will apply again if the constant is removed. Existing Bluesky replies are unchanged.', 'atmosphere' );
+				?>
+			</p>
+		<?php else : ?>
+			<p class="description">
+				<?php
+				\esc_html_e( 'When disabled, WordPress comment changes are not sent to Bluesky and existing Bluesky replies are unchanged. Incoming replies, likes, and reposts continue to use the settings below.', 'atmosphere' );
+				?>
+			</p>
+		<?php endif; ?>
 		<?php
 	}
 

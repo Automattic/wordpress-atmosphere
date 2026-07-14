@@ -8,6 +8,7 @@
 - [Extending Content Formats](#extending-content-formats)
 - [Custom Post Type Support](#custom-post-type-support)
 - [Publishing Programmatically](#publishing-programmatically)
+- [Outgoing Reaction Controls](#outgoing-reaction-controls)
 - [Token Encryption](#token-encryption)
 - [Templates and Admin UI](#templates-and-admin-ui)
 
@@ -351,6 +352,32 @@ landing page, so their `source_url` is intentionally empty and
 `comment_author_url` (the author's profile) is the outbound link.
 Integrations can react to each via
 [`atmosphere_reaction_synced`](#public-hooks).
+
+## Outgoing Reaction Controls
+
+Outbound reactions are WordPress comments that ATmosphere publishes as
+Bluesky replies. Administrators can turn these writes off under
+**Settings → ATmosphere → Reactions**. The underlying
+`atmosphere_publish_reactions` option defaults to enabled so existing sites
+keep their current behavior.
+
+Managed environments can enforce the boundary in `wp-config.php`:
+
+```php
+define( 'ATMOSPHERE_DISABLE_OUTGOING_REACTIONS', true );
+```
+
+The constant takes precedence over the saved option. While outgoing reactions
+are disabled, ATmosphere does not create, update, or delete Bluesky reply
+records for WordPress comments, including work that was already queued in
+WP-Cron. Replies that were previously published remain unchanged. Post and
+standard.site document publishing continues normally, as does inbound syncing
+of Bluesky replies, likes, and reposts.
+
+Direct calls to the `Publisher` comment methods return a WP_Error with the
+`atmosphere_outgoing_reactions_disabled` code while the control is off. Use
+`\Atmosphere\outgoing_reactions_enabled()` when an integration needs to inspect
+the effective state.
 
 ## Token Encryption
 

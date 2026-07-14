@@ -1,0 +1,4 @@
+Significance: minor
+Type: added
+
+Add settings and site-configuration controls to keep WordPress comment changes from being published to Bluesky while leaving incoming reactions enabled.

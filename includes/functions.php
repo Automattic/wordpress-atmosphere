@@ -448,6 +448,40 @@ function is_connected(): bool {
 }
 
 /**
+ * Whether outgoing reactions are forced off by site configuration.
+ *
+ * The constant is intended for wp-config.php and managed hosting
+ * environments. A truthy value takes precedence over the saved setting.
+ *
+ * @since unreleased
+ *
+ * @return bool
+ */
+function outgoing_reactions_disabled_by_constant(): bool {
+	return \defined( 'ATMOSPHERE_DISABLE_OUTGOING_REACTIONS' )
+		&& (bool) \constant( 'ATMOSPHERE_DISABLE_OUTGOING_REACTIONS' );
+}
+
+/**
+ * Whether local WordPress reactions may be written to Bluesky.
+ *
+ * Existing installs keep the historical enabled behavior when the option
+ * has not been saved. The deployment-level constant always wins so hosts
+ * can enforce the boundary regardless of the database value.
+ *
+ * @since unreleased
+ *
+ * @return bool
+ */
+function outgoing_reactions_enabled(): bool {
+	if ( outgoing_reactions_disabled_by_constant() ) {
+		return false;
+	}
+
+	return '1' === (string) \get_option( 'atmosphere_publish_reactions', '1' );
+}
+
+/**
  * Whether the connection requires the user to re-authorize.
  *
  * True when an identity is on file but the credentials option is

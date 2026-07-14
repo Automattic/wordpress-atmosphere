@@ -1162,15 +1162,17 @@ class Publisher {
 	private const APPLY_WRITES_CHUNK_SIZE = 100;
 
 	/**
-	 * Delete every bsky record (root + thread replies + outbound
-	 * comment replies) and the document for a post.
+	 * Delete every bsky record (root + thread replies) and the document
+	 * for a post, plus outbound comment replies when outgoing reactions
+	 * are enabled.
 	 *
 	 * Handles thread posts (reads `META_THREAD_RECORDS`) and legacy
 	 * single-record posts (falls back to the mirrored `META_URI` /
 	 * `META_TID` / `META_CID` keys). Outbound comment replies live in
 	 * our own repo keyed by their own TIDs — the AT Protocol has no
 	 * cascade semantics, so they have to be enumerated alongside the
-	 * post records or they orphan on Bluesky.
+	 * post records or they orphan on Bluesky. When outgoing reactions are
+	 * disabled, those replies and their local metadata are preserved.
 	 *
 	 * The post + document deletes and the outbound comment-reply deletes
 	 * are submitted as two independent, individually-chunked `applyWrites`
@@ -1185,7 +1187,9 @@ class Publisher {
 		$stored  = self::stored_thread_records( $post->ID, true );
 		$doc_tid = \get_post_meta( $post->ID, Document::META_TID, true );
 
-		$comment_tids = self::collect_published_comment_tids( $post->ID );
+		$comment_tids = outgoing_reactions_enabled()
+			? self::collect_published_comment_tids( $post->ID )
+			: array();
 
 		if ( empty( $stored ) && ! $doc_tid && empty( $comment_tids ) ) {
 			return new \WP_Error(
@@ -1286,12 +1290,14 @@ class Publisher {
 			return $outcome['comments'];
 		}
 
-		// Clean up comment meta for every reply we just deleted.
-		foreach ( $comment_tids as $comment_tid ) {
-			\delete_comment_meta( $comment_tid['comment_id'], Comment::META_TID );
-			\delete_comment_meta( $comment_tid['comment_id'], Comment::META_URI );
-			\delete_comment_meta( $comment_tid['comment_id'], Comment::META_CID );
-			\delete_comment_meta( $comment_tid['comment_id'], Reaction_Sync::META_SOURCE_ID );
+		if ( null !== $outcome['comments'] ) {
+			// Clean up comment meta for every reply we just deleted.
+			foreach ( $comment_tids as $comment_tid ) {
+				\delete_comment_meta( $comment_tid['comment_id'], Comment::META_TID );
+				\delete_comment_meta( $comment_tid['comment_id'], Comment::META_URI );
+				\delete_comment_meta( $comment_tid['comment_id'], Comment::META_CID );
+				\delete_comment_meta( $comment_tid['comment_id'], Reaction_Sync::META_SOURCE_ID );
+			}
 		}
 
 		return self::merge_decoupled_results( $outcome );
@@ -1359,17 +1365,19 @@ class Publisher {
 	 * accessible to `delete_post()`. Accepts either a single Bluesky TID
 	 * string (legacy single-record posts) or an array of TIDs
 	 * (thread-strategy posts), plus an optional list of outbound
-	 * comment-reply TIDs. The post + document deletes and the
+	 * comment-reply TIDs when outgoing reactions are enabled. The post +
+	 * document deletes and the
 	 * comment-reply deletes are submitted as two independent,
 	 * individually-chunked `applyWrites` batches (root first) so a long
 	 * reply tail can neither overflow the root batch nor block its
 	 * cleanup when it fails. Unlike `delete_post()`, this path has no
 	 * local meta to reconcile — the post row is already gone — so meta
-	 * cleanup is left entirely to the caller (`on_before_delete`).
+	 * cleanup is left entirely to the caller (`on_before_delete`). When
+	 * outgoing reactions are disabled, comment-reply TIDs are ignored.
 	 *
 	 * @param string|string[] $bsky_tids    Bluesky post TID or array of TIDs (may be empty).
 	 * @param string          $doc_tid      Document TID (may be empty).
-	 * @param string[]        $comment_tids Comment reply TIDs to delete in the same batch.
+	 * @param string[]        $comment_tids Comment reply TIDs to delete in a separate batch.
 	 * @return array|\WP_Error
 	 */
 	public static function delete_post_by_tids( $bsky_tids, string $doc_tid, array $comment_tids = array() ): array|\WP_Error {
@@ -1379,8 +1387,11 @@ class Publisher {
 			$bsky_tids = array();
 		}
 
-		$bsky_tids    = \array_values( \array_filter( \array_map( 'strval', $bsky_tids ), 'strlen' ) );
-		$comment_tids = \array_values( \array_filter( \array_map( 'strval', $comment_tids ), 'strlen' ) );
+		$bsky_tids = \array_values( \array_filter( \array_map( 'strval', $bsky_tids ), 'strlen' ) );
+
+		$comment_tids = outgoing_reactions_enabled()
+			? \array_values( \array_filter( \array_map( 'strval', $comment_tids ), 'strlen' ) )
+			: array();
 
 		if ( empty( $bsky_tids ) && ! $doc_tid && empty( $comment_tids ) ) {
 			return new \WP_Error( 'atmosphere_not_published', \__( 'No TIDs provided.', 'atmosphere' ) );
@@ -1445,11 +1456,16 @@ class Publisher {
 	 * `results` array — preserving the shape callers expect from
 	 * `API::apply_writes()`.
 	 *
-	 * @param array $writes Full write batch.
+	 * @param array $writes                     Full write batch.
+	 * @param bool  $require_outgoing_reactions Whether to stop before each chunk when outgoing reactions are disabled.
 	 * @return array|\WP_Error
 	 */
-	private static function apply_writes_chunked( array $writes ): array|\WP_Error {
+	private static function apply_writes_chunked( array $writes, bool $require_outgoing_reactions = false ): array|\WP_Error {
 		if ( \count( $writes ) <= self::APPLY_WRITES_CHUNK_SIZE ) {
+			if ( $require_outgoing_reactions && ! outgoing_reactions_enabled() ) {
+				return self::outgoing_reactions_disabled_error();
+			}
+
 			return API::apply_writes( $writes );
 		}
 
@@ -1459,6 +1475,10 @@ class Publisher {
 		$succeeded = 0;
 
 		foreach ( $chunks as $index => $chunk ) {
+			if ( $require_outgoing_reactions && ! outgoing_reactions_enabled() ) {
+				return self::outgoing_reactions_disabled_error();
+			}
+
 			$response = API::apply_writes( $chunk );
 
 			if ( \is_wp_error( $response ) ) {
@@ -1494,15 +1514,17 @@ class Publisher {
 	 * record-meta cleanup on its success and comment-meta cleanup on the
 	 * comment batch's success.
 	 *
-	 * The comment batch is not attempted when the root batch fails — there
-	 * is nothing local to reconcile yet, and a retry re-runs both.
+	 * The comment batch is not attempted when the root batch fails or
+	 * outgoing reactions are disabled before it starts. The effective
+	 * setting is also checked before every comment chunk.
 	 *
 	 * @param array $root_writes    Post + document delete writes (may be empty).
 	 * @param array $comment_writes Outbound comment-reply delete writes (may be empty).
 	 * @return array{root: array|\WP_Error|null, comments: array|\WP_Error|null}
 	 *               Per-batch outcome; an element is null when that batch
-	 *               had no writes, and `comments` is null when the root
-	 *               batch failed and the comment batch was skipped.
+	 *               had no writes. `comments` is also null when the root
+	 *               batch failed or outgoing reactions were disabled and
+	 *               the comment batch was skipped.
 	 */
 	private static function delete_in_decoupled_batches( array $root_writes, array $comment_writes ): array {
 		$root_result = empty( $root_writes ) ? null : self::apply_writes_chunked( $root_writes );
@@ -1514,7 +1536,9 @@ class Publisher {
 			);
 		}
 
-		$comment_result = empty( $comment_writes ) ? null : self::apply_writes_chunked( $comment_writes );
+		$comment_result = empty( $comment_writes ) || ! outgoing_reactions_enabled()
+			? null
+			: self::apply_writes_chunked( $comment_writes, true );
 
 		return array(
 			'root'     => $root_result,
@@ -1666,6 +1690,12 @@ class Publisher {
 	 * @return array|\WP_Error applyWrites response or error.
 	 */
 	public static function publish_comment( \WP_Comment $comment ): array|\WP_Error {
+		if ( ! outgoing_reactions_enabled() ) {
+			$result = self::outgoing_reactions_disabled_error();
+			\do_action( 'atmosphere_publish_comment_result', $comment, $result );
+			return $result;
+		}
+
 		$transformer = new Comment( $comment );
 		$rkey        = $transformer->get_rkey();
 		$record      = $transformer->transform();
@@ -1718,6 +1748,10 @@ class Publisher {
 	 * @return array|\WP_Error
 	 */
 	public static function update_comment( \WP_Comment $comment ): array|\WP_Error {
+		if ( ! outgoing_reactions_enabled() ) {
+			return self::outgoing_reactions_disabled_error();
+		}
+
 		$comment_id = (int) $comment->comment_ID;
 		$uri        = \get_comment_meta( $comment_id, Comment::META_URI, true );
 
@@ -1767,6 +1801,10 @@ class Publisher {
 	 * @return array|\WP_Error
 	 */
 	public static function delete_comment( \WP_Comment $comment ): array|\WP_Error {
+		if ( ! outgoing_reactions_enabled() ) {
+			return self::outgoing_reactions_disabled_error();
+		}
+
 		$comment_id = (int) $comment->comment_ID;
 		$uri        = \get_comment_meta( $comment_id, Comment::META_URI, true );
 
@@ -1812,6 +1850,10 @@ class Publisher {
 	 * @return array|\WP_Error
 	 */
 	public static function delete_comment_by_tid( string $tid ): array|\WP_Error {
+		if ( ! outgoing_reactions_enabled() ) {
+			return self::outgoing_reactions_disabled_error();
+		}
+
 		if ( '' === $tid ) {
 			return new \WP_Error( 'atmosphere_not_published', \__( 'No TID provided.', 'atmosphere' ) );
 		}
@@ -1825,6 +1867,18 @@ class Publisher {
 		);
 
 		return API::apply_writes( $writes );
+	}
+
+	/**
+	 * Build the standard error for a blocked outgoing-reaction write.
+	 *
+	 * @return \WP_Error
+	 */
+	private static function outgoing_reactions_disabled_error(): \WP_Error {
+		return new \WP_Error(
+			'atmosphere_outgoing_reactions_disabled',
+			\__( 'Outgoing reactions are disabled.', 'atmosphere' )
+		);
 	}
 
 	/**

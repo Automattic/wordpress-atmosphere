@@ -77,6 +77,12 @@ Long posts are turned into a short Bluesky thread of a few connected posts, with
 
 Yes — approved comments left by logged-in readers on cross-posted articles are sent to Bluesky as replies under your original post. Anonymous comments, trackbacks, and pingbacks are skipped.
 
+= Can I stop WordPress comments from being published to Bluesky? =
+
+Yes. Under **Settings → ATmosphere → Reactions**, turn off **Publish eligible WordPress comments as Bluesky replies**. New comment changes will stay on WordPress; replies already published to Bluesky are left unchanged. Incoming Bluesky replies, likes, and reposts continue to follow their own settings.
+
+Managed sites can enforce this in `wp-config.php` with `define( 'ATMOSPHERE_DISABLE_OUTGOING_REACTIONS', true );`. The constant overrides the saved setting.
+
 = Are Bluesky replies and reposts pulled back into WordPress? =
 
 Yes. ATmosphere checks Bluesky periodically and turns replies, likes, and reposts into WordPress comments on the matching post. Likes and reposts have their own comment types so they show up as engagement counts, not as duplicate comment text.

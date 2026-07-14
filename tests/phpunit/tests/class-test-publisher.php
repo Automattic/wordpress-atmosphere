@@ -56,6 +56,7 @@ class Test_Publisher extends WP_UnitTestCase {
 		\delete_option( 'atmosphere_did' );
 		\delete_option( 'atmosphere_publication_tid' );
 		\delete_option( 'atmosphere_publication_cid' );
+		\delete_option( 'atmosphere_publish_reactions' );
 
 		\remove_all_filters( 'atmosphere_pre_apply_writes' );
 		\remove_all_filters( 'atmosphere_long_form_composition' );
@@ -552,6 +553,77 @@ class Test_Publisher extends WP_UnitTestCase {
 	}
 
 	/**
+	 * Disabling outgoing reactions leaves published comment replies and
+	 * their metadata untouched while post and document cleanup continues.
+	 */
+	public function test_delete_post_skips_comment_cascade_when_outgoing_reactions_disabled() {
+		$post = self::factory()->post->create_and_get(
+			array( 'post_status' => 'trash' )
+		);
+		\update_post_meta( $post->ID, Post::META_TID, 'post-tid' );
+		\update_post_meta( $post->ID, Post::META_URI, 'at://did:plc:test123/app.bsky.feed.post/post-tid' );
+		\update_post_meta( $post->ID, Document::META_TID, 'doc-tid' );
+
+		$comment_id = self::factory()->comment->create( array( 'comment_post_ID' => $post->ID ) );
+		\update_comment_meta( $comment_id, Comment::META_TID, 'reply-tid' );
+		\update_comment_meta( $comment_id, Comment::META_URI, 'at://did:plc:test123/app.bsky.feed.post/reply-tid' );
+
+		\update_option( 'atmosphere_publish_reactions', '' );
+		$this->register_capture( $post->ID );
+
+		$result = Publisher::delete_post( $post );
+
+		$this->assertIsArray( $result );
+		$this->assertCount( 1, $this->captured_calls );
+		$this->assertSame(
+			array( 'post-tid', 'doc-tid' ),
+			\array_column( $this->captured_calls[0]['writes'], 'rkey' )
+		);
+		$this->assertSame( 'reply-tid', \get_comment_meta( $comment_id, Comment::META_TID, true ) );
+		$this->assertNotSame( '', \get_comment_meta( $comment_id, Comment::META_URI, true ) );
+		$this->assertSame( '', \get_post_meta( $post->ID, Post::META_TID, true ) );
+	}
+
+	/**
+	 * Disabling outgoing reactions while the root delete is in flight must
+	 * prevent the prebuilt comment batch and preserve its local metadata.
+	 */
+	public function test_delete_post_rechecks_outgoing_reactions_before_comment_batch() {
+		$post = self::factory()->post->create_and_get(
+			array( 'post_status' => 'trash' )
+		);
+		\update_post_meta( $post->ID, Post::META_TID, 'post-tid' );
+		\update_post_meta( $post->ID, Post::META_URI, 'at://did:plc:test123/app.bsky.feed.post/post-tid' );
+		\update_post_meta( $post->ID, Document::META_TID, 'doc-tid' );
+
+		$comment_id = self::factory()->comment->create( array( 'comment_post_ID' => $post->ID ) );
+		\update_comment_meta( $comment_id, Comment::META_TID, 'reply-tid' );
+		\update_comment_meta( $comment_id, Comment::META_URI, 'at://did:plc:test123/app.bsky.feed.post/reply-tid' );
+
+		\add_filter(
+			'atmosphere_pre_apply_writes',
+			static function ( $short_circuit ) {
+				\update_option( 'atmosphere_publish_reactions', '' );
+				return $short_circuit;
+			},
+			5
+		);
+		$this->register_capture( $post->ID );
+
+		$result = Publisher::delete_post( $post );
+
+		$this->assertIsArray( $result );
+		$this->assertCount( 1, $this->captured_calls );
+		$this->assertSame(
+			array( 'post-tid', 'doc-tid' ),
+			\array_column( $this->captured_calls[0]['writes'], 'rkey' )
+		);
+		$this->assertSame( '', \get_post_meta( $post->ID, Post::META_TID, true ) );
+		$this->assertSame( 'reply-tid', \get_comment_meta( $comment_id, Comment::META_TID, true ) );
+		$this->assertNotSame( '', \get_comment_meta( $comment_id, Comment::META_URI, true ) );
+	}
+
+	/**
 	 * When the comment-reply batch fails, the post + document deletes are
 	 * already done, so their meta is cleared regardless — the decoupling
 	 * guarantee. The comment meta is left intact so a re-trash retries
@@ -898,6 +970,36 @@ class Test_Publisher extends WP_UnitTestCase {
 
 		$this->assertWPError( $result );
 		$this->assertSame( 'atmosphere_not_published', $result->get_error_code() );
+	}
+
+	/**
+	 * Direct Publisher callers cannot bypass the global outgoing-reaction
+	 * control for create, update, or delete operations.
+	 */
+	public function test_comment_publisher_methods_return_disabled_error_without_writing() {
+		$post_id    = self::factory()->post->create();
+		$comment_id = self::factory()->comment->create( array( 'comment_post_ID' => $post_id ) );
+		$comment    = \get_comment( $comment_id );
+
+		\update_comment_meta( $comment_id, Comment::META_TID, 'reply-tid' );
+		\update_comment_meta( $comment_id, Comment::META_URI, 'at://did:plc:test123/app.bsky.feed.post/reply-tid' );
+		\update_option( 'atmosphere_publish_reactions', '' );
+		$this->register_capture( $post_id );
+
+		$results = array(
+			Publisher::publish_comment( $comment ),
+			Publisher::update_comment( $comment ),
+			Publisher::delete_comment( $comment ),
+			Publisher::delete_comment_by_tid( 'reply-tid' ),
+		);
+
+		foreach ( $results as $result ) {
+			$this->assertWPError( $result );
+			$this->assertSame( 'atmosphere_outgoing_reactions_disabled', $result->get_error_code() );
+		}
+
+		$this->assertCount( 0, $this->captured_calls );
+		$this->assertSame( 'reply-tid', \get_comment_meta( $comment_id, Comment::META_TID, true ) );
 	}
 
 	/**
@@ -2240,6 +2342,64 @@ class Test_Publisher extends WP_UnitTestCase {
 		$this->assertSame(
 			array( 'reply-1', 'reply-2' ),
 			\array_column( $this->captured_calls[1]['writes'], 'rkey' )
+		);
+	}
+
+	/**
+	 * Disabling outgoing reactions during a chunked comment cascade stops
+	 * the next comment chunk before another request is made.
+	 */
+	public function test_delete_post_by_tids_rechecks_outgoing_reactions_before_each_comment_chunk() {
+		$api_calls = 0;
+		\add_filter(
+			'atmosphere_pre_apply_writes',
+			static function ( $short_circuit ) use ( &$api_calls ) {
+				++$api_calls;
+				if ( 2 === $api_calls ) {
+					\update_option( 'atmosphere_publish_reactions', '' );
+				}
+
+				return $short_circuit;
+			},
+			5
+		);
+		$this->register_capture( 0 );
+
+		$comment_tids = array();
+		for ( $i = 0; $i < 101; ++$i ) {
+			$comment_tids[] = 'reply-' . $i;
+		}
+
+		$result = Publisher::delete_post_by_tids(
+			array( 'root-tid' ),
+			'doc-tid',
+			$comment_tids
+		);
+
+		$this->assertWPError( $result );
+		$this->assertSame( 'atmosphere_outgoing_reactions_disabled', $result->get_error_code() );
+		$this->assertCount( 2, $this->captured_calls, 'The second comment chunk must not be sent.' );
+	}
+
+	/**
+	 * A permanent-post-delete event queued before the switch changed still
+	 * removes the post and document, but drops its comment-reply TIDs.
+	 */
+	public function test_delete_post_by_tids_strips_comments_when_outgoing_reactions_disabled() {
+		\update_option( 'atmosphere_publish_reactions', '' );
+		$this->register_capture( 0 );
+
+		$result = Publisher::delete_post_by_tids(
+			array( 'root-tid' ),
+			'doc-tid',
+			array( 'reply-1', 'reply-2' )
+		);
+
+		$this->assertIsArray( $result );
+		$this->assertCount( 1, $this->captured_calls );
+		$this->assertSame(
+			array( 'root-tid', 'doc-tid' ),
+			\array_column( $this->captured_calls[0]['writes'], 'rkey' )
 		);
 	}
 

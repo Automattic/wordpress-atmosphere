@@ -59,6 +59,17 @@ class Options {
 
 		\register_setting(
 			'atmosphere',
+			'atmosphere_publish_reactions',
+			array(
+				'type'         => 'boolean',
+				'description'  => 'Whether eligible WordPress comments are published as Bluesky replies.',
+				'default'      => '1',
+				'show_in_rest' => true,
+			)
+		);
+
+		\register_setting(
+			'atmosphere',
 			'atmosphere_sync_reactions',
 			array(
 				'type'         => 'boolean',
