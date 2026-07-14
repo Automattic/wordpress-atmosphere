@@ -667,7 +667,8 @@ class Reaction_Sync {
 						'relation' => 'AND',
 						array(
 							'key'     => BskyPost::META_URI,
-							'compare' => 'EXISTS',
+							'value'   => '',
+							'compare' => '!=',
 						),
 						array(
 							'key'     => self::META_BACKFILL_CHECKED_AT,
@@ -698,7 +699,8 @@ class Reaction_Sync {
 					'meta_query'     => array( // phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_query
 						array(
 							'key'     => BskyPost::META_URI,
-							'compare' => 'EXISTS',
+							'value'   => '',
+							'compare' => '!=',
 						),
 					),
 				)
@@ -757,8 +759,16 @@ class Reaction_Sync {
 				continue;
 			}
 
-			++$found;
 			$reply_uri = (string) ( $post['uri'] ?? '' );
+
+			// A malformed/placeholder node without a URI is not a countable
+			// reply — skip it before it inflates `found` and rides through
+			// a doomed dedup + process_reply() pass.
+			if ( '' === $reply_uri ) {
+				continue;
+			}
+
+			++$found;
 
 			if ( isset( $existing_uris[ $reply_uri ] ) ) {
 				++$existing;

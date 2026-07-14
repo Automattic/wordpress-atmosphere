@@ -2149,6 +2149,13 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 		);
 		\update_post_meta( $protected_id, BskyPost::META_URI, 'at://did:plc:me/app.bsky.feed.post/protected' );
 
+		/*
+		 * An empty root-URI meta can never backfill; it must not be
+		 * selected, or it would burn a batch slot on every rotation.
+		 */
+		$empty_uri_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		\update_post_meta( $empty_uri_id, BskyPost::META_URI, '' );
+
 		$method = new \ReflectionMethod( Reaction_Sync::class, 'get_backfill_post_ids' );
 		$actual = $method->invoke( null, 4 );
 

@@ -1,6 +1,6 @@
 <?php
 /**
- * Tests for the reaction recovery WP-CLI command.
+ * Tests for the reply recovery WP-CLI command.
  *
  * @package Atmosphere
  * @group atmosphere
@@ -14,7 +14,7 @@ use Atmosphere\Reaction_Sync;
 use Atmosphere\Transformer\Post as BskyPost;
 
 /**
- * Reaction recovery command tests.
+ * Reply recovery command tests.
  */
 class Test_Replies_Command extends \WP_UnitTestCase {
 
