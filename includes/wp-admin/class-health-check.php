@@ -20,7 +20,9 @@ namespace Atmosphere\WP_Admin;
 
 use Atmosphere\OAuth\Client;
 use Atmosphere\OAuth\Encryption;
+use function Atmosphere\get_did;
 use function Atmosphere\get_identity;
+use function Atmosphere\get_pds_endpoint;
 use function Atmosphere\get_reauth_reason;
 use function Atmosphere\get_supported_post_types;
 use function Atmosphere\has_identity;
@@ -35,14 +37,6 @@ use function Atmosphere\settings_url;
  * @since unreleased
  */
 class Health_Check {
-
-	/**
-	 * Register the Site Health filters.
-	 */
-	public static function init(): void {
-		\add_filter( 'site_status_tests', array( self::class, 'add_tests' ) );
-		\add_filter( 'debug_information', array( self::class, 'debug_information' ) );
-	}
 
 	/**
 	 * Register the direct (non-async) status tests.
@@ -243,12 +237,12 @@ class Health_Check {
 				),
 				'did'               => array(
 					'label'   => \__( 'DID', 'atmosphere' ),
-					'value'   => (string) ( $identity['did'] ?? '' ),
+					'value'   => get_did(),
 					'private' => false,
 				),
 				'pds_endpoint'      => array(
 					'label'   => \__( 'PDS Endpoint', 'atmosphere' ),
-					'value'   => (string) ( $identity['pds_endpoint'] ?? '' ),
+					'value'   => get_pds_endpoint(),
 					'private' => false,
 				),
 				'encryption_key'    => array(

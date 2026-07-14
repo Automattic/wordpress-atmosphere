@@ -165,16 +165,15 @@ class Atmosphere {
 		\add_action( 'init', array( Settings_Fields::class, 'init' ), 5 );
 
 		/*
-		 * Site Health status test + debug information. The cron gate is
-		 * needed alongside `is_admin()` because the weekly
-		 * `wp_site_health_scheduled_check` event runs the direct tests
-		 * in a non-admin context to feed the dashboard status counter;
-		 * front-end requests never fire either filter, so they skip the
-		 * class entirely.
+		 * Site Health status test + debug information. Registered
+		 * directly on the pull filters (no context gate, no `init`
+		 * indirection): they only fire on Site Health surfaces — the
+		 * screen, the weekly scheduled check, WP-CLI — so the class is
+		 * autoloaded only there and every other request just stores two
+		 * callables.
 		 */
-		if ( \is_admin() || \wp_doing_cron() ) {
-			\add_action( 'init', array( Health_Check::class, 'init' ), 5 );
-		}
+		\add_filter( 'site_status_tests', array( Health_Check::class, 'add_tests' ) );
+		\add_filter( 'debug_information', array( Health_Check::class, 'debug_information' ) );
 
 		/*
 		 * Display-side @handle.tld mention auto-linking. Self-registers on
@@ -2124,28 +2123,6 @@ class Atmosphere {
 			)
 		);
 	}
-
-	/**
-	 * Failure codes resolvable only by reconnecting the Bluesky account.
-	 *
-	 * Consumed by the `atmosphere_publish_error` REST field as the
-	 * `needs_reconnect` flag (combined with the live connection state,
-	 * so the flag drops once the operator reconnects) — the editor
-	 * panel never keeps its own copy of this judgment. Folded into the
-	 * permanent codes of
-	 * {@see self::is_transient_publish_error()}, so each reconnect-class
-	 * code is declared exactly once. Deliberately without
-	 * `atmosphere_did_mismatch`, which reconnecting to the current
-	 * account does not fix.
-	 *
-	 * @var string[]
-	 */
-	private const RECONNECT_ERROR_CODES = array(
-		'atmosphere_key_changed',
-		'atmosphere_decrypt',
-		'atmosphere_needs_reauth',
-		'atmosphere_not_connected',
-	);
 
 	/**
 	 * Whether a publish failure is worth retrying.
