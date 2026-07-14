@@ -111,6 +111,26 @@ class Test_Client_Decrypt extends WP_UnitTestCase {
 	}
 
 	/**
+	 * A malformed stored fingerprint proves only that the row is corrupt,
+	 * not that the key material changed — it falls back to the generic
+	 * decrypt error rather than misdiagnosing a key change.
+	 */
+	public function test_decrypt_failure_with_malformed_fingerprint_falls_back_to_generic_error() {
+		$this->seed_undecryptable_connection(
+			array( 'key_fingerprint' => 'not-a-fingerprint' )
+		);
+
+		$result = Client::access_token();
+
+		$this->assertWPError( $result );
+		$this->assertSame( 'atmosphere_decrypt', $result->get_error_code() );
+
+		$stored = \get_option( 'atmosphere_connection' );
+		$this->assertTrue( $stored['needs_reauth'] );
+		$this->assertSame( 'decrypt_failed', $stored['reauth_reason'] );
+	}
+
+	/**
 	 * Rows connected before fingerprints existed cannot be classified —
 	 * they fall back to the generic decrypt error rather than falsely
 	 * claiming the keys changed.

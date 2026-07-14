@@ -1002,8 +1002,17 @@ class Client {
 	 *                   `atmosphere_decrypt` otherwise.
 	 */
 	public static function flag_decrypt_failure( array $conn, string $field ): \WP_Error {
-		$stored      = (string) ( $conn['key_fingerprint'] ?? '' );
-		$key_changed = '' !== $stored && ! \hash_equals( Encryption::key_fingerprint(), $stored );
+		$stored = (string) ( $conn['key_fingerprint'] ?? '' );
+
+		/*
+		 * Only a well-formed stored fingerprint (32 hex chars, exactly
+		 * what `Encryption::key_fingerprint()` writes) is authoritative
+		 * for the "key changed" diagnosis. A mangled row proves only
+		 * that the row is corrupt, so it falls back to the generic
+		 * classification below — like a pre-fingerprint row.
+		 */
+		$key_changed = \preg_match( '/^[0-9a-f]{32}$/', $stored )
+			&& ! \hash_equals( Encryption::key_fingerprint(), $stored );
 
 		self::mark_needs_reauth(
 			$conn,
