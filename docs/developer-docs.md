@@ -7,6 +7,8 @@
 - [Previewing AT Protocol Records](#previewing-at-protocol-records)
 - [Extending Content Formats](#extending-content-formats)
 - [Custom Post Type Support](#custom-post-type-support)
+- [Publishing Programmatically](#publishing-programmatically)
+- [Token Encryption](#token-encryption)
 - [Templates and Admin UI](#templates-and-admin-ui)
 
 ## Introduction
@@ -276,6 +278,91 @@ ATmosphere only cross-posts post types that opt in. Two ways to add one:
 ```
 
 The plugin merges all three sources, dedupes, and sanitises.
+
+## Publishing Programmatically
+
+Publishing UIs, syndication managers, and other companion plugins can drive
+cross-posting per post instead of relying on the automatic save-flow.
+
+### Per-post controls
+
+Two registered post metas (both `show_in_rest`, writable with `edit_post`)
+control what a cross-post looks like before it happens:
+
+| Meta key | Constant | Effect |
+|----------|----------|--------|
+| `atmosphere_disabled` | `ATMOSPHERE_META_DISABLED` | Sharing is opt-out: `'1'` excludes the post from cross-posting. |
+| `atmosphere_custom_text` | `ATMOSPHERE_META_CUSTOM_TEXT` | Replaces the derived Bluesky post text for this post. |
+
+While the automatic save-flow is active, changing either meta schedules a
+reconcile that publishes, updates, or removes the remote records to match.
+Integrations that disable `atmosphere_auto_publish` (below) must run that
+reconcile themselves by calling `\Atmosphere\Publisher::update_post()`
+after changing the metas — setting `atmosphere_disabled` alone does not
+remove already-published records.
+
+### Taking over the publish flow
+
+The automatic save-flow is gated by the `atmosphere_auto_publish` option
+(`'1'` by default). An integration that wants to decide *when* a post is
+cross-posted can disable it and call the publisher directly:
+
+```php
+\update_option( 'atmosphere_auto_publish', '0' );
+
+$result = \Atmosphere\Publisher::publish_post( $post );
+
+if ( \is_wp_error( $result ) ) {
+    // Post was ineligible or the write failed.
+}
+```
+
+`publish_post()` enforces `\Atmosphere\is_post_publishable()` — the post
+must be published, not password-protected, of a [supported post
+type](#custom-post-type-support), and not opted out via
+`atmosphere_disabled`. It fires
+[`atmosphere_publish_post_result`](#public-hooks) once with the final
+outcome, and returns the `applyWrites` response(s) or a `WP_Error`.
+`\Atmosphere\Publisher::update_post()` and
+`\Atmosphere\Publisher::delete_post()` complete the lifecycle;
+`update_post()` doubles as the reconcile — when the post is no longer
+publishable (trashed, unpublished, or opted out via `atmosphere_disabled`)
+it removes the remote records.
+
+### Reading back the published record
+
+After a successful publish the post carries the created record's
+references:
+
+| Meta key | Constant | Value |
+|----------|----------|-------|
+| `_atmosphere_bsky_uri` | `\Atmosphere\Transformer\Post::META_URI` | The `at://` URI of the Bluesky post. |
+| `_atmosphere_bsky_tid` | `\Atmosphere\Transformer\Post::META_TID` | The record key (TID). |
+
+```php
+$at_uri = \get_post_meta( $post_id, \Atmosphere\Transformer\Post::META_URI, true );
+```
+
+Replies, likes, and reposts synced back from Bluesky arrive as native
+WordPress comments (comment types `comment`, `like`, and `repost`, all
+with `protocol` comment meta `atproto`). Replies carry a link to the
+reply's Bluesky page in `source_url`; likes and reposts have no Bluesky
+landing page, so their `source_url` is intentionally empty and
+`comment_author_url` (the author's profile) is the outbound link.
+Integrations can react to each via
+[`atmosphere_reaction_synced`](#public-hooks).
+
+## Token Encryption
+
+OAuth tokens are encrypted at rest with a key derived from the site's `AUTH_KEY` and `AUTH_SALT`. That keeps the key out of the database, but it also means the stored tokens become unreadable when the salts change — after a migration, a regenerated `wp-config.php`, or a security plugin that rotates salts on a schedule. ATmosphere detects that case, flags the connection, and asks the user to reconnect.
+
+Sites that rotate their salts deliberately can pin a dedicated key instead, which takes precedence over the salts:
+
+```php
+define( 'ATMOSPHERE_ENCRYPTION_KEY', 'a long random secret that never changes' );
+```
+
+Define it in `wp-config.php` **before** connecting (or reconnect afterwards — changing key material always orphans previously stored tokens). Treat it like a salt: long, random, and never committed to version control.
 
 ## Templates and Admin UI
 
