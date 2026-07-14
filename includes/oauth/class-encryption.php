@@ -70,16 +70,21 @@ class Encryption {
 	/**
 	 * Whether a dedicated `ATMOSPHERE_ENCRYPTION_KEY` is in effect.
 	 *
-	 * Single owner of the defined-and-non-empty semantics so admin
-	 * surfaces reporting the key source cannot drift from the actual
-	 * derivation in {@see self::key_material()}.
+	 * Single owner of the defined-non-empty-string semantics, so the
+	 * admin surfaces reporting the key source (the Site Health test)
+	 * cannot drift from the actual derivation in
+	 * {@see self::key_material()}. A constant misdefined as a non-string
+	 * (e.g. `false` or an array) is treated as unset rather than being
+	 * silently coerced into weak key material.
 	 *
 	 * @since unreleased
 	 *
 	 * @return bool
 	 */
 	public static function has_dedicated_key(): bool {
-		return \defined( 'ATMOSPHERE_ENCRYPTION_KEY' ) && '' !== ATMOSPHERE_ENCRYPTION_KEY;
+		return \defined( 'ATMOSPHERE_ENCRYPTION_KEY' )
+			&& \is_string( ATMOSPHERE_ENCRYPTION_KEY )
+			&& '' !== ATMOSPHERE_ENCRYPTION_KEY;
 	}
 
 	/**
@@ -97,7 +102,7 @@ class Encryption {
 	 */
 	public static function key_fingerprint(): string {
 		return \sodium_bin2hex(
-			\sodium_crypto_generichash( 'atmosphere-key-fingerprint' . self::key(), '', 16 )
+			\sodium_crypto_generichash( 'atmosphere-key-fingerprint', self::key(), 16 )
 		);
 	}
 

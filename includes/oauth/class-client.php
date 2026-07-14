@@ -1062,8 +1062,17 @@ class Client {
 	 *                   `atmosphere_decrypt` otherwise.
 	 */
 	public static function flag_decrypt_failure( array $conn, string $field ): \WP_Error {
-		$stored      = (string) ( $conn['key_fingerprint'] ?? '' );
-		$key_changed = '' !== $stored && ! \hash_equals( Encryption::key_fingerprint(), $stored );
+		$stored = (string) ( $conn['key_fingerprint'] ?? '' );
+
+		/*
+		 * Only a well-formed stored fingerprint (32 hex chars, exactly
+		 * what `Encryption::key_fingerprint()` writes) is authoritative
+		 * for the "key changed" diagnosis. A mangled row proves only
+		 * that the row is corrupt, so it falls back to the generic
+		 * classification below — like a pre-fingerprint row.
+		 */
+		$key_changed = \preg_match( '/^[0-9a-f]{32}$/', $stored )
+			&& ! \hash_equals( Encryption::key_fingerprint(), $stored );
 
 		self::mark_needs_reauth(
 			$conn,
@@ -1107,6 +1116,9 @@ class Client {
 	 * @param string $reason Optional machine-readable marker stored as
 	 *                       `reauth_reason` so the admin notice can
 	 *                       explain the failure (e.g. `key_changed`).
+	 *                       An empty reason clears any stale marker, so
+	 *                       a later session-expiry stamp is not
+	 *                       explained with an earlier failure's cause.
 	 */
 	private static function mark_needs_reauth( array $conn, string $field, string $reason = '' ): void {
 		if ( empty( $conn[ $field ] ) ) {
@@ -1128,6 +1140,8 @@ class Client {
 
 		if ( '' !== $reason ) {
 			$current['reauth_reason'] = $reason;
+		} else {
+			unset( $current['reauth_reason'] );
 		}
 
 		\update_option( 'atmosphere_connection', $current, false );

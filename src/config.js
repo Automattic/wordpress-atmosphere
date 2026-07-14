@@ -41,3 +41,12 @@ export const PREVIEW_PATH =
  */
 export const SETTINGS_URL =
 	options.settingsUrl || 'options-general.php?page=atmosphere';
+
+/**
+ * Whether the current user can open the settings page (manage_options).
+ *
+ * Reconnect prompts link there only for users who can act on them.
+ *
+ * @type {boolean}
+ */
+export const CAN_MANAGE = !! options.canManage;

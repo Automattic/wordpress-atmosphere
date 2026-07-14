@@ -247,7 +247,7 @@ class Admin {
 		 */
 		if ( is_operator_disconnected() ) {
 			$heading = \__( 'ATmosphere: disconnected', 'atmosphere' );
-			$lead    = \__( 'ATmosphere is disconnected from AT Protocol.', 'atmosphere' );
+			$lead    = \__( 'ATmosphere is disconnected from Bluesky.', 'atmosphere' );
 		} else {
 			$lead = reauth_reason_lead();
 		}
@@ -255,7 +255,12 @@ class Admin {
 		/* translators: %s: URL to the ATmosphere settings page. */
 		$tail = \__( 'New posts and comments will not publish until you <a href="%s">reconnect on the settings page</a>. Your publishing preferences and verification headers stay in place in the meantime.', 'atmosphere' );
 
-		$message = $lead . ' ' . $tail;
+		/*
+		 * Only the tail goes through sprintf: a lead translation
+		 * containing a stray `%` must not be able to corrupt the
+		 * placeholder substitution (PHP 8 throws on missing arguments).
+		 */
+		$message = $lead . ' ' . \sprintf( $tail, \esc_url( settings_url() ) );
 
 		?>
 		<div class="notice notice-warning is-dismissible">
@@ -265,7 +270,7 @@ class Admin {
 			<p>
 				<?php
 				echo \wp_kses(
-					\sprintf( $message, \esc_url( settings_url() ) ),
+					$message,
 					array( 'a' => array( 'href' => array() ) )
 				);
 				?>
