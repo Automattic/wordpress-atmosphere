@@ -247,13 +247,13 @@ class Test_Connectors extends WP_UnitTestCase {
 	}
 
 	/**
-	 * The card also enqueues when the Gutenberg plugin re-registers the screen as a
-	 * Settings submenu — the regression this fix addresses, where the exact-match
-	 * check silently bailed.
+	 * The card also enqueues on a site running the Gutenberg plugin, where the
+	 * screen is a Settings submenu — the regression this fix addresses, where the
+	 * exact-match check silently bailed.
 	 *
 	 * @covers ::is_connectors_screen
 	 */
-	public function test_is_connectors_screen_matches_remapped_submenu() {
+	public function test_is_connectors_screen_matches_gutenberg_submenu() {
 		$this->assertTrue( Connectors::is_connectors_screen( 'settings_page_options-connectors-wp-admin' ) );
 	}
 
@@ -270,8 +270,8 @@ class Test_Connectors extends WP_UnitTestCase {
 	}
 
 	/**
-	 * With no re-registered submenu present, the OAuth return destination falls
-	 * back to core's top-level Connectors page.
+	 * With no Gutenberg submenu present, the OAuth return destination falls back to
+	 * core's top-level Connectors page.
 	 *
 	 * @covers ::screen_url
 	 */
@@ -280,17 +280,17 @@ class Test_Connectors extends WP_UnitTestCase {
 	}
 
 	/**
-	 * When the Gutenberg plugin has re-registered the screen as a Settings submenu, the
-	 * return destination resolves to that submenu URL — server-side, from the
+	 * On a site running the Gutenberg plugin, where the screen is a Settings submenu,
+	 * the return destination resolves to that submenu URL — server-side, from the
 	 * registered admin menu, never from request input.
 	 *
 	 * @covers ::screen_url
 	 */
-	public function test_screen_url_prefers_remapped_submenu() {
+	public function test_screen_url_prefers_gutenberg_submenu() {
 		global $submenu;
 		$saved = $submenu;
 
-		// phpcs:ignore WordPress.WP.GlobalVariablesOverride.Prohibited -- Test fixture: simulate the Gutenberg plugin's remapped admin menu, restored below.
+		// phpcs:ignore WordPress.WP.GlobalVariablesOverride.Prohibited -- Test fixture: simulate the Gutenberg plugin's Connectors submenu, restored below.
 		$submenu = array(
 			'options-general.php' => array(
 				array( 'Settings', 'manage_options', 'options-general.php' ),
@@ -308,8 +308,8 @@ class Test_Connectors extends WP_UnitTestCase {
 	}
 
 	/**
-	 * Core's own `options-connectors.php` submenu entries do not count as a
-	 * remap, so the top-level page URL is still used when only they are present.
+	 * Core's own `options-connectors.php` submenu entries are not a Gutenberg
+	 * submenu, so the top-level page URL is still used when only they are present.
 	 *
 	 * @covers ::screen_url
 	 */
