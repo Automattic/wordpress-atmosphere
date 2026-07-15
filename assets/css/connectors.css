@@ -3,11 +3,46 @@
  *
  * Core's ConnectorItem styles the shared card chrome (frame, logo, name,
  * description, action-area layout); these rules only cover the content
- * ATmosphere renders into it — the connected-state status line and the handle
- * typeahead, which core has no equivalent for. The "Connected" badge itself is
- * core's own `Badge` component (rendered from the card script module), so it
- * needs no styling here.
+ * ATmosphere renders into it — the connected-state badge, the expandable
+ * Details panel, the account status line, and the handle typeahead, which core
+ * has no equivalent for.
  */
+
+/*
+ * Connected-state badge. We render our own `<span>` rather than core's `Badge`
+ * component because that component isn't reliably exposed on the Connectors
+ * screen (it fell back to unstyled text). The colours mirror core's own
+ * connected-badge tokens so ATmosphere's badge matches its neighbours exactly.
+ */
+.atmosphere-connector-card__status-badge {
+	padding-block: 4px;
+	padding-inline: 12px;
+	border-radius: 2px;
+	font-size: 13px;
+	font-weight: 500;
+	white-space: nowrap;
+}
+
+.atmosphere-connector-card__status-badge--connected {
+	color: #345b37;
+	background-color: #eff8f0;
+}
+
+/* Expanded Details panel: account info + Disconnect, revealed by the toggle. */
+.atmosphere-connector-card__section-label {
+	font-size: 11px;
+	font-weight: 500;
+	text-transform: uppercase;
+	letter-spacing: 0.02em;
+	color: #757575;
+}
+
+.atmosphere-connector-card__divider {
+	width: 100%;
+	margin: 0;
+	border: 0;
+	border-top: 1px solid #e0e0e0;
+}
 
 /* Slim connected-state line: `@handle · View profile`. */
 .atmosphere-connector-card__status {

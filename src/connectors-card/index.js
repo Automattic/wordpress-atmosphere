@@ -31,10 +31,6 @@ import { HandleTypeahead } from '../shared/handle-typeahead';
 const { createElement: el, useState } = window.wp.element;
 const { __ } = window.wp.i18n;
 const { Button, Notice, ExternalLink } = window.wp.components;
-// Core's own connected-state badge, so ATmosphere's matches its neighbours and
-// inherits core's tokens (colours, dark mode) instead of hardcoding any.
-const Badge =
-	window.wp.components.Badge || window.wp.components.__experimentalBadge;
 const HStack =
 	window.wp.components.__experimentalHStack || window.wp.components.HStack;
 const VStack =
@@ -103,6 +99,7 @@ function makeCard( Shell ) {
 		const [ handle, setHandle ] = useState( data.handle || '' );
 		const [ busy, setBusy ] = useState( false );
 		const [ error, setError ] = useState( '' );
+		const [ expanded, setExpanded ] = useState( false );
 
 		const connect = async ( explicit ) => {
 			const target = (
@@ -149,51 +146,101 @@ function makeCard( Shell ) {
 		let body;
 
 		if ( connected ) {
-			// Match the neighbouring connector cards: a "Connected" badge sits
-			// beside the action button in the header row, rendered with core's
-			// own `Badge` component (`intent="success"`) so it inherits core's
-			// styling and tokens rather than any hardcoded values. The badge now
-			// carries the connected state, so the body drops to a slim
-			// `@handle · View profile` line — the two pieces generic connectors
-			// don't need but ATmosphere does: which account, and a link to it.
+			// Match the neighbouring connector cards (core's own + Jetpack's): the
+			// header row carries a green "Connected" badge beside a "Details"
+			// toggle. The badge is a plain styled `<span>` rather than core's
+			// `Badge` component — on the Connectors screen that component isn't
+			// reliably exposed on `window.wp.components`, so it silently fell back
+			// to unstyled text; owning the markup guarantees the green treatment
+			// (and matches core's connected-badge tokens via `connectors.css`).
+			// The account line (`@handle · View profile`) and the Disconnect
+			// button move into the collapsible panel below, so the header stays a
+			// compact status + toggle just like its neighbours.
 			actionArea = el(
 				HStack,
 				{ spacing: 3, expanded: false },
-				Badge
-					? el(
-							Badge,
-							{ intent: 'success' },
-							__( 'Connected', 'atmosphere' )
-					  )
-					: el( 'span', null, __( 'Connected', 'atmosphere' ) ),
+				el(
+					'span',
+					{
+						className:
+							'atmosphere-connector-card__status-badge atmosphere-connector-card__status-badge--connected',
+					},
+					__( 'Connected', 'atmosphere' )
+				),
 				el(
 					Button,
 					{
-						variant: 'tertiary',
+						variant: 'secondary',
 						size: 'compact',
-						onClick: disconnect,
-						isBusy: busy,
-						disabled: busy,
-						accessibleWhenDisabled: true,
+						onClick: () => setExpanded( ( value ) => ! value ),
+						'aria-expanded': expanded,
 					},
-					__( 'Disconnect', 'atmosphere' )
+					expanded
+						? __( 'Close', 'atmosphere' )
+						: __( 'Details', 'atmosphere' )
 				)
 			);
-			body =
-				data.handle || data.profileUrl
-					? el(
-							'p',
-							{ className: 'atmosphere-connector-card__status' },
-							data.handle && '@' + data.handle,
-							data.handle && data.profileUrl && ' · ',
-							data.profileUrl &&
+			body = expanded
+				? el(
+						VStack,
+						{
+							spacing: 5,
+							className: 'atmosphere-connector-card__expanded',
+						},
+						( data.handle || data.profileUrl ) &&
+							el(
+								VStack,
+								{
+									spacing: 1,
+									className:
+										'atmosphere-connector-card__section',
+								},
 								el(
-									ExternalLink,
-									{ href: data.profileUrl },
-									__( 'View profile', 'atmosphere' )
+									'span',
+									{
+										className:
+											'atmosphere-connector-card__section-label',
+									},
+									__( 'Connected account', 'atmosphere' )
+								),
+								el(
+									'p',
+									{
+										className:
+											'atmosphere-connector-card__status',
+									},
+									data.handle && '@' + data.handle,
+									data.handle && data.profileUrl && ' · ',
+									data.profileUrl &&
+										el(
+											ExternalLink,
+											{ href: data.profileUrl },
+											__( 'View profile', 'atmosphere' )
+										)
 								)
-					  )
-					: null;
+							),
+						el( 'hr', {
+							className: 'atmosphere-connector-card__divider',
+						} ),
+						el(
+							HStack,
+							{ spacing: 3, justify: 'flex-end' },
+							el(
+								Button,
+								{
+									variant: 'secondary',
+									isDestructive: true,
+									size: 'compact',
+									onClick: disconnect,
+									isBusy: busy,
+									disabled: busy,
+									accessibleWhenDisabled: true,
+								},
+								__( 'Disconnect', 'atmosphere' )
+							)
+						)
+				  )
+				: null;
 		} else {
 			actionArea = el(
 				Button,
