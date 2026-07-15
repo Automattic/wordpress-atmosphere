@@ -23,6 +23,10 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 	 */
 	public function tear_down(): void {
 		\delete_option( 'atmosphere_support_post_types' );
+		\delete_option( 'atmosphere_reaction_sync_pagination' );
+		\delete_option( 'atmosphere_reaction_sync_did' );
+		\delete_option( '_atmosphere_reaction_sync_lock' );
+		\remove_all_filters( 'atmosphere_reply_backfill_batch_size' );
 
 		if ( \post_type_exists( 'atmos_hidden_cpt' ) ) {
 			\unregister_post_type( 'atmos_hidden_cpt' );
@@ -966,6 +970,54 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 	}
 
 	/**
+	 * A reply whose parent the admin moderated away must be dropped as an
+	 * orphan, not imported under the suppressed parent — dedup sees
+	 * spam/trash rows, parent resolution deliberately does not.
+	 */
+	public function test_process_reply_drops_child_of_moderated_parent() {
+		$post_id  = self::factory()->post->create();
+		$post_uri = 'at://did:plc:me/app.bsky.feed.post/mypost';
+
+		\update_post_meta( $post_id, BskyPost::META_URI, $post_uri );
+
+		$parent_comment_id = self::factory()->comment->create(
+			array( 'comment_post_ID' => $post_id )
+		);
+		$parent_reply_uri  = 'at://did:plc:first/app.bsky.feed.post/spammedparent';
+
+		\update_comment_meta( $parent_comment_id, 'source_id', $parent_reply_uri );
+		\wp_spam_comment( $parent_comment_id );
+
+		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_reply' );
+
+		$result = $method->invoke(
+			null,
+			array(
+				'uri'    => 'at://did:plc:second/app.bsky.feed.post/childofspam',
+				'cid'    => 'bafychildofspam',
+				'record' => array(
+					'text'      => 'Reply to a suppressed parent.',
+					'createdAt' => '2026-03-21T13:00:00.000Z',
+					'reply'     => array(
+						'parent' => array( 'uri' => $parent_reply_uri ),
+						'root'   => array( 'uri' => $post_uri ),
+					),
+				),
+				'author' => array(
+					'did'    => 'did:plc:second',
+					'handle' => 'second.bsky.social',
+				),
+			)
+		);
+
+		$this->assertFalse( $result );
+		$this->assertFalse(
+			$this->find_comment_id_by_source_uri( 'at://did:plc:second/app.bsky.feed.post/childofspam' ),
+			'The child of a moderated parent must not be imported.'
+		);
+	}
+
+	/**
 	 * Test that process_reply skips when no matching post is found.
 	 */
 	public function test_process_reply_skips_unmatched() {
@@ -1473,6 +1525,63 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 	}
 
 	/**
+	 * A getProfile failure while syncing an own-record reaction falls back
+	 * to the locally stored identity handle, so the comment author link
+	 * never degrades to a broken profile URL.
+	 */
+	public function test_process_own_record_falls_back_to_identity_handle_when_profile_fails() {
+		/*
+		 * Connection did only — no profile transient and no usable API
+		 * session, so resolve_author() fails; the identity row supplies
+		 * the local handle fallback.
+		 */
+		\update_option( 'atmosphere_connection', array( 'did' => 'did:plc:me' ), false );
+		\update_option(
+			'atmosphere_identity',
+			array(
+				'did'    => 'did:plc:me',
+				'handle' => 'me.example.com',
+			),
+			false
+		);
+
+		$post_id  = self::factory()->post->create();
+		$post_uri = 'at://did:plc:me/app.bsky.feed.post/mypost';
+		\update_post_meta( $post_id, BskyPost::META_URI, $post_uri );
+
+		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_own_record' );
+
+		try {
+			$comment_id = $method->invoke(
+				null,
+				array(
+					'uri'   => 'at://did:plc:me/app.bsky.feed.like/fallbacklike',
+					'cid'   => 'bafyfallbacklike',
+					'value' => array(
+						'$type'     => 'app.bsky.feed.like',
+						'createdAt' => '2026-04-20T14:00:00.000Z',
+						'subject'   => array(
+							'uri' => $post_uri,
+							'cid' => 'bafymypost',
+						),
+					),
+				),
+				'like'
+			);
+		} finally {
+			\delete_option( 'atmosphere_connection' );
+			\delete_option( 'atmosphere_identity' );
+		}
+
+		$this->assertIsInt( $comment_id );
+		$this->assertStringContainsString(
+			'me.example.com',
+			\get_comment( $comment_id )->comment_author_url,
+			'The author link must fall back to the stored identity handle.'
+		);
+	}
+
+	/**
 	 * Test that a self-like on someone else's post is skipped.
 	 */
 	public function test_process_own_record_like_on_foreign_post_is_skipped() {
@@ -1739,6 +1848,53 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 	}
 
 	/**
+	 * If the page budget runs out while the grace window is still armed, the
+	 * run must count as complete — saving a continuation would resume past
+	 * the watermark, where no older item can ever match it again, and walk
+	 * the account's entire remaining history.
+	 */
+	public function test_paginate_completes_when_page_budget_ends_inside_grace() {
+		$option_key = 'atmosphere_test_paginate_budget_grace';
+		\update_option( $option_key, 'at://a/13', false );
+
+		$pages = array();
+		for ( $page = 0; $page < 5; $page++ ) {
+			$items = array();
+			for ( $i = 1; $i <= 3; $i++ ) {
+				$items[] = array( 'uri' => 'at://a/' . ( $page * 3 + $i ) );
+			}
+			$pages[] = array(
+				'items'  => $items,
+				'cursor' => 'cursor-' . ( $page + 1 ),
+			);
+		}
+
+		$fetch = static function ( ?string $cursor ) use ( $pages ) {
+			if ( null === $cursor ) {
+				return $pages[0];
+			}
+
+			return $pages[ (int) \substr( $cursor, 7 ) ];
+		};
+
+		$seen    = array();
+		$process = static function ( array $item ) use ( &$seen ) {
+			$seen[] = $item['uri'];
+		};
+
+		$this->invoke_paginate( $fetch, 'items', $option_key, $process );
+
+		/*
+		 * The watermark (13th item) arms the grace window on the final page;
+		 * only two items past it fit the five-page budget. All 15 items are
+		 * processed, the watermark advances, and no continuation is saved.
+		 */
+		$this->assertCount( 15, $seen );
+		$this->assertSame( 'at://a/1', \get_option( $option_key ) );
+		$this->assertSame( array(), \get_option( 'atmosphere_reaction_sync_pagination', array() ) );
+	}
+
+	/**
 	 * Test that paginate() stops cleanly if fewer items than
 	 * WATERMARK_GRACE remain after the watermark is hit.
 	 */
@@ -1765,6 +1921,699 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 		// Processed oldest-first (reverse of the newest-first stream).
 		$this->assertSame( array( 'at://a/4', 'at://a/3', 'at://a/2', 'at://a/1' ), $seen );
 		$this->assertSame( 'at://a/1', \get_option( $option_key ) );
+	}
+
+	/**
+	 * A notification burst beyond MAX_PAGES must resume from its saved cursor
+	 * instead of advancing the watermark past the unprocessed tail.
+	 *
+	 * The completed range is replayed once so a child from the first (newer)
+	 * chunk can resolve after its parent arrives in the second (older) chunk.
+	 */
+	public function test_paginate_resumes_overflow_and_replays_for_cross_chunk_parents() {
+		$option_key    = 'atmosphere_test_paginate_overflow';
+		$old_watermark = 'at://a/old-watermark';
+		$parent_uri    = 'at://a/parent';
+		$child_uri     = 'at://a/child';
+
+		\update_option( $option_key, $old_watermark, false );
+
+		$pages = array(
+			'start'  => array(
+				'items'  => array( array( 'uri' => $child_uri ) ),
+				'cursor' => 'page-2',
+			),
+			'page-2' => array(
+				'items'  => array( array( 'uri' => 'at://a/filler-2' ) ),
+				'cursor' => 'page-3',
+			),
+			'page-3' => array(
+				'items'  => array( array( 'uri' => 'at://a/filler-3' ) ),
+				'cursor' => 'page-4',
+			),
+			'page-4' => array(
+				'items'  => array( array( 'uri' => 'at://a/filler-4' ) ),
+				'cursor' => 'page-5',
+			),
+			'page-5' => array(
+				'items'  => array( array( 'uri' => 'at://a/filler-5' ) ),
+				'cursor' => 'page-6',
+			),
+			'page-6' => array(
+				'items' => array(
+					array( 'uri' => $parent_uri ),
+					array( 'uri' => $old_watermark ),
+				),
+			),
+		);
+
+		$fetched = array();
+		$fetch   = static function ( ?string $cursor ) use ( $pages, &$fetched ) {
+			$key       = $cursor ?? 'start';
+			$fetched[] = $key;
+
+			return $pages[ $key ];
+		};
+
+		$present = array( $old_watermark => true );
+		$process = static function ( array $item ) use ( $parent_uri, $child_uri, &$present ) {
+			$uri = $item['uri'];
+
+			if ( $parent_uri === $uri ) {
+				$present[ $uri ] = true;
+				return;
+			}
+
+			if ( $child_uri === $uri && isset( $present[ $parent_uri ] ) ) {
+				$present[ $uri ] = true;
+			}
+		};
+
+		// First chunk: child is attempted before the older parent exists.
+		$this->invoke_paginate( $fetch, 'items', $option_key, $process );
+		$this->assertArrayNotHasKey( $child_uri, $present );
+		$this->assertSame( $old_watermark, \get_option( $option_key ) );
+		$this->assertSame( 1, \get_option( 'atmosphere_reaction_sync_pagination' )[ $option_key ]['phase'] );
+
+		// Finish the first pass: parent is imported, watermark still waits.
+		$this->invoke_paginate( $fetch, 'items', $option_key, $process );
+		$this->assertArrayHasKey( $parent_uri, $present );
+		$this->assertArrayNotHasKey( $child_uri, $present );
+		$this->assertSame( 2, \get_option( 'atmosphere_reaction_sync_pagination' )[ $option_key ]['phase'] );
+
+		// Replay spans the same cap, then finishes from its saved cursor.
+		$this->invoke_paginate( $fetch, 'items', $option_key, $process );
+		$this->assertArrayHasKey( $child_uri, $present );
+		$this->assertSame( $old_watermark, \get_option( $option_key ) );
+
+		$this->invoke_paginate( $fetch, 'items', $option_key, $process );
+		$this->assertSame( $child_uri, \get_option( $option_key ) );
+		$this->assertFalse( \get_option( 'atmosphere_reaction_sync_pagination', false ) );
+		$this->assertSame(
+			array(
+				'start',
+				'page-2',
+				'page-3',
+				'page-4',
+				'page-5',
+				'page-6',
+				'start',
+				'page-2',
+				'page-3',
+				'page-4',
+				'page-5',
+				'page-6',
+			),
+			$fetched
+		);
+	}
+
+	/**
+	 * A continuation cursor from another connected DID must never be reused.
+	 */
+	public function test_paginate_discards_continuation_from_another_did() {
+		$option_key = 'atmosphere_test_paginate_did';
+
+		\update_option( 'atmosphere_identity', array( 'did' => 'did:plc:new' ), false );
+		\update_option( $option_key, 'at://old/watermark', false );
+		\update_option(
+			'atmosphere_reaction_sync_pagination',
+			array(
+				$option_key => array(
+					'did'       => 'did:plc:old',
+					'cursor'    => 'old-cursor',
+					'newest'    => 'at://old/newest',
+					'last_seen' => 'at://old/watermark',
+					'phase'     => 1,
+					'failures'  => 0,
+				),
+			),
+			false
+		);
+
+		$fetched_cursor = 'not-called';
+		$fetch          = static function ( ?string $cursor ) use ( &$fetched_cursor ) {
+			$fetched_cursor = $cursor;
+
+			return array(
+				'items' => array(
+					array( 'uri' => 'at://new/newest' ),
+					array( 'uri' => 'at://old/watermark' ),
+				),
+			);
+		};
+
+		$this->invoke_paginate( $fetch, 'items', $option_key, static function () {} );
+
+		$this->assertNull( $fetched_cursor );
+		$this->assertSame( 'at://new/newest', \get_option( $option_key ) );
+		$this->assertFalse( \get_option( 'atmosphere_reaction_sync_pagination', false ) );
+
+		\delete_option( 'atmosphere_identity' );
+	}
+
+	/**
+	 * Repeated failures on a saved cursor restart safely without advancing the
+	 * old watermark, so an expired server cursor cannot stall sync forever.
+	 */
+	public function test_paginate_discards_cursor_after_repeated_failures() {
+		$option_key = 'atmosphere_test_paginate_failed_cursor';
+
+		\update_option( $option_key, 'at://a/old', false );
+		\update_option(
+			'atmosphere_reaction_sync_pagination',
+			array(
+				$option_key => array(
+					'did'       => '',
+					'cursor'    => 'expired-cursor',
+					'newest'    => 'at://a/new',
+					'last_seen' => 'at://a/old',
+					'phase'     => 1,
+					'failures'  => 2,
+				),
+			),
+			false
+		);
+
+		$this->invoke_paginate(
+			static fn() => new \WP_Error( 'expired_cursor', 'Cursor expired.' ),
+			'items',
+			$option_key,
+			static function () {}
+		);
+
+		$this->assertSame( 'at://a/old', \get_option( $option_key ) );
+		$this->assertFalse( \get_option( 'atmosphere_reaction_sync_pagination', false ) );
+
+		$fetched_cursor = 'not-called';
+		$fetch          = static function ( ?string $cursor ) use ( &$fetched_cursor ) {
+			$fetched_cursor = $cursor;
+
+			return array(
+				'items' => array(
+					array( 'uri' => 'at://a/new' ),
+					array( 'uri' => 'at://a/old' ),
+				),
+			);
+		};
+
+		$this->invoke_paginate( $fetch, 'items', $option_key, static function () {} );
+
+		$this->assertNull( $fetched_cursor );
+		$this->assertSame( 'at://a/new', \get_option( $option_key ) );
+	}
+
+	/**
+	 * Switching the connected account clears repository-specific watermarks.
+	 */
+	public function test_prepare_account_state_clears_previous_did_watermarks() {
+		\update_option( 'atmosphere_identity', array( 'did' => 'did:plc:new' ), false );
+		\update_option( 'atmosphere_reaction_sync_did', 'did:plc:old', false );
+		\update_option( 'atmosphere_last_seen_notification', 'at://old/notification', false );
+		\update_option( 'atmosphere_last_seen_own_like', 'at://old/like', false );
+		\update_option( 'atmosphere_last_seen_own_repost', 'at://old/repost', false );
+		\update_option( 'atmosphere_last_seen_own_post', 'at://old/post', false );
+		\update_option( 'atmosphere_reaction_sync_pagination', array( 'old' => array() ), false );
+
+		$method = new \ReflectionMethod( Reaction_Sync::class, 'prepare_account_state' );
+		$method->invoke( null );
+
+		$this->assertSame( 'did:plc:new', \get_option( 'atmosphere_reaction_sync_did' ) );
+		$this->assertFalse( \get_option( 'atmosphere_last_seen_notification', false ) );
+		$this->assertFalse( \get_option( 'atmosphere_last_seen_own_like', false ) );
+		$this->assertFalse( \get_option( 'atmosphere_last_seen_own_repost', false ) );
+		$this->assertFalse( \get_option( 'atmosphere_last_seen_own_post', false ) );
+		$this->assertFalse( \get_option( 'atmosphere_reaction_sync_pagination', false ) );
+
+		\delete_option( 'atmosphere_identity' );
+	}
+
+	/**
+	 * The reaction lock must reclaim stale rows and only release its own lease.
+	 */
+	public function test_reaction_lock_reclaims_stale_row_without_deleting_successor() {
+		\update_option(
+			'_atmosphere_reaction_sync_lock',
+			(string) \wp_json_encode(
+				array(
+					'expires_at' => \time() - 1,
+					'token'      => 'stale-worker',
+				)
+			),
+			false
+		);
+
+		$lock   = new \ReflectionMethod( Reaction_Sync::class, 'lock' );
+		$unlock = new \ReflectionMethod( Reaction_Sync::class, 'unlock' );
+
+		$this->assertTrue( $lock->invoke( null ) );
+
+		$successor = (string) \wp_json_encode(
+			array(
+				'expires_at' => \time() + 300,
+				'token'      => 'successor-worker',
+			)
+		);
+
+		\update_option( '_atmosphere_reaction_sync_lock', $successor, false );
+		$unlock->invoke( null );
+
+		$this->assertSame( $successor, \get_option( '_atmosphere_reaction_sync_lock' ) );
+	}
+
+	/**
+	 * A targeted backfill must fail before HTTP when another sync owns the lock.
+	 */
+	public function test_backfill_replies_respects_active_reaction_lock() {
+		\update_option( 'atmosphere_identity', array( 'did' => 'did:plc:me' ), false );
+		\update_option( 'atmosphere_connection', array( 'access_token' => 'test-token' ), false );
+		\update_option(
+			'_atmosphere_reaction_sync_lock',
+			(string) \wp_json_encode(
+				array(
+					'expires_at' => \time() + 300,
+					'token'      => 'other-worker',
+				)
+			),
+			false
+		);
+
+		$fetched  = false;
+		$tripwire = static function ( $response ) use ( &$fetched ) {
+			$fetched = true;
+			return $response;
+		};
+
+		\add_filter( 'pre_http_request', $tripwire );
+
+		try {
+			$result = Reaction_Sync::backfill_replies( 1 );
+		} finally {
+			\remove_filter( 'pre_http_request', $tripwire );
+			\delete_option( 'atmosphere_connection' );
+			\delete_option( 'atmosphere_identity' );
+		}
+
+		$this->assertWPError( $result );
+		$this->assertSame( 'atmosphere_reaction_sync_locked', $result->get_error_code() );
+		$this->assertFalse( $fetched );
+	}
+
+	/**
+	 * The rolling selector prioritizes posts never checked before filling the
+	 * batch with the least-recently checked posts.
+	 */
+	public function test_get_backfill_post_ids_prioritizes_unchecked_then_oldest_checked() {
+		$post_ids = self::factory()->post->create_many(
+			5,
+			array(
+				'post_status' => 'publish',
+			)
+		);
+
+		foreach ( $post_ids as $index => $post_id ) {
+			\update_post_meta(
+				$post_id,
+				BskyPost::META_URI,
+				'at://did:plc:me/app.bsky.feed.post/rolling-' . $index
+			);
+		}
+
+		\update_post_meta( $post_ids[0], '_atmosphere_reply_backfill_checked_at', 200 );
+		\update_post_meta( $post_ids[1], '_atmosphere_reply_backfill_checked_at', 100 );
+		\update_post_meta( $post_ids[4], '_atmosphere_reply_backfill_checked_at', 50 );
+
+		$draft_id = self::factory()->post->create( array( 'post_status' => 'draft' ) );
+		\update_post_meta( $draft_id, BskyPost::META_URI, 'at://did:plc:me/app.bsky.feed.post/draft' );
+
+		$protected_id = self::factory()->post->create(
+			array(
+				'post_status'   => 'publish',
+				'post_password' => 'secret',
+			)
+		);
+		\update_post_meta( $protected_id, BskyPost::META_URI, 'at://did:plc:me/app.bsky.feed.post/protected' );
+
+		/*
+		 * An empty root-URI meta can never backfill; it must not be
+		 * selected, or it would burn a batch slot on every rotation.
+		 */
+		$empty_uri_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		\update_post_meta( $empty_uri_id, BskyPost::META_URI, '' );
+
+		$method = new \ReflectionMethod( Reaction_Sync::class, 'get_backfill_post_ids' );
+		$actual = $method->invoke( null, 4 );
+
+		$this->assertSame(
+			array(
+				$post_ids[2],
+				$post_ids[3],
+				$post_ids[4],
+				$post_ids[1],
+			),
+			$actual
+		);
+	}
+
+	/**
+	 * The scheduled worker checks only its configured batch, timestamps every
+	 * attempt, and starts the next run with the remaining unchecked post.
+	 */
+	public function test_scheduled_backfill_runs_bounded_rolling_batches() {
+		$post_ids = self::factory()->post->create_many(
+			3,
+			array(
+				'post_status' => 'publish',
+			)
+		);
+		$uris     = array();
+
+		foreach ( $post_ids as $index => $post_id ) {
+			$uris[ $post_id ] = 'at://did:plc:me/app.bsky.feed.post/scheduled-' . $index;
+			\update_post_meta( $post_id, BskyPost::META_URI, $uris[ $post_id ] );
+		}
+
+		\update_option( 'atmosphere_identity', array( 'did' => 'did:plc:me' ), false );
+		\update_option( 'atmosphere_connection', array( 'access_token' => 'test-token' ), false );
+		\add_filter( 'atmosphere_reply_backfill_batch_size', static fn() => 2 );
+
+		$captured = array();
+		$http     = function ( $response, $args, $url ) use ( &$captured ) {
+			if ( false === \strpos( $url, 'public.api.bsky.app/xrpc/app.bsky.feed.getPostThread' ) ) {
+				return $response;
+			}
+
+			$query = array();
+			\parse_str( (string) \wp_parse_url( $url, \PHP_URL_QUERY ), $query );
+
+			$uri        = (string) ( $query['uri'] ?? '' );
+			$captured[] = $uri;
+
+			return $this->mock_thread_response(
+				array(
+					'$type'   => 'app.bsky.feed.defs#threadViewPost',
+					'post'    => array( 'uri' => $uri ),
+					'replies' => array(),
+				)
+			);
+		};
+
+		\add_filter( 'pre_http_request', $http, 10, 3 );
+
+		try {
+			Reaction_Sync::backfill_scheduled_replies();
+
+			$this->assertSame( array( $uris[ $post_ids[0] ], $uris[ $post_ids[1] ] ), $captured );
+			$this->assertGreaterThan( 0, (int) \get_post_meta( $post_ids[0], '_atmosphere_reply_backfill_checked_at', true ) );
+			$this->assertGreaterThan( 0, (int) \get_post_meta( $post_ids[1], '_atmosphere_reply_backfill_checked_at', true ) );
+			$this->assertSame( '', \get_post_meta( $post_ids[2], '_atmosphere_reply_backfill_checked_at', true ) );
+			$this->assertFalse( \get_option( '_atmosphere_reaction_sync_lock', false ) );
+
+			$captured = array();
+			Reaction_Sync::backfill_scheduled_replies();
+
+			$this->assertSame( $uris[ $post_ids[2] ], $captured[0] ?? '' );
+			$this->assertCount( 2, $captured );
+			$this->assertGreaterThan( 0, (int) \get_post_meta( $post_ids[2], '_atmosphere_reply_backfill_checked_at', true ) );
+			$this->assertFalse( \get_option( '_atmosphere_reaction_sync_lock', false ) );
+		} finally {
+			\remove_filter( 'pre_http_request', $http, 10 );
+			\delete_option( 'atmosphere_connection' );
+			\delete_option( 'atmosphere_identity' );
+		}
+	}
+
+	/**
+	 * A targeted thread backfill imports missed parents before their children
+	 * and remains idempotent when the command is repeated.
+	 */
+	public function test_import_thread_replies_recovers_nested_replies_idempotently() {
+		$post_id    = self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		$root_uri   = 'at://did:plc:me/app.bsky.feed.post/root';
+		$parent_uri = 'at://did:plc:alice/app.bsky.feed.post/parent';
+		$child_uri  = 'at://did:plc:bob/app.bsky.feed.post/child';
+
+		\update_post_meta( $post_id, BskyPost::META_URI, $root_uri );
+		\set_transient( 'atmosphere_profile_' . \md5( 'did:plc:alice' ), array( 'handle' => 'alice.test' ), \HOUR_IN_SECONDS );
+		\set_transient( 'atmosphere_profile_' . \md5( 'did:plc:bob' ), array( 'handle' => 'bob.test' ), \HOUR_IN_SECONDS );
+
+		$thread = array(
+			'$type'   => 'app.bsky.feed.defs#threadViewPost',
+			'post'    => array( 'uri' => $root_uri ),
+			'replies' => array(
+				array(
+					'$type'   => 'app.bsky.feed.defs#threadViewPost',
+					'post'    => array(
+						'uri'    => $parent_uri,
+						'cid'    => 'bafyparent',
+						'author' => array(
+							'did'    => 'did:plc:alice',
+							'handle' => 'alice.test',
+						),
+						'record' => array(
+							'text'      => 'Parent reply.',
+							'createdAt' => '2026-07-10T12:00:00.000Z',
+							'reply'     => array(
+								'root'   => array( 'uri' => $root_uri ),
+								'parent' => array( 'uri' => $root_uri ),
+							),
+						),
+					),
+					'replies' => array(
+						array(
+							'$type' => 'app.bsky.feed.defs#threadViewPost',
+							'post'  => array(
+								'uri'    => $child_uri,
+								'cid'    => 'bafychild',
+								'author' => array(
+									'did'    => 'did:plc:bob',
+									'handle' => 'bob.test',
+								),
+								'record' => array(
+									'text'      => 'Child reply.',
+									'createdAt' => '2026-07-10T11:55:00.000Z',
+									'reply'     => array(
+										'root'   => array( 'uri' => $root_uri ),
+										'parent' => array( 'uri' => $parent_uri ),
+									),
+								),
+							),
+						),
+					),
+				),
+			),
+		);
+
+		$method = new \ReflectionMethod( Reaction_Sync::class, 'import_thread_replies' );
+		$first  = $method->invoke( null, $root_uri, $thread );
+
+		$this->assertSame(
+			array(
+				'found'    => 2,
+				'imported' => 2,
+				'existing' => 0,
+				'skipped'  => 0,
+				'pending'  => 2,
+			),
+			$first
+		);
+
+		$parent_id = $this->find_comment_id_by_source_uri( $parent_uri );
+		$child_id  = $this->find_comment_id_by_source_uri( $child_uri );
+
+		$this->assertIsInt( $parent_id );
+		$this->assertIsInt( $child_id );
+		$this->assertSame( (string) $parent_id, \get_comment( $child_id )->comment_parent );
+
+		$second = $method->invoke( null, $root_uri, $thread );
+		$this->assertSame(
+			array(
+				'found'    => 2,
+				'imported' => 0,
+				'existing' => 2,
+				'skipped'  => 0,
+				'pending'  => 0,
+			),
+			$second
+		);
+	}
+
+	/**
+	 * Replies the admin moderated away must not be re-imported by a later
+	 * thread audit — spammed and trashed comments stay visible to dedup.
+	 */
+	public function test_import_thread_replies_does_not_resurrect_moderated_replies() {
+		$post_id   = self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		$root_uri  = 'at://did:plc:me/app.bsky.feed.post/root-moderated';
+		$spam_uri  = 'at://did:plc:alice/app.bsky.feed.post/spammed';
+		$trash_uri = 'at://did:plc:alice/app.bsky.feed.post/trashed';
+
+		\update_post_meta( $post_id, BskyPost::META_URI, $root_uri );
+		\set_transient( 'atmosphere_profile_' . \md5( 'did:plc:alice' ), array( 'handle' => 'alice.test' ), \HOUR_IN_SECONDS );
+
+		$reply = static function ( string $uri, string $text ) use ( $root_uri ): array {
+			return array(
+				'$type' => 'app.bsky.feed.defs#threadViewPost',
+				'post'  => array(
+					'uri'    => $uri,
+					'cid'    => 'bafy' . \md5( $uri ),
+					'author' => array(
+						'did'    => 'did:plc:alice',
+						'handle' => 'alice.test',
+					),
+					'record' => array(
+						'text'      => $text,
+						'createdAt' => '2026-07-10T12:00:00.000Z',
+						'reply'     => array(
+							'root'   => array( 'uri' => $root_uri ),
+							'parent' => array( 'uri' => $root_uri ),
+						),
+					),
+				),
+			);
+		};
+
+		$thread = array(
+			'$type'   => 'app.bsky.feed.defs#threadViewPost',
+			'post'    => array( 'uri' => $root_uri ),
+			'replies' => array(
+				$reply( $spam_uri, 'Spam me.' ),
+				$reply( $trash_uri, 'Trash me.' ),
+			),
+		);
+
+		$method = new \ReflectionMethod( Reaction_Sync::class, 'import_thread_replies' );
+		$first  = $method->invoke( null, $root_uri, $thread );
+
+		$this->assertSame( 2, $first['imported'] );
+
+		\wp_spam_comment( $this->find_comment_id_by_source_uri( $spam_uri ) );
+		\wp_trash_comment( $this->find_comment_id_by_source_uri( $trash_uri ) );
+
+		$second = $method->invoke( null, $root_uri, $thread );
+
+		$this->assertSame(
+			array(
+				'found'    => 2,
+				'imported' => 0,
+				'existing' => 2,
+				'skipped'  => 0,
+				'pending'  => 0,
+			),
+			$second
+		);
+	}
+
+	/**
+	 * The public backfill path fetches getPostThread without requiring a new
+	 * OAuth RPC permission, then imports the returned replies.
+	 */
+	public function test_backfill_replies_fetches_public_thread() {
+		$post_id   = self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		$root_uri  = 'at://did:plc:me/app.bsky.feed.post/root-public';
+		$reply_uri = 'at://did:plc:alice/app.bsky.feed.post/reply-public';
+
+		\update_post_meta( $post_id, BskyPost::META_URI, $root_uri );
+		\update_option( 'atmosphere_identity', array( 'did' => 'did:plc:me' ), false );
+		\update_option( 'atmosphere_connection', array( 'access_token' => 'test-token' ), false );
+		\set_transient( 'atmosphere_profile_' . \md5( 'did:plc:alice' ), array( 'handle' => 'alice.test' ), \HOUR_IN_SECONDS );
+
+		$captured = array();
+		$http     = function ( $response, $args, $url ) use ( $root_uri, $reply_uri, &$captured ) {
+			if ( false === \strpos( $url, 'public.api.bsky.app/xrpc/app.bsky.feed.getPostThread' ) ) {
+				return $response;
+			}
+
+			$captured = array(
+				'args' => $args,
+				'url'  => $url,
+			);
+
+			return $this->mock_thread_response(
+				array(
+					'$type'   => 'app.bsky.feed.defs#threadViewPost',
+					'post'    => array( 'uri' => $root_uri ),
+					'replies' => array(
+						array(
+							'$type' => 'app.bsky.feed.defs#threadViewPost',
+							'post'  => array(
+								'uri'    => $reply_uri,
+								'cid'    => 'bafyreply',
+								'author' => array(
+									'did'    => 'did:plc:alice',
+									'handle' => 'alice.test',
+								),
+								'record' => array(
+									'text'      => 'Recovered reply.',
+									'createdAt' => '2026-07-10T12:00:00.000Z',
+									'reply'     => array(
+										'root'   => array( 'uri' => $root_uri ),
+										'parent' => array( 'uri' => $root_uri ),
+									),
+								),
+							),
+						),
+					),
+				)
+			);
+		};
+
+		\add_filter( 'pre_http_request', $http, 10, 3 );
+
+		try {
+			$result = Reaction_Sync::backfill_replies( $post_id );
+		} finally {
+			\remove_filter( 'pre_http_request', $http, 10 );
+			\delete_option( 'atmosphere_connection' );
+			\delete_option( 'atmosphere_identity' );
+		}
+
+		$query = array();
+		\parse_str( (string) \wp_parse_url( $captured['url'], \PHP_URL_QUERY ), $query );
+
+		$this->assertSame(
+			array(
+				'found'    => 1,
+				'imported' => 1,
+				'existing' => 0,
+				'skipped'  => 0,
+				'pending'  => 1,
+			),
+			$result
+		);
+		$this->assertSame( $root_uri, $query['uri'] ?? '' );
+		$this->assertSame( 120, $captured['args']['timeout'] );
+		$this->assertSame( 0, $captured['args']['redirection'] );
+		$this->assertIsInt( $this->find_comment_id_by_source_uri( $reply_uri ) );
+	}
+
+	/**
+	 * Find a comment by the inbound source URI written by Reaction_Sync.
+	 *
+	 * Delegates to the production dedup query so the tests exercise the same
+	 * lookup the sync itself uses.
+	 *
+	 * @param string $uri Source AT-URI.
+	 * @return int|false Comment ID or false.
+	 */
+	private function find_comment_id_by_source_uri( string $uri ): int|false {
+		$method = new \ReflectionMethod( Reaction_Sync::class, 'find_comment_by_source_id' );
+
+		return $method->invoke( null, $uri );
+	}
+
+	/**
+	 * Build a getPostThread HTTP response for the pre_http_request filter.
+	 *
+	 * @param array $thread Hydrated threadViewPost node.
+	 * @return array WP HTTP API response array.
+	 */
+	private function mock_thread_response( array $thread ): array {
+		return array(
+			'response' => array( 'code' => 200 ),
+			'headers'  => new \WpOrg\Requests\Utility\CaseInsensitiveDictionary( array() ),
+			'body'     => (string) \wp_json_encode( array( 'thread' => $thread ) ),
+		);
 	}
 
 	/**

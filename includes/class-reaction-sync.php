@@ -107,6 +107,108 @@ class Reaction_Sync {
 	private const OPTION_LAST_SEEN_OWN_PREFIX = 'atmosphere_last_seen_own_';
 
 	/**
+	 * In-progress pagination state for streams that exceed one cron run.
+	 *
+	 * Keyed by the stream's watermark option so notifications and each own-
+	 * repo collection can resume independently.
+	 *
+	 * @var string
+	 */
+	private const OPTION_PAGINATION_STATE = 'atmosphere_reaction_sync_pagination';
+
+	/**
+	 * DID whose reaction-sync watermarks belong to the current account.
+	 *
+	 * @var string
+	 */
+	private const OPTION_SYNC_DID = 'atmosphere_reaction_sync_did';
+
+	/**
+	 * Post meta recording the most recent automatic reply-backfill attempt.
+	 *
+	 * @var string
+	 */
+	private const META_BACKFILL_CHECKED_AT = '_atmosphere_reply_backfill_checked_at';
+
+	/**
+	 * Posts audited during each daily automatic reply-backfill run.
+	 *
+	 * @var int
+	 */
+	private const DEFAULT_BACKFILL_BATCH_SIZE = 5;
+
+	/**
+	 * Comment statuses considered by the source-URI dedup lookups.
+	 *
+	 * `WP_Comment_Query`'s default status only matches approved and pending
+	 * comments. Spammed and trashed comments must stay visible to dedup, or
+	 * the thread backfill would re-import a reply the admin moderated away
+	 * on every audit.
+	 *
+	 * @var string[]
+	 */
+	private const DEDUP_COMMENT_STATUSES = array( 'approve', 'hold', 'spam', 'trash', 'post-trashed' );
+
+	/**
+	 * Comment statuses a nested reply may thread under.
+	 *
+	 * Deliberately narrower than {@see self::DEDUP_COMMENT_STATUSES}: a
+	 * parent the admin moderated away (spam/trash) must not resolve, or
+	 * its replies would import and render as top-level comments —
+	 * resurfacing a suppressed conversation without its context. An
+	 * unresolved parent drops the reply as an orphan instead (see the
+	 * rationale in {@see self::process_reply()}).
+	 *
+	 * @var string[]
+	 */
+	private const PARENT_COMMENT_STATUSES = array( 'approve', 'hold' );
+
+	/**
+	 * Maximum reply nodes imported from one getPostThread response.
+	 *
+	 * Bounds one backfill run's comment inserts (and their spam-check HTTP
+	 * calls) when a thread is unexpectedly huge.
+	 *
+	 * @var int
+	 */
+	private const MAX_THREAD_REPLIES = 500;
+
+	/**
+	 * Cross-process lock guarding reaction sync and targeted reply backfills.
+	 *
+	 * @var string
+	 */
+	public const LOCK_OPTION = '_atmosphere_reaction_sync_lock';
+
+	/**
+	 * Maximum lock age before another worker may reclaim it.
+	 *
+	 * The lock is renewed between remote requests and imported items, so this
+	 * only needs to exceed the longest individual request timeout (120 seconds
+	 * for getPostThread) plus local processing overhead.
+	 *
+	 * @var int
+	 */
+	private const LOCK_TTL = 180;
+
+	/**
+	 * Consecutive continuation failures before restarting from the newest page.
+	 *
+	 * Restarting is safe because the old watermark is not advanced while a
+	 * continuation is active and imported reactions are deduplicated by URI.
+	 *
+	 * @var int
+	 */
+	private const MAX_PAGINATION_FAILURES = 3;
+
+	/**
+	 * Cross-process lock shared by reaction sync and reply backfills.
+	 *
+	 * @var Lock|null
+	 */
+	private static ?Lock $lock = null;
+
+	/**
 	 * Register display-side hooks.
 	 */
 	public static function register(): void {
@@ -275,6 +377,24 @@ class Reaction_Sync {
 			return;
 		}
 
+		if ( ! self::lock() ) {
+			debug_log( 'reaction sync skipped: another reaction sync or reply backfill is already running' );
+			return;
+		}
+
+		try {
+			self::sync_locked();
+		} finally {
+			self::unlock();
+		}
+	}
+
+	/**
+	 * Run reaction sync while holding the cross-process lock.
+	 */
+	private static function sync_locked(): void {
+		self::prepare_account_state();
+
 		/*
 		 * Probe the access token once before walking the four streams.
 		 * Without this, a refresh that's locked or has just flipped
@@ -307,6 +427,430 @@ class Reaction_Sync {
 		self::sync_own_collection( 'app.bsky.feed.like', 'like' );
 		self::sync_own_collection( 'app.bsky.feed.repost', 'repost' );
 		self::sync_own_collection( 'app.bsky.feed.post', 'comment' );
+	}
+
+	/**
+	 * Backfill replies for one already-published WordPress post.
+	 *
+	 * Unlike the notification stream, getPostThread is scoped to the target
+	 * post, so it can recover replies that an older watermark already skipped
+	 * without replaying the connected account's entire notification history.
+	 * Existing comments are deduplicated by source AT-URI.
+	 *
+	 * @param int $post_id WordPress post ID.
+	 * @return array{found: int, imported: int, existing: int, skipped: int, pending: int}|\WP_Error Result counts or an error.
+	 */
+	public static function backfill_replies( int $post_id ): array|\WP_Error {
+		if ( ! is_connected() ) {
+			return new \WP_Error(
+				'atmosphere_not_connected',
+				\__( 'Not connected to AT Protocol.', 'atmosphere' )
+			);
+		}
+
+		if ( ! self::replies_enabled() ) {
+			return new \WP_Error(
+				'atmosphere_reply_sync_disabled',
+				\__( 'Reply syncing is disabled in the ATmosphere settings.', 'atmosphere' )
+			);
+		}
+
+		if ( ! self::lock() ) {
+			return new \WP_Error(
+				'atmosphere_reaction_sync_locked',
+				\__( 'Another reaction sync or reply backfill is already running. Try again shortly.', 'atmosphere' )
+			);
+		}
+
+		try {
+			return self::backfill_replies_locked( $post_id );
+		} finally {
+			self::unlock();
+		}
+	}
+
+	/**
+	 * Audit a bounded batch of published Bluesky posts for missed replies.
+	 *
+	 * Called by the daily `atmosphere_backfill_replies` cron event. Posts that
+	 * have never been checked are selected first; after the initial sweep, the
+	 * least-recently checked posts rotate back through the batch. Each attempt
+	 * gets a timestamp even when the public AppView request fails, preventing a
+	 * single unavailable thread from starving every newer post indefinitely.
+	 */
+	public static function backfill_scheduled_replies(): void {
+		if ( ! is_connected() || ! self::replies_enabled() ) {
+			return;
+		}
+
+		if ( ! self::lock() ) {
+			debug_log( 'automatic reply backfill skipped: another reaction sync or reply backfill is already running' );
+			return;
+		}
+
+		try {
+			self::prepare_account_state();
+
+			/**
+			 * Filters how many posts the automatic reply backfill checks per run.
+			 *
+			 * Return 0 to disable the rolling audit while leaving normal reaction
+			 * sync and the explicit WP-CLI backfill command enabled. Values above
+			 * 20 are clamped to keep one WP-Cron request bounded.
+			 *
+			 * @since unreleased
+			 *
+			 * @param int $batch_size Posts checked per daily run. Default 5.
+			 */
+			$batch_size = (int) \apply_filters(
+				'atmosphere_reply_backfill_batch_size',
+				self::DEFAULT_BACKFILL_BATCH_SIZE
+			);
+			$batch_size = \min( 20, \max( 0, $batch_size ) );
+
+			if ( 0 === $batch_size ) {
+				return;
+			}
+
+			foreach ( self::get_backfill_post_ids( $batch_size ) as $post_id ) {
+				if ( ! self::refresh_lock() ) {
+					debug_log( 'automatic reply backfill stopped after losing its coordination lock' );
+					break;
+				}
+
+				$result = self::backfill_replies_locked( $post_id );
+
+				if ( \is_wp_error( $result ) ) {
+					debug_log(
+						\sprintf(
+							'automatic reply backfill failed for post %d: %s — %s',
+							$post_id,
+							$result->get_error_code(),
+							$result->get_error_message()
+						)
+					);
+
+					/*
+					 * A lost lock aborts the whole batch without stamping the
+					 * post, so the next run retries it. Other errors count as
+					 * an attempt and move on to the next post.
+					 */
+					if ( 'atmosphere_reaction_sync_lock_lost' === $result->get_error_code() ) {
+						break;
+					}
+
+					\update_post_meta( $post_id, self::META_BACKFILL_CHECKED_AT, \time() );
+					continue;
+				}
+
+				\update_post_meta( $post_id, self::META_BACKFILL_CHECKED_AT, \time() );
+
+				if ( 0 < $result['imported'] ) {
+					debug_log(
+						\sprintf(
+							'automatic reply backfill imported %d replies for post %d',
+							$result['imported'],
+							$post_id
+						)
+					);
+				}
+			}
+		} finally {
+			self::unlock();
+		}
+	}
+
+	/**
+	 * Backfill replies for one post while holding the cross-process lock.
+	 *
+	 * @param int $post_id WordPress post ID.
+	 * @return array{found: int, imported: int, existing: int, skipped: int, pending: int}|\WP_Error Result counts or an error.
+	 */
+	private static function backfill_replies_locked( int $post_id ): array|\WP_Error {
+
+		$post_uri         = (string) \get_post_meta( $post_id, BskyPost::META_URI, true );
+		$resolved_post_id = self::find_post_by_bsky_uri( $post_uri );
+
+		if ( '' === $post_uri || $post_id !== $resolved_post_id ) {
+			return new \WP_Error(
+				'atmosphere_reply_backfill_unavailable',
+				\__( 'This post does not have a public Bluesky post to backfill.', 'atmosphere' )
+			);
+		}
+
+		/*
+		 * getPostThread is public and is not part of the plugin's requested
+		 * OAuth RPC permissions. Call the public Bluesky AppView directly;
+		 * routing it through the PDS would require a service-proxy grant that
+		 * existing connections do not hold.
+		 */
+		$url      = \add_query_arg(
+			array(
+				'uri'          => $post_uri,
+				'depth'        => 100,
+				'parentHeight' => 0,
+			),
+			'https://public.api.bsky.app/xrpc/app.bsky.feed.getPostThread'
+		);
+		$response = \wp_safe_remote_get(
+			$url,
+			array(
+				'timeout'     => 120,
+				'redirection' => 0,
+			)
+		);
+
+		if ( \is_wp_error( $response ) ) {
+			return $response;
+		}
+
+		if ( ! self::refresh_lock() ) {
+			return new \WP_Error(
+				'atmosphere_reaction_sync_lock_lost',
+				\__( 'The reply backfill lock expired before the Bluesky thread finished loading. Run the command again.', 'atmosphere' )
+			);
+		}
+
+		$status = \wp_remote_retrieve_response_code( $response );
+
+		if ( ! is_success_status( $status ) ) {
+			return new \WP_Error(
+				'atmosphere_reply_backfill_request_failed',
+				\__( 'Could not load this post’s Bluesky thread.', 'atmosphere' ),
+				array( 'status' => $status )
+			);
+		}
+
+		$response = \json_decode( \wp_remote_retrieve_body( $response ), true );
+
+		if ( ! \is_array( $response ) ) {
+			return new \WP_Error(
+				'atmosphere_reply_backfill_invalid_response',
+				\__( 'Bluesky returned an invalid thread response.', 'atmosphere' )
+			);
+		}
+
+		$thread     = $response['thread'] ?? null;
+		$thread_uri = \is_array( $thread ) ? (string) ( $thread['post']['uri'] ?? '' ) : '';
+
+		if ( ! \is_array( $thread ) || $post_uri !== $thread_uri ) {
+			return new \WP_Error(
+				'atmosphere_reply_backfill_invalid_thread',
+				\__( 'Bluesky returned an invalid thread for this post.', 'atmosphere' )
+			);
+		}
+
+		return self::import_thread_replies( $post_uri, $thread );
+	}
+
+	/**
+	 * Select posts for the next rolling automatic reply-backfill batch.
+	 *
+	 * Published, password-free posts with a Bluesky root URI are eligible.
+	 * Never-checked posts are returned by ascending ID first, making the initial
+	 * historical sweep deterministic. Remaining capacity is filled by the
+	 * oldest checked timestamps so every post is eventually revisited.
+	 *
+	 * @param int $limit Maximum post IDs to return.
+	 * @return int[] Post IDs to audit.
+	 */
+	private static function get_backfill_post_ids( int $limit ): array {
+		$post_types = get_supported_post_types();
+
+		if ( 1 > $limit || empty( $post_types ) ) {
+			return array();
+		}
+
+		$common = array(
+			'post_type'              => $post_types,
+			'post_status'            => 'publish',
+			'has_password'           => false,
+			'fields'                 => 'ids',
+			'no_found_rows'          => true,
+			'update_post_meta_cache' => false,
+			'update_post_term_cache' => false,
+		);
+
+		$unchecked = \get_posts(
+			\array_merge(
+				$common,
+				array(
+					'posts_per_page' => $limit,
+					'orderby'        => array( 'ID' => 'ASC' ),
+					'meta_query'     => array( // phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_query
+						'relation' => 'AND',
+						array(
+							'key'     => BskyPost::META_URI,
+							'value'   => '',
+							'compare' => '!=',
+						),
+						array(
+							'key'     => self::META_BACKFILL_CHECKED_AT,
+							'compare' => 'NOT EXISTS',
+						),
+					),
+				)
+			)
+		);
+
+		$post_ids  = \array_map( 'intval', $unchecked );
+		$remaining = $limit - \count( $post_ids );
+
+		if ( 1 > $remaining ) {
+			return $post_ids;
+		}
+
+		$checked = \get_posts(
+			\array_merge(
+				$common,
+				array(
+					'posts_per_page' => $remaining,
+					'meta_key'       => self::META_BACKFILL_CHECKED_AT, // phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_key
+					'orderby'        => array(
+						'meta_value_num' => 'ASC',
+						'ID'             => 'ASC',
+					),
+					'meta_query'     => array( // phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_query
+						array(
+							'key'     => BskyPost::META_URI,
+							'value'   => '',
+							'compare' => '!=',
+						),
+					),
+				)
+			)
+		);
+
+		return \array_merge( $post_ids, \array_map( 'intval', $checked ) );
+	}
+
+	/**
+	 * Import every usable reply in a hydrated Bluesky thread.
+	 *
+	 * @param string $post_uri Root Bluesky post AT-URI.
+	 * @param array  $thread   Hydrated threadViewPost response node.
+	 * The hydrated response is already a tree, so the pre-order traversal from
+	 * {@see self::collect_thread_replies()} is also a parent-before-child order.
+	 * Do not sort by record.createdAt: it is supplied by the remote author and
+	 * may be skewed, which can otherwise put a child before its parent and make
+	 * the child look unresolved.
+	 *
+	 * @return array{found: int, imported: int, existing: int, skipped: int, pending: int}|\WP_Error Result counts or an error.
+	 */
+	private static function import_thread_replies( string $post_uri, array $thread ): array|\WP_Error {
+		$posts = array();
+		self::collect_thread_replies( $thread, $posts );
+
+		if ( self::MAX_THREAD_REPLIES <= \count( $posts ) ) {
+			debug_log(
+				\sprintf(
+					'thread backfill for %s hit the %d-reply cap; remaining replies were skipped',
+					$post_uri,
+					self::MAX_THREAD_REPLIES
+				)
+			);
+		}
+
+		$existing_uris = self::find_existing_source_ids( \array_column( $posts, 'uri' ) );
+
+		$found    = 0;
+		$imported = 0;
+		$existing = 0;
+		$pending  = 0;
+
+		foreach ( $posts as $post ) {
+			if ( ! self::refresh_lock() ) {
+				return new \WP_Error(
+					'atmosphere_reaction_sync_lock_lost',
+					\__( 'The reply backfill lock expired while comments were being imported. Run the command again.', 'atmosphere' )
+				);
+			}
+
+			$record   = $post['record'] ?? array();
+			$root_uri = \is_array( $record ) ? (string) ( $record['reply']['root']['uri'] ?? '' ) : '';
+
+			if ( ! \is_array( $record ) || $post_uri !== $root_uri ) {
+				continue;
+			}
+
+			$reply_uri = (string) ( $post['uri'] ?? '' );
+
+			// A malformed/placeholder node without a URI is not a countable
+			// reply — skip it before it inflates `found` and rides through
+			// a doomed dedup + process_reply() pass.
+			if ( '' === $reply_uri ) {
+				continue;
+			}
+
+			++$found;
+
+			if ( isset( $existing_uris[ $reply_uri ] ) ) {
+				++$existing;
+				continue;
+			}
+
+			$result = self::process_reply(
+				array(
+					'uri'    => $reply_uri,
+					'cid'    => $post['cid'] ?? '',
+					'author' => \is_array( $post['author'] ?? null ) ? $post['author'] : array(),
+					'record' => $record,
+				)
+			);
+
+			if ( \is_int( $result ) ) {
+				++$imported;
+
+				$comment = \get_comment( $result );
+
+				if ( $comment && '1' !== (string) $comment->comment_approved ) {
+					++$pending;
+				}
+			}
+		}
+
+		return array(
+			'found'    => $found,
+			'imported' => $imported,
+			'existing' => $existing,
+			'skipped'  => $found - $imported - $existing,
+			'pending'  => $pending,
+		);
+	}
+
+	/**
+	 * Flatten hydrated reply nodes into post views.
+	 *
+	 * Blocked and not-found placeholders are not importable, but their reply
+	 * arrays are still traversed in case the appview exposes visible children.
+	 *
+	 * @param array $thread Hydrated thread node.
+	 * @param array $posts  Collected post views, passed by reference.
+	 */
+	private static function collect_thread_replies( array $thread, array &$posts ): void {
+		$replies = $thread['replies'] ?? array();
+
+		if ( ! \is_array( $replies ) ) {
+			return;
+		}
+
+		foreach ( $replies as $reply ) {
+			if ( self::MAX_THREAD_REPLIES <= \count( $posts ) ) {
+				return;
+			}
+
+			if ( ! \is_array( $reply ) ) {
+				continue;
+			}
+
+			if ( 'app.bsky.feed.defs#threadViewPost' === ( $reply['$type'] ?? '' )
+				&& \is_array( $reply['post'] ?? null )
+			) {
+				$posts[] = $reply['post'];
+			}
+
+			self::collect_thread_replies( $reply, $posts );
+		}
 	}
 
 	/**
@@ -344,14 +888,23 @@ class Reaction_Sync {
 	 * @param callable $process    Receives one item array.
 	 */
 	private static function paginate( callable $fetch, string $items_key, string $option_key, callable $process ): void {
-		$last_seen = \get_option( $option_key, '' );
-		$newest    = null;
-		$cursor    = null;
+		$state     = self::get_pagination_state( $option_key );
+		$resuming  = ! empty( $state );
+		$last_seen = $resuming ? $state['last_seen'] : (string) \get_option( $option_key, '' );
+		$newest    = $resuming && '' !== $state['newest'] ? $state['newest'] : null;
+		$cursor    = $resuming && '' !== $state['cursor'] ? $state['cursor'] : null;
+		$phase     = $resuming ? $state['phase'] : 1;
 		$pages     = 0;
 		$rewalk    = null;
 		$collected = array();
+		$complete  = false;
 
 		while ( $pages < self::MAX_PAGES ) {
+			if ( ! self::refresh_lock() ) {
+				debug_log( \sprintf( 'reaction sync (%s) stopped after losing its coordination lock', $option_key ) );
+				return;
+			}
+
 			$response = $fetch( $cursor );
 
 			if ( \is_wp_error( $response ) ) {
@@ -368,12 +921,32 @@ class Reaction_Sync {
 						$response->get_error_message()
 					)
 				);
+
+				if ( $resuming ) {
+					$failures = $state['failures'] + 1;
+
+					if ( self::MAX_PAGINATION_FAILURES <= $failures ) {
+						self::delete_pagination_state( $option_key );
+						debug_log(
+							\sprintf(
+								'reaction sync (%s) discarded its saved cursor after %d consecutive failures; the next run will restart from the newest page',
+								$option_key,
+								$failures
+							)
+						);
+					} else {
+						$state['failures'] = $failures;
+						self::save_pagination_state( $option_key, $state );
+					}
+				}
+
 				return;
 			}
 
 			$items = $response[ $items_key ] ?? array();
 
 			if ( empty( $items ) ) {
+				$complete = true;
 				break;
 			}
 
@@ -395,6 +968,7 @@ class Reaction_Sync {
 				}
 
 				if ( 0 === $rewalk ) {
+					$complete = true;
 					break 2;
 				}
 
@@ -409,8 +983,21 @@ class Reaction_Sync {
 			++$pages;
 
 			if ( ! $cursor ) {
+				$complete = true;
 				break;
 			}
+		}
+
+		/*
+		 * An armed grace counter means the watermark was reached, even when
+		 * the page budget ran out before the window was fully re-walked.
+		 * Saving a continuation here would resume *past* the watermark —
+		 * every older item can never match it, so the walk would continue
+		 * through the account's entire remaining history. Forfeit the
+		 * unwalked tail of the best-effort grace window instead.
+		 */
+		if ( null !== $rewalk ) {
+			$complete = true;
 		}
 
 		/*
@@ -428,11 +1015,217 @@ class Reaction_Sync {
 		 */
 		foreach ( \array_reverse( $collected ) as $item ) {
 			$process( $item );
+
+			if ( ! self::refresh_lock() ) {
+				debug_log( \sprintf( 'reaction sync (%s) stopped after losing its coordination lock', $option_key ) );
+				return;
+			}
 		}
+
+		/*
+		 * A stored watermark means this is an incremental sync, not the
+		 * intentionally bounded first import. If five pages were not enough
+		 * to reach that watermark, persist the response cursor and continue
+		 * from it next time. Advancing the watermark here used to strand every
+		 * item beyond page five permanently.
+		 */
+		if ( ! $complete && $cursor && $last_seen ) {
+			self::save_pagination_state(
+				$option_key,
+				array(
+					'cursor'    => $cursor,
+					'newest'    => (string) $newest,
+					'last_seen' => $last_seen,
+					'phase'     => $phase,
+					'failures'  => 0,
+				)
+			);
+			return;
+		}
+
+		/*
+		 * The first overflow pass is processed in bounded chunks. A newer
+		 * nested reply can therefore appear in an earlier chunk than its
+		 * older parent and be skipped before that parent is imported. Replay
+		 * the completed range once; dedup makes successful items cheap, while
+		 * previously-unresolved children now find their parents.
+		 */
+		if ( $resuming && 1 === $phase ) {
+			self::save_pagination_state(
+				$option_key,
+				array(
+					'cursor'    => '',
+					'newest'    => '',
+					'last_seen' => $last_seen,
+					'phase'     => 2,
+					'failures'  => 0,
+				)
+			);
+			return;
+		}
+
+		self::delete_pagination_state( $option_key );
 
 		if ( $newest ) {
 			\update_option( $option_key, $newest, false );
 		}
+	}
+
+	/**
+	 * Read and validate one stream's saved pagination state.
+	 *
+	 * @param string $option_key Stream watermark option name.
+	 * @return array{cursor: string, newest: string, last_seen: string, phase: int, failures: int}|array{}
+	 */
+	private static function get_pagination_state( string $option_key ): array {
+		$states = \get_option( self::OPTION_PAGINATION_STATE, array() );
+
+		if ( ! \is_array( $states ) ) {
+			\delete_option( self::OPTION_PAGINATION_STATE );
+			return array();
+		}
+
+		if ( ! isset( $states[ $option_key ] ) ) {
+			return array();
+		}
+
+		/*
+		 * A non-array entry has no valid `cursor` and fails the field
+		 * validation below, taking the same delete-and-return path.
+		 */
+		$state    = \is_array( $states[ $option_key ] ) ? $states[ $option_key ] : array();
+		$phase    = (int) ( $state['phase'] ?? 0 );
+		$failures = (int) ( $state['failures'] ?? 0 );
+
+		if ( ! \is_string( $state['cursor'] ?? null )
+			|| ! \is_string( $state['newest'] ?? null )
+			|| ! \is_string( $state['last_seen'] ?? null )
+			|| ! \in_array( $phase, array( 1, 2 ), true )
+			|| 0 > $failures
+			|| get_did() !== (string) ( $state['did'] ?? '' )
+		) {
+			self::delete_pagination_state( $option_key );
+			return array();
+		}
+
+		return array(
+			'cursor'    => $state['cursor'],
+			'newest'    => $state['newest'],
+			'last_seen' => $state['last_seen'],
+			'phase'     => $phase,
+			'failures'  => $failures,
+		);
+	}
+
+	/**
+	 * Persist one stream's continuation without disturbing other streams.
+	 *
+	 * @param string $option_key Stream watermark option name.
+	 * @param array  $state      Validated continuation state.
+	 */
+	private static function save_pagination_state( string $option_key, array $state ): void {
+		$states = \get_option( self::OPTION_PAGINATION_STATE, array() );
+
+		if ( ! \is_array( $states ) ) {
+			$states = array();
+		}
+
+		$state['did'] = get_did();
+
+		$states[ $option_key ] = $state;
+		\update_option( self::OPTION_PAGINATION_STATE, $states, false );
+	}
+
+	/**
+	 * Remove a completed stream's continuation state.
+	 *
+	 * @param string $option_key Stream watermark option name.
+	 */
+	private static function delete_pagination_state( string $option_key ): void {
+		$states = \get_option( self::OPTION_PAGINATION_STATE, array() );
+
+		if ( ! \is_array( $states ) || ! isset( $states[ $option_key ] ) ) {
+			return;
+		}
+
+		unset( $states[ $option_key ] );
+
+		if ( empty( $states ) ) {
+			\delete_option( self::OPTION_PAGINATION_STATE );
+			return;
+		}
+
+		\update_option( self::OPTION_PAGINATION_STATE, $states, false );
+	}
+
+	/**
+	 * Reset watermarks when reaction sync is used with a different account.
+	 *
+	 * Watermark URIs and saved cursors are repository-specific. Reusing them
+	 * after the site reconnects to another DID can make the new account walk
+	 * an unrelated history or resume a cursor issued for the previous repo.
+	 */
+	private static function prepare_account_state(): void {
+		$did        = get_did();
+		$stored_did = (string) \get_option( self::OPTION_SYNC_DID, '' );
+
+		if ( '' === $did ) {
+			return;
+		}
+
+		if ( '' !== $stored_did && $did !== $stored_did ) {
+			\delete_option( self::OPTION_LAST_SEEN_NOTIFICATION );
+			\delete_option( self::OPTION_LAST_SEEN_OWN_PREFIX . 'like' );
+			\delete_option( self::OPTION_LAST_SEEN_OWN_PREFIX . 'repost' );
+			\delete_option( self::OPTION_LAST_SEEN_OWN_PREFIX . 'post' );
+			\delete_option( self::OPTION_PAGINATION_STATE );
+		}
+
+		if ( $did !== $stored_did ) {
+			\update_option( self::OPTION_SYNC_DID, $did, false );
+		}
+	}
+
+	/**
+	 * The lease lock guarding reaction sync and targeted reply backfills.
+	 *
+	 * @return Lock
+	 */
+	private static function get_lock(): Lock {
+		if ( null === self::$lock ) {
+			self::$lock = new Lock( self::LOCK_OPTION, self::LOCK_TTL );
+		}
+
+		return self::$lock;
+	}
+
+	/**
+	 * Acquire the cross-process reaction-sync lock.
+	 *
+	 * @return bool Whether this request owns the lock.
+	 */
+	private static function lock(): bool {
+		return self::get_lock()->acquire();
+	}
+
+	/**
+	 * Renew the lock lease owned by this request.
+	 *
+	 * Calls outside a locked sync (notably focused private-method tests) are a
+	 * no-op. A failed renewal means another worker reclaimed the lock and the
+	 * current worker must stop writing.
+	 *
+	 * @return bool Whether this request still owns the lock.
+	 */
+	private static function refresh_lock(): bool {
+		return self::get_lock()->renew();
+	}
+
+	/**
+	 * Release this request's lock without deleting a successor's lock.
+	 */
+	private static function unlock(): void {
+		self::get_lock()->release();
 	}
 
 	/**
@@ -496,12 +1289,19 @@ class Reaction_Sync {
 
 		$did = get_did();
 
+		/*
+		 * getProfile can fail transiently, but our own handle is stored
+		 * locally — fall back to it so the comment author link never
+		 * degrades to a broken profile URL.
+		 */
+		$handle = self::resolve_author( $did )['handle'] ?? ( get_identity()['handle'] ?? '' );
+
 		$notification = array(
 			'uri'    => $record['uri'] ?? '',
 			'cid'    => $record['cid'] ?? '',
 			'author' => array(
 				'did'    => $did,
-				'handle' => self::resolve_author( $did )['handle'] ?? '',
+				'handle' => $handle,
 			),
 			'record' => $value,
 		);
@@ -544,8 +1344,10 @@ class Reaction_Sync {
 		$post_id        = self::find_post_by_bsky_uri( $parent_uri );
 
 		if ( ! $post_id ) {
-			// Nested reply: parent is an existing synced comment.
-			$parent_comment_id = self::find_comment_by_source_id( $parent_uri );
+			// Nested reply: parent is an existing synced comment. Only
+			// approved/pending parents resolve — a moderated-away parent
+			// drops the reply as an orphan below.
+			$parent_comment_id = self::find_comment_by_source_id( $parent_uri, self::PARENT_COMMENT_STATUSES );
 
 			if ( $parent_comment_id ) {
 				$parent_comment = \get_comment( $parent_comment_id );
@@ -563,8 +1365,10 @@ class Reaction_Sync {
 		 * comment is either:
 		 *
 		 *   - Orphaned: the parent was deleted on Bluesky (e.g. blocked
-		 *     user, account deletion) or removed from our moderation
-		 *     queue. Falling back to the root post would re-attach
+		 *     user, account deletion), or the admin moderated it away
+		 *     locally (spam, trash, hard delete — see
+		 *     PARENT_COMMENT_STATUSES). Falling back to the root post
+		 *     would resurface a suppressed conversation and re-attach
 		 *     every subsequent re-walk as a top-level orphan, looping
 		 *     the moderation queue indefinitely until the watermark
 		 *     advances past it.
@@ -902,6 +1706,21 @@ class Reaction_Sync {
 		$result = API::get( '/xrpc/app.bsky.actor.getProfile', array( 'actor' => $did ) );
 
 		if ( \is_wp_error( $result ) ) {
+			/*
+			 * Deliberately not cached: a transient blip must not poison
+			 * the profile cache for an hour. The reaction still imports
+			 * with a degraded profile (payload handle, no avatar) — leave
+			 * a breadcrumb, since dedup means it is never revisited.
+			 */
+			debug_log(
+				\sprintf(
+					'getProfile failed for %s: %s — %s',
+					$did,
+					$result->get_error_code(),
+					$result->get_error_message()
+				)
+			);
+
 			return array();
 		}
 
@@ -1147,10 +1966,14 @@ class Reaction_Sync {
 	/**
 	 * Find a WordPress comment by its source_id meta (AT-URI).
 	 *
-	 * @param string $uri AT-URI.
+	 * @param string   $uri      AT-URI.
+	 * @param string[] $statuses Comment statuses the lookup may match.
+	 *                           Defaults to the wide dedup set; parent
+	 *                           resolution passes the narrower
+	 *                           {@see self::PARENT_COMMENT_STATUSES}.
 	 * @return int|false
 	 */
-	private static function find_comment_by_source_id( string $uri ): int|false {
+	private static function find_comment_by_source_id( string $uri, array $statuses = self::DEDUP_COMMENT_STATUSES ): int|false {
 		if ( empty( $uri ) ) {
 			return false;
 		}
@@ -1161,9 +1984,56 @@ class Reaction_Sync {
 				'meta_value' => $uri, // phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_value
 				'number'     => 1,
 				'fields'     => 'ids',
+				'status'     => $statuses,
 			)
 		);
 
 		return ! empty( $comments ) ? (int) $comments[0] : false;
+	}
+
+	/**
+	 * Find which of the given source AT-URIs already exist as comments.
+	 *
+	 * One batched lookup replaces a per-reply dedup query when importing a
+	 * whole thread.
+	 *
+	 * @param array $uris Candidate source AT-URIs.
+	 * @return array<string, true> Set of URIs that already have a comment.
+	 */
+	private static function find_existing_source_ids( array $uris ): array {
+		$uris = \array_values(
+			\array_unique(
+				\array_filter( $uris, static fn( $uri ) => \is_string( $uri ) && '' !== $uri )
+			)
+		);
+
+		if ( empty( $uris ) ) {
+			return array();
+		}
+
+		$comments = \get_comments(
+			array(
+				'status'     => self::DEDUP_COMMENT_STATUSES,
+				'meta_query' => array( // phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_query
+					array(
+						'key'     => self::META_SOURCE_ID,
+						'value'   => $uris,
+						'compare' => 'IN',
+					),
+				),
+			)
+		);
+
+		$existing = array();
+
+		foreach ( $comments as $comment ) {
+			$uri = (string) \get_comment_meta( (int) $comment->comment_ID, self::META_SOURCE_ID, true );
+
+			if ( '' !== $uri ) {
+				$existing[ $uri ] = true;
+			}
+		}
+
+		return $existing;
 	}
 }

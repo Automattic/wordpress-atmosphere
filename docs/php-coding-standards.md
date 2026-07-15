@@ -228,6 +228,7 @@ use function Atmosphere\is_connected;
 \apply_filters( 'atmosphere_should_publish_comments',     $bool ); // Feature switch for publishing WP comments to Bluesky; runs after the stored setting, final say. NOT the per-comment `_comment` filter above.
 \apply_filters( 'atmosphere_should_sync_reply',           $bool, $notification, $post_id );
 \apply_filters( 'atmosphere_backfill_query_chunk_size',   500 );
+\apply_filters( 'atmosphere_reply_backfill_batch_size',   5 ); // Posts audited per daily reply-backfill run; 0 disables the rolling audit; clamped to 20.
 \apply_filters( 'atmosphere_publish_retry_delays',        array( 60, 300, 900 ) ); // Backoff ladder for failed publish/update cron workers; length = retry budget; empty array disables retries.
 \apply_filters( 'atmosphere_oauth_redirect_uri',          $uri );
 \apply_filters( 'atmosphere_client_metadata',             $metadata );

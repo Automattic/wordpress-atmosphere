@@ -324,10 +324,21 @@ class Atmosphere {
 
 		// Reaction sync cron + display hooks.
 		\add_action( 'atmosphere_sync_reactions', array( Reaction_Sync::class, 'sync' ) );
+		\add_action( 'atmosphere_backfill_replies', array( Reaction_Sync::class, 'backfill_scheduled_replies' ) );
 		Reaction_Sync::register();
 
 		if ( ! \wp_next_scheduled( 'atmosphere_sync_reactions' ) && is_connected() ) {
 			\wp_schedule_event( \time(), 'hourly', 'atmosphere_sync_reactions' );
+		}
+
+		if ( ! \wp_next_scheduled( 'atmosphere_backfill_replies' ) && is_connected() ) {
+			/*
+			 * The half-hour offset keeps the daily audit's due timestamps
+			 * from ever coinciding with the hourly sync's — a whole-hour
+			 * offset would collide every day, and both compete for the
+			 * same reaction-sync lock.
+			 */
+			\wp_schedule_event( \time() + \HOUR_IN_SECONDS / 2, 'daily', 'atmosphere_backfill_replies' );
 		}
 	}
 

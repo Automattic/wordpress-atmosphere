@@ -41,6 +41,8 @@ $atmosphere_options = array(
 	'atmosphere_sync_reactions',
 	'atmosphere_sync_replies',
 	'atmosphere_last_seen_notification',
+	'atmosphere_reaction_sync_pagination',
+	'atmosphere_reaction_sync_did',
 	'atmosphere_tid_last_ts',
 	'atmosphere_visibility_cleanup_migrated',
 	'atmosphere_visibility_cleanup_migrated_offset',
@@ -49,6 +51,9 @@ $atmosphere_options = array(
 	// Hardcoded here because `uninstall.php` runs before the plugin
 	// bootstrap is loaded, so the constant isn't available.
 	'_atmosphere_refresh_lock',
+	// Canonical value: `\Atmosphere\Reaction_Sync::LOCK_OPTION`.
+	// Hardcoded because the reaction-sync class is unavailable during uninstall.
+	'_atmosphere_reaction_sync_lock',
 	// Canonical value: `\Atmosphere\OAuth\Client::DISCONNECTED_OPTION`.
 	// Hardcoded for the same reason as `_atmosphere_refresh_lock`.
 	'atmosphere_disconnected',
@@ -85,6 +90,7 @@ $atmosphere_meta_keys = array(
 	'_atmosphere_visibility_cleanup',
 	'_atmosphere_publish_retries',
 	'_atmosphere_last_publish_error',
+	'_atmosphere_reply_backfill_checked_at',
 	'_atmosphere_blob_ref',
 	'atmosphere_custom_text',
 );
