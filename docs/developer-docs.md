@@ -45,8 +45,7 @@ ATmosphere exposes a small set of filters and actions for plugins to extend beha
 | `atmosphere_publication_labels` | filter | Add standard self-labels to `site.standard.publication` records. |
 | `atmosphere_publication_show_in_discover` | filter | Override `preferences.showInDiscover` (defaults to the site's `blog_public` option) for `site.standard.publication` records. |
 | `atmosphere_syncable_post_types` | filter | Add or remove post types eligible for cross-posting. |
-| `atmosphere_connection_only_mode` | filter | Return `true` to embed ATmosphere purely as a connection layer: auto cross-posting, reaction/reply import, comment publishing, and the settings screen all default off. |
-| `atmosphere_show_settings_page` | filter | Return `false` to hide the Settings → ATmosphere screen when another plugin drives the connection from Settings → Connectors. |
+| `atmosphere_connection_only_mode` | filter | Return `true` to embed ATmosphere purely as a connection layer: auto cross-posting, reaction/reply import, and comment publishing all default off, and the Settings → ATmosphere screen is hidden. |
 | `atmosphere_should_auto_publish` | filter | Effective on/off for automatic post cross-posting; runs after the stored setting and connection-only mode, and has the final say. |
 | `atmosphere_should_publish_comments` | filter | Effective on/off for publishing local comments as Bluesky replies; runs after the stored setting and connection-only mode, and has the final say. Re-enable this lane while in connection-only mode. Not the per-comment `_comment` filter below. |
 | `atmosphere_should_publish_comment` | filter | Customise which approved comments from users allowed to publish posts are mirrored as Bluesky replies. |

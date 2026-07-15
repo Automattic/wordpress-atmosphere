@@ -61,32 +61,17 @@ class Admin {
 	/**
 	 * Whether the plugin's own settings screen should be shown.
 	 *
-	 * A third-party plugin that drives the AT Protocol connection through the
-	 * Settings → Connectors screen (and its own UI) can return false from the
-	 * `atmosphere_show_settings_page` filter to hide Settings → ATmosphere.
-	 * The connection layer, publishing, and the Connectors card all keep
-	 * working; only this plugin's own settings surface is hidden.
+	 * Hidden while {@see \Atmosphere\is_connection_only_mode()} is on: a host that
+	 * embeds ATmosphere purely as a connection layer — driving the AT Protocol
+	 * connection through the Settings → Connectors screen and its own UI — has no
+	 * use for Settings → ATmosphere. The connection layer, publishing, and the
+	 * Connectors card all keep working; only this plugin's own settings surface is
+	 * hidden.
 	 *
 	 * @return bool True to show the settings screen (default), false to hide it.
 	 */
 	public static function is_settings_page_visible(): bool {
-		/**
-		 * Filters whether the ATmosphere settings screen is shown.
-		 *
-		 * Return false to hide Settings → ATmosphere, for example when another
-		 * plugin embeds ATmosphere as a connection layer and manages the
-		 * connection from the Settings → Connectors screen and its own UI.
-		 *
-		 * Defaults to hidden while {@see \Atmosphere\is_connection_only_mode()}
-		 * is on, so a host that flips connection-only mode gets the settings
-		 * screen tucked away without a second filter. This filter is evaluated
-		 * afterwards and still wins, so the screen can be forced back on.
-		 *
-		 * @since unreleased
-		 *
-		 * @param bool $visible Whether to show Settings → ATmosphere. Default true, or false in connection-only mode.
-		 */
-		return (bool) \apply_filters( 'atmosphere_show_settings_page', ! is_connection_only_mode() );
+		return ! is_connection_only_mode();
 	}
 
 	/**
@@ -135,10 +120,10 @@ class Admin {
 	/**
 	 * Add a Settings shortcut to the plugin's row on the Plugins screen.
 	 *
-	 * When the settings screen is hidden via the `atmosphere_show_settings_page`
-	 * filter, the shortcut is replaced with a plain, non-linked label so
-	 * operators understand why the usual Settings link is gone. Filters cannot
-	 * report which plugin hid the screen, so the copy is intentionally generic.
+	 * When the settings screen is hidden by connection-only mode, the shortcut is
+	 * replaced with a plain, non-linked label so operators understand why the usual
+	 * Settings link is gone. The filter cannot report which plugin hid the screen,
+	 * so the copy is intentionally generic.
 	 *
 	 * @param string[] $links Existing plugin action links.
 	 * @return string[] Filtered plugin action links.

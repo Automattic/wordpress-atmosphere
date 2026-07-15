@@ -1,13 +1,13 @@
 <?php
 /**
- * Tests for hiding the ATmosphere settings screen via the
- * `atmosphere_show_settings_page` filter.
+ * Tests for hiding the ATmosphere settings screen in connection-only mode.
  *
  * A third-party plugin that drives the AT Protocol connection through the
- * Settings → Connectors screen can return false from the filter to hide
- * Settings → ATmosphere. When hidden, the plugin-row Settings shortcut turns
- * into a plain label and the reauth notice — whose only call to action links
- * to the now-hidden page — is suppressed.
+ * Settings → Connectors screen enables connection-only mode
+ * (`atmosphere_connection_only_mode`), which hides Settings → ATmosphere. When
+ * hidden, the plugin-row Settings shortcut turns into a plain label and the
+ * reauth notice — whose only call to action links to the now-hidden page — is
+ * suppressed.
  *
  * @package Atmosphere
  * @group atmosphere
@@ -21,7 +21,7 @@ use Atmosphere\WP_Admin\Admin;
 use WP_UnitTestCase;
 
 /**
- * Settings-page visibility filter tests.
+ * Settings-page visibility tests.
  */
 class Test_Settings_Page_Visibility extends WP_UnitTestCase {
 
@@ -61,7 +61,6 @@ class Test_Settings_Page_Visibility extends WP_UnitTestCase {
 			}
 		}
 
-		\remove_all_filters( 'atmosphere_show_settings_page' );
 		\remove_all_filters( 'atmosphere_connection_only_mode' );
 		\wp_set_current_user( 0 );
 		\delete_option( 'atmosphere_identity' );
@@ -91,33 +90,12 @@ class Test_Settings_Page_Visibility extends WP_UnitTestCase {
 	}
 
 	/**
-	 * Returning false from the filter hides the settings screen.
+	 * Enabling connection-only mode hides the settings screen.
 	 */
-	public function test_filter_can_hide_settings_page(): void {
-		\add_filter( 'atmosphere_show_settings_page', '__return_false' );
-
-		$this->assertFalse( Admin::is_settings_page_visible() );
-	}
-
-	/**
-	 * Connection-only mode hides the settings screen without a second filter:
-	 * the `atmosphere_show_settings_page` default follows connection-only mode.
-	 */
-	public function test_connection_only_mode_hides_settings_page_by_default(): void {
+	public function test_connection_only_mode_hides_settings_page(): void {
 		\add_filter( 'atmosphere_connection_only_mode', '__return_true' );
 
 		$this->assertFalse( Admin::is_settings_page_visible() );
-	}
-
-	/**
-	 * The `atmosphere_show_settings_page` filter is evaluated last, so a host in
-	 * connection-only mode can still force the settings screen back on.
-	 */
-	public function test_show_settings_page_filter_overrides_connection_only_mode(): void {
-		\add_filter( 'atmosphere_connection_only_mode', '__return_true' );
-		\add_filter( 'atmosphere_show_settings_page', '__return_true' );
-
-		$this->assertTrue( Admin::is_settings_page_visible() );
 	}
 
 	/**
@@ -138,7 +116,7 @@ class Test_Settings_Page_Visibility extends WP_UnitTestCase {
 	 * label explaining that another plugin hid the screen.
 	 */
 	public function test_action_links_render_plain_label_when_hidden(): void {
-		\add_filter( 'atmosphere_show_settings_page', '__return_false' );
+		\add_filter( 'atmosphere_connection_only_mode', '__return_true' );
 
 		$links = Admin::filter_action_links( array() );
 
@@ -186,7 +164,7 @@ class Test_Settings_Page_Visibility extends WP_UnitTestCase {
 		);
 		\update_option( Client::DISCONNECTED_OPTION, \time(), false );
 
-		\add_filter( 'atmosphere_show_settings_page', '__return_false' );
+		\add_filter( 'atmosphere_connection_only_mode', '__return_true' );
 
 		\ob_start();
 		Admin::maybe_render_reauth_notice();
@@ -206,7 +184,7 @@ class Test_Settings_Page_Visibility extends WP_UnitTestCase {
 		$admin = self::factory()->user->create( array( 'role' => 'administrator' ) );
 		\wp_set_current_user( $admin );
 
-		\add_filter( 'atmosphere_show_settings_page', '__return_false' );
+		\add_filter( 'atmosphere_connection_only_mode', '__return_true' );
 
 		Admin::add_menu();
 
@@ -225,7 +203,7 @@ class Test_Settings_Page_Visibility extends WP_UnitTestCase {
 		$admin = self::factory()->user->create( array( 'role' => 'administrator' ) );
 		\wp_set_current_user( $admin );
 
-		\add_filter( 'atmosphere_show_settings_page', '__return_false' );
+		\add_filter( 'atmosphere_connection_only_mode', '__return_true' );
 
 		Admin::add_menu();
 
@@ -252,7 +230,7 @@ class Test_Settings_Page_Visibility extends WP_UnitTestCase {
 		$admin = self::factory()->user->create( array( 'role' => 'administrator' ) );
 		\wp_set_current_user( $admin );
 
-		\add_filter( 'atmosphere_show_settings_page', '__return_false' );
+		\add_filter( 'atmosphere_connection_only_mode', '__return_true' );
 
 		\ob_start();
 		Admin::render_page();

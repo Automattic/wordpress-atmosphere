@@ -767,14 +767,16 @@ function is_sharing_enabled( \WP_Post $post ): bool {
  * ({@see is_reaction_sync_enabled()}), reply import
  * ({@see is_reply_sync_enabled()}), and publishing local comments as Bluesky
  * replies ({@see is_comment_publishing_enabled()}) are all off, and the
- * plugin's own Settings → ATmosphere screen is hidden by default.
+ * plugin's own Settings → ATmosphere screen is hidden
+ * ({@see \Atmosphere\WP_Admin\Admin::is_settings_page_visible()}).
  *
  * This is a hard override of the *effective* behaviour, not merely a change of
  * default: it forces those features off regardless of the stored per-site
  * option, so the outcome does not depend on whether the site previously saved a
- * value. Each feature keeps its own dedicated filter, evaluated last, so a host
- * that wants to re-enable a single lane (say, keep cross-posting while
- * suppressing reactions) still can.
+ * value. Each behavioural lane keeps its own dedicated filter, evaluated last, so
+ * a host that wants to re-enable one (say, keep cross-posting while suppressing
+ * reactions) still can. Settings-page visibility, by contrast, follows
+ * connection-only mode directly, with no separate override.
  *
  * @since unreleased
  *
@@ -790,10 +792,9 @@ function is_connection_only_mode(): bool {
 	 * ATmosphere is hidden. The per-feature filters
 	 * ({@see 'atmosphere_should_auto_publish'},
 	 * {@see 'atmosphere_should_sync_reactions'},
-	 * {@see 'atmosphere_should_sync_replies'},
-	 * {@see 'atmosphere_should_publish_comments'}, and
-	 * {@see 'atmosphere_show_settings_page'}) are evaluated afterwards and have
-	 * the final say, so individual lanes can still be re-enabled.
+	 * {@see 'atmosphere_should_sync_replies'}, and
+	 * {@see 'atmosphere_should_publish_comments'}) are evaluated afterwards and
+	 * have the final say, so individual behavioural lanes can still be re-enabled.
 	 *
 	 * @since unreleased
 	 *
