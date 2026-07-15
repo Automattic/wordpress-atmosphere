@@ -987,21 +987,21 @@ class Atmosphere {
 	/**
 	 * Schedule AT Protocol record deletion before a post is permanently deleted.
 	 *
-	 * Captures every Bluesky TID (post root + thread replies + outbound
-	 * comment replies) and the document TID from post meta, then
-	 * schedules a single async batch delete via cron. Thread-strategy
-	 * posts read every TID from `Post::META_THREAD_RECORDS`; outbound
-	 * comment replies come from `Publisher::collect_published_comment_tids()`.
+	 * Captures every Bluesky post TID (root + thread replies) and the
+	 * document TID from post meta, then schedules an async batch delete
+	 * via cron. When comment publishing is enabled, outbound comment
+	 * replies are also collected through
+	 * `Publisher::collect_published_comment_tids()`.
 	 *
-	 * Comment TIDs must be collected here, while WP still has the
+	 * Enabled comment TIDs must be collected here, while WP still has the
 	 * comment rows: `wp_delete_post( $id, true )` fires `before_delete_post`
 	 * first and only then iterates child comments, so this is the last
 	 * opportunity to read them.
 	 *
-	 * The trash path (`Publisher::delete_post()`) already cascades
-	 * comment deletes; this keeps the permanent-delete path symmetric
-	 * so unpublishing or hard-deleting a post does not orphan its
-	 * outbound replies on the PDS.
+	 * While comment publishing is enabled, the trash path
+	 * (`Publisher::delete_post()`) also cascades comment deletes. This
+	 * keeps permanent deletion symmetric. When they are disabled, both
+	 * paths preserve existing outbound replies instead.
 	 *
 	 * @param int $post_id Post ID being deleted.
 	 */
@@ -1044,10 +1044,9 @@ class Atmosphere {
 
 		$doc_tid = (string) \get_post_meta( $post_id, Transformer\Document::META_TID, true );
 
-		$comment_tids = \array_column(
-			Publisher::collect_published_comment_tids( $post_id ),
-			'tid'
-		);
+		$comment_tids = is_comment_publishing_enabled()
+			? \array_column( Publisher::collect_published_comment_tids( $post_id ), 'tid' )
+			: array();
 
 		if ( ! empty( $bsky_tids ) || '' !== $doc_tid || ! empty( $comment_tids ) ) {
 			\wp_schedule_single_event(
@@ -1141,7 +1140,7 @@ class Atmosphere {
 	 * @param int $comment_id Comment ID.
 	 */
 	public function on_comment_before_delete( int $comment_id ): void {
-		if ( ! is_connected() ) {
+		if ( ! is_comment_publishing_enabled() || ! is_connected() ) {
 			return;
 		}
 
@@ -1174,6 +1173,15 @@ class Atmosphere {
 	 * @return bool
 	 */
 	public static function should_publish_comment( \WP_Comment $comment ): bool {
+		/*
+		 * Checked first: a disabled site skips the eligibility work (which
+		 * busts the parent post's cache on every comment event) and the
+		 * per-comment filter entirely.
+		 */
+		if ( ! is_comment_publishing_enabled() ) {
+			return false;
+		}
+
 		$should = self::is_comment_eligible( $comment );
 
 		/**
@@ -1200,7 +1208,16 @@ class Atmosphere {
 			return false;
 		}
 
-		if ( (int) $comment->user_id <= 0 ) {
+		$user_id = (int) $comment->user_id;
+
+		/*
+		 * Registered users may be Subscribers who can comment but are not
+		 * trusted to publish site content. Outbound replies are written by
+		 * the site's connected Bluesky account, so use the comment author's
+		 * stored capabilities rather than the current user: this gate also
+		 * runs asynchronously in WP-Cron, where nobody is logged in.
+		 */
+		if ( $user_id <= 0 || ! \user_can( $user_id, 'publish_posts' ) ) {
 			return false;
 		}
 
@@ -1279,7 +1296,7 @@ class Atmosphere {
 	 * @param \WP_Comment $comment Comment object.
 	 */
 	private function schedule_comment_delete( \WP_Comment $comment ): void {
-		if ( ! is_connected() ) {
+		if ( ! is_comment_publishing_enabled() || ! is_connected() ) {
 			return;
 		}
 
@@ -1693,6 +1710,10 @@ class Atmosphere {
 		\add_action(
 			'atmosphere_delete_records',
 			static function ( $bsky_tids, string $doc_tid, $comment_tids = array() ): void {
+				/*
+				 * delete_post_by_tids() drops the comment TIDs itself when
+				 * comment publishing is disabled at execution time.
+				 */
 				$comment_tids = \is_array( $comment_tids ) ? $comment_tids : array();
 				$result       = Publisher::delete_post_by_tids( $bsky_tids, $doc_tid, $comment_tids );
 
@@ -1791,6 +1812,10 @@ class Atmosphere {
 		\add_action(
 			'atmosphere_delete_comment',
 			static function ( int $comment_id ): void {
+				if ( ! is_comment_publishing_enabled() ) {
+					return;
+				}
+
 				$comment = \get_comment( $comment_id );
 				if ( ! $comment instanceof \WP_Comment ) {
 					return;
@@ -1809,7 +1834,7 @@ class Atmosphere {
 		\add_action(
 			'atmosphere_delete_comment_record',
 			static function ( string $tid ): void {
-				if ( '' === $tid ) {
+				if ( ! is_comment_publishing_enabled() || '' === $tid ) {
 					return;
 				}
 
@@ -2215,6 +2240,15 @@ class Atmosphere {
 	 * @param int $comment_id Comment ID just published.
 	 */
 	private static function reconcile_comment_after_publish( int $comment_id ): void {
+		/*
+		 * A switch flipped while applyWrites was in flight cannot undo the
+		 * completed request. Keep the returned record metadata intact and do
+		 * not enqueue a compensating delete while outgoing writes are off.
+		 */
+		if ( ! is_comment_publishing_enabled() ) {
+			return;
+		}
+
 		/*
 		 * Drop the in-process `WP_Comment` cache so a concurrent web
 		 * request that just unapproved or deleted this comment is

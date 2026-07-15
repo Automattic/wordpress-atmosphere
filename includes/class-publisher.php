@@ -1162,15 +1162,17 @@ class Publisher {
 	private const APPLY_WRITES_CHUNK_SIZE = 100;
 
 	/**
-	 * Delete every bsky record (root + thread replies + outbound
-	 * comment replies) and the document for a post.
+	 * Delete every bsky record (root + thread replies) and the document
+	 * for a post, plus outbound comment replies when comment publishing
+	 * is enabled.
 	 *
 	 * Handles thread posts (reads `META_THREAD_RECORDS`) and legacy
 	 * single-record posts (falls back to the mirrored `META_URI` /
 	 * `META_TID` / `META_CID` keys). Outbound comment replies live in
 	 * our own repo keyed by their own TIDs — the AT Protocol has no
 	 * cascade semantics, so they have to be enumerated alongside the
-	 * post records or they orphan on Bluesky.
+	 * post records or they orphan on Bluesky. When comment publishing is
+	 * disabled, those replies and their local metadata are preserved.
 	 *
 	 * The post + document deletes and the outbound comment-reply deletes
 	 * are submitted as two independent, individually-chunked `applyWrites`
@@ -1185,7 +1187,9 @@ class Publisher {
 		$stored  = self::stored_thread_records( $post->ID, true );
 		$doc_tid = \get_post_meta( $post->ID, Document::META_TID, true );
 
-		$comment_tids = self::collect_published_comment_tids( $post->ID );
+		$comment_tids = is_comment_publishing_enabled()
+			? self::collect_published_comment_tids( $post->ID )
+			: array();
 
 		if ( empty( $stored ) && ! $doc_tid && empty( $comment_tids ) ) {
 			return new \WP_Error(
@@ -1286,12 +1290,14 @@ class Publisher {
 			return $outcome['comments'];
 		}
 
-		// Clean up comment meta for every reply we just deleted.
-		foreach ( $comment_tids as $comment_tid ) {
-			\delete_comment_meta( $comment_tid['comment_id'], Comment::META_TID );
-			\delete_comment_meta( $comment_tid['comment_id'], Comment::META_URI );
-			\delete_comment_meta( $comment_tid['comment_id'], Comment::META_CID );
-			\delete_comment_meta( $comment_tid['comment_id'], Reaction_Sync::META_SOURCE_ID );
+		if ( null !== $outcome['comments'] ) {
+			// Clean up comment meta for every reply we just deleted.
+			foreach ( $comment_tids as $comment_tid ) {
+				\delete_comment_meta( $comment_tid['comment_id'], Comment::META_TID );
+				\delete_comment_meta( $comment_tid['comment_id'], Comment::META_URI );
+				\delete_comment_meta( $comment_tid['comment_id'], Comment::META_CID );
+				\delete_comment_meta( $comment_tid['comment_id'], Reaction_Sync::META_SOURCE_ID );
+			}
 		}
 
 		return self::merge_decoupled_results( $outcome );
@@ -1359,17 +1365,19 @@ class Publisher {
 	 * accessible to `delete_post()`. Accepts either a single Bluesky TID
 	 * string (legacy single-record posts) or an array of TIDs
 	 * (thread-strategy posts), plus an optional list of outbound
-	 * comment-reply TIDs. The post + document deletes and the
+	 * comment-reply TIDs when comment publishing is enabled. The post +
+	 * document deletes and the
 	 * comment-reply deletes are submitted as two independent,
 	 * individually-chunked `applyWrites` batches (root first) so a long
 	 * reply tail can neither overflow the root batch nor block its
 	 * cleanup when it fails. Unlike `delete_post()`, this path has no
 	 * local meta to reconcile — the post row is already gone — so meta
-	 * cleanup is left entirely to the caller (`on_before_delete`).
+	 * cleanup is left entirely to the caller (`on_before_delete`). When
+	 * comment publishing is disabled, comment-reply TIDs are ignored.
 	 *
 	 * @param string|string[] $bsky_tids    Bluesky post TID or array of TIDs (may be empty).
 	 * @param string          $doc_tid      Document TID (may be empty).
-	 * @param string[]        $comment_tids Comment reply TIDs to delete in the same batch.
+	 * @param string[]        $comment_tids Comment reply TIDs to delete in a separate batch.
 	 * @return array|\WP_Error
 	 */
 	public static function delete_post_by_tids( $bsky_tids, string $doc_tid, array $comment_tids = array() ): array|\WP_Error {
@@ -1379,8 +1387,22 @@ class Publisher {
 			$bsky_tids = array();
 		}
 
-		$bsky_tids    = \array_values( \array_filter( \array_map( 'strval', $bsky_tids ), 'strlen' ) );
+		$bsky_tids = \array_values( \array_filter( \array_map( 'strval', $bsky_tids ), 'strlen' ) );
+
 		$comment_tids = \array_values( \array_filter( \array_map( 'strval', $comment_tids ), 'strlen' ) );
+
+		if ( $comment_tids && ! is_comment_publishing_enabled() ) {
+			/*
+			 * A queued comment-only cascade is an intentional no-op while
+			 * comment publishing is disabled, not a failure — return an
+			 * empty success so the cron handler does not log it as an error.
+			 */
+			if ( empty( $bsky_tids ) && ! $doc_tid ) {
+				return array( 'results' => array() );
+			}
+
+			$comment_tids = array();
+		}
 
 		if ( empty( $bsky_tids ) && ! $doc_tid && empty( $comment_tids ) ) {
 			return new \WP_Error( 'atmosphere_not_published', \__( 'No TIDs provided.', 'atmosphere' ) );
@@ -1494,15 +1516,16 @@ class Publisher {
 	 * record-meta cleanup on its success and comment-meta cleanup on the
 	 * comment batch's success.
 	 *
-	 * The comment batch is not attempted when the root batch fails — there
-	 * is nothing local to reconcile yet, and a retry re-runs both.
+	 * The comment batch is not attempted when the root batch fails or
+	 * comment publishing is disabled before it starts.
 	 *
 	 * @param array $root_writes    Post + document delete writes (may be empty).
 	 * @param array $comment_writes Outbound comment-reply delete writes (may be empty).
 	 * @return array{root: array|\WP_Error|null, comments: array|\WP_Error|null}
 	 *               Per-batch outcome; an element is null when that batch
-	 *               had no writes, and `comments` is null when the root
-	 *               batch failed and the comment batch was skipped.
+	 *               had no writes. `comments` is also null when the root
+	 *               batch failed or comment publishing was disabled and
+	 *               the comment batch was skipped.
 	 */
 	private static function delete_in_decoupled_batches( array $root_writes, array $comment_writes ): array {
 		$root_result = empty( $root_writes ) ? null : self::apply_writes_chunked( $root_writes );
@@ -1514,7 +1537,9 @@ class Publisher {
 			);
 		}
 
-		$comment_result = empty( $comment_writes ) ? null : self::apply_writes_chunked( $comment_writes );
+		$comment_result = empty( $comment_writes ) || ! is_comment_publishing_enabled()
+			? null
+			: self::apply_writes_chunked( $comment_writes );
 
 		return array(
 			'root'     => $root_result,
@@ -1666,6 +1691,12 @@ class Publisher {
 	 * @return array|\WP_Error applyWrites response or error.
 	 */
 	public static function publish_comment( \WP_Comment $comment ): array|\WP_Error {
+		if ( ! is_comment_publishing_enabled() ) {
+			$result = self::comment_publishing_disabled_error();
+			\do_action( 'atmosphere_publish_comment_result', $comment, $result );
+			return $result;
+		}
+
 		$transformer = new Comment( $comment );
 		$rkey        = $transformer->get_rkey();
 		$record      = $transformer->transform();
@@ -1718,6 +1749,10 @@ class Publisher {
 	 * @return array|\WP_Error
 	 */
 	public static function update_comment( \WP_Comment $comment ): array|\WP_Error {
+		if ( ! is_comment_publishing_enabled() ) {
+			return self::comment_publishing_disabled_error();
+		}
+
 		$comment_id = (int) $comment->comment_ID;
 		$uri        = \get_comment_meta( $comment_id, Comment::META_URI, true );
 
@@ -1767,6 +1802,10 @@ class Publisher {
 	 * @return array|\WP_Error
 	 */
 	public static function delete_comment( \WP_Comment $comment ): array|\WP_Error {
+		if ( ! is_comment_publishing_enabled() ) {
+			return self::comment_publishing_disabled_error();
+		}
+
 		$comment_id = (int) $comment->comment_ID;
 		$uri        = \get_comment_meta( $comment_id, Comment::META_URI, true );
 
@@ -1812,6 +1851,10 @@ class Publisher {
 	 * @return array|\WP_Error
 	 */
 	public static function delete_comment_by_tid( string $tid ): array|\WP_Error {
+		if ( ! is_comment_publishing_enabled() ) {
+			return self::comment_publishing_disabled_error();
+		}
+
 		if ( '' === $tid ) {
 			return new \WP_Error( 'atmosphere_not_published', \__( 'No TID provided.', 'atmosphere' ) );
 		}
@@ -1825,6 +1868,18 @@ class Publisher {
 		);
 
 		return API::apply_writes( $writes );
+	}
+
+	/**
+	 * Build the standard error for a blocked outbound comment write.
+	 *
+	 * @return \WP_Error
+	 */
+	private static function comment_publishing_disabled_error(): \WP_Error {
+		return new \WP_Error(
+			'atmosphere_comment_publishing_disabled',
+			\__( 'Comment publishing to Bluesky is disabled.', 'atmosphere' )
+		);
 	}
 
 	/**

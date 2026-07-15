@@ -124,8 +124,16 @@ class Settings_Fields {
 		);
 
 		\add_settings_field(
+			'atmosphere_publish_comments',
+			\__( 'Outgoing replies', 'atmosphere' ),
+			array( self::class, 'render_publish_comments_field' ),
+			'atmosphere',
+			'atmosphere_reactions'
+		);
+
+		\add_settings_field(
 			'atmosphere_sync_reactions',
-			\__( 'Likes and reposts', 'atmosphere' ),
+			\__( 'Incoming reactions', 'atmosphere' ),
 			array( self::class, 'render_sync_reactions_field' ),
 			'atmosphere',
 			'atmosphere_reactions'
@@ -133,7 +141,7 @@ class Settings_Fields {
 
 		\add_settings_field(
 			'atmosphere_sync_replies',
-			\__( 'Replies', 'atmosphere' ),
+			\__( 'Incoming replies', 'atmosphere' ),
 			array( self::class, 'render_sync_replies_field' ),
 			'atmosphere',
 			'atmosphere_reactions'
@@ -326,11 +334,12 @@ class Settings_Fields {
 				type="checkbox"
 				name="atmosphere_auto_publish"
 				value="1"
+				aria-describedby="atmosphere-auto-publish-description"
 				<?php \checked( \get_option( 'atmosphere_auto_publish', '1' ), '1' ); ?>
 			>
 			<?php \esc_html_e( 'Automatically publish new posts to AT Protocol', 'atmosphere' ); ?>
 		</label>
-		<p class="description"><?php \esc_html_e( 'When enabled, posts are sent to your PDS as soon as they are published in WordPress.', 'atmosphere' ); ?></p>
+		<p class="description" id="atmosphere-auto-publish-description"><?php \esc_html_e( 'When enabled, posts are sent to your PDS as soon as they are published in WordPress.', 'atmosphere' ); ?></p>
 		<?php
 	}
 
@@ -519,7 +528,26 @@ class Settings_Fields {
 	 */
 	public static function render_reactions_section(): void {
 		?>
-		<p><?php \esc_html_e( 'Choose which Bluesky interactions are saved to your posts.', 'atmosphere' ); ?></p>
+		<p><?php \esc_html_e( 'Choose which interactions are sent to Bluesky and which are saved to WordPress.', 'atmosphere' ); ?></p>
+		<?php
+	}
+
+	/**
+	 * Render the outgoing WordPress comment toggle.
+	 */
+	public static function render_publish_comments_field(): void {
+		?>
+		<label>
+			<input
+				type="checkbox"
+				name="atmosphere_publish_comments"
+				value="1"
+				aria-describedby="atmosphere-publish-comments-description"
+				<?php \checked( \get_option( 'atmosphere_publish_comments', '1' ), '1' ); ?>
+			>
+			<?php \esc_html_e( 'Publish eligible WordPress comments as Bluesky replies', 'atmosphere' ); ?>
+		</label>
+		<p class="description" id="atmosphere-publish-comments-description"><?php \esc_html_e( 'Comments are not sent to Bluesky while this is disabled. Replies that were already published to Bluesky are kept.', 'atmosphere' ); ?></p>
 		<?php
 	}
 
@@ -580,11 +608,12 @@ class Settings_Fields {
 				type="checkbox"
 				name="atmosphere_sync_reactions"
 				value="1"
+				aria-describedby="atmosphere-sync-reactions-description"
 				<?php \checked( \get_option( 'atmosphere_sync_reactions', '1' ), '1' ); ?>
 			>
 			<?php \esc_html_e( 'Save likes and reposts', 'atmosphere' ); ?>
 		</label>
-		<p class="description"><?php \esc_html_e( 'New likes and reposts are skipped while this is disabled and will not be imported when you turn it back on. Reactions that were already imported are kept.', 'atmosphere' ); ?></p>
+		<p class="description" id="atmosphere-sync-reactions-description"><?php \esc_html_e( 'New likes and reposts are skipped while this is disabled and will not be imported when you turn it back on. Reactions that were already imported are kept.', 'atmosphere' ); ?></p>
 		<?php
 	}
 
@@ -598,11 +627,12 @@ class Settings_Fields {
 				type="checkbox"
 				name="atmosphere_sync_replies"
 				value="1"
+				aria-describedby="atmosphere-sync-replies-description"
 				<?php \checked( \get_option( 'atmosphere_sync_replies', '1' ), '1' ); ?>
 			>
 			<?php \esc_html_e( 'Save replies as comments', 'atmosphere' ); ?>
 		</label>
-		<p class="description"><?php \esc_html_e( 'New replies are skipped while this is disabled and will not be imported when you turn it back on. Replies that were already imported are kept.', 'atmosphere' ); ?></p>
+		<p class="description" id="atmosphere-sync-replies-description"><?php \esc_html_e( 'New replies are skipped while this is disabled and will not be imported when you turn it back on. Replies that were already imported are kept.', 'atmosphere' ); ?></p>
 		<?php
 	}
 }

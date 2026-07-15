@@ -3,12 +3,12 @@
  * Transforms an approved WordPress comment into an app.bsky.feed.post
  * reply record.
  *
- * Only comments authored by a registered WordPress user are published;
- * Atmosphere::should_publish_comment() and the comment lifecycle
- * hooks enforce that gate before this transformer runs. Root is
- * always the parent post's bsky record; parent resolves to a
- * previously-published sibling comment, a federated reply ingested
- * via Reaction_Sync, or falls through to the root.
+ * Only comments authored by a WordPress user with the publish_posts
+ * capability are published; Atmosphere::should_publish_comment() and
+ * the comment lifecycle hooks enforce that gate before this transformer
+ * runs. Root is always the parent post's bsky record; parent resolves to
+ * a previously-published sibling comment, a federated reply ingested via
+ * Reaction_Sync, or falls through to the root.
  *
  * @package Atmosphere
  */

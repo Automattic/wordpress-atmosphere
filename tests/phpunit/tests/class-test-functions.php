@@ -23,6 +23,7 @@ use function Atmosphere\is_reaction_sync_enabled;
 use function Atmosphere\is_reply_sync_enabled;
 use function Atmosphere\get_connection;
 use function Atmosphere\debug_log;
+use function Atmosphere\is_comment_publishing_enabled;
 
 /**
  * Function tests.
@@ -409,6 +410,26 @@ class Test_Functions extends \WP_UnitTestCase {
 		$this->assertSame( array(), $conn );
 
 		\delete_option( 'atmosphere_connection' );
+	}
+
+	/**
+	 * Comment publishing retains the historical enabled default until an
+	 * administrator explicitly turns them off.
+	 */
+	public function test_comment_publishing_option_controls_effective_state() {
+		\delete_option( 'atmosphere_publish_comments' );
+		$this->assertTrue( is_comment_publishing_enabled() );
+
+		\update_option( 'atmosphere_publish_comments', '' );
+		$this->assertFalse( is_comment_publishing_enabled() );
+
+		\update_option( 'atmosphere_publish_comments', '0' );
+		$this->assertFalse( is_comment_publishing_enabled() );
+
+		\update_option( 'atmosphere_publish_comments', '1' );
+		$this->assertTrue( is_comment_publishing_enabled() );
+
+		\delete_option( 'atmosphere_publish_comments' );
 	}
 
 	/**
@@ -908,6 +929,7 @@ class Test_Functions extends \WP_UnitTestCase {
 		\remove_all_filters( 'atmosphere_should_auto_publish' );
 		\remove_all_filters( 'atmosphere_should_sync_reactions' );
 		\remove_all_filters( 'atmosphere_should_sync_replies' );
+		\remove_all_filters( 'atmosphere_should_publish_comments' );
 
 		parent::tear_down();
 	}
@@ -1006,5 +1028,27 @@ class Test_Functions extends \WP_UnitTestCase {
 		\add_filter( 'atmosphere_should_sync_replies', '__return_true' );
 
 		$this->assertTrue( is_reply_sync_enabled() );
+	}
+
+	/**
+	 * Comment publishing (WordPress comments → Bluesky replies) is opt-out and
+	 * forced off in connection-only mode, closing the outgoing lane too.
+	 */
+	public function test_comment_publishing_forced_off_in_connection_only_mode() {
+		$this->assertTrue( is_comment_publishing_enabled() );
+
+		\add_filter( 'atmosphere_connection_only_mode', '__return_true' );
+
+		$this->assertFalse( is_comment_publishing_enabled() );
+	}
+
+	/**
+	 * The comment-publishing filter has the final say over connection-only mode.
+	 */
+	public function test_comment_publishing_filter_can_reenable_in_connection_only_mode() {
+		\add_filter( 'atmosphere_connection_only_mode', '__return_true' );
+		\add_filter( 'atmosphere_should_publish_comments', '__return_true' );
+
+		$this->assertTrue( is_comment_publishing_enabled() );
 	}
 }

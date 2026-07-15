@@ -481,6 +481,41 @@ function is_connected(): bool {
 }
 
 /**
+ * Whether local WordPress comments may be published to Bluesky as replies.
+ *
+ * Unsaved installs default to enabled. The stored per-site preference is
+ * resolved first; the `atmosphere_should_publish_comments` filter then
+ * has the final say, so host plugins can override the effective behavior
+ * without touching the saved option.
+ *
+ * @since unreleased
+ *
+ * @return bool
+ */
+function is_comment_publishing_enabled(): bool {
+	$enabled = '1' === (string) \get_option( 'atmosphere_publish_comments', '1' );
+
+	if ( is_connection_only_mode() ) {
+		$enabled = false;
+	}
+
+	/**
+	 * Filters whether local WordPress comments may be published to Bluesky as replies.
+	 *
+	 * Runs last, so it has the final say over the stored setting and
+	 * {@see is_connection_only_mode()} — a host plugin can force outgoing
+	 * writes off (or back on) regardless of the saved preference. The override
+	 * is on effective behavior, not the option, so the stored preference
+	 * survives untouched.
+	 *
+	 * @since unreleased
+	 *
+	 * @param bool $enabled Whether comment publishing is enabled.
+	 */
+	return (bool) \apply_filters( 'atmosphere_should_publish_comments', $enabled );
+}
+
+/**
  * Whether the connection requires the user to re-authorize.
  *
  * True when an identity is on file but the credentials option is
@@ -729,9 +764,10 @@ function is_sharing_enabled( \WP_Post $post ): bool {
  * its own UI — can return true from the `atmosphere_connection_only_mode`
  * filter. In that mode ATmosphere stops acting on its own: automatic
  * cross-posting ({@see is_auto_publish_enabled()}), reaction import
- * ({@see is_reaction_sync_enabled()}), and reply import
- * ({@see is_reply_sync_enabled()}) are all off, and the plugin's own
- * Settings → ATmosphere screen is hidden by default.
+ * ({@see is_reaction_sync_enabled()}), reply import
+ * ({@see is_reply_sync_enabled()}), and publishing local comments as Bluesky
+ * replies ({@see is_comment_publishing_enabled()}) are all off, and the
+ * plugin's own Settings → ATmosphere screen is hidden by default.
  *
  * This is a hard override of the *effective* behaviour, not merely a change of
  * default: it forces those features off regardless of the stored per-site
@@ -749,11 +785,13 @@ function is_connection_only_mode(): bool {
 	 * Filters whether ATmosphere runs purely as a connection layer.
 	 *
 	 * Return true when another plugin embeds ATmosphere solely to reuse its
-	 * AT Protocol connection. Automatic cross-posting, reaction import, and
-	 * reply import then default off, and Settings → ATmosphere is hidden. The
-	 * per-feature filters ({@see 'atmosphere_should_auto_publish'},
+	 * AT Protocol connection. Automatic cross-posting, reaction import,
+	 * reply import, and comment publishing then default off, and Settings →
+	 * ATmosphere is hidden. The per-feature filters
+	 * ({@see 'atmosphere_should_auto_publish'},
 	 * {@see 'atmosphere_should_sync_reactions'},
-	 * {@see 'atmosphere_should_sync_replies'}, and
+	 * {@see 'atmosphere_should_sync_replies'},
+	 * {@see 'atmosphere_should_publish_comments'}, and
 	 * {@see 'atmosphere_show_settings_page'}) are evaluated afterwards and have
 	 * the final say, so individual lanes can still be re-enabled.
 	 *

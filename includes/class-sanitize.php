@@ -22,6 +22,21 @@ use Atmosphere\OAuth\Client;
 class Sanitize {
 
 	/**
+	 * Sanitize a boolean option while preserving its string storage format.
+	 *
+	 * WordPress caches the value passed to `update_option()` without first
+	 * converting scalar values to their database string representation. Keep
+	 * these existing checkbox options as `'1'` or `''` so strict comparisons
+	 * behave consistently whether the value comes from the database or cache.
+	 *
+	 * @param mixed $value Submitted value.
+	 * @return string
+	 */
+	public static function boolean_option( $value ): string {
+		return \rest_sanitize_boolean( $value ) ? '1' : '';
+	}
+
+	/**
 	 * Sanitize the handle field and trigger OAuth if a value is submitted.
 	 *
 	 * Used as the `sanitize_callback` for the `atmosphere_handle`
