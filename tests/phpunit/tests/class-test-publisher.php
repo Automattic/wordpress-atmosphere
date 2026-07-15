@@ -2404,6 +2404,27 @@ class Test_Publisher extends WP_UnitTestCase {
 	}
 
 	/**
+	 * A queued comment-only cascade whose TIDs were stripped by the kill
+	 * switch is an intentional no-op — it returns an empty success (so the
+	 * cron handler logs nothing), while a genuinely empty payload still
+	 * surfaces the no-TIDs error.
+	 */
+	public function test_delete_post_by_tids_comment_only_payload_is_noop_when_disabled() {
+		\update_option( 'atmosphere_publish_reactions', '' );
+		$this->register_capture( 0 );
+
+		$result = Publisher::delete_post_by_tids( array(), '', array( 'reply-1', 'reply-2' ) );
+
+		$this->assertSame( array( 'results' => array() ), $result );
+		$this->assertCount( 0, $this->captured_calls, 'A stripped comment-only cascade must not reach the PDS.' );
+
+		$this->assertWPError(
+			Publisher::delete_post_by_tids( array(), '', array() ),
+			'A genuinely empty payload must still surface the no-TIDs error.'
+		);
+	}
+
+	/**
 	 * If the root batch fails on the permanent-delete path, the comment
 	 * batch is not attempted — the failure short-circuits before the
 	 * comment cascade, mirroring the trash path.

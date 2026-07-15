@@ -363,24 +363,29 @@ keep their current behavior.
 
 The naming is deliberately broader than today's behavior: comment replies
 are currently the only outgoing reaction type, so the settings-screen label
-says "Outgoing replies" — but the option, the constant, and
+says "Outgoing replies" — but the option, the filter, and
 `outgoing_reactions_enabled()` are the switch for *all* outgoing reaction
 writes. If ATmosphere ever publishes other reaction types (likes, reposts),
-they will honor the same option and constant rather than growing parallel
-switches.
+they will honor the same switch rather than growing parallel ones.
 
-Managed environments can enforce the boundary in `wp-config.php`:
+Host plugins can enforce the boundary with a behavior filter that runs
+*after* the stored preference and has the final say:
 
 ```php
-define( 'ATMOSPHERE_DISABLE_OUTGOING_REACTIONS', true );
+add_filter( 'atmosphere_should_publish_reactions', '__return_false' );
 ```
 
-The constant takes precedence over the saved option. While outgoing reactions
-are disabled, ATmosphere does not create, update, or delete Bluesky reply
-records for WordPress comments, including work that was already queued in
-WP-Cron. Replies that were previously published remain unchanged. Post and
-standard.site document publishing continues normally, as does inbound syncing
-of Bluesky replies, likes, and reposts.
+The override is on effective behavior, not the option — the saved
+preference stays untouched (and the settings form keeps editing it), so
+removing the filter restores whatever the site had configured. Because the
+filter runs last, it can also force the lane back *on* while the option is
+off.
+
+While outgoing reactions are disabled, ATmosphere does not create, update,
+or delete Bluesky reply records for WordPress comments, including work that
+was already queued in WP-Cron. Replies that were previously published
+remain unchanged. Post and standard.site document publishing continues
+normally, as does inbound syncing of Bluesky replies, likes, and reposts.
 
 Direct calls to the `Publisher` comment methods return a WP_Error with the
 `atmosphere_outgoing_reactions_disabled` code while the control is off. Use

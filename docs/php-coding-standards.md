@@ -225,6 +225,7 @@ use function Atmosphere\is_connected;
 ```php
 \apply_filters( 'atmosphere_syncable_post_types',         array( 'post' ) );
 \apply_filters( 'atmosphere_should_publish_comment',      $bool, $comment );
+\apply_filters( 'atmosphere_should_publish_reactions',    $bool ); // Effective on/off for all outgoing reaction writes; runs after the stored setting and has the final say.
 \apply_filters( 'atmosphere_should_sync_reply',           $bool, $notification, $post_id );
 \apply_filters( 'atmosphere_backfill_query_chunk_size',   500 );
 \apply_filters( 'atmosphere_publish_retry_delays',        array( 60, 300, 900 ) ); // Backoff ladder for failed publish/update cron workers; length = retry budget; empty array disables retries.

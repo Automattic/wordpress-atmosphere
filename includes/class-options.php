@@ -33,29 +33,6 @@ class Options {
 	 * Invoked on the `init` action.
 	 */
 	public static function init(): void {
-		/*
-		 * The deployment constant is enforced at the option layer: reads
-		 * report the effective value on every surface (get_option, REST,
-		 * WP-CLI, the settings checkbox), and writes preserve the saved
-		 * preference for when the constant is removed. Returning '' (not
-		 * false, which means "continue to the DB") short-circuits the read.
-		 */
-		\add_filter(
-			'pre_option_atmosphere_publish_reactions',
-			static function ( $pre ) {
-				return outgoing_reactions_disabled_by_constant() ? '' : $pre;
-			}
-		);
-
-		\add_filter(
-			'pre_update_option_atmosphere_publish_reactions',
-			static function ( $value, $old_value ) {
-				return outgoing_reactions_disabled_by_constant() ? $old_value : $value;
-			},
-			10,
-			2
-		);
-
 		if ( ( \defined( 'WP_CLI' ) && \WP_CLI ) || \wp_doing_cron() ) {
 			self::register_settings();
 			return;
@@ -73,10 +50,11 @@ class Options {
 			'atmosphere',
 			'atmosphere_auto_publish',
 			array(
-				'type'         => 'boolean',
-				'description'  => 'Whether new posts are automatically published to AT Protocol.',
-				'default'      => '1',
-				'show_in_rest' => true,
+				'type'              => 'boolean',
+				'description'       => 'Whether new posts are automatically published to AT Protocol.',
+				'default'           => '1',
+				'show_in_rest'      => true,
+				'sanitize_callback' => 'rest_sanitize_boolean',
 			)
 		);
 
@@ -84,10 +62,11 @@ class Options {
 			'atmosphere',
 			'atmosphere_publish_reactions',
 			array(
-				'type'         => 'boolean',
-				'description'  => 'Whether eligible WordPress comments are published as Bluesky replies.',
-				'default'      => '1',
-				'show_in_rest' => true,
+				'type'              => 'boolean',
+				'description'       => 'Whether eligible WordPress comments are published as Bluesky replies.',
+				'default'           => '1',
+				'show_in_rest'      => true,
+				'sanitize_callback' => 'rest_sanitize_boolean',
 			)
 		);
 
@@ -95,10 +74,11 @@ class Options {
 			'atmosphere',
 			'atmosphere_sync_reactions',
 			array(
-				'type'         => 'boolean',
-				'description'  => 'Whether Bluesky likes and reposts are imported.',
-				'default'      => '1',
-				'show_in_rest' => true,
+				'type'              => 'boolean',
+				'description'       => 'Whether Bluesky likes and reposts are imported.',
+				'default'           => '1',
+				'show_in_rest'      => true,
+				'sanitize_callback' => 'rest_sanitize_boolean',
 			)
 		);
 
@@ -106,10 +86,11 @@ class Options {
 			'atmosphere',
 			'atmosphere_sync_replies',
 			array(
-				'type'         => 'boolean',
-				'description'  => 'Whether Bluesky replies are imported as comments.',
-				'default'      => '1',
-				'show_in_rest' => true,
+				'type'              => 'boolean',
+				'description'       => 'Whether Bluesky replies are imported as comments.',
+				'default'           => '1',
+				'show_in_rest'      => true,
+				'sanitize_callback' => 'rest_sanitize_boolean',
 			)
 		);
 

@@ -1389,11 +1389,23 @@ class Publisher {
 
 		$bsky_tids = \array_values( \array_filter( \array_map( 'strval', $bsky_tids ), 'strlen' ) );
 
-		$comment_tids = outgoing_reactions_enabled()
-			? \array_values( \array_filter( \array_map( 'strval', $comment_tids ), 'strlen' ) )
-			: array();
+		$comment_tids = \array_values( \array_filter( \array_map( 'strval', $comment_tids ), 'strlen' ) );
+		$stripped     = ! empty( $comment_tids ) && ! outgoing_reactions_enabled();
+
+		if ( $stripped ) {
+			$comment_tids = array();
+		}
 
 		if ( empty( $bsky_tids ) && ! $doc_tid && empty( $comment_tids ) ) {
+			/*
+			 * A queued comment-only cascade whose TIDs were stripped by the
+			 * kill switch is an intentional no-op, not a failure — return an
+			 * empty success so the cron handler does not log it as an error.
+			 */
+			if ( $stripped ) {
+				return array( 'results' => array() );
+			}
+
 			return new \WP_Error( 'atmosphere_not_published', \__( 'No TIDs provided.', 'atmosphere' ) );
 		}
 

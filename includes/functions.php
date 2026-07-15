@@ -448,33 +448,33 @@ function is_connected(): bool {
 }
 
 /**
- * Whether outgoing reactions are forced off by site configuration.
- *
- * The constant is intended for wp-config.php and managed hosting
- * environments. A truthy value takes precedence over the saved setting.
- *
- * @since unreleased
- *
- * @return bool
- */
-function outgoing_reactions_disabled_by_constant(): bool {
-	return \defined( 'ATMOSPHERE_DISABLE_OUTGOING_REACTIONS' )
-		&& (bool) \constant( 'ATMOSPHERE_DISABLE_OUTGOING_REACTIONS' );
-}
-
-/**
  * Whether local WordPress reactions may be written to Bluesky.
  *
- * Unsaved installs default to enabled. The deployment constant is
- * enforced by the option filters in {@see \Atmosphere\Options::init()},
- * so this read always reports the effective value.
+ * Unsaved installs default to enabled. The stored per-site preference is
+ * resolved first; the `atmosphere_should_publish_reactions` filter then
+ * has the final say, so host plugins can override the effective behavior
+ * without touching the saved option.
  *
  * @since unreleased
  *
  * @return bool
  */
 function outgoing_reactions_enabled(): bool {
-	return '1' === (string) \get_option( 'atmosphere_publish_reactions', '1' );
+	$enabled = '1' === (string) \get_option( 'atmosphere_publish_reactions', '1' );
+
+	/**
+	 * Filters whether local WordPress reactions may be written to Bluesky.
+	 *
+	 * Runs last, so it has the final say over the stored setting — a host
+	 * plugin can force outgoing writes off (or back on) regardless of the
+	 * saved preference. The override is on effective behavior, not the
+	 * option, so the stored preference survives untouched.
+	 *
+	 * @since unreleased
+	 *
+	 * @param bool $enabled Whether outgoing reactions are enabled.
+	 */
+	return (bool) \apply_filters( 'atmosphere_should_publish_reactions', $enabled );
 }
 
 /**

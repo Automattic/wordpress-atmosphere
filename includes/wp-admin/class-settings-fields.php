@@ -20,8 +20,6 @@ use function Atmosphere\get_connection;
 use function Atmosphere\get_supported_post_types;
 use function Atmosphere\has_identity;
 use function Atmosphere\is_connected;
-use function Atmosphere\outgoing_reactions_disabled_by_constant;
-use function Atmosphere\outgoing_reactions_enabled;
 
 /**
  * Settings page UI assembly.
@@ -335,11 +333,12 @@ class Settings_Fields {
 				type="checkbox"
 				name="atmosphere_auto_publish"
 				value="1"
+				aria-describedby="atmosphere-auto-publish-description"
 				<?php \checked( \get_option( 'atmosphere_auto_publish', '1' ), '1' ); ?>
 			>
 			<?php \esc_html_e( 'Automatically publish new posts to AT Protocol', 'atmosphere' ); ?>
 		</label>
-		<p class="description"><?php \esc_html_e( 'When enabled, posts are sent to your PDS as soon as they are published in WordPress.', 'atmosphere' ); ?></p>
+		<p class="description" id="atmosphere-auto-publish-description"><?php \esc_html_e( 'When enabled, posts are sent to your PDS as soon as they are published in WordPress.', 'atmosphere' ); ?></p>
 		<?php
 	}
 
@@ -536,42 +535,18 @@ class Settings_Fields {
 	 * Render the outgoing WordPress comment toggle.
 	 */
 	public static function render_publish_reactions_field(): void {
-		/*
-		 * No hidden-input preservation dance for the disabled state: the
-		 * `pre_update_option_atmosphere_publish_reactions` filter (see
-		 * {@see \Atmosphere\Options::init()}) keeps the saved preference
-		 * intact for every writer while the constant is active.
-		 */
-		$forced_disabled = outgoing_reactions_disabled_by_constant();
 		?>
 		<label>
 			<input
 				type="checkbox"
 				name="atmosphere_publish_reactions"
 				value="1"
-				<?php \checked( outgoing_reactions_enabled() ); ?>
-				<?php \disabled( $forced_disabled ); ?>
+				aria-describedby="atmosphere-publish-reactions-description"
+				<?php \checked( \get_option( 'atmosphere_publish_reactions', '1' ), '1' ); ?>
 			>
 			<?php \esc_html_e( 'Publish eligible WordPress comments as Bluesky replies', 'atmosphere' ); ?>
 		</label>
-		<?php if ( $forced_disabled ) : ?>
-			<p class="description">
-				<?php
-				// phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- Constant name is a static, safe literal.
-				\printf(
-					/* translators: %s: the wp-config constant name, wrapped in a code tag. */
-					\esc_html__( 'Outgoing replies are disabled by %s in the site configuration. The saved preference will apply again if the constant is removed. Existing Bluesky replies are unchanged.', 'atmosphere' ),
-					'<code>ATMOSPHERE_DISABLE_OUTGOING_REACTIONS</code>'
-				);
-				?>
-			</p>
-		<?php else : ?>
-			<p class="description">
-				<?php
-				\esc_html_e( 'Comments are not sent to Bluesky while this is disabled. Replies that were already published to Bluesky are kept.', 'atmosphere' );
-				?>
-			</p>
-		<?php endif; ?>
+		<p class="description" id="atmosphere-publish-reactions-description"><?php \esc_html_e( 'Comments are not sent to Bluesky while this is disabled. Replies that were already published to Bluesky are kept.', 'atmosphere' ); ?></p>
 		<?php
 	}
 
@@ -632,11 +607,12 @@ class Settings_Fields {
 				type="checkbox"
 				name="atmosphere_sync_reactions"
 				value="1"
+				aria-describedby="atmosphere-sync-reactions-description"
 				<?php \checked( \get_option( 'atmosphere_sync_reactions', '1' ), '1' ); ?>
 			>
 			<?php \esc_html_e( 'Save likes and reposts', 'atmosphere' ); ?>
 		</label>
-		<p class="description"><?php \esc_html_e( 'New likes and reposts are skipped while this is disabled and will not be imported when you turn it back on. Reactions that were already imported are kept.', 'atmosphere' ); ?></p>
+		<p class="description" id="atmosphere-sync-reactions-description"><?php \esc_html_e( 'New likes and reposts are skipped while this is disabled and will not be imported when you turn it back on. Reactions that were already imported are kept.', 'atmosphere' ); ?></p>
 		<?php
 	}
 
@@ -650,11 +626,12 @@ class Settings_Fields {
 				type="checkbox"
 				name="atmosphere_sync_replies"
 				value="1"
+				aria-describedby="atmosphere-sync-replies-description"
 				<?php \checked( \get_option( 'atmosphere_sync_replies', '1' ), '1' ); ?>
 			>
 			<?php \esc_html_e( 'Save replies as comments', 'atmosphere' ); ?>
 		</label>
-		<p class="description"><?php \esc_html_e( 'New replies are skipped while this is disabled and will not be imported when you turn it back on. Replies that were already imported are kept.', 'atmosphere' ); ?></p>
+		<p class="description" id="atmosphere-sync-replies-description"><?php \esc_html_e( 'New replies are skipped while this is disabled and will not be imported when you turn it back on. Replies that were already imported are kept.', 'atmosphere' ); ?></p>
 		<?php
 	}
 }
