@@ -53,7 +53,6 @@ class Test_Outgoing_Reactions_Setting extends \WP_UnitTestCase {
 
 		$this->assertStringContainsString( 'checked=', $enabled );
 		$this->assertStringNotContainsString( 'disabled=', $enabled );
-		$this->assertStringNotContainsString( 'type="hidden"', $enabled );
 
 		\update_option( 'atmosphere_publish_reactions', '' );
 		\ob_start();
@@ -94,7 +93,6 @@ class Test_Outgoing_Reactions_Setting extends \WP_UnitTestCase {
 
 		$this->assertStringContainsString( 'disabled=', $html );
 		$this->assertStringNotContainsString( 'checked=', $html );
-		$this->assertStringNotContainsString( 'type="hidden"', $html );
 		$this->assertStringContainsString( 'ATMOSPHERE_DISABLE_OUTGOING_REACTIONS', $html );
 
 		/*

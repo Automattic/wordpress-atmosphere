@@ -1457,22 +1457,20 @@ class Publisher {
 	 * `API::apply_writes()`.
 	 *
 	 * @param array         $writes       Full write batch.
-	 * @param callable|null $precondition Optional gate evaluated before each
-	 *                                    chunk is submitted; returning a
-	 *                                    `WP_Error` aborts the cascade (chunks
-	 *                                    already submitted stand). Keeps
-	 *                                    feature policy out of this transport
-	 *                                    helper — the caller supplies it.
+	 * @param callable|null $precondition Optional gate evaluated BETWEEN
+	 *                                    chunks — the caller has just checked
+	 *                                    its own precondition when the first
+	 *                                    request goes out, so only later
+	 *                                    chunks can observe a change.
+	 *                                    Returning a `WP_Error` aborts the
+	 *                                    cascade (chunks already submitted
+	 *                                    stand). Keeps feature policy out of
+	 *                                    this transport helper — the caller
+	 *                                    supplies it.
 	 * @return array|\WP_Error
 	 */
 	private static function apply_writes_chunked( array $writes, ?callable $precondition = null ): array|\WP_Error {
 		if ( \count( $writes ) <= self::APPLY_WRITES_CHUNK_SIZE ) {
-			$blocked = $precondition ? $precondition() : null;
-
-			if ( \is_wp_error( $blocked ) ) {
-				return $blocked;
-			}
-
 			return API::apply_writes( $writes );
 		}
 
@@ -1482,7 +1480,7 @@ class Publisher {
 		$succeeded = 0;
 
 		foreach ( $chunks as $index => $chunk ) {
-			$blocked = $precondition ? $precondition() : null;
+			$blocked = $index > 0 && $precondition ? $precondition() : null;
 
 			if ( \is_wp_error( $blocked ) ) {
 				return $blocked;
@@ -1525,7 +1523,7 @@ class Publisher {
 	 *
 	 * The comment batch is not attempted when the root batch fails or
 	 * outgoing reactions are disabled before it starts. The effective
-	 * setting is also checked before every comment chunk.
+	 * setting is re-checked between comment chunks of a long cascade.
 	 *
 	 * @param array $root_writes    Post + document delete writes (may be empty).
 	 * @param array $comment_writes Outbound comment-reply delete writes (may be empty).
