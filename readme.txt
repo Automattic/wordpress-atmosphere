@@ -14,7 +14,7 @@ Share your WordPress posts on Bluesky and the wider AT Protocol network — and 
 
 **ATmosphere** turns your WordPress site into a first-class citizen of the AT Protocol — the open network behind [Bluesky](https://bsky.social/).
 
-When you publish a post, ATmosphere automatically shares it on Bluesky and stores the full article on your AT Protocol account so any compatible app can read it. When people on Bluesky reply, like, or repost what you shared, those reactions show up as comments on your post. And approved comments your readers leave on WordPress are sent right back to Bluesky as replies under your original post — so the same conversation happens in both places without you having to copy anything by hand.
+When you publish a post, ATmosphere automatically shares it on Bluesky and stores the full article on your AT Protocol account so any compatible app can read it. When people on Bluesky reply, like, or repost what you shared, those reactions show up as comments on your post. And approved comments left by WordPress users who are allowed to publish posts are sent right back to Bluesky as replies under your original post — so the same conversation happens in both places without you having to copy anything by hand.
 
 = What you get =
 
@@ -22,7 +22,7 @@ When you publish a post, ATmosphere automatically shares it on Bluesky and store
 * **Long posts done right.** A long article becomes a short, readable Bluesky thread that links back to the full piece on your site. Edits are kept tidy so existing replies and reposts on Bluesky don't get orphaned.
 * **Use your own domain as your Bluesky handle.** With one click, your handle becomes something like `@yourblog.com` instead of `@you.bsky.social`. ATmosphere does the technical bit; Bluesky verifies it.
 * **Bluesky reactions become WordPress comments.** Replies appear in your comments. Likes and reposts show up alongside them with their own counts so the engagement is visible to your readers.
-* **WordPress comments become Bluesky replies.** When a logged-in reader leaves an approved comment on a cross-posted article, it's sent to Bluesky as a reply under the original post.
+* **Publishing-team comments become Bluesky replies.** When an Author, Editor, Administrator, or custom role allowed to publish posts leaves an approved comment on a cross-posted article, it's sent to Bluesky as a reply under the original post. Subscriber and other comment-only accounts stay local.
 * **Catch up on older posts.** A `wp atmosphere backfill` command can publish posts you wrote before installing the plugin.
 * **Per-post control.** You can opt individual posts out of cross-posting straight from the editor sidebar.
 * **No middleman.** ATmosphere talks directly to your Bluesky account using modern, secure sign-in. Nothing is routed through a third-party service, and your tokens never leave your WordPress site.
@@ -35,7 +35,7 @@ When you publish a post, ATmosphere automatically shares it on Bluesky and store
 3. Fill in a name, description, and icon for your "publication" — this is how your site is represented on the AT Protocol.
 4. Publish a post.
 5. Open Bluesky — your post is there. People can reply, like, repost, and follow as they normally would.
-6. Replies, likes, and reposts will start appearing as comments on your WordPress post. Comments you approve on WordPress will appear as replies on Bluesky.
+6. Replies, likes, and reposts will start appearing as comments on your WordPress post. Approved comments from users who can publish WordPress posts will appear as replies on Bluesky.
 
 **Note:** Cross-posting only kicks in for posts you publish *after* connecting. To bring older posts across, run `wp atmosphere backfill` from WP-CLI.
 
@@ -75,7 +75,7 @@ Long posts are turned into a short Bluesky thread of a few connected posts, with
 
 = Are my WordPress comments published to Bluesky? =
 
-Yes — approved comments left by logged-in readers on cross-posted articles are sent to Bluesky as replies under your original post. Anonymous comments, trackbacks, and pingbacks are skipped.
+Yes — approved comments left by WordPress users who are allowed to publish posts are sent to Bluesky as replies under your original post. Comments from Subscribers and other comment-only accounts stay local, as do anonymous comments, trackbacks, and pingbacks.
 
 = Can I stop WordPress comments from being published to Bluesky? =
 

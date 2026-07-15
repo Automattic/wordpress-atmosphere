@@ -1202,7 +1202,16 @@ class Atmosphere {
 			return false;
 		}
 
-		if ( (int) $comment->user_id <= 0 ) {
+		$user_id = (int) $comment->user_id;
+
+		/*
+		 * Registered users may be Subscribers who can comment but are not
+		 * trusted to publish site content. Outbound replies are written by
+		 * the site's connected Bluesky account, so use the comment author's
+		 * stored capabilities rather than the current user: this gate also
+		 * runs asynchronously in WP-Cron, where nobody is logged in.
+		 */
+		if ( $user_id <= 0 || ! \user_can( $user_id, 'publish_posts' ) ) {
 			return false;
 		}
 

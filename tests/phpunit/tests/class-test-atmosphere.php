@@ -89,6 +89,15 @@ class Test_Atmosphere extends WP_UnitTestCase {
 	}
 
 	/**
+	 * Create a user authorized to publish outbound comments.
+	 *
+	 * @return int User ID.
+	 */
+	private function make_publishing_user(): int {
+		return self::factory()->user->create( array( 'role' => 'author' ) );
+	}
+
+	/**
 	 * Build a WP_Comment on a published post for comment eligibility tests.
 	 *
 	 * A fresh post is created each call: WP_UnitTestCase rolls back
@@ -108,7 +117,7 @@ class Test_Atmosphere extends WP_UnitTestCase {
 			'comment_post_ID'  => $post_id,
 			'comment_approved' => '1',
 			'comment_type'     => 'comment',
-			'user_id'          => self::factory()->user->create(),
+			'user_id'          => $this->make_publishing_user(),
 			'comment_content'  => 'Hello.',
 		);
 
@@ -697,13 +706,28 @@ class Test_Atmosphere extends WP_UnitTestCase {
 	}
 
 	/**
-	 * Baseline: approved comment from a registered user on a published
-	 * post is publishable.
+	 * Baseline: an approved comment from an author on a published post
+	 * is publishable.
 	 */
-	public function test_eligible_registered_user_approved_comment_publishes() {
+	public function test_eligible_author_approved_comment_publishes() {
 		$comment = $this->make_eligible_comment();
 
 		$this->assertTrue( Atmosphere::should_publish_comment( $comment ) );
+	}
+
+	/**
+	 * A registered Subscriber can comment but cannot publish site content.
+	 */
+	public function test_subscriber_comment_is_skipped() {
+		$subscriber_id = self::factory()->user->create( array( 'role' => 'subscriber' ) );
+		$comment       = $this->make_eligible_comment( array( 'user_id' => $subscriber_id ) );
+
+		$this->assertFalse( Atmosphere::should_publish_comment( $comment ) );
+		$this->atmosphere->on_comment_insert( (int) $comment->comment_ID, 1 );
+		$this->assertFalse(
+			\wp_next_scheduled( 'atmosphere_publish_comment', array( (int) $comment->comment_ID ) ),
+			'Subscriber comments must not schedule an outbound publish.'
+		);
 	}
 
 	/**
@@ -804,7 +828,7 @@ class Test_Atmosphere extends WP_UnitTestCase {
 
 	/**
 	 * Third parties can force-allow publication via filter (e.g.
-	 * overriding the anonymous-only guard for a specific integration).
+	 * overriding the core eligibility gates for a specific integration).
 	 */
 	public function test_comment_filter_can_force_publish() {
 		$comment = $this->make_eligible_comment( array( 'user_id' => 0 ) );
@@ -906,7 +930,7 @@ class Test_Atmosphere extends WP_UnitTestCase {
 			array(
 				'comment_post_ID'  => $post_id,
 				'comment_approved' => '1',
-				'user_id'          => self::factory()->user->create(),
+				'user_id'          => $this->make_publishing_user(),
 			)
 		);
 
@@ -928,7 +952,7 @@ class Test_Atmosphere extends WP_UnitTestCase {
 			array(
 				'comment_post_ID'  => $post_id,
 				'comment_approved' => '1',
-				'user_id'          => self::factory()->user->create(),
+				'user_id'          => $this->make_publishing_user(),
 			)
 		);
 		\update_comment_meta( $comment_id, Comment::META_URI, 'at://did:plc:test123/app.bsky.feed.post/reply' );
@@ -954,7 +978,7 @@ class Test_Atmosphere extends WP_UnitTestCase {
 		$comment_id = self::factory()->comment->create(
 			array(
 				'comment_post_ID' => $post_id,
-				'user_id'         => self::factory()->user->create(),
+				'user_id'         => $this->make_publishing_user(),
 			)
 		);
 		\update_comment_meta( $comment_id, Comment::META_TID, 'deadbeef' );
@@ -1009,6 +1033,39 @@ class Test_Atmosphere extends WP_UnitTestCase {
 		\remove_all_filters( 'pre_http_request' );
 
 		$this->assertFalse( $captured, 'applyWrites must not be called for a no-longer-eligible comment.' );
+	}
+
+	/**
+	 * The publish cron handler must use the comment author's current
+	 * capabilities, not the user who happens to run WP-Cron.
+	 */
+	public function test_publish_comment_cron_rechecks_author_capability() {
+		$comment    = $this->make_eligible_comment();
+		$comment_id = (int) $comment->comment_ID;
+		$author     = \get_user_by( 'id', (int) $comment->user_id );
+
+		$this->assertInstanceOf( \WP_User::class, $author );
+		$this->atmosphere->on_comment_insert( $comment_id, 1 );
+		$this->assertNotFalse(
+			\wp_next_scheduled( 'atmosphere_publish_comment', array( $comment_id ) ),
+			'Author comment should be queued before the role downgrade.'
+		);
+		$author->set_role( 'subscriber' );
+
+		$captured = false;
+		\add_filter(
+			'atmosphere_pre_apply_writes',
+			static function () use ( &$captured ) {
+				$captured = true;
+				return new \WP_Error( 'unexpected_write', 'Subscriber comment reached the PDS write path.' );
+			}
+		);
+
+		\do_action( 'atmosphere_publish_comment', $comment_id );
+		\remove_all_filters( 'atmosphere_pre_apply_writes' );
+		\wp_clear_scheduled_hook( 'atmosphere_publish_comment', array( $comment_id ) );
+
+		$this->assertFalse( $captured, 'A role downgrade before cron execution must prevent publication.' );
 	}
 
 	/**
@@ -1210,7 +1267,7 @@ class Test_Atmosphere extends WP_UnitTestCase {
 		\update_post_meta( $post_id, Post::META_URI, 'at://did:plc:test123/app.bsky.feed.post/root' );
 		\update_post_meta( $post_id, Post::META_CID, 'bafyroot' );
 
-		$user_id = self::factory()->user->create();
+		$user_id = $this->make_publishing_user();
 
 		$parent_id = self::factory()->comment->create(
 			array(
@@ -1423,7 +1480,7 @@ class Test_Atmosphere extends WP_UnitTestCase {
 		\update_post_meta( $post_id, Post::META_URI, 'at://did:plc:test123/app.bsky.feed.post/root' );
 		\update_post_meta( $post_id, Post::META_CID, 'bafyroot' );
 
-		$user_id = self::factory()->user->create();
+		$user_id = $this->make_publishing_user();
 
 		$parent_id = self::factory()->comment->create(
 			array(
@@ -2277,7 +2334,7 @@ class Test_Atmosphere extends WP_UnitTestCase {
 				'comment_post_ID'  => $post_id,
 				'comment_approved' => '1',
 				'comment_type'     => 'comment',
-				'user_id'          => self::factory()->user->create(),
+				'user_id'          => $this->make_publishing_user(),
 				'comment_content'  => 'Reply to anon.',
 				'comment_parent'   => $parent_id,
 			)
@@ -2328,7 +2385,7 @@ class Test_Atmosphere extends WP_UnitTestCase {
 				'comment_post_ID'  => $post_id,
 				'comment_approved' => '1',
 				'comment_type'     => 'comment',
-				'user_id'          => self::factory()->user->create(),
+				'user_id'          => $this->make_publishing_user(),
 				'comment_content'  => 'Already-published parent.',
 			)
 		);
@@ -2340,7 +2397,7 @@ class Test_Atmosphere extends WP_UnitTestCase {
 				'comment_post_ID'  => $post_id,
 				'comment_approved' => '1',
 				'comment_type'     => 'comment',
-				'user_id'          => self::factory()->user->create(),
+				'user_id'          => $this->make_publishing_user(),
 				'comment_content'  => 'Reply.',
 				'comment_parent'   => $parent_id,
 			)
@@ -2403,7 +2460,7 @@ class Test_Atmosphere extends WP_UnitTestCase {
 				'comment_post_ID'  => $post_id,
 				'comment_approved' => '1',
 				'comment_type'     => 'comment',
-				'user_id'          => self::factory()->user->create(),
+				'user_id'          => $this->make_publishing_user(),
 				'comment_content'  => 'Reply to federated.',
 				'comment_parent'   => $parent_id,
 			)
@@ -2447,7 +2504,7 @@ class Test_Atmosphere extends WP_UnitTestCase {
 				'comment_post_ID'  => $post_id,
 				'comment_approved' => '1',
 				'comment_type'     => 'comment',
-				'user_id'          => self::factory()->user->create(),
+				'user_id'          => $this->make_publishing_user(),
 				'comment_content'  => 'Top-level comment.',
 			)
 		);
@@ -2495,7 +2552,7 @@ class Test_Atmosphere extends WP_UnitTestCase {
 				'comment_post_ID'  => $post_id,
 				'comment_approved' => '1',
 				'comment_type'     => 'comment',
-				'user_id'          => self::factory()->user->create(),
+				'user_id'          => $this->make_publishing_user(),
 				'comment_content'  => 'Half-published parent.',
 			)
 		);
@@ -2509,7 +2566,7 @@ class Test_Atmosphere extends WP_UnitTestCase {
 				'comment_post_ID'  => $post_id,
 				'comment_approved' => '1',
 				'comment_type'     => 'comment',
-				'user_id'          => self::factory()->user->create(),
+				'user_id'          => $this->make_publishing_user(),
 				'comment_content'  => 'Reply to half-state.',
 				'comment_parent'   => $parent_id,
 			)
