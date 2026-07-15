@@ -45,4 +45,34 @@ describe( 'searchHandles', () => {
 			[]
 		);
 	} );
+
+	test( 'builds an encoded q + limit query on a bare endpoint', async () => {
+		global.fetch = jest.fn().mockResolvedValue( {
+			ok: true,
+			json: async () => ( { actors: [] } ),
+		} );
+
+		await searchHandles( 'https://ex.test/xrpc', 'al ice' );
+
+		const requested = new URL( global.fetch.mock.calls[ 0 ][ 0 ] );
+		expect( requested.searchParams.get( 'q' ) ).toBe( 'al ice' );
+		expect( requested.searchParams.get( 'limit' ) ).toBe( '8' );
+	} );
+
+	test( 'preserves an existing query string instead of doubling the ?', async () => {
+		global.fetch = jest.fn().mockResolvedValue( {
+			ok: true,
+			json: async () => ( { actors: [] } ),
+		} );
+
+		await searchHandles( 'https://ex.test/xrpc?viewer=did:plc:me', 'ali' );
+
+		const raw = String( global.fetch.mock.calls[ 0 ][ 0 ] );
+		expect( raw.match( /\?/g ) ).toHaveLength( 1 );
+
+		const requested = new URL( raw );
+		expect( requested.searchParams.get( 'viewer' ) ).toBe( 'did:plc:me' );
+		expect( requested.searchParams.get( 'q' ) ).toBe( 'ali' );
+		expect( requested.searchParams.get( 'limit' ) ).toBe( '8' );
+	} );
 } );

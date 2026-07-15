@@ -29,9 +29,12 @@ const TYPEAHEAD_DEBOUNCE_MS = 250;
  */
 export async function searchHandles( baseUrl, query ) {
 	try {
-		const url = `${ baseUrl }?q=${ encodeURIComponent(
-			query
-		) }&limit=${ TYPEAHEAD_LIMIT }`;
+		// Build via the URL API so a filtered endpoint that already carries a
+		// query string (or a trailing `?`) doesn't produce a double `?` /
+		// malformed query; searchParams also handles encoding consistently.
+		const url = new URL( baseUrl );
+		url.searchParams.set( 'q', query );
+		url.searchParams.set( 'limit', TYPEAHEAD_LIMIT );
 		const res = await fetch( url, {
 			headers: { Accept: 'application/json' },
 		} );
@@ -134,7 +137,12 @@ export function HandleTypeahead( {
 			setActive( ( i ) => Math.min( i + 1, suggestions.length - 1 ) );
 		} else if ( 'ArrowUp' === e.key ) {
 			e.preventDefault();
-			setActive( ( i ) => Math.max( i - 1, 0 ) );
+			setOpen( suggestions.length > 0 );
+			// Never point aria-activedescendant at a non-existent option: hold
+			// active at -1 while the list is empty, mirroring ArrowDown.
+			setActive( ( i ) =>
+				suggestions.length ? Math.max( i - 1, 0 ) : -1
+			);
 		} else if ( 'Enter' === e.key ) {
 			e.preventDefault();
 			if ( open && suggestions.length ) {
