@@ -42,6 +42,7 @@ ATmosphere exposes a small set of filters and actions for plugins to extend beha
 | `atmosphere_publication_labels` | filter | Add standard self-labels to `site.standard.publication` records. |
 | `atmosphere_publication_show_in_discover` | filter | Override `preferences.showInDiscover` (defaults to the site's `blog_public` option) for `site.standard.publication` records. |
 | `atmosphere_syncable_post_types` | filter | Add or remove post types eligible for cross-posting. |
+| `atmosphere_show_settings_page` | filter | Return `false` to hide the Settings → ATmosphere screen when another plugin drives the connection from Settings → Connectors. |
 | `atmosphere_should_publish_comment` | filter | Customise which approved comments are mirrored as Bluesky replies. |
 | `atmosphere_should_sync_reply` | filter | Customise which inbound Bluesky replies become WordPress comments. |
 | `atmosphere_transform_bsky_post` | filter | Mutate the Bluesky post record before write. |

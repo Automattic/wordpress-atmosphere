@@ -230,6 +230,7 @@ use function Atmosphere\is_connected;
 \apply_filters( 'atmosphere_publish_retry_delays',        array( 60, 300, 900 ) ); // Backoff ladder for failed publish/update cron workers; length = retry budget; empty array disables retries.
 \apply_filters( 'atmosphere_oauth_redirect_uri',          $uri );
 \apply_filters( 'atmosphere_client_metadata',             $metadata );
+\apply_filters( 'atmosphere_show_settings_page',          true ); // Return false to hide Settings → ATmosphere, e.g. when another plugin drives the connection from Settings → Connectors and its own UI.
 \apply_filters( 'atmosphere_appview_host',                'bsky.app', $path, $context ); // Host/subpath for appview web links; normalized; $context keys: type|did|handle|rkey|tag.
 \apply_filters( 'atmosphere_appview_url',                 $url, $path, $context );        // Whole assembled appview link; rewrite the route from $context.
 ```

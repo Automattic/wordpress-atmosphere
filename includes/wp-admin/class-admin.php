@@ -47,12 +47,47 @@ class Admin {
 		\add_action( 'load-settings_page_atmosphere', array( self::class, 'maybe_warn_missing_post_types' ) );
 
 		\add_action( 'admin_post_atmosphere_disconnect', array( self::class, 'handle_disconnect' ) );
+
+		\add_filter(
+			'plugin_action_links_' . \plugin_basename( ATMOSPHERE_PLUGIN_FILE ),
+			array( self::class, 'filter_action_links' )
+		);
+	}
+
+	/**
+	 * Whether the plugin's own settings screen should be shown.
+	 *
+	 * A third-party plugin that drives the AT Protocol connection through the
+	 * Settings → Connectors screen (and its own UI) can return false from the
+	 * `atmosphere_show_settings_page` filter to hide Settings → ATmosphere.
+	 * The connection layer, publishing, and the Connectors card all keep
+	 * working; only this plugin's own settings surface is hidden.
+	 *
+	 * @return bool True to show the settings screen (default), false to hide it.
+	 */
+	public static function is_settings_page_visible(): bool {
+		/**
+		 * Filters whether the ATmosphere settings screen is shown.
+		 *
+		 * Return false to hide Settings → ATmosphere, for example when another
+		 * plugin embeds ATmosphere as a connection layer and manages the
+		 * connection from the Settings → Connectors screen and its own UI.
+		 *
+		 * @since unreleased
+		 *
+		 * @param bool $visible Whether to show Settings → ATmosphere. Default true.
+		 */
+		return (bool) \apply_filters( 'atmosphere_show_settings_page', true );
 	}
 
 	/**
 	 * Register the settings page under Settings.
 	 */
 	public static function add_menu(): void {
+		if ( ! self::is_settings_page_visible() ) {
+			return;
+		}
+
 		$hook = \add_options_page(
 			\__( 'ATmosphere', 'atmosphere' ),
 			\__( 'ATmosphere', 'atmosphere' ),
@@ -74,6 +109,36 @@ class Admin {
 		 * {@see Atmosphere::maybe_flush_wellknown_rewrites()} for detail.
 		 */
 		\add_action( "load-{$hook}", array( Atmosphere::class, 'maybe_flush_wellknown_rewrites' ) );
+	}
+
+	/**
+	 * Add a Settings shortcut to the plugin's row on the Plugins screen.
+	 *
+	 * When the settings screen is hidden via the `atmosphere_show_settings_page`
+	 * filter, the shortcut is replaced with a plain, non-linked label so
+	 * operators understand why the usual Settings link is gone. Filters cannot
+	 * report which plugin hid the screen, so the copy is intentionally generic.
+	 *
+	 * @param string[] $links Existing plugin action links.
+	 * @return string[] Filtered plugin action links.
+	 */
+	public static function filter_action_links( array $links ): array {
+		if ( self::is_settings_page_visible() ) {
+			$settings_link = \sprintf(
+				'<a href="%s">%s</a>',
+				\esc_url( \admin_url( 'options-general.php?page=atmosphere' ) ),
+				\esc_html__( 'Settings', 'atmosphere' )
+			);
+		} else {
+			$settings_link = \sprintf(
+				'<span style="color:#646970;">%s</span>',
+				\esc_html__( 'Settings hidden by another plugin', 'atmosphere' )
+			);
+		}
+
+		\array_unshift( $links, $settings_link );
+
+		return $links;
 	}
 
 	/**
@@ -296,6 +361,12 @@ class Admin {
 		}
 
 		if ( ! needs_reauth() ) {
+			return;
+		}
+
+		// The notice's only call to action links to the settings page; skip it
+		// entirely when that page is hidden so we never point at a dead URL.
+		if ( ! self::is_settings_page_visible() ) {
 			return;
 		}
 

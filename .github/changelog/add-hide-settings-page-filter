@@ -1,0 +1,4 @@
+Significance: minor
+Type: added
+
+Let other plugins hide the ATmosphere settings screen when they manage the connection from Settings → Connectors instead.
