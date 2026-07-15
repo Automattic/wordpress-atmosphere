@@ -32,8 +32,7 @@ module.exports = list.map( ( config ) => {
 		...config,
 		plugins: config.plugins.map( ( plugin ) => {
 			if (
-				plugin.constructor.name !==
-				'DependencyExtractionWebpackPlugin'
+				! ( plugin instanceof DependencyExtractionWebpackPlugin )
 			) {
 				return plugin;
 			}

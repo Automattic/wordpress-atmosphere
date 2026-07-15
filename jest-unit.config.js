@@ -3,8 +3,8 @@
  *
  * Extends the default `@wordpress/scripts` unit config and registers a setup
  * file that exposes the `window.wp.*` globals our script modules read at load
- * time. Jest concatenates a preset's `setupFiles` with these, so the preset's
- * own globals still run.
+ * time. We append to any `setupFiles` the default config already declares
+ * rather than replacing them, so the toolchain's own globals still run.
  */
 
 /**
@@ -14,5 +14,8 @@ const defaultConfig = require( '@wordpress/scripts/config/jest-unit.config.js' )
 
 module.exports = {
 	...defaultConfig,
-	setupFiles: [ '<rootDir>/jest.setup.js' ],
+	setupFiles: [
+		...( defaultConfig.setupFiles || [] ),
+		'<rootDir>/jest.setup.js',
+	],
 };
