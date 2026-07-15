@@ -34,11 +34,19 @@ class Options {
 	 */
 	public static function init(): void {
 		/*
-		 * While the deployment constant forces outgoing reactions off, the
-		 * saved preference must survive every writer — the settings form
-		 * (whose disabled checkbox is not submitted), REST, and CLI alike —
-		 * so enforcement lives at the option-write layer, not per-form.
+		 * The deployment constant is enforced at the option layer: reads
+		 * report the effective value on every surface (get_option, REST,
+		 * WP-CLI, the settings checkbox), and writes preserve the saved
+		 * preference for when the constant is removed. Returning '' (not
+		 * false, which means "continue to the DB") short-circuits the read.
 		 */
+		\add_filter(
+			'pre_option_atmosphere_publish_reactions',
+			static function ( $pre ) {
+				return outgoing_reactions_disabled_by_constant() ? '' : $pre;
+			}
+		);
+
 		\add_filter(
 			'pre_update_option_atmosphere_publish_reactions',
 			static function ( $value, $old_value ) {

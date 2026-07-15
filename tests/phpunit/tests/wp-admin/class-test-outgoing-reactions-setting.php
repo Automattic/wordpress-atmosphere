@@ -85,6 +85,9 @@ class Test_Outgoing_Reactions_Setting extends \WP_UnitTestCase {
 
 		$this->assertFalse( outgoing_reactions_enabled() );
 
+		/* Reads report the effective value while the constant is active. */
+		$this->assertSame( '', \get_option( 'atmosphere_publish_reactions' ) );
+
 		\ob_start();
 		Settings_Fields::render_publish_reactions_field();
 		$html = (string) \ob_get_clean();
@@ -94,8 +97,22 @@ class Test_Outgoing_Reactions_Setting extends \WP_UnitTestCase {
 		$this->assertStringNotContainsString( 'type="hidden"', $html );
 		$this->assertStringContainsString( 'ATMOSPHERE_DISABLE_OUTGOING_REACTIONS', $html );
 
-		/* Any writer must be unable to overwrite the saved preference. */
+		/*
+		 * Any writer must be unable to overwrite the saved preference.
+		 * Asserted against the raw row: get_option() is now filtered to
+		 * the effective value, so it cannot see the stored one.
+		 */
 		\update_option( 'atmosphere_publish_reactions', '' );
-		$this->assertSame( '1', \get_option( 'atmosphere_publish_reactions' ) );
+
+		global $wpdb;
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching
+		$stored = $wpdb->get_var(
+			$wpdb->prepare(
+				"SELECT option_value FROM {$wpdb->options} WHERE option_name = %s",
+				'atmosphere_publish_reactions'
+			)
+		);
+
+		$this->assertSame( '1', $stored, 'The stored preference must survive writers while the constant is active.' );
 	}
 }

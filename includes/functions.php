@@ -465,19 +465,15 @@ function outgoing_reactions_disabled_by_constant(): bool {
 /**
  * Whether local WordPress reactions may be written to Bluesky.
  *
- * Existing installs keep the historical enabled behavior when the option
- * has not been saved. The deployment-level constant always wins so hosts
- * can enforce the boundary regardless of the database value.
+ * Unsaved installs default to enabled. The deployment constant is
+ * enforced by the option filters in {@see \Atmosphere\Options::init()},
+ * so this read always reports the effective value.
  *
  * @since unreleased
  *
  * @return bool
  */
 function outgoing_reactions_enabled(): bool {
-	if ( outgoing_reactions_disabled_by_constant() ) {
-		return false;
-	}
-
 	return '1' === (string) \get_option( 'atmosphere_publish_reactions', '1' );
 }
 
