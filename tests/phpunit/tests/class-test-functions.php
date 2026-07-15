@@ -967,6 +967,22 @@ class Test_Functions extends \WP_UnitTestCase {
 	}
 
 	/**
+	 * Regression: an option stored programmatically as the integer 1 (rather than
+	 * the string '1') must still read as enabled. The gates compare against '1',
+	 * so they cast to string first — otherwise `'1' === 1` is false and a genuinely
+	 * enabled feature would be mis-read as disabled. Covers all three sync gates.
+	 */
+	public function test_feature_gates_treat_integer_one_as_enabled() {
+		\update_option( 'atmosphere_auto_publish', 1 );
+		\update_option( 'atmosphere_sync_reactions', 1 );
+		\update_option( 'atmosphere_sync_replies', 1 );
+
+		$this->assertTrue( is_auto_publish_enabled() );
+		$this->assertTrue( is_reaction_sync_enabled() );
+		$this->assertTrue( is_reply_sync_enabled() );
+	}
+
+	/**
 	 * Connection-only mode forces auto-publish off even when the stored option
 	 * says on — the override is on effective behaviour, not just the default.
 	 */

@@ -817,7 +817,7 @@ function is_connection_only_mode(): bool {
  * @return bool
  */
 function is_auto_publish_enabled(): bool {
-	$enabled = '1' === \get_option( 'atmosphere_auto_publish', '1' );
+	$enabled = '1' === (string) \get_option( 'atmosphere_auto_publish', '1' );
 
 	if ( is_connection_only_mode() ) {
 		$enabled = false;
@@ -851,7 +851,7 @@ function is_auto_publish_enabled(): bool {
  * @return bool
  */
 function is_reaction_sync_enabled(): bool {
-	$enabled = '1' === \get_option( 'atmosphere_sync_reactions', '1' );
+	$enabled = '1' === (string) \get_option( 'atmosphere_sync_reactions', '1' );
 
 	if ( is_connection_only_mode() ) {
 		$enabled = false;
@@ -883,7 +883,7 @@ function is_reaction_sync_enabled(): bool {
  * @return bool
  */
 function is_reply_sync_enabled(): bool {
-	$enabled = '1' === \get_option( 'atmosphere_sync_replies', '1' );
+	$enabled = '1' === (string) \get_option( 'atmosphere_sync_replies', '1' );
 
 	if ( is_connection_only_mode() ) {
 		$enabled = false;
