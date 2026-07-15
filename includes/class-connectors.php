@@ -235,6 +235,8 @@ class Connectors {
 			}
 
 			foreach ( $items as $item ) {
+				// WP submenu items are [ title, capability, slug, ... ]; index 2
+				// is the menu slug, regardless of the item's position in the menu.
 				$slug = $item[2] ?? '';
 				if (
 					\is_string( $slug )
