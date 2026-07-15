@@ -563,7 +563,7 @@ class Settings_Fields {
 		<?php else : ?>
 			<p class="description">
 				<?php
-				\esc_html_e( 'When disabled, WordPress comment changes are not sent to Bluesky and existing Bluesky replies are unchanged.', 'atmosphere' );
+				\esc_html_e( 'Comments are not sent to Bluesky while this is disabled. Replies that were already published to Bluesky are kept.', 'atmosphere' );
 				?>
 			</p>
 		<?php endif; ?>
