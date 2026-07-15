@@ -26,6 +26,7 @@ use function Atmosphere\get_pds_endpoint;
 use function Atmosphere\get_reauth_reason;
 use function Atmosphere\get_supported_post_types;
 use function Atmosphere\has_identity;
+use function Atmosphere\is_auto_publish_enabled;
 use function Atmosphere\is_connected;
 use function Atmosphere\is_operator_disconnected;
 use function Atmosphere\reauth_reason_lead;
@@ -254,7 +255,7 @@ class Health_Check {
 				),
 				'auto_publish'      => array(
 					'label'   => \__( 'Auto-Publish', 'atmosphere' ),
-					'value'   => '1' === \get_option( 'atmosphere_auto_publish', '1' )
+					'value'   => is_auto_publish_enabled()
 						? \__( 'Enabled', 'atmosphere' )
 						: \__( 'Disabled', 'atmosphere' ),
 					'private' => false,

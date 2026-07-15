@@ -17,6 +17,10 @@ use function Atmosphere\grapheme_length;
 use function Atmosphere\to_iso8601;
 use function Atmosphere\is_post_publishable;
 use function Atmosphere\is_sharing_enabled;
+use function Atmosphere\is_connection_only_mode;
+use function Atmosphere\is_auto_publish_enabled;
+use function Atmosphere\is_reaction_sync_enabled;
+use function Atmosphere\is_reply_sync_enabled;
 use function Atmosphere\get_connection;
 use function Atmosphere\debug_log;
 
@@ -893,5 +897,114 @@ class Test_Functions extends \WP_UnitTestCase {
 		$this->assertSame( '', \Atmosphere\handle_typeahead_url() );
 
 		\remove_all_filters( 'atmosphere_handle_typeahead_url' );
+	}
+
+	/**
+	 * Clean up the connection-only-mode filters after each relevant test so a
+	 * lingering callback can't bleed into an unrelated test.
+	 */
+	public function tear_down(): void {
+		\remove_all_filters( 'atmosphere_connection_only_mode' );
+		\remove_all_filters( 'atmosphere_should_auto_publish' );
+		\remove_all_filters( 'atmosphere_should_sync_reactions' );
+		\remove_all_filters( 'atmosphere_should_sync_replies' );
+
+		parent::tear_down();
+	}
+
+	/**
+	 * Connection-only mode is off unless a plugin opts in.
+	 */
+	public function test_connection_only_mode_off_by_default() {
+		$this->assertFalse( is_connection_only_mode() );
+	}
+
+	/**
+	 * A host plugin flips connection-only mode on through the filter.
+	 */
+	public function test_connection_only_mode_is_filterable() {
+		\add_filter( 'atmosphere_connection_only_mode', '__return_true' );
+
+		$this->assertTrue( is_connection_only_mode() );
+	}
+
+	/**
+	 * Auto-publish is opt-out: on for a never-configured install.
+	 */
+	public function test_auto_publish_enabled_by_default() {
+		$this->assertTrue( is_auto_publish_enabled() );
+	}
+
+	/**
+	 * A saved "off" (any non-'1' value) turns auto-publish off.
+	 */
+	public function test_auto_publish_disabled_when_option_off() {
+		\update_option( 'atmosphere_auto_publish', '0' );
+
+		$this->assertFalse( is_auto_publish_enabled() );
+	}
+
+	/**
+	 * Connection-only mode forces auto-publish off even when the stored option
+	 * says on — the override is on effective behaviour, not just the default.
+	 */
+	public function test_auto_publish_forced_off_in_connection_only_mode() {
+		\update_option( 'atmosphere_auto_publish', '1' );
+		\add_filter( 'atmosphere_connection_only_mode', '__return_true' );
+
+		$this->assertFalse( is_auto_publish_enabled() );
+	}
+
+	/**
+	 * The per-feature filter is evaluated last, so a host can keep cross-posting
+	 * on while otherwise running in connection-only mode.
+	 */
+	public function test_auto_publish_filter_can_reenable_in_connection_only_mode() {
+		\add_filter( 'atmosphere_connection_only_mode', '__return_true' );
+		\add_filter( 'atmosphere_should_auto_publish', '__return_true' );
+
+		$this->assertTrue( is_auto_publish_enabled() );
+	}
+
+	/**
+	 * Reaction import is opt-out and forced off in connection-only mode.
+	 */
+	public function test_reaction_sync_forced_off_in_connection_only_mode() {
+		$this->assertTrue( is_reaction_sync_enabled() );
+
+		\add_filter( 'atmosphere_connection_only_mode', '__return_true' );
+
+		$this->assertFalse( is_reaction_sync_enabled() );
+	}
+
+	/**
+	 * The reaction filter has the final say over connection-only mode.
+	 */
+	public function test_reaction_sync_filter_can_reenable_in_connection_only_mode() {
+		\add_filter( 'atmosphere_connection_only_mode', '__return_true' );
+		\add_filter( 'atmosphere_should_sync_reactions', '__return_true' );
+
+		$this->assertTrue( is_reaction_sync_enabled() );
+	}
+
+	/**
+	 * Reply import is opt-out and forced off in connection-only mode.
+	 */
+	public function test_reply_sync_forced_off_in_connection_only_mode() {
+		$this->assertTrue( is_reply_sync_enabled() );
+
+		\add_filter( 'atmosphere_connection_only_mode', '__return_true' );
+
+		$this->assertFalse( is_reply_sync_enabled() );
+	}
+
+	/**
+	 * The reply filter has the final say over connection-only mode.
+	 */
+	public function test_reply_sync_filter_can_reenable_in_connection_only_mode() {
+		\add_filter( 'atmosphere_connection_only_mode', '__return_true' );
+		\add_filter( 'atmosphere_should_sync_replies', '__return_true' );
+
+		$this->assertTrue( is_reply_sync_enabled() );
 	}
 }

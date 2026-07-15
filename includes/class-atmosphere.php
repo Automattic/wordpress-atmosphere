@@ -699,13 +699,13 @@ class Atmosphere {
 		}
 
 		/*
-		 * Publish only when auto-publish is explicitly on. An unchecked
-		 * checkbox submits no value, so a saved "off" state is stored as
-		 * an empty string rather than '0' — comparing against '1' (with a
-		 * '1' default for never-saved installs) treats every non-'1' value
-		 * as off, the same way the ActivityPub plugin gates its toggles.
+		 * Publish only when auto-publish is effectively on. The gate folds
+		 * together the stored `atmosphere_auto_publish` option (opt-out, off
+		 * for any non-'1' value the same way the ActivityPub plugin gates its
+		 * toggles), connection-only mode, and the `atmosphere_should_auto_publish`
+		 * filter. See {@see \Atmosphere\is_auto_publish_enabled()}.
 		 */
-		if ( '1' !== \get_option( 'atmosphere_auto_publish', '1' ) ) {
+		if ( ! is_auto_publish_enabled() ) {
 			return;
 		}
 
@@ -1400,7 +1400,7 @@ class Atmosphere {
 			return;
 		}
 
-		if ( ! is_connected() || '1' !== \get_option( 'atmosphere_auto_publish', '1' ) ) {
+		if ( ! is_connected() || ! is_auto_publish_enabled() ) {
 			return;
 		}
 

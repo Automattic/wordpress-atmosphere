@@ -18,7 +18,9 @@ use function Atmosphere\get_identity;
 use function Atmosphere\get_supported_post_types;
 use function Atmosphere\handle_typeahead_url;
 use function Atmosphere\has_identity;
+use function Atmosphere\is_auto_publish_enabled;
 use function Atmosphere\is_connected;
+use function Atmosphere\is_connection_only_mode;
 use function Atmosphere\is_operator_disconnected;
 use function Atmosphere\needs_reauth;
 use function Atmosphere\reauth_reason_lead;
@@ -75,11 +77,16 @@ class Admin {
 		 * plugin embeds ATmosphere as a connection layer and manages the
 		 * connection from the Settings → Connectors screen and its own UI.
 		 *
+		 * Defaults to hidden while {@see \Atmosphere\is_connection_only_mode()}
+		 * is on, so a host that flips connection-only mode gets the settings
+		 * screen tucked away without a second filter. This filter is evaluated
+		 * afterwards and still wins, so the screen can be forced back on.
+		 *
 		 * @since unreleased
 		 *
-		 * @param bool $visible Whether to show Settings → ATmosphere. Default true.
+		 * @param bool $visible Whether to show Settings → ATmosphere. Default true, or false in connection-only mode.
 		 */
-		return (bool) \apply_filters( 'atmosphere_show_settings_page', true );
+		return (bool) \apply_filters( 'atmosphere_show_settings_page', ! is_connection_only_mode() );
 	}
 
 	/**
@@ -487,7 +494,7 @@ class Admin {
 			return;
 		}
 
-		if ( '1' !== \get_option( 'atmosphere_auto_publish', '1' ) ) {
+		if ( ! is_auto_publish_enabled() ) {
 			return;
 		}
 

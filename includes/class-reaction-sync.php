@@ -213,7 +213,7 @@ class Reaction_Sync {
 	 * @return bool
 	 */
 	private static function reactions_enabled(): bool {
-		return '1' === \get_option( 'atmosphere_sync_reactions', '1' );
+		return is_reaction_sync_enabled();
 	}
 
 	/**
@@ -226,7 +226,7 @@ class Reaction_Sync {
 	 * @return bool
 	 */
 	private static function replies_enabled(): bool {
-		return '1' === \get_option( 'atmosphere_sync_replies', '1' );
+		return is_reply_sync_enabled();
 	}
 
 	/**

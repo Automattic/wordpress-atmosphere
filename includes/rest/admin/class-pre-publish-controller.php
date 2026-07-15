@@ -20,6 +20,7 @@ use WP_Post;
 use WP_REST_Request;
 use WP_REST_Response;
 use WP_REST_Server;
+use function Atmosphere\is_auto_publish_enabled;
 use function Atmosphere\is_connected;
 use function Atmosphere\is_supported_post_type;
 
@@ -298,7 +299,7 @@ class Pre_Publish_Controller extends \WP_REST_Controller {
 			);
 		}
 
-		if ( '1' !== \get_option( 'atmosphere_auto_publish', '1' ) ) {
+		if ( ! is_auto_publish_enabled() ) {
 			return array(
 				'will_publish' => false,
 				'reason'       => \__( 'Automatic publishing to Bluesky is turned off in settings.', 'atmosphere' ),

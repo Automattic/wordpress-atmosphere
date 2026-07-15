@@ -23,6 +23,7 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 	 */
 	public function tear_down(): void {
 		\delete_option( 'atmosphere_support_post_types' );
+		\remove_all_filters( 'atmosphere_connection_only_mode' );
 
 		if ( \post_type_exists( 'atmos_hidden_cpt' ) ) {
 			\unregister_post_type( 'atmos_hidden_cpt' );
@@ -1983,6 +1984,88 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 				)
 			),
 			'No reply comment should be written when replies are off.'
+		);
+	}
+
+	/**
+	 * Connection-only mode forces reaction import off even with the stored
+	 * setting on, so likes and reposts are skipped.
+	 */
+	public function test_connection_only_mode_skips_reaction_import() {
+		$post_id  = self::factory()->post->create();
+		$post_uri = 'at://did:plc:me/app.bsky.feed.post/reactionconnonly';
+		\update_post_meta( $post_id, BskyPost::META_URI, $post_uri );
+
+		\update_option( 'atmosphere_sync_reactions', '1' );
+		\add_filter( 'atmosphere_connection_only_mode', '__return_true' );
+
+		$method       = new \ReflectionMethod( Reaction_Sync::class, 'process_subject_reaction' );
+		$notification = array(
+			'uri'    => 'at://did:plc:liker/app.bsky.feed.like/likeconnonly',
+			'cid'    => 'bafyreilikeconnonly',
+			'record' => array(
+				'subject' => array( 'uri' => $post_uri ),
+			),
+			'author' => array(
+				'did'    => 'did:plc:liker',
+				'handle' => 'liker.bsky.social',
+			),
+		);
+
+		$this->assertFalse( $method->invoke( null, $notification, 'like' ) );
+
+		$this->assertCount(
+			0,
+			\get_comments(
+				array(
+					'post_id'  => $post_id,
+					'type__in' => array( 'like', 'repost' ),
+				)
+			),
+			'No like/repost row should be written in connection-only mode.'
+		);
+	}
+
+	/**
+	 * Connection-only mode forces reply import off even with the stored setting
+	 * on, so replies are skipped.
+	 */
+	public function test_connection_only_mode_skips_reply_import() {
+		$post_id  = self::factory()->post->create();
+		$post_uri = 'at://did:plc:me/app.bsky.feed.post/replyconnonly';
+		\update_post_meta( $post_id, BskyPost::META_URI, $post_uri );
+
+		\update_option( 'atmosphere_sync_replies', '1' );
+		\add_filter( 'atmosphere_connection_only_mode', '__return_true' );
+
+		$method       = new \ReflectionMethod( Reaction_Sync::class, 'process_reply' );
+		$notification = array(
+			'uri'    => 'at://did:plc:replier/app.bsky.feed.post/replyconnonly',
+			'cid'    => 'bafyreireplyconnonly',
+			'record' => array(
+				'text'  => 'Nice one',
+				'reply' => array(
+					'parent' => array( 'uri' => $post_uri ),
+					'root'   => array( 'uri' => $post_uri ),
+				),
+			),
+			'author' => array(
+				'did'    => 'did:plc:replier',
+				'handle' => 'replier.bsky.social',
+			),
+		);
+
+		$this->assertFalse( $method->invoke( null, $notification ) );
+
+		$this->assertCount(
+			0,
+			\get_comments(
+				array(
+					'post_id'  => $post_id,
+					'type__in' => array( 'comment' ),
+				)
+			),
+			'No reply comment should be written in connection-only mode.'
 		);
 	}
 }

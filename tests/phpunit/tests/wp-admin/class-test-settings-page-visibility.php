@@ -62,6 +62,7 @@ class Test_Settings_Page_Visibility extends WP_UnitTestCase {
 		}
 
 		\remove_all_filters( 'atmosphere_show_settings_page' );
+		\remove_all_filters( 'atmosphere_connection_only_mode' );
 		\wp_set_current_user( 0 );
 		\delete_option( 'atmosphere_identity' );
 		\delete_option( Client::DISCONNECTED_OPTION );
@@ -96,6 +97,27 @@ class Test_Settings_Page_Visibility extends WP_UnitTestCase {
 		\add_filter( 'atmosphere_show_settings_page', '__return_false' );
 
 		$this->assertFalse( Admin::is_settings_page_visible() );
+	}
+
+	/**
+	 * Connection-only mode hides the settings screen without a second filter:
+	 * the `atmosphere_show_settings_page` default follows connection-only mode.
+	 */
+	public function test_connection_only_mode_hides_settings_page_by_default(): void {
+		\add_filter( 'atmosphere_connection_only_mode', '__return_true' );
+
+		$this->assertFalse( Admin::is_settings_page_visible() );
+	}
+
+	/**
+	 * The `atmosphere_show_settings_page` filter is evaluated last, so a host in
+	 * connection-only mode can still force the settings screen back on.
+	 */
+	public function test_show_settings_page_filter_overrides_connection_only_mode(): void {
+		\add_filter( 'atmosphere_connection_only_mode', '__return_true' );
+		\add_filter( 'atmosphere_show_settings_page', '__return_true' );
+
+		$this->assertTrue( Admin::is_settings_page_visible() );
 	}
 
 	/**

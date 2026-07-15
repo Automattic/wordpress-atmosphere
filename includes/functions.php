@@ -722,6 +722,148 @@ function is_sharing_enabled( \WP_Post $post ): bool {
 }
 
 /**
+ * Whether the plugin is running purely as a connection layer for another plugin.
+ *
+ * A host plugin that embeds ATmosphere only to reuse its AT Protocol
+ * connection — driving everything through the Settings → Connectors card and
+ * its own UI — can return true from the `atmosphere_connection_only_mode`
+ * filter. In that mode ATmosphere stops acting on its own: automatic
+ * cross-posting ({@see is_auto_publish_enabled()}), reaction import
+ * ({@see is_reaction_sync_enabled()}), and reply import
+ * ({@see is_reply_sync_enabled()}) are all off, and the plugin's own
+ * Settings → ATmosphere screen is hidden by default.
+ *
+ * This is a hard override of the *effective* behaviour, not merely a change of
+ * default: it forces those features off regardless of the stored per-site
+ * option, so the outcome does not depend on whether the site previously saved a
+ * value. Each feature keeps its own dedicated filter, evaluated last, so a host
+ * that wants to re-enable a single lane (say, keep cross-posting while
+ * suppressing reactions) still can.
+ *
+ * @since unreleased
+ *
+ * @return bool True when ATmosphere is embedded purely as a connection layer.
+ */
+function is_connection_only_mode(): bool {
+	/**
+	 * Filters whether ATmosphere runs purely as a connection layer.
+	 *
+	 * Return true when another plugin embeds ATmosphere solely to reuse its
+	 * AT Protocol connection. Automatic cross-posting, reaction import, and
+	 * reply import then default off, and Settings → ATmosphere is hidden. The
+	 * per-feature filters ({@see 'atmosphere_should_auto_publish'},
+	 * {@see 'atmosphere_should_sync_reactions'},
+	 * {@see 'atmosphere_should_sync_replies'}, and
+	 * {@see 'atmosphere_show_settings_page'}) are evaluated afterwards and have
+	 * the final say, so individual lanes can still be re-enabled.
+	 *
+	 * @since unreleased
+	 *
+	 * @param bool $connection_only Whether ATmosphere is embedded as a connection layer only. Default false.
+	 */
+	return (bool) \apply_filters( 'atmosphere_connection_only_mode', false );
+}
+
+/**
+ * Whether posts are automatically cross-posted to Bluesky on publish.
+ *
+ * Resolves the effective auto-publish state from three layers, in order: the
+ * stored `atmosphere_auto_publish` option (opt-out — on unless the user turned
+ * it off), forced off in {@see is_connection_only_mode()}, and finally the
+ * `atmosphere_should_auto_publish` filter, which has the last word so a host in
+ * connection-only mode can re-enable cross-posting on its own terms.
+ *
+ * @since unreleased
+ *
+ * @return bool
+ */
+function is_auto_publish_enabled(): bool {
+	$enabled = '1' === \get_option( 'atmosphere_auto_publish', '1' );
+
+	if ( is_connection_only_mode() ) {
+		$enabled = false;
+	}
+
+	/**
+	 * Filters whether posts are automatically cross-posted to Bluesky on publish.
+	 *
+	 * Evaluated after the stored option and {@see is_connection_only_mode()},
+	 * so it is the final authority: a host that keeps ATmosphere in
+	 * connection-only mode but still wants automatic cross-posting can return
+	 * true here.
+	 *
+	 * @since unreleased
+	 *
+	 * @param bool $enabled Whether auto-publish is effectively enabled.
+	 */
+	return (bool) \apply_filters( 'atmosphere_should_auto_publish', $enabled );
+}
+
+/**
+ * Whether Bluesky likes and reposts are imported as comments.
+ *
+ * Same three-layer resolution as {@see is_auto_publish_enabled()}: the stored
+ * `atmosphere_sync_reactions` option, forced off in
+ * {@see is_connection_only_mode()}, then the `atmosphere_should_sync_reactions`
+ * filter as the final say.
+ *
+ * @since unreleased
+ *
+ * @return bool
+ */
+function is_reaction_sync_enabled(): bool {
+	$enabled = '1' === \get_option( 'atmosphere_sync_reactions', '1' );
+
+	if ( is_connection_only_mode() ) {
+		$enabled = false;
+	}
+
+	/**
+	 * Filters whether Bluesky likes and reposts are imported as comments.
+	 *
+	 * Evaluated after the stored option and {@see is_connection_only_mode()},
+	 * so it has the final say over the effective reaction-import state.
+	 *
+	 * @since unreleased
+	 *
+	 * @param bool $enabled Whether reaction import is effectively enabled.
+	 */
+	return (bool) \apply_filters( 'atmosphere_should_sync_reactions', $enabled );
+}
+
+/**
+ * Whether Bluesky replies are imported as comments.
+ *
+ * Same three-layer resolution as {@see is_auto_publish_enabled()}: the stored
+ * `atmosphere_sync_replies` option, forced off in
+ * {@see is_connection_only_mode()}, then the `atmosphere_should_sync_replies`
+ * filter as the final say.
+ *
+ * @since unreleased
+ *
+ * @return bool
+ */
+function is_reply_sync_enabled(): bool {
+	$enabled = '1' === \get_option( 'atmosphere_sync_replies', '1' );
+
+	if ( is_connection_only_mode() ) {
+		$enabled = false;
+	}
+
+	/**
+	 * Filters whether Bluesky replies are imported as comments.
+	 *
+	 * Evaluated after the stored option and {@see is_connection_only_mode()},
+	 * so it has the final say over the effective reply-import state.
+	 *
+	 * @since unreleased
+	 *
+	 * @param bool $enabled Whether reply import is effectively enabled.
+	 */
+	return (bool) \apply_filters( 'atmosphere_should_sync_replies', $enabled );
+}
+
+/**
  * Write a debug message to the PHP error log, gated behind WP_DEBUG.
  *
  * `error_log()` honours the server's `log_errors` / `error_log` directives
