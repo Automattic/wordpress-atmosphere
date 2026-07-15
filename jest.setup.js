@@ -24,3 +24,7 @@ window.wp = {
 		Spinner: () => null,
 	},
 };
+
+// React 18 requires this flag for `act` to work without printing a warning
+// that @wordpress/jest-console would fail the test on.
+global.IS_REACT_ACT_ENVIRONMENT = true;

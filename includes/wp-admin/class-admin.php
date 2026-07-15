@@ -15,8 +15,11 @@ use Atmosphere\Handle;
 use Atmosphere\OAuth\Client;
 use Atmosphere\Publisher;
 use function Atmosphere\get_connection;
+use function Atmosphere\get_identity;
 use function Atmosphere\get_supported_post_types;
+use function Atmosphere\handle_typeahead_url;
 use function Atmosphere\has_identity;
+use function Atmosphere\is_connected;
 use function Atmosphere\needs_reauth;
 
 /**
@@ -88,6 +91,50 @@ class Admin {
 			ATMOSPHERE_PLUGIN_URL . 'assets/css/admin.css',
 			array(),
 			ATMOSPHERE_VERSION
+		);
+
+		// The connect handle field — and so the typeahead that enhances it —
+		// only renders while disconnected.
+		if ( is_connected() ) {
+			return;
+		}
+
+		$asset_file = ATMOSPHERE_PLUGIN_DIR . 'build/settings-connect/index.asset.php';
+		if ( ! \file_exists( $asset_file ) ) {
+			return;
+		}
+
+		$asset = include $asset_file;
+
+		// Depend on the wp-components stylesheet: the typeahead's loading Spinner
+		// is styled by its `.components-spinner` rules, which a classic admin
+		// page does not load by default. wp-components is a core-registered
+		// handle, so this pulls it in wherever the stylesheet loads.
+		\wp_enqueue_style(
+			'atmosphere-handle-typeahead',
+			ATMOSPHERE_PLUGIN_URL . 'assets/css/handle-typeahead.css',
+			array( 'wp-components' ),
+			ATMOSPHERE_VERSION
+		);
+
+		\wp_enqueue_script(
+			'atmosphere-settings-connect',
+			ATMOSPHERE_PLUGIN_URL . 'build/settings-connect/index.js',
+			\array_merge(
+				$asset['dependencies'] ?? array(),
+				array( 'wp-element', 'wp-components', 'wp-i18n' )
+			),
+			$asset['version'] ?? ATMOSPHERE_VERSION,
+			true
+		);
+
+		\wp_localize_script(
+			'atmosphere-settings-connect',
+			'atmosphereSettingsConnect',
+			array(
+				'typeaheadUrl' => handle_typeahead_url(),
+				'handle'       => get_identity()['handle'] ?? '',
+			)
 		);
 	}
 

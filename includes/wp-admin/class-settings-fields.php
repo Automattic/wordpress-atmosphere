@@ -58,7 +58,8 @@ class Settings_Fields {
 				\__( 'Handle', 'atmosphere' ),
 				array( self::class, 'render_handle_field' ),
 				'atmosphere',
-				'atmosphere_connection'
+				'atmosphere_connection',
+				array( 'label_for' => 'atmosphere_handle' )
 			);
 
 			/*
