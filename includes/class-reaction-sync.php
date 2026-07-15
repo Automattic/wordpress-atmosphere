@@ -150,6 +150,20 @@ class Reaction_Sync {
 	private const DEDUP_COMMENT_STATUSES = array( 'approve', 'hold', 'spam', 'trash', 'post-trashed' );
 
 	/**
+	 * Comment statuses a nested reply may thread under.
+	 *
+	 * Deliberately narrower than {@see self::DEDUP_COMMENT_STATUSES}: a
+	 * parent the admin moderated away (spam/trash) must not resolve, or
+	 * its replies would import and render as top-level comments —
+	 * resurfacing a suppressed conversation without its context. An
+	 * unresolved parent drops the reply as an orphan instead (see the
+	 * rationale in {@see self::process_reply()}).
+	 *
+	 * @var string[]
+	 */
+	private const PARENT_COMMENT_STATUSES = array( 'approve', 'hold' );
+
+	/**
 	 * Maximum reply nodes imported from one getPostThread response.
 	 *
 	 * Bounds one backfill run's comment inserts (and their spam-check HTTP
@@ -1275,12 +1289,19 @@ class Reaction_Sync {
 
 		$did = get_did();
 
+		/*
+		 * getProfile can fail transiently, but our own handle is stored
+		 * locally — fall back to it so the comment author link never
+		 * degrades to a broken profile URL.
+		 */
+		$handle = self::resolve_author( $did )['handle'] ?? ( get_identity()['handle'] ?? '' );
+
 		$notification = array(
 			'uri'    => $record['uri'] ?? '',
 			'cid'    => $record['cid'] ?? '',
 			'author' => array(
 				'did'    => $did,
-				'handle' => self::resolve_author( $did )['handle'] ?? '',
+				'handle' => $handle,
 			),
 			'record' => $value,
 		);
@@ -1323,8 +1344,10 @@ class Reaction_Sync {
 		$post_id        = self::find_post_by_bsky_uri( $parent_uri );
 
 		if ( ! $post_id ) {
-			// Nested reply: parent is an existing synced comment.
-			$parent_comment_id = self::find_comment_by_source_id( $parent_uri );
+			// Nested reply: parent is an existing synced comment. Only
+			// approved/pending parents resolve — a moderated-away parent
+			// drops the reply as an orphan below.
+			$parent_comment_id = self::find_comment_by_source_id( $parent_uri, self::PARENT_COMMENT_STATUSES );
 
 			if ( $parent_comment_id ) {
 				$parent_comment = \get_comment( $parent_comment_id );
@@ -1342,8 +1365,10 @@ class Reaction_Sync {
 		 * comment is either:
 		 *
 		 *   - Orphaned: the parent was deleted on Bluesky (e.g. blocked
-		 *     user, account deletion) or removed from our moderation
-		 *     queue. Falling back to the root post would re-attach
+		 *     user, account deletion), or the admin moderated it away
+		 *     locally (spam, trash, hard delete — see
+		 *     PARENT_COMMENT_STATUSES). Falling back to the root post
+		 *     would resurface a suppressed conversation and re-attach
 		 *     every subsequent re-walk as a top-level orphan, looping
 		 *     the moderation queue indefinitely until the watermark
 		 *     advances past it.
@@ -1681,6 +1706,21 @@ class Reaction_Sync {
 		$result = API::get( '/xrpc/app.bsky.actor.getProfile', array( 'actor' => $did ) );
 
 		if ( \is_wp_error( $result ) ) {
+			/*
+			 * Deliberately not cached: a transient blip must not poison
+			 * the profile cache for an hour. The reaction still imports
+			 * with a degraded profile (payload handle, no avatar) — leave
+			 * a breadcrumb, since dedup means it is never revisited.
+			 */
+			debug_log(
+				\sprintf(
+					'getProfile failed for %s: %s — %s',
+					$did,
+					$result->get_error_code(),
+					$result->get_error_message()
+				)
+			);
+
 			return array();
 		}
 
@@ -1926,10 +1966,14 @@ class Reaction_Sync {
 	/**
 	 * Find a WordPress comment by its source_id meta (AT-URI).
 	 *
-	 * @param string $uri AT-URI.
+	 * @param string   $uri      AT-URI.
+	 * @param string[] $statuses Comment statuses the lookup may match.
+	 *                           Defaults to the wide dedup set; parent
+	 *                           resolution passes the narrower
+	 *                           {@see self::PARENT_COMMENT_STATUSES}.
 	 * @return int|false
 	 */
-	private static function find_comment_by_source_id( string $uri ): int|false {
+	private static function find_comment_by_source_id( string $uri, array $statuses = self::DEDUP_COMMENT_STATUSES ): int|false {
 		if ( empty( $uri ) ) {
 			return false;
 		}
@@ -1940,7 +1984,7 @@ class Reaction_Sync {
 				'meta_value' => $uri, // phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_value
 				'number'     => 1,
 				'fields'     => 'ids',
-				'status'     => self::DEDUP_COMMENT_STATUSES,
+				'status'     => $statuses,
 			)
 		);
 

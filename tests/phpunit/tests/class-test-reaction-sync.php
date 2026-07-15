@@ -970,6 +970,54 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 	}
 
 	/**
+	 * A reply whose parent the admin moderated away must be dropped as an
+	 * orphan, not imported under the suppressed parent — dedup sees
+	 * spam/trash rows, parent resolution deliberately does not.
+	 */
+	public function test_process_reply_drops_child_of_moderated_parent() {
+		$post_id  = self::factory()->post->create();
+		$post_uri = 'at://did:plc:me/app.bsky.feed.post/mypost';
+
+		\update_post_meta( $post_id, BskyPost::META_URI, $post_uri );
+
+		$parent_comment_id = self::factory()->comment->create(
+			array( 'comment_post_ID' => $post_id )
+		);
+		$parent_reply_uri  = 'at://did:plc:first/app.bsky.feed.post/spammedparent';
+
+		\update_comment_meta( $parent_comment_id, 'source_id', $parent_reply_uri );
+		\wp_spam_comment( $parent_comment_id );
+
+		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_reply' );
+
+		$result = $method->invoke(
+			null,
+			array(
+				'uri'    => 'at://did:plc:second/app.bsky.feed.post/childofspam',
+				'cid'    => 'bafychildofspam',
+				'record' => array(
+					'text'      => 'Reply to a suppressed parent.',
+					'createdAt' => '2026-03-21T13:00:00.000Z',
+					'reply'     => array(
+						'parent' => array( 'uri' => $parent_reply_uri ),
+						'root'   => array( 'uri' => $post_uri ),
+					),
+				),
+				'author' => array(
+					'did'    => 'did:plc:second',
+					'handle' => 'second.bsky.social',
+				),
+			)
+		);
+
+		$this->assertFalse( $result );
+		$this->assertFalse(
+			$this->find_comment_id_by_source_uri( 'at://did:plc:second/app.bsky.feed.post/childofspam' ),
+			'The child of a moderated parent must not be imported.'
+		);
+	}
+
+	/**
 	 * Test that process_reply skips when no matching post is found.
 	 */
 	public function test_process_reply_skips_unmatched() {
@@ -1473,6 +1521,63 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 		$this->assertSame(
 			'at://did:plc:me/app.bsky.feed.like/selflike1',
 			\get_comment_meta( $comment_id, 'source_id', true )
+		);
+	}
+
+	/**
+	 * A getProfile failure while syncing an own-record reaction falls back
+	 * to the locally stored identity handle, so the comment author link
+	 * never degrades to a broken profile URL.
+	 */
+	public function test_process_own_record_falls_back_to_identity_handle_when_profile_fails() {
+		/*
+		 * Connection did only — no profile transient and no usable API
+		 * session, so resolve_author() fails; the identity row supplies
+		 * the local handle fallback.
+		 */
+		\update_option( 'atmosphere_connection', array( 'did' => 'did:plc:me' ), false );
+		\update_option(
+			'atmosphere_identity',
+			array(
+				'did'    => 'did:plc:me',
+				'handle' => 'me.example.com',
+			),
+			false
+		);
+
+		$post_id  = self::factory()->post->create();
+		$post_uri = 'at://did:plc:me/app.bsky.feed.post/mypost';
+		\update_post_meta( $post_id, BskyPost::META_URI, $post_uri );
+
+		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_own_record' );
+
+		try {
+			$comment_id = $method->invoke(
+				null,
+				array(
+					'uri'   => 'at://did:plc:me/app.bsky.feed.like/fallbacklike',
+					'cid'   => 'bafyfallbacklike',
+					'value' => array(
+						'$type'     => 'app.bsky.feed.like',
+						'createdAt' => '2026-04-20T14:00:00.000Z',
+						'subject'   => array(
+							'uri' => $post_uri,
+							'cid' => 'bafymypost',
+						),
+					),
+				),
+				'like'
+			);
+		} finally {
+			\delete_option( 'atmosphere_connection' );
+			\delete_option( 'atmosphere_identity' );
+		}
+
+		$this->assertIsInt( $comment_id );
+		$this->assertStringContainsString(
+			'me.example.com',
+			\get_comment( $comment_id )->comment_author_url,
+			'The author link must fall back to the stored identity handle.'
 		);
 	}
 
