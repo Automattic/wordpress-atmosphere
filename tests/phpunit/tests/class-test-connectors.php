@@ -236,4 +236,97 @@ class Test_Connectors extends WP_UnitTestCase {
 
 		\remove_all_filters( 'atmosphere_handle_typeahead_url' );
 	}
+
+	/**
+	 * The card enqueues on stock core's `options-connectors.php` hook suffix.
+	 *
+	 * @covers ::is_connectors_screen
+	 */
+	public function test_is_connectors_screen_matches_core_page() {
+		$this->assertTrue( Connectors::is_connectors_screen( 'options-connectors.php' ) );
+	}
+
+	/**
+	 * The card also enqueues when nav unification (the Gutenberg plugin, e.g. on
+	 * WordPress.com/Atomic) re-registers the screen as a Settings submenu — the
+	 * regression this fix addresses, where the exact-match check silently bailed.
+	 *
+	 * @covers ::is_connectors_screen
+	 */
+	public function test_is_connectors_screen_matches_remapped_submenu() {
+		$this->assertTrue( Connectors::is_connectors_screen( 'settings_page_options-connectors-wp-admin' ) );
+	}
+
+	/**
+	 * The check stays scoped: unrelated admin screens never match, so the card
+	 * never enqueues where it shouldn't.
+	 *
+	 * @covers ::is_connectors_screen
+	 */
+	public function test_is_connectors_screen_rejects_other_screens() {
+		$this->assertFalse( Connectors::is_connectors_screen( 'options-general.php' ) );
+		$this->assertFalse( Connectors::is_connectors_screen( 'settings_page_atmosphere' ) );
+		$this->assertFalse( Connectors::is_connectors_screen( '' ) );
+	}
+
+	/**
+	 * With no re-registered submenu present, the OAuth return destination falls
+	 * back to core's top-level Connectors page.
+	 *
+	 * @covers ::screen_url
+	 */
+	public function test_screen_url_defaults_to_core_page() {
+		$this->assertSame( \admin_url( 'options-connectors.php' ), Connectors::screen_url() );
+	}
+
+	/**
+	 * When nav unification has re-registered the screen as a Settings submenu, the
+	 * return destination resolves to that submenu URL — server-side, from the
+	 * registered admin menu, never from request input.
+	 *
+	 * @covers ::screen_url
+	 */
+	public function test_screen_url_prefers_remapped_submenu() {
+		global $submenu;
+		$saved = $submenu;
+
+		// phpcs:ignore WordPress.WP.GlobalVariablesOverride.Prohibited -- Test fixture: simulate a nav-unified admin menu, restored below.
+		$submenu = array(
+			'options-general.php' => array(
+				array( 'Settings', 'manage_options', 'options-general.php' ),
+				array( 'Connectors', 'manage_options', 'options-connectors-wp-admin' ),
+			),
+		);
+
+		$this->assertSame(
+			\admin_url( 'options-general.php?page=options-connectors-wp-admin' ),
+			Connectors::screen_url()
+		);
+
+		// phpcs:ignore WordPress.WP.GlobalVariablesOverride.Prohibited -- Restore the real admin menu.
+		$submenu = $saved;
+	}
+
+	/**
+	 * Core's own `options-connectors.php` submenu entries do not count as a
+	 * remap, so the top-level page URL is still used when only they are present.
+	 *
+	 * @covers ::screen_url
+	 */
+	public function test_screen_url_ignores_core_screen_submenu_entries() {
+		global $submenu;
+		$saved = $submenu;
+
+		// phpcs:ignore WordPress.WP.GlobalVariablesOverride.Prohibited -- Test fixture: simulate core's own submenu entries, restored below.
+		$submenu = array(
+			'options-connectors.php' => array(
+				array( 'Connectors', 'manage_options', 'options-connectors.php' ),
+			),
+		);
+
+		$this->assertSame( \admin_url( 'options-connectors.php' ), Connectors::screen_url() );
+
+		// phpcs:ignore WordPress.WP.GlobalVariablesOverride.Prohibited -- Restore the real admin menu.
+		$submenu = $saved;
+	}
 }

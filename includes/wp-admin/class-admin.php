@@ -336,10 +336,13 @@ class Admin {
 	 * A Connectors-card connect sets the `atmosphere_oauth_from_connectors` flag
 	 * (see {@see \Atmosphere\Rest\Admin\Connection_Controller::authorize()});
 	 * honor it by returning to the Connectors screen, otherwise fall back to the
-	 * settings page. The destination is hardcoded — the flag is a boolean, so
-	 * nothing off the wire can steer the redirect. The flag is always consumed
-	 * (deleted), so it can't survive its TTL and leak into a later, unrelated
-	 * connect regardless of whether that connect succeeds or fails.
+	 * settings page. The Connectors screen has two possible URLs (core's
+	 * `options-connectors.php` and nav unification's Settings submenu), so the
+	 * concrete URL is resolved server-side from the registered admin menu via
+	 * {@see Connectors::screen_url()} — the flag is a boolean and the URL is never
+	 * taken from request input, so nothing off the wire can steer the redirect. The
+	 * flag is always consumed (deleted), so it can't survive its TTL and leak into a
+	 * later, unrelated connect regardless of whether that connect succeeds or fails.
 	 *
 	 * @return string The admin URL to redirect to.
 	 */
@@ -348,7 +351,7 @@ class Admin {
 		\delete_transient( 'atmosphere_oauth_from_connectors' );
 
 		return $from_connectors
-			? \admin_url( Connectors::SCREEN )
+			? Connectors::screen_url()
 			: settings_url();
 	}
 

@@ -54,18 +54,35 @@ class Connectors {
 	/**
 	 * The core Connectors admin page.
 	 *
-	 * WordPress ships the Connectors screen as this top-level admin page. It is
-	 * the single source for both jobs the screen serves here: matching the card
-	 * enqueue (`admin_enqueue_scripts` passes it verbatim as `$hook_suffix`, see
-	 * {@see self::maybe_enqueue()}) and, in the OAuth callback, the hardcoded
-	 * destination a Connectors-initiated connect returns to (see
-	 * {@see \Atmosphere\WP_Admin\Admin::handle_oauth_callback()}). One screen
-	 * means one return target, so the card never tells the server where to come
-	 * back to — it only flags that the flow started here.
+	 * Stock WordPress ships the Connectors screen as this top-level admin page.
+	 * Nav unification (the Gutenberg plugin, e.g. on WordPress.com/Atomic) instead
+	 * re-registers it as a Settings submenu at
+	 * `options-general.php?page=options-connectors-wp-admin`, so the screen has two
+	 * possible URLs. Both are matched through the shared {@see self::SCREEN_SLUG}
+	 * marker rather than this exact filename — for the card enqueue (see
+	 * {@see self::is_connectors_screen()}) and for the OAuth return destination
+	 * (see {@see self::screen_url()} and
+	 * {@see \Atmosphere\WP_Admin\Admin::handle_oauth_callback()}). The card never
+	 * tells the server where to come back to — it only flags that the flow started
+	 * on the Connectors screen; the server resolves the concrete URL from the
+	 * registered admin menu, never from request input.
 	 *
 	 * @var string
 	 */
 	public const SCREEN = 'options-connectors.php';
+
+	/**
+	 * The stable marker shared by every variant of the Connectors screen slug.
+	 *
+	 * Core's page is `options-connectors.php`; nav unification re-registers it
+	 * under Settings with a slug like `options-connectors-wp-admin`. Both contain
+	 * this substring, so matching on it recognizes the screen regardless of how a
+	 * given install exposes it, while staying scoped enough not to match anything
+	 * else.
+	 *
+	 * @var string
+	 */
+	public const SCREEN_SLUG = 'options-connectors';
 
 	/**
 	 * Hook registration.
@@ -114,7 +131,7 @@ class Connectors {
 	 * @return void
 	 */
 	public static function maybe_enqueue( string $hook_suffix ): void {
-		if ( self::SCREEN !== $hook_suffix ) {
+		if ( ! self::is_connectors_screen( $hook_suffix ) ) {
 			return;
 		}
 
@@ -152,6 +169,86 @@ class Connectors {
 			array( 'wp-components' ),
 			ATMOSPHERE_VERSION
 		);
+	}
+
+	/**
+	 * Whether an admin hook suffix identifies the Connectors screen.
+	 *
+	 * Core passes `options-connectors.php`; nav unification remaps the screen to a
+	 * Settings submenu whose hook suffix is `settings_page_options-connectors-wp-admin`
+	 * (and any similar `{parent}_page_options-connectors-*` variant). Match both by
+	 * looking for the shared {@see self::SCREEN_SLUG} marker, which stays scoped to
+	 * this one screen so the card never enqueues elsewhere.
+	 *
+	 * @param string $hook_suffix Current admin page hook suffix.
+	 * @return bool True on the Connectors screen in any of its registered forms.
+	 */
+	public static function is_connectors_screen( string $hook_suffix ): bool {
+		return self::SCREEN === $hook_suffix
+			|| \str_contains( $hook_suffix, self::SCREEN_SLUG );
+	}
+
+	/**
+	 * The admin URL of the Connectors screen for this install.
+	 *
+	 * Used as the OAuth return destination for a Connectors-initiated connect.
+	 * Stock core serves the screen at `options-connectors.php`; nav unification
+	 * re-registers it as a Settings submenu at
+	 * `options-general.php?page=options-connectors-wp-admin`. Prefer the
+	 * re-registered submenu URL when it is present in the admin menu, so the flow
+	 * returns to the screen the user actually came from; otherwise fall back to
+	 * core's top-level page.
+	 *
+	 * The URL is resolved from the server-side admin menu, never from request
+	 * input, so it stays a trusted, hardcoded-shape destination for
+	 * `wp_safe_redirect()`.
+	 *
+	 * @return string Admin URL of the Connectors screen.
+	 */
+	public static function screen_url(): string {
+		$remapped = self::remapped_screen_url();
+
+		return null !== $remapped ? $remapped : \admin_url( self::SCREEN );
+	}
+
+	/**
+	 * Locate a re-registered Connectors screen in the admin submenu, if any.
+	 *
+	 * Nav unification nests the screen under a parent (Settings) with a menu slug
+	 * that still carries the {@see self::SCREEN_SLUG} marker (e.g.
+	 * `options-connectors-wp-admin`). Walk the registered submenus for such an
+	 * entry and build its admin URL from the parent it lives under. Returns null on
+	 * stock core, where the screen is its own top-level page rather than a submenu.
+	 *
+	 * The admin menu (`admin_menu`) is fully built before `admin_init`, where the
+	 * OAuth callback resolves this, so `$submenu` is populated by then.
+	 *
+	 * @return string|null Admin URL of the remapped screen, or null if none found.
+	 */
+	private static function remapped_screen_url(): ?string {
+		$submenu = $GLOBALS['submenu'] ?? null;
+		if ( ! \is_array( $submenu ) ) {
+			return null;
+		}
+
+		foreach ( $submenu as $parent => $items ) {
+			if ( ! \is_array( $items ) ) {
+				continue;
+			}
+
+			foreach ( $items as $item ) {
+				$slug = $item[2] ?? '';
+				if (
+					\is_string( $slug )
+					&& self::SCREEN !== $slug
+					&& \str_contains( $slug, self::SCREEN_SLUG )
+				) {
+					return \add_query_arg( 'page', $slug, \admin_url( (string) $parent ) );
+				}
+			}
+		}
+
+		return null;
 	}
 
 	/**
