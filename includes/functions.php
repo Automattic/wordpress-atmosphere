@@ -155,6 +155,39 @@ function appview_base_url( string $base ): string {
 }
 
 /**
+ * The handle typeahead endpoint queried as the user types a handle (an
+ * `app.bsky.actor.searchActorsTypeahead` XRPC endpoint).
+ *
+ * Used by both the Settings → ATmosphere connect field and the Settings →
+ * Connectors card. Defaults to Bluesky's official unauthenticated public
+ * appview (`public.api.bsky.app`), which is CORS-enabled so the browser can
+ * call it directly. Centralized and filterable the same way {@see appview_url()}
+ * centralizes the appview host: a site can point it elsewhere — e.g. a
+ * network-wide index such as `typeahead.waow.tech` — or return an empty string
+ * to disable typeahead entirely and fall back to manual handle entry.
+ *
+ * @since unreleased
+ *
+ * @return string The typeahead XRPC endpoint, or '' to disable typeahead.
+ */
+function handle_typeahead_url(): string {
+	/**
+	 * Filters the handle typeahead endpoint used across the plugin's admin UI.
+	 *
+	 * @since unreleased
+	 *
+	 * @param string $url Default typeahead XRPC endpoint. Return '' to disable
+	 *                    typeahead and require manual handle entry.
+	 */
+	$url = (string) \apply_filters(
+		'atmosphere_handle_typeahead_url',
+		'https://public.api.bsky.app/xrpc/app.bsky.actor.searchActorsTypeahead'
+	);
+
+	return '' === $url ? '' : \esc_url_raw( $url );
+}
+
+/**
  * Decode entities, strip HTML, normalise whitespace.
  *
  * @param string $text Raw text.

@@ -858,4 +858,40 @@ class Test_Functions extends \WP_UnitTestCase {
 			'The queued revoke event must be cleared at deactivation/uninstall.'
 		);
 	}
+
+	/**
+	 * The typeahead resolver defaults to Bluesky's official public appview
+	 * searchActorsTypeahead endpoint.
+	 */
+	public function test_handle_typeahead_url_default() {
+		$url = \Atmosphere\handle_typeahead_url();
+
+		$this->assertStringContainsString( 'public.api.bsky.app', $url );
+		$this->assertStringContainsString( 'searchActorsTypeahead', $url );
+	}
+
+	/**
+	 * A site can repoint the endpoint through the filter.
+	 */
+	public function test_handle_typeahead_url_is_filterable() {
+		\add_filter(
+			'atmosphere_handle_typeahead_url',
+			static fn () => 'https://example.test/xrpc/app.bsky.actor.searchActorsTypeahead'
+		);
+
+		$this->assertStringStartsWith( 'https://example.test/', \Atmosphere\handle_typeahead_url() );
+
+		\remove_all_filters( 'atmosphere_handle_typeahead_url' );
+	}
+
+	/**
+	 * Filtering to an empty string disables typeahead entirely.
+	 */
+	public function test_handle_typeahead_url_can_be_disabled() {
+		\add_filter( 'atmosphere_handle_typeahead_url', '__return_empty_string' );
+
+		$this->assertSame( '', \Atmosphere\handle_typeahead_url() );
+
+		\remove_all_filters( 'atmosphere_handle_typeahead_url' );
+	}
 }
