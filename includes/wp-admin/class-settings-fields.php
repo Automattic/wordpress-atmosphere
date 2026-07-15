@@ -536,23 +536,13 @@ class Settings_Fields {
 	 * Render the outgoing WordPress comment toggle.
 	 */
 	public static function render_publish_reactions_field(): void {
+		/*
+		 * No hidden-input preservation dance for the disabled state: the
+		 * `pre_update_option_atmosphere_publish_reactions` filter (see
+		 * {@see \Atmosphere\Options::init()}) keeps the saved preference
+		 * intact for every writer while the constant is active.
+		 */
 		$forced_disabled = outgoing_reactions_disabled_by_constant();
-		$saved_enabled   = '1' === (string) \get_option( 'atmosphere_publish_reactions', '1' );
-
-		if ( $forced_disabled ) {
-			/*
-			 * Disabled controls are not submitted by browsers. Preserve the
-			 * saved preference so changing an unrelated setting while the
-			 * constant is active does not silently overwrite it.
-			 */
-			?>
-			<input
-				type="hidden"
-				name="atmosphere_publish_reactions"
-				value="<?php echo \esc_attr( $saved_enabled ? '1' : '' ); ?>"
-			>
-			<?php
-		}
 		?>
 		<label>
 			<input

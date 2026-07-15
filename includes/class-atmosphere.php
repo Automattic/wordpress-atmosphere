@@ -1167,6 +1167,16 @@ class Atmosphere {
 	 * @return bool
 	 */
 	public static function should_publish_comment( \WP_Comment $comment ): bool {
+		/*
+		 * The deployment/site kill switch cannot be bypassed by a filter.
+		 * Checked first: a disabled site skips the eligibility work (which
+		 * busts the parent post's cache on every comment event) and the
+		 * filter entirely.
+		 */
+		if ( ! outgoing_reactions_enabled() ) {
+			return false;
+		}
+
 		$should = self::is_comment_eligible( $comment );
 
 		/**
@@ -1175,10 +1185,7 @@ class Atmosphere {
 		 * @param bool        $should  Whether to publish.
 		 * @param \WP_Comment $comment Comment object.
 		 */
-		$should = (bool) \apply_filters( 'atmosphere_should_publish_comment', $should, $comment );
-
-		// The deployment/site kill switch cannot be bypassed by a filter.
-		return outgoing_reactions_enabled() && $should;
+		return (bool) \apply_filters( 'atmosphere_should_publish_comment', $should, $comment );
 	}
 
 	/**
@@ -1688,11 +1695,14 @@ class Atmosphere {
 		\add_action(
 			'atmosphere_delete_records',
 			static function ( $bsky_tids, string $doc_tid, $comment_tids = array() ): void {
+				/*
+				 * No kill-switch strip here: delete_post_by_tids() drops the
+				 * comment TIDs itself when outgoing reactions are disabled,
+				 * and that execution-time check is the one that matters for
+				 * queued events.
+				 */
 				$comment_tids = \is_array( $comment_tids ) ? $comment_tids : array();
-				if ( ! outgoing_reactions_enabled() ) {
-					$comment_tids = array();
-				}
-				$result = Publisher::delete_post_by_tids( $bsky_tids, $doc_tid, $comment_tids );
+				$result       = Publisher::delete_post_by_tids( $bsky_tids, $doc_tid, $comment_tids );
 
 				if ( \is_wp_error( $result ) ) {
 					/*

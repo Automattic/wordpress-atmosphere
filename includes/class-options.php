@@ -33,6 +33,21 @@ class Options {
 	 * Invoked on the `init` action.
 	 */
 	public static function init(): void {
+		/*
+		 * While the deployment constant forces outgoing reactions off, the
+		 * saved preference must survive every writer — the settings form
+		 * (whose disabled checkbox is not submitted), REST, and CLI alike —
+		 * so enforcement lives at the option-write layer, not per-form.
+		 */
+		\add_filter(
+			'pre_update_option_atmosphere_publish_reactions',
+			static function ( $value, $old_value ) {
+				return outgoing_reactions_disabled_by_constant() ? $old_value : $value;
+			},
+			10,
+			2
+		);
+
 		if ( ( \defined( 'WP_CLI' ) && \WP_CLI ) || \wp_doing_cron() ) {
 			self::register_settings();
 			return;

@@ -1456,14 +1456,21 @@ class Publisher {
 	 * `results` array — preserving the shape callers expect from
 	 * `API::apply_writes()`.
 	 *
-	 * @param array $writes                     Full write batch.
-	 * @param bool  $require_outgoing_reactions Whether to stop before each chunk when outgoing reactions are disabled.
+	 * @param array         $writes       Full write batch.
+	 * @param callable|null $precondition Optional gate evaluated before each
+	 *                                    chunk is submitted; returning a
+	 *                                    `WP_Error` aborts the cascade (chunks
+	 *                                    already submitted stand). Keeps
+	 *                                    feature policy out of this transport
+	 *                                    helper — the caller supplies it.
 	 * @return array|\WP_Error
 	 */
-	private static function apply_writes_chunked( array $writes, bool $require_outgoing_reactions = false ): array|\WP_Error {
+	private static function apply_writes_chunked( array $writes, ?callable $precondition = null ): array|\WP_Error {
 		if ( \count( $writes ) <= self::APPLY_WRITES_CHUNK_SIZE ) {
-			if ( $require_outgoing_reactions && ! outgoing_reactions_enabled() ) {
-				return self::outgoing_reactions_disabled_error();
+			$blocked = $precondition ? $precondition() : null;
+
+			if ( \is_wp_error( $blocked ) ) {
+				return $blocked;
 			}
 
 			return API::apply_writes( $writes );
@@ -1475,8 +1482,10 @@ class Publisher {
 		$succeeded = 0;
 
 		foreach ( $chunks as $index => $chunk ) {
-			if ( $require_outgoing_reactions && ! outgoing_reactions_enabled() ) {
-				return self::outgoing_reactions_disabled_error();
+			$blocked = $precondition ? $precondition() : null;
+
+			if ( \is_wp_error( $blocked ) ) {
+				return $blocked;
 			}
 
 			$response = API::apply_writes( $chunk );
@@ -1538,7 +1547,10 @@ class Publisher {
 
 		$comment_result = empty( $comment_writes ) || ! outgoing_reactions_enabled()
 			? null
-			: self::apply_writes_chunked( $comment_writes, true );
+			: self::apply_writes_chunked(
+				$comment_writes,
+				static fn (): ?\WP_Error => outgoing_reactions_enabled() ? null : self::outgoing_reactions_disabled_error()
+			);
 
 		return array(
 			'root'     => $root_result,

@@ -66,14 +66,22 @@ class Test_Outgoing_Reactions_Setting extends \WP_UnitTestCase {
 
 	/**
 	 * The wp-config constant wins over an enabled option, disables the
-	 * visible control, and preserves the saved preference through a form save.
+	 * visible control, and preserves the saved preference against every
+	 * writer — the option-write layer enforces it, so a form save, a REST
+	 * settings write, and a direct update_option() all behave alike.
 	 *
 	 * @runInSeparateProcess
 	 * @preserveGlobalState disabled
 	 */
 	public function test_constant_overrides_option_and_disables_field() {
-		\define( 'ATMOSPHERE_DISABLE_OUTGOING_REACTIONS', true );
+		/*
+		 * Seed before defining the constant: the option-write guard
+		 * registered by Options::init() (already active from the plugin
+		 * bootstrap) preserves the stored value against every writer once
+		 * the constant is in effect — including this seed.
+		 */
 		\update_option( 'atmosphere_publish_reactions', '1' );
+		\define( 'ATMOSPHERE_DISABLE_OUTGOING_REACTIONS', true );
 
 		$this->assertFalse( outgoing_reactions_enabled() );
 
@@ -83,8 +91,11 @@ class Test_Outgoing_Reactions_Setting extends \WP_UnitTestCase {
 
 		$this->assertStringContainsString( 'disabled=', $html );
 		$this->assertStringNotContainsString( 'checked=', $html );
-		$this->assertStringContainsString( 'type="hidden"', $html );
-		$this->assertStringContainsString( 'value="1"', $html );
+		$this->assertStringNotContainsString( 'type="hidden"', $html );
 		$this->assertStringContainsString( 'ATMOSPHERE_DISABLE_OUTGOING_REACTIONS', $html );
+
+		/* Any writer must be unable to overwrite the saved preference. */
+		\update_option( 'atmosphere_publish_reactions', '' );
+		$this->assertSame( '1', \get_option( 'atmosphere_publish_reactions' ) );
 	}
 }
