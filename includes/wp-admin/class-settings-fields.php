@@ -134,7 +134,7 @@ class Settings_Fields {
 
 		\add_settings_field(
 			'atmosphere_sync_reactions',
-			\__( 'Likes and reposts', 'atmosphere' ),
+			\__( 'Incoming reactions', 'atmosphere' ),
 			array( self::class, 'render_sync_reactions_field' ),
 			'atmosphere',
 			'atmosphere_reactions'
@@ -142,7 +142,7 @@ class Settings_Fields {
 
 		\add_settings_field(
 			'atmosphere_sync_replies',
-			\__( 'Replies', 'atmosphere' ),
+			\__( 'Incoming replies', 'atmosphere' ),
 			array( self::class, 'render_sync_replies_field' ),
 			'atmosphere',
 			'atmosphere_reactions'
