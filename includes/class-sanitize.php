@@ -51,6 +51,14 @@ class Sanitize {
 			return '';
 		}
 
+		/*
+		 * A settings-page connect must land back on the settings page. Clear any
+		 * `atmosphere_oauth_from_connectors` flag left over from an earlier,
+		 * abandoned Connectors-card flow so it can't survive its TTL and bounce
+		 * this connect to the Connectors screen once the callback completes.
+		 */
+		\delete_transient( 'atmosphere_oauth_from_connectors' );
+
 		$auth_url = Client::authorize( $handle );
 
 		if ( \is_wp_error( $auth_url ) ) {

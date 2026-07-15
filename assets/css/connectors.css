@@ -1,0 +1,102 @@
+/**
+ * ATmosphere connector card, on the Settings → Connectors screen.
+ *
+ * Core's ConnectorItem styles the shared card chrome (frame, logo, name,
+ * description, action-area layout); these rules only cover the content
+ * ATmosphere renders into it — the connected-state status line and the handle
+ * typeahead, which core has no equivalent for. The "Connected" badge itself is
+ * core's own `Badge` component (rendered from the card script module), so it
+ * needs no styling here.
+ */
+
+/* Slim connected-state line: `@handle · View profile`. */
+.atmosphere-connector-card__status {
+	margin: 0;
+	color: #757575;
+}
+
+/* Handle field with typeahead. */
+.atmosphere-handle-field {
+	position: relative;
+}
+
+/*
+ * The connector card frame (core's `.connectors-page .components-item`) sets
+ * `overflow: hidden` for its rounded corners, which clips the absolutely
+ * positioned suggestion list at the card's bottom edge. While a list is open,
+ * lift the clip on just that card — the `__list` element only exists in the DOM
+ * while the dropdown is open, so sibling cards keep their clipping. The
+ * `.connectors-page` prefix keeps this above core's own rule regardless of
+ * stylesheet load order.
+ */
+.connectors-page .components-item:has( .atmosphere-handle-field__list ) {
+	overflow: visible;
+}
+
+.atmosphere-handle-field__label {
+	display: block;
+	margin-bottom: 4px;
+	font-size: 11px;
+	font-weight: 500;
+	text-transform: uppercase;
+}
+
+.atmosphere-handle-field__control {
+	position: relative;
+	display: flex;
+	align-items: center;
+}
+
+.atmosphere-handle-field__control input {
+	width: 100%;
+}
+
+.atmosphere-handle-field__control .components-spinner {
+	position: absolute;
+	inset-inline-end: 8px;
+}
+
+.atmosphere-handle-field__list {
+	position: absolute;
+	z-index: 10;
+	inset-inline: 0;
+	top: 100%;
+	margin: 2px 0 0;
+	padding: 0;
+	max-height: 260px;
+	overflow-y: auto;
+	list-style: none;
+	background: #fff;
+	border: 1px solid #ccc;
+	border-radius: 4px;
+	box-shadow: 0 2px 6px rgba( 0, 0, 0, 0.1 );
+}
+
+.atmosphere-handle-field__option {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 6px 10px;
+	cursor: pointer;
+}
+
+.atmosphere-handle-field__option.is-active {
+	background: #f0f0f0;
+}
+
+.atmosphere-handle-field__avatar {
+	flex: 0 0 auto;
+	border-radius: 50%;
+	object-fit: cover;
+}
+
+.atmosphere-handle-field__handle {
+	font-weight: 600;
+}
+
+.atmosphere-handle-field__name {
+	color: #757575;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}

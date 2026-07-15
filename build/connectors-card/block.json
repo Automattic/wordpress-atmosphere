@@ -1,0 +1,10 @@
+{
+  "$schema": "https://schemas.wp.org/trunk/block.json",
+  "apiVersion": 3,
+  "name": "atmosphere/connectors-card",
+  "title": "ATmosphere Connectors Card",
+  "category": "widgets",
+  "description": "Renders ATmosphere's connection UI on the WordPress Connectors screen.",
+  "textdomain": "atmosphere",
+  "viewScriptModule": "file:./index.js"
+}

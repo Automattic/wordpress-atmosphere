@@ -71,6 +71,7 @@ class Test_Sanitize_Handle extends WP_UnitTestCase {
 		\delete_transient( 'atmosphere_oauth_verifier' );
 		\delete_transient( 'atmosphere_oauth_dpop_jwk' );
 		\delete_transient( 'atmosphere_oauth_resolved' );
+		\delete_transient( 'atmosphere_oauth_from_connectors' );
 
 		parent::tear_down();
 	}
@@ -316,5 +317,35 @@ class Test_Sanitize_Handle extends WP_UnitTestCase {
 			'A leading "@" must be stripped so the handle resolves and redirects.'
 		);
 		$this->assertStringStartsWith( 'https://auth.example.com/oauth/authorize', $captured_target );
+	}
+
+	/**
+	 * A settings-page connect clears any leftover Connectors-card flag before
+	 * starting, so an abandoned card flow can't survive its TTL and bounce this
+	 * connect to the Connectors screen once the callback completes.
+	 */
+	public function test_settings_page_connect_clears_connectors_flag(): void {
+		$this->become_admin();
+		\set_transient( 'atmosphere_oauth_from_connectors', 1, HOUR_IN_SECONDS );
+		$this->stub_resolver_chain( 'https://auth.example.com/oauth/authorize' );
+
+		$this->add_filter_tracked(
+			'wp_redirect',
+			static function () {
+				throw new WPDieException( 'redirect_intercepted' );
+			}
+		);
+
+		try {
+			Sanitize::handle( 'alice.bsky-test-handle.io' );
+			$this->fail( 'Expected redirect to be intercepted.' );
+		} catch ( WPDieException $e ) {
+			$this->assertSame( 'redirect_intercepted', $e->getMessage() );
+		}
+
+		$this->assertFalse(
+			\get_transient( 'atmosphere_oauth_from_connectors' ),
+			'A settings-page connect must clear the Connectors-card return flag.'
+		);
 	}
 }

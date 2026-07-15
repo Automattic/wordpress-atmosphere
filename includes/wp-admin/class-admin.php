@@ -10,6 +10,7 @@ namespace Atmosphere\WP_Admin;
 \defined( 'ABSPATH' ) || exit;
 
 use Atmosphere\Atmosphere;
+use Atmosphere\Connectors;
 use Atmosphere\Handle;
 use Atmosphere\OAuth\Client;
 use Atmosphere\Publisher;
@@ -142,7 +143,23 @@ class Admin {
 		);
 		\set_transient( 'settings_errors', \get_settings_errors(), 30 );
 
-		\wp_safe_redirect( \admin_url( 'options-general.php?page=atmosphere&connected=1' ) );
+		/*
+		 * Return the browser to wherever the flow started. A Connectors-card
+		 * connect sets the `atmosphere_oauth_from_connectors` flag (see
+		 * {@see \Atmosphere\Rest\Admin\Connection_Controller::authorize()}); honor
+		 * it by returning to the Connectors screen, otherwise fall back to the
+		 * settings page. The destination is hardcoded here — the flag is a
+		 * boolean, so nothing off the wire can steer the redirect. Always consume
+		 * the flag so a stale one can't leak into a later, unrelated connect.
+		 */
+		$from_connectors = (bool) \get_transient( 'atmosphere_oauth_from_connectors' );
+		\delete_transient( 'atmosphere_oauth_from_connectors' );
+
+		$destination = $from_connectors
+			? \admin_url( Connectors::SCREEN )
+			: \admin_url( 'options-general.php?page=atmosphere' );
+
+		\wp_safe_redirect( \add_query_arg( 'connected', '1', $destination ) );
 		exit;
 	}
 

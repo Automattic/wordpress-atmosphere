@@ -21,6 +21,7 @@ use Atmosphere\Transformer\Post;
 use Atmosphere\Transformer\Preview;
 use Atmosphere\Transformer\Publication;
 use Atmosphere\Integrations\Load;
+use Atmosphere\Rest\Admin\Connection_Controller;
 use Atmosphere\Rest\Admin\Pre_Publish_Controller;
 use Atmosphere\Rest\Client_Metadata_Controller;
 use Atmosphere\Rest\Reactions_Controller;
@@ -169,6 +170,8 @@ class Atmosphere {
 		 * rendering and the site.standard.document content parsers.
 		 */
 		\add_action( 'init', array( Mention::class, 'init' ), 5 );
+
+		\add_action( 'init', array( Connectors::class, 'init' ), 5 );
 
 		/*
 		 * Seed the long-form composition strategy from the user's
@@ -1356,6 +1359,7 @@ class Atmosphere {
 	 */
 	public function register_rest_controllers(): void {
 		( new Client_Metadata_Controller() )->register_routes();
+		( new Connection_Controller() )->register_routes();
 		( new Pre_Publish_Controller() )->register_routes();
 		( new Reactions_Controller() )->register_routes();
 	}

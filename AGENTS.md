@@ -15,15 +15,17 @@ WordPress plugin that publishes posts to AT Protocol in both `app.bsky.feed.post
 ```
 atmosphere.php                  # Main plugin file.
 includes/
-├── class-*.php                 # Core classes (Atmosphere, API, Publisher, Backfill, Handle, Post_Types, Reaction_Sync).
+├── class-*.php                 # Core classes (Atmosphere, API, Publisher, Backfill, Handle, Post_Types, Reaction_Sync, Connectors).
 ├── functions.php               # Helper functions.
 ├── content-parser/             # Pluggable content formats for site.standard.document (interface only by default).
 ├── oauth/                      # OAuth flow (Client, DPoP, Encryption, Resolver, Nonce).
+├── rest/                       # REST controllers (public + admin-only under rest/admin/).
 ├── transformer/                # AT Protocol record transformers (Post, Document, Publication, Comment, Facet, TID).
 └── wp-admin/                   # Admin UI (settings page, sidebar panel).
 integrations/                   # Plugin-specific content-parser integrations (stubs).
 templates/                      # PHP template files.
-assets/                         # CSS and JS.
+assets/                         # CSS, JS, and images.
+src/                            # Source for the wp-scripts build (editor panels, reactions block, connectors card).
 tests/
 └── phpunit/                    # PHPUnit tests.
 ```
@@ -95,6 +97,8 @@ Test files live in `tests/phpunit/tests/` mirroring `includes/` structure. Files
 **Publisher** — Atomic batch `applyWrites` for both bsky post + standard.site document. See `includes/class-publisher.php`.
 
 **Well-known endpoints** — Rewrite rules + `template_redirect` handlers in `Atmosphere` class serve `/.well-known/atproto-did` (domain handle verification) and `/.well-known/site.standard.publication` (publication AT-URI). All share the `atmosphere_wellknown` query var.
+
+**Connectors API** — Progressive-enhancement registration on the WordPress 7.0 Settings → Connectors screen. `Atmosphere\Connectors` (`includes/class-connectors.php`) registers an `atmosphere` connector on `wp_connectors_init` with `authentication.method => 'none'` and ships a script module (`src/connectors-card/`) that renders the connect/disconnect card via `method:none` + a custom render, since core only auto-renders a UI for `api_key` connectors. The card drives the flow through `Atmosphere\Rest\Admin\Connection_Controller` (authorize/disconnect), reusing the existing OAuth `Client`. There is a single Connectors screen (`Connectors::SCREEN`, i.e. `options-connectors.php`), so there is a single return target and **no URL is ever passed around or validated**: the card supplies only the handle, the controller sets a boolean `atmosphere_oauth_from_connectors` transient on success, and the OAuth callback (`Admin::handle_oauth_callback()`) reads that flag and redirects to a **hardcoded** destination — `admin_url( Connectors::SCREEN )` when set, else the settings page. Because the flag is a boolean and the destination is hardcoded, nothing off the wire can steer the post-callback `wp_safe_redirect()`. The settings-page connect (its own admin-post handler, not this REST route) clears the flag before starting so a stale card flow can't bounce it to the Connectors screen. Its handle field offers typeahead (an `app.bsky.actor.searchActorsTypeahead` XRPC endpoint), defaulting to Bluesky's official public appview (`public.api.bsky.app`) and centralized + filterable via `atmosphere_handle_typeahead_url` (point it at a network-wide index such as `typeahead.waow.tech`, or return `''` to disable typeahead and require manual entry). The enqueue and `wp_connectors_init` registration are guarded by `class_exists( 'WP_Connector_Registry' )`, so the card is inert where the Connectors screen isn't present and the plugin's own settings page stays the baseline.
 
 ## Documentation Index
 
