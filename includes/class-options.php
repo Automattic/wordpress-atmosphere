@@ -54,7 +54,7 @@ class Options {
 				'description'       => 'Whether new posts are automatically published to AT Protocol.',
 				'default'           => '1',
 				'show_in_rest'      => true,
-				'sanitize_callback' => 'rest_sanitize_boolean',
+				'sanitize_callback' => array( Sanitize::class, 'boolean_option' ),
 			)
 		);
 
@@ -66,7 +66,7 @@ class Options {
 				'description'       => 'Whether eligible WordPress comments are published as Bluesky replies.',
 				'default'           => '1',
 				'show_in_rest'      => true,
-				'sanitize_callback' => 'rest_sanitize_boolean',
+				'sanitize_callback' => array( Sanitize::class, 'boolean_option' ),
 			)
 		);
 
@@ -78,7 +78,7 @@ class Options {
 				'description'       => 'Whether Bluesky likes and reposts are imported.',
 				'default'           => '1',
 				'show_in_rest'      => true,
-				'sanitize_callback' => 'rest_sanitize_boolean',
+				'sanitize_callback' => array( Sanitize::class, 'boolean_option' ),
 			)
 		);
 
@@ -90,7 +90,7 @@ class Options {
 				'description'       => 'Whether Bluesky replies are imported as comments.',
 				'default'           => '1',
 				'show_in_rest'      => true,
-				'sanitize_callback' => 'rest_sanitize_boolean',
+				'sanitize_callback' => array( Sanitize::class, 'boolean_option' ),
 			)
 		);
 
