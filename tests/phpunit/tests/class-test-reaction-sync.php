@@ -11,6 +11,8 @@ namespace Atmosphere\Tests;
 
 use WP_UnitTestCase;
 use Atmosphere\Reaction_Sync;
+use Atmosphere\OAuth\DPoP;
+use Atmosphere\OAuth\Encryption;
 use Atmosphere\Transformer\Post as BskyPost;
 
 /**
@@ -23,7 +25,10 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 	 */
 	public function tear_down(): void {
 		\delete_option( 'atmosphere_support_post_types' );
+		\delete_option( 'atmosphere_connection' );
+		\delete_option( 'atmosphere_identity' );
 		\remove_all_filters( 'atmosphere_connection_only_mode' );
+		\remove_all_filters( 'pre_http_request' );
 
 		if ( \post_type_exists( 'atmos_hidden_cpt' ) ) {
 			\unregister_post_type( 'atmos_hidden_cpt' );
@@ -2067,5 +2072,93 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 			),
 			'No reply comment should be written in connection-only mode.'
 		);
+	}
+
+	/**
+	 * A connected fixture whose access token and DPoP key decrypt cleanly, so
+	 * sync() can get past is_connected()/access_token() to the PDS fetch.
+	 */
+	private function connect_site_for_sync(): void {
+		\update_option(
+			'atmosphere_connection',
+			array(
+				'access_token' => Encryption::encrypt( 'test-token' ),
+				'did'          => 'did:plc:me',
+				'handle'       => 'me.example.com',
+				'pds_endpoint' => 'https://pds.example.com',
+				'dpop_jwk'     => Encryption::encrypt( (string) \wp_json_encode( DPoP::generate_key() ) ),
+				'expires_at'   => \time() + HOUR_IN_SECONDS,
+			)
+		);
+		\update_option(
+			'atmosphere_identity',
+			array(
+				'did'          => 'did:plc:me',
+				'handle'       => 'me.example.com',
+				'pds_endpoint' => 'https://pds.example.com',
+			),
+			true
+		);
+	}
+
+	/**
+	 * Capture the URL of any outgoing HTTP request and answer it with an empty,
+	 * well-formed response so paginate() completes cleanly.
+	 *
+	 * @param string $captured_url Set to the requested URL by reference.
+	 */
+	private function spy_on_http( string &$captured_url ): void {
+		\add_filter(
+			'pre_http_request',
+			static function ( $response, $args, $url ) use ( &$captured_url ) {
+				$captured_url = (string) $url;
+				return array(
+					'response' => array( 'code' => 200 ),
+					'body'     => (string) \wp_json_encode(
+						array(
+							'notifications' => array(),
+							'records'       => array(),
+						)
+					),
+					'headers'  => array(),
+				);
+			},
+			5,
+			3
+		);
+	}
+
+	/**
+	 * Positive control: with a live connection and connection-only mode off,
+	 * sync() reaches out to the PDS. Proves the fixture and the HTTP spy are
+	 * wired, so the negative test below is meaningful rather than passing on an
+	 * earlier bail.
+	 */
+	public function test_sync_polls_the_pds_when_not_connection_only() {
+		$this->connect_site_for_sync();
+
+		$requested_url = '';
+		$this->spy_on_http( $requested_url );
+
+		Reaction_Sync::sync();
+
+		$this->assertNotSame( '', $requested_url, 'sync() should poll the PDS when not in connection-only mode.' );
+	}
+
+	/**
+	 * Regression: connection-only mode short-circuits sync() before any PDS
+	 * call, so a host embedding ATmosphere purely as a connection layer gets no
+	 * hourly background polling.
+	 */
+	public function test_connection_only_mode_skips_pds_polling() {
+		$this->connect_site_for_sync();
+		\add_filter( 'atmosphere_connection_only_mode', '__return_true' );
+
+		$requested_url = '';
+		$this->spy_on_http( $requested_url );
+
+		Reaction_Sync::sync();
+
+		$this->assertSame( '', $requested_url, 'sync() must not touch the PDS in connection-only mode.' );
 	}
 }

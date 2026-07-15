@@ -329,7 +329,10 @@ class Atmosphere {
 		\add_action( 'atmosphere_sync_reactions', array( Reaction_Sync::class, 'sync' ) );
 		Reaction_Sync::register();
 
-		if ( ! \wp_next_scheduled( 'atmosphere_sync_reactions' ) && is_connected() ) {
+		// Skip scheduling in connection-only mode: the sync would short-circuit
+		// anyway (see Reaction_Sync::sync()), so there's no point running the
+		// hourly event against a connection another plugin is managing.
+		if ( ! \wp_next_scheduled( 'atmosphere_sync_reactions' ) && is_connected() && ! is_connection_only_mode() ) {
 			\wp_schedule_event( \time(), 'hourly', 'atmosphere_sync_reactions' );
 		}
 	}

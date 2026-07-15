@@ -271,6 +271,20 @@ class Reaction_Sync {
 	 * Run the sync. Called by WP-Cron.
 	 */
 	public static function sync(): void {
+		/*
+		 * Connection-only mode: another plugin owns the connection and does
+		 * not want ATmosphere reaching out to the PDS on its own. Skip the
+		 * whole poll — the per-item gates already drop any writes, but bailing
+		 * here also spares the hourly `listNotifications` + `listRecords`
+		 * calls. Deliberately return *before* the watermarks advance, unlike
+		 * the per-setting toggles: if the host later leaves connection-only
+		 * mode, the interactions that arrived meanwhile are picked up rather
+		 * than skipped for good.
+		 */
+		if ( is_connection_only_mode() ) {
+			return;
+		}
+
 		if ( ! is_connected() ) {
 			return;
 		}
