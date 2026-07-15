@@ -1390,22 +1390,21 @@ class Publisher {
 		$bsky_tids = \array_values( \array_filter( \array_map( 'strval', $bsky_tids ), 'strlen' ) );
 
 		$comment_tids = \array_values( \array_filter( \array_map( 'strval', $comment_tids ), 'strlen' ) );
-		$stripped     = ! empty( $comment_tids ) && ! is_comment_publishing_enabled();
 
-		if ( $stripped ) {
+		if ( $comment_tids && ! is_comment_publishing_enabled() ) {
+			/*
+			 * A queued comment-only cascade is an intentional no-op while
+			 * comment publishing is disabled, not a failure — return an
+			 * empty success so the cron handler does not log it as an error.
+			 */
+			if ( empty( $bsky_tids ) && ! $doc_tid ) {
+				return array( 'results' => array() );
+			}
+
 			$comment_tids = array();
 		}
 
 		if ( empty( $bsky_tids ) && ! $doc_tid && empty( $comment_tids ) ) {
-			/*
-			 * A queued comment-only cascade whose TIDs were stripped by the
-			 * kill switch is an intentional no-op, not a failure — return an
-			 * empty success so the cron handler does not log it as an error.
-			 */
-			if ( $stripped ) {
-				return array( 'results' => array() );
-			}
-
 			return new \WP_Error( 'atmosphere_not_published', \__( 'No TIDs provided.', 'atmosphere' ) );
 		}
 
@@ -1468,20 +1467,10 @@ class Publisher {
 	 * `results` array — preserving the shape callers expect from
 	 * `API::apply_writes()`.
 	 *
-	 * @param array         $writes       Full write batch.
-	 * @param callable|null $precondition Optional gate evaluated BETWEEN
-	 *                                    chunks — the caller has just checked
-	 *                                    its own precondition when the first
-	 *                                    request goes out, so only later
-	 *                                    chunks can observe a change.
-	 *                                    Returning a `WP_Error` aborts the
-	 *                                    cascade (chunks already submitted
-	 *                                    stand). Keeps feature policy out of
-	 *                                    this transport helper — the caller
-	 *                                    supplies it.
+	 * @param array $writes Full write batch.
 	 * @return array|\WP_Error
 	 */
-	private static function apply_writes_chunked( array $writes, ?callable $precondition = null ): array|\WP_Error {
+	private static function apply_writes_chunked( array $writes ): array|\WP_Error {
 		if ( \count( $writes ) <= self::APPLY_WRITES_CHUNK_SIZE ) {
 			return API::apply_writes( $writes );
 		}
@@ -1492,12 +1481,6 @@ class Publisher {
 		$succeeded = 0;
 
 		foreach ( $chunks as $index => $chunk ) {
-			$blocked = $index > 0 && $precondition ? $precondition() : null;
-
-			if ( \is_wp_error( $blocked ) ) {
-				return $blocked;
-			}
-
 			$response = API::apply_writes( $chunk );
 
 			if ( \is_wp_error( $response ) ) {
@@ -1534,10 +1517,7 @@ class Publisher {
 	 * comment batch's success.
 	 *
 	 * The comment batch is not attempted when the root batch fails or
-	 * comment publishing is disabled before it starts. The effective
-	 * setting is re-checked between comment chunks of a long cascade —
-	 * an in-process check: a toggle flipped in another PHP process is
-	 * not visible to this request's option cache.
+	 * comment publishing is disabled before it starts.
 	 *
 	 * @param array $root_writes    Post + document delete writes (may be empty).
 	 * @param array $comment_writes Outbound comment-reply delete writes (may be empty).
@@ -1559,10 +1539,7 @@ class Publisher {
 
 		$comment_result = empty( $comment_writes ) || ! is_comment_publishing_enabled()
 			? null
-			: self::apply_writes_chunked(
-				$comment_writes,
-				static fn(): ?\WP_Error => is_comment_publishing_enabled() ? null : self::comment_publishing_disabled_error()
-			);
+			: self::apply_writes_chunked( $comment_writes );
 
 		return array(
 			'root'     => $root_result,
@@ -1894,7 +1871,7 @@ class Publisher {
 	}
 
 	/**
-	 * Build the standard error for a blocked outgoing-reaction write.
+	 * Build the standard error for a blocked outbound comment write.
 	 *
 	 * @return \WP_Error
 	 */

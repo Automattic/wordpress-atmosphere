@@ -448,7 +448,7 @@ function is_connected(): bool {
 }
 
 /**
- * Whether local WordPress reactions may be written to Bluesky.
+ * Whether local WordPress comments may be published to Bluesky as replies.
  *
  * Unsaved installs default to enabled. The stored per-site preference is
  * resolved first; the `atmosphere_should_publish_comments` filter then
@@ -463,7 +463,7 @@ function is_comment_publishing_enabled(): bool {
 	$enabled = '1' === (string) \get_option( 'atmosphere_publish_comments', '1' );
 
 	/**
-	 * Filters whether local WordPress reactions may be written to Bluesky.
+	 * Filters whether local WordPress comments may be published to Bluesky as replies.
 	 *
 	 * Runs last, so it has the final say over the stored setting — a host
 	 * plugin can force outgoing writes off (or back on) regardless of the

@@ -973,8 +973,8 @@ class Test_Publisher extends WP_UnitTestCase {
 	}
 
 	/**
-	 * Direct Publisher callers cannot bypass the global outgoing-reaction
-	 * control for create, update, or delete operations.
+	 * Direct Publisher callers cannot bypass the global comment-publishing
+	 * setting for create, update, or delete operations.
 	 */
 	public function test_comment_publisher_methods_return_disabled_error_without_writing() {
 		$post_id    = self::factory()->post->create();
@@ -2346,42 +2346,6 @@ class Test_Publisher extends WP_UnitTestCase {
 	}
 
 	/**
-	 * Disabling comment publishing during a chunked comment cascade stops
-	 * the next comment chunk before another request is made.
-	 */
-	public function test_delete_post_by_tids_rechecks_comment_publishing_before_each_comment_chunk() {
-		$api_calls = 0;
-		\add_filter(
-			'atmosphere_pre_apply_writes',
-			static function ( $short_circuit ) use ( &$api_calls ) {
-				++$api_calls;
-				if ( 2 === $api_calls ) {
-					\update_option( 'atmosphere_publish_comments', '' );
-				}
-
-				return $short_circuit;
-			},
-			5
-		);
-		$this->register_capture( 0 );
-
-		$comment_tids = array();
-		for ( $i = 0; $i < 101; ++$i ) {
-			$comment_tids[] = 'reply-' . $i;
-		}
-
-		$result = Publisher::delete_post_by_tids(
-			array( 'root-tid' ),
-			'doc-tid',
-			$comment_tids
-		);
-
-		$this->assertWPError( $result );
-		$this->assertSame( 'atmosphere_comment_publishing_disabled', $result->get_error_code() );
-		$this->assertCount( 2, $this->captured_calls, 'The second comment chunk must not be sent.' );
-	}
-
-	/**
 	 * A permanent-post-delete event queued before the switch changed still
 	 * removes the post and document, but drops its comment-reply TIDs.
 	 */
@@ -2404,8 +2368,8 @@ class Test_Publisher extends WP_UnitTestCase {
 	}
 
 	/**
-	 * A queued comment-only cascade whose TIDs were stripped by the kill
-	 * switch is an intentional no-op — it returns an empty success (so the
+	 * A queued comment-only cascade whose TIDs were stripped by the disabled
+	 * setting is an intentional no-op — it returns an empty success (so the
 	 * cron handler logs nothing), while a genuinely empty payload still
 	 * surfaces the no-TIDs error.
 	 */

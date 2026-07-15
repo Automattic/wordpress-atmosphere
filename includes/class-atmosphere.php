@@ -1168,10 +1168,9 @@ class Atmosphere {
 	 */
 	public static function should_publish_comment( \WP_Comment $comment ): bool {
 		/*
-		 * The deployment/site kill switch cannot be bypassed by a filter.
 		 * Checked first: a disabled site skips the eligibility work (which
 		 * busts the parent post's cache on every comment event) and the
-		 * filter entirely.
+		 * per-comment filter entirely.
 		 */
 		if ( ! is_comment_publishing_enabled() ) {
 			return false;
@@ -1696,10 +1695,8 @@ class Atmosphere {
 			'atmosphere_delete_records',
 			static function ( $bsky_tids, string $doc_tid, $comment_tids = array() ): void {
 				/*
-				 * No kill-switch strip here: delete_post_by_tids() drops the
-				 * comment TIDs itself when comment publishing is disabled,
-				 * and that execution-time check is the one that matters for
-				 * queued events.
+				 * delete_post_by_tids() drops the comment TIDs itself when
+				 * comment publishing is disabled at execution time.
 				 */
 				$comment_tids = \is_array( $comment_tids ) ? $comment_tids : array();
 				$result       = Publisher::delete_post_by_tids( $bsky_tids, $doc_tid, $comment_tids );

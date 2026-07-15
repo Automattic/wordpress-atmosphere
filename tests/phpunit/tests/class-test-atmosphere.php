@@ -1515,7 +1515,7 @@ class Test_Atmosphere extends WP_UnitTestCase {
 
 	/**
 	 * Permanent post cleanup still removes the post and document while the
-	 * outgoing-reaction switch keeps existing comment replies unchanged.
+	 * comment-publishing setting keeps existing comment replies unchanged.
 	 */
 	public function test_on_before_delete_omits_comment_tids_when_comment_publishing_disabled() {
 		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
@@ -1849,7 +1849,7 @@ class Test_Atmosphere extends WP_UnitTestCase {
 	}
 
 	/**
-	 * If the kill switch changes while applyWrites is already in flight,
+	 * If the setting changes while applyWrites is already in flight,
 	 * retain the successful result instead of scheduling a new outbound
 	 * delete that the disabled state is explicitly meant to prevent.
 	 */
@@ -1857,24 +1857,17 @@ class Test_Atmosphere extends WP_UnitTestCase {
 		$comment    = $this->make_eligible_comment();
 		$comment_id = (int) $comment->comment_ID;
 
+		/* Flip the setting while the applyWrites call is in flight. */
 		\add_filter(
 			'atmosphere_pre_apply_writes',
-			static function ( $short, $writes ) {
+			static function ( $short_circuit ) {
 				\update_option( 'atmosphere_publish_comments', '' );
-				$rkey = $writes[0]['rkey'] ?? 'tid';
 
-				return array(
-					'results' => array(
-						array(
-							'uri' => 'at://did:plc:test123/app.bsky.feed.post/' . $rkey,
-							'cid' => 'bafyreibinflight',
-						),
-					),
-				);
+				return $short_circuit;
 			},
-			10,
-			2
+			5
 		);
+		$this->force_apply_writes_success();
 
 		\do_action( 'atmosphere_publish_comment', $comment_id );
 
