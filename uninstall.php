@@ -37,7 +37,7 @@ $atmosphere_options = array(
 	'atmosphere_previous_handle',
 	'atmosphere_long_form_composition',
 	'atmosphere_support_post_types',
-	'atmosphere_publish_reactions',
+	'atmosphere_publish_comments',
 	'atmosphere_sync_reactions',
 	'atmosphere_sync_replies',
 	'atmosphere_last_seen_notification',

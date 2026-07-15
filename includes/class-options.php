@@ -60,7 +60,7 @@ class Options {
 
 		\register_setting(
 			'atmosphere',
-			'atmosphere_publish_reactions',
+			'atmosphere_publish_comments',
 			array(
 				'type'              => 'boolean',
 				'description'       => 'Whether eligible WordPress comments are published as Bluesky replies.',

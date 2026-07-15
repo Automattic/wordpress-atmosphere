@@ -983,7 +983,7 @@ class Atmosphere {
 	 *
 	 * Captures every Bluesky post TID (root + thread replies) and the
 	 * document TID from post meta, then schedules an async batch delete
-	 * via cron. When outgoing reactions are enabled, outbound comment
+	 * via cron. When comment publishing is enabled, outbound comment
 	 * replies are also collected through
 	 * `Publisher::collect_published_comment_tids()`.
 	 *
@@ -992,7 +992,7 @@ class Atmosphere {
 	 * first and only then iterates child comments, so this is the last
 	 * opportunity to read them.
 	 *
-	 * While outgoing reactions are enabled, the trash path
+	 * While comment publishing is enabled, the trash path
 	 * (`Publisher::delete_post()`) also cascades comment deletes. This
 	 * keeps permanent deletion symmetric. When they are disabled, both
 	 * paths preserve existing outbound replies instead.
@@ -1038,7 +1038,7 @@ class Atmosphere {
 
 		$doc_tid = (string) \get_post_meta( $post_id, Transformer\Document::META_TID, true );
 
-		$comment_tids = outgoing_reactions_enabled()
+		$comment_tids = is_comment_publishing_enabled()
 			? \array_column( Publisher::collect_published_comment_tids( $post_id ), 'tid' )
 			: array();
 
@@ -1134,7 +1134,7 @@ class Atmosphere {
 	 * @param int $comment_id Comment ID.
 	 */
 	public function on_comment_before_delete( int $comment_id ): void {
-		if ( ! outgoing_reactions_enabled() || ! is_connected() ) {
+		if ( ! is_comment_publishing_enabled() || ! is_connected() ) {
 			return;
 		}
 
@@ -1173,7 +1173,7 @@ class Atmosphere {
 		 * busts the parent post's cache on every comment event) and the
 		 * filter entirely.
 		 */
-		if ( ! outgoing_reactions_enabled() ) {
+		if ( ! is_comment_publishing_enabled() ) {
 			return false;
 		}
 
@@ -1282,7 +1282,7 @@ class Atmosphere {
 	 * @param \WP_Comment $comment Comment object.
 	 */
 	private function schedule_comment_delete( \WP_Comment $comment ): void {
-		if ( ! outgoing_reactions_enabled() || ! is_connected() ) {
+		if ( ! is_comment_publishing_enabled() || ! is_connected() ) {
 			return;
 		}
 
@@ -1697,7 +1697,7 @@ class Atmosphere {
 			static function ( $bsky_tids, string $doc_tid, $comment_tids = array() ): void {
 				/*
 				 * No kill-switch strip here: delete_post_by_tids() drops the
-				 * comment TIDs itself when outgoing reactions are disabled,
+				 * comment TIDs itself when comment publishing is disabled,
 				 * and that execution-time check is the one that matters for
 				 * queued events.
 				 */
@@ -1799,7 +1799,7 @@ class Atmosphere {
 		\add_action(
 			'atmosphere_delete_comment',
 			static function ( int $comment_id ): void {
-				if ( ! outgoing_reactions_enabled() ) {
+				if ( ! is_comment_publishing_enabled() ) {
 					return;
 				}
 
@@ -1821,7 +1821,7 @@ class Atmosphere {
 		\add_action(
 			'atmosphere_delete_comment_record',
 			static function ( string $tid ): void {
-				if ( ! outgoing_reactions_enabled() || '' === $tid ) {
+				if ( ! is_comment_publishing_enabled() || '' === $tid ) {
 					return;
 				}
 
@@ -2232,7 +2232,7 @@ class Atmosphere {
 		 * completed request. Keep the returned record metadata intact and do
 		 * not enqueue a compensating delete while outgoing writes are off.
 		 */
-		if ( ! outgoing_reactions_enabled() ) {
+		if ( ! is_comment_publishing_enabled() ) {
 			return;
 		}
 

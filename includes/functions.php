@@ -451,7 +451,7 @@ function is_connected(): bool {
  * Whether local WordPress reactions may be written to Bluesky.
  *
  * Unsaved installs default to enabled. The stored per-site preference is
- * resolved first; the `atmosphere_should_publish_reactions` filter then
+ * resolved first; the `atmosphere_should_publish_comments` filter then
  * has the final say, so host plugins can override the effective behavior
  * without touching the saved option.
  *
@@ -459,8 +459,8 @@ function is_connected(): bool {
  *
  * @return bool
  */
-function outgoing_reactions_enabled(): bool {
-	$enabled = '1' === (string) \get_option( 'atmosphere_publish_reactions', '1' );
+function is_comment_publishing_enabled(): bool {
+	$enabled = '1' === (string) \get_option( 'atmosphere_publish_comments', '1' );
 
 	/**
 	 * Filters whether local WordPress reactions may be written to Bluesky.
@@ -472,9 +472,9 @@ function outgoing_reactions_enabled(): bool {
 	 *
 	 * @since unreleased
 	 *
-	 * @param bool $enabled Whether outgoing reactions are enabled.
+	 * @param bool $enabled Whether comment publishing is enabled.
 	 */
-	return (bool) \apply_filters( 'atmosphere_should_publish_reactions', $enabled );
+	return (bool) \apply_filters( 'atmosphere_should_publish_comments', $enabled );
 }
 
 /**

@@ -81,7 +81,7 @@ Yes — approved comments left by logged-in readers on cross-posted articles are
 
 Yes. Under **Settings → ATmosphere → Reactions**, turn off **Publish eligible WordPress comments as Bluesky replies**. New comment changes will stay on WordPress; replies already published to Bluesky are left unchanged. Incoming Bluesky replies, likes, and reposts continue to follow their own settings.
 
-Plugins can enforce this with the `atmosphere_should_publish_reactions` filter, which overrides the saved setting without changing it.
+Plugins can enforce this with the `atmosphere_should_publish_comments` filter, which overrides the saved setting without changing it.
 
 = Are Bluesky replies and reposts pulled back into WordPress? =
 

@@ -1163,15 +1163,15 @@ class Publisher {
 
 	/**
 	 * Delete every bsky record (root + thread replies) and the document
-	 * for a post, plus outbound comment replies when outgoing reactions
-	 * are enabled.
+	 * for a post, plus outbound comment replies when comment publishing
+	 * is enabled.
 	 *
 	 * Handles thread posts (reads `META_THREAD_RECORDS`) and legacy
 	 * single-record posts (falls back to the mirrored `META_URI` /
 	 * `META_TID` / `META_CID` keys). Outbound comment replies live in
 	 * our own repo keyed by their own TIDs — the AT Protocol has no
 	 * cascade semantics, so they have to be enumerated alongside the
-	 * post records or they orphan on Bluesky. When outgoing reactions are
+	 * post records or they orphan on Bluesky. When comment publishing is
 	 * disabled, those replies and their local metadata are preserved.
 	 *
 	 * The post + document deletes and the outbound comment-reply deletes
@@ -1187,7 +1187,7 @@ class Publisher {
 		$stored  = self::stored_thread_records( $post->ID, true );
 		$doc_tid = \get_post_meta( $post->ID, Document::META_TID, true );
 
-		$comment_tids = outgoing_reactions_enabled()
+		$comment_tids = is_comment_publishing_enabled()
 			? self::collect_published_comment_tids( $post->ID )
 			: array();
 
@@ -1365,7 +1365,7 @@ class Publisher {
 	 * accessible to `delete_post()`. Accepts either a single Bluesky TID
 	 * string (legacy single-record posts) or an array of TIDs
 	 * (thread-strategy posts), plus an optional list of outbound
-	 * comment-reply TIDs when outgoing reactions are enabled. The post +
+	 * comment-reply TIDs when comment publishing is enabled. The post +
 	 * document deletes and the
 	 * comment-reply deletes are submitted as two independent,
 	 * individually-chunked `applyWrites` batches (root first) so a long
@@ -1373,7 +1373,7 @@ class Publisher {
 	 * cleanup when it fails. Unlike `delete_post()`, this path has no
 	 * local meta to reconcile — the post row is already gone — so meta
 	 * cleanup is left entirely to the caller (`on_before_delete`). When
-	 * outgoing reactions are disabled, comment-reply TIDs are ignored.
+	 * comment publishing is disabled, comment-reply TIDs are ignored.
 	 *
 	 * @param string|string[] $bsky_tids    Bluesky post TID or array of TIDs (may be empty).
 	 * @param string          $doc_tid      Document TID (may be empty).
@@ -1390,7 +1390,7 @@ class Publisher {
 		$bsky_tids = \array_values( \array_filter( \array_map( 'strval', $bsky_tids ), 'strlen' ) );
 
 		$comment_tids = \array_values( \array_filter( \array_map( 'strval', $comment_tids ), 'strlen' ) );
-		$stripped     = ! empty( $comment_tids ) && ! outgoing_reactions_enabled();
+		$stripped     = ! empty( $comment_tids ) && ! is_comment_publishing_enabled();
 
 		if ( $stripped ) {
 			$comment_tids = array();
@@ -1534,7 +1534,7 @@ class Publisher {
 	 * comment batch's success.
 	 *
 	 * The comment batch is not attempted when the root batch fails or
-	 * outgoing reactions are disabled before it starts. The effective
+	 * comment publishing is disabled before it starts. The effective
 	 * setting is re-checked between comment chunks of a long cascade —
 	 * an in-process check: a toggle flipped in another PHP process is
 	 * not visible to this request's option cache.
@@ -1544,7 +1544,7 @@ class Publisher {
 	 * @return array{root: array|\WP_Error|null, comments: array|\WP_Error|null}
 	 *               Per-batch outcome; an element is null when that batch
 	 *               had no writes. `comments` is also null when the root
-	 *               batch failed or outgoing reactions were disabled and
+	 *               batch failed or comment publishing was disabled and
 	 *               the comment batch was skipped.
 	 */
 	private static function delete_in_decoupled_batches( array $root_writes, array $comment_writes ): array {
@@ -1557,11 +1557,11 @@ class Publisher {
 			);
 		}
 
-		$comment_result = empty( $comment_writes ) || ! outgoing_reactions_enabled()
+		$comment_result = empty( $comment_writes ) || ! is_comment_publishing_enabled()
 			? null
 			: self::apply_writes_chunked(
 				$comment_writes,
-				static fn(): ?\WP_Error => outgoing_reactions_enabled() ? null : self::outgoing_reactions_disabled_error()
+				static fn(): ?\WP_Error => is_comment_publishing_enabled() ? null : self::comment_publishing_disabled_error()
 			);
 
 		return array(
@@ -1714,8 +1714,8 @@ class Publisher {
 	 * @return array|\WP_Error applyWrites response or error.
 	 */
 	public static function publish_comment( \WP_Comment $comment ): array|\WP_Error {
-		if ( ! outgoing_reactions_enabled() ) {
-			$result = self::outgoing_reactions_disabled_error();
+		if ( ! is_comment_publishing_enabled() ) {
+			$result = self::comment_publishing_disabled_error();
 			\do_action( 'atmosphere_publish_comment_result', $comment, $result );
 			return $result;
 		}
@@ -1772,8 +1772,8 @@ class Publisher {
 	 * @return array|\WP_Error
 	 */
 	public static function update_comment( \WP_Comment $comment ): array|\WP_Error {
-		if ( ! outgoing_reactions_enabled() ) {
-			return self::outgoing_reactions_disabled_error();
+		if ( ! is_comment_publishing_enabled() ) {
+			return self::comment_publishing_disabled_error();
 		}
 
 		$comment_id = (int) $comment->comment_ID;
@@ -1825,8 +1825,8 @@ class Publisher {
 	 * @return array|\WP_Error
 	 */
 	public static function delete_comment( \WP_Comment $comment ): array|\WP_Error {
-		if ( ! outgoing_reactions_enabled() ) {
-			return self::outgoing_reactions_disabled_error();
+		if ( ! is_comment_publishing_enabled() ) {
+			return self::comment_publishing_disabled_error();
 		}
 
 		$comment_id = (int) $comment->comment_ID;
@@ -1874,8 +1874,8 @@ class Publisher {
 	 * @return array|\WP_Error
 	 */
 	public static function delete_comment_by_tid( string $tid ): array|\WP_Error {
-		if ( ! outgoing_reactions_enabled() ) {
-			return self::outgoing_reactions_disabled_error();
+		if ( ! is_comment_publishing_enabled() ) {
+			return self::comment_publishing_disabled_error();
 		}
 
 		if ( '' === $tid ) {
@@ -1898,10 +1898,10 @@ class Publisher {
 	 *
 	 * @return \WP_Error
 	 */
-	private static function outgoing_reactions_disabled_error(): \WP_Error {
+	private static function comment_publishing_disabled_error(): \WP_Error {
 		return new \WP_Error(
-			'atmosphere_outgoing_reactions_disabled',
-			\__( 'Outgoing reactions are disabled.', 'atmosphere' )
+			'atmosphere_comment_publishing_disabled',
+			\__( 'Comment publishing to Bluesky is disabled.', 'atmosphere' )
 		);
 	}
 

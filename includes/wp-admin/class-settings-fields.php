@@ -123,9 +123,9 @@ class Settings_Fields {
 		);
 
 		\add_settings_field(
-			'atmosphere_publish_reactions',
+			'atmosphere_publish_comments',
 			\__( 'Outgoing replies', 'atmosphere' ),
-			array( self::class, 'render_publish_reactions_field' ),
+			array( self::class, 'render_publish_comments_field' ),
 			'atmosphere',
 			'atmosphere_reactions'
 		);
@@ -534,19 +534,19 @@ class Settings_Fields {
 	/**
 	 * Render the outgoing WordPress comment toggle.
 	 */
-	public static function render_publish_reactions_field(): void {
+	public static function render_publish_comments_field(): void {
 		?>
 		<label>
 			<input
 				type="checkbox"
-				name="atmosphere_publish_reactions"
+				name="atmosphere_publish_comments"
 				value="1"
-				aria-describedby="atmosphere-publish-reactions-description"
-				<?php \checked( \get_option( 'atmosphere_publish_reactions', '1' ), '1' ); ?>
+				aria-describedby="atmosphere-publish-comments-description"
+				<?php \checked( \get_option( 'atmosphere_publish_comments', '1' ), '1' ); ?>
 			>
 			<?php \esc_html_e( 'Publish eligible WordPress comments as Bluesky replies', 'atmosphere' ); ?>
 		</label>
-		<p class="description" id="atmosphere-publish-reactions-description"><?php \esc_html_e( 'Comments are not sent to Bluesky while this is disabled. Replies that were already published to Bluesky are kept.', 'atmosphere' ); ?></p>
+		<p class="description" id="atmosphere-publish-comments-description"><?php \esc_html_e( 'Comments are not sent to Bluesky while this is disabled. Replies that were already published to Bluesky are kept.', 'atmosphere' ); ?></p>
 		<?php
 	}
 

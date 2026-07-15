@@ -56,7 +56,7 @@ class Test_Atmosphere extends WP_UnitTestCase {
 		\delete_option( 'atmosphere_connection' );
 		\delete_option( 'atmosphere_identity' );
 		\delete_option( 'atmosphere_publication_tid' );
-		\delete_option( 'atmosphere_publish_reactions' );
+		\delete_option( 'atmosphere_publish_comments' );
 		\delete_option( \Atmosphere\OAuth\Client::DISCONNECTED_OPTION );
 
 		/*
@@ -815,16 +815,16 @@ class Test_Atmosphere extends WP_UnitTestCase {
 	}
 
 	/**
-	 * Turning off outgoing reactions blocks every comment lifecycle
+	 * Turning off comment publishing blocks every comment lifecycle
 	 * scheduler, and the hard boundary cannot be bypassed by the legacy
 	 * eligibility filter.
 	 */
-	public function test_disabled_outgoing_reactions_do_not_schedule_comment_writes() {
+	public function test_disabled_comment_publishing_do_not_schedule_comment_writes() {
 		$comment    = $this->make_eligible_comment();
 		$comment_id = (int) $comment->comment_ID;
 		\update_comment_meta( $comment_id, Comment::META_TID, 'reply-tid' );
 		\update_comment_meta( $comment_id, Comment::META_URI, 'at://did:plc:test123/app.bsky.feed.post/reply-tid' );
-		\update_option( 'atmosphere_publish_reactions', '' );
+		\update_option( 'atmosphere_publish_comments', '' );
 		\add_filter( 'atmosphere_should_publish_comment', '__return_true' );
 
 		$this->assertFalse( Atmosphere::should_publish_comment( $comment ) );
@@ -842,7 +842,7 @@ class Test_Atmosphere extends WP_UnitTestCase {
 
 	/**
 	 * Events queued while the feature was enabled become no-ops when an
-	 * administrator disables outgoing reactions before WP-Cron runs.
+	 * administrator disables comment publishing before WP-Cron runs.
 	 */
 	public function test_queued_comment_cron_events_do_not_write_after_disable() {
 		$comment    = $this->make_eligible_comment();
@@ -860,14 +860,14 @@ class Test_Atmosphere extends WP_UnitTestCase {
 		$this->assertNotFalse( \wp_next_scheduled( 'atmosphere_delete_comment', array( $comment_id ) ) );
 		$this->assertNotFalse( \wp_next_scheduled( 'atmosphere_delete_comment_record', array( 'reply-tid' ) ) );
 
-		\update_option( 'atmosphere_publish_reactions', '' );
+		\update_option( 'atmosphere_publish_comments', '' );
 
 		$writes = 0;
 		\add_filter(
 			'atmosphere_pre_apply_writes',
 			static function () use ( &$writes ) {
 				++$writes;
-				return new \WP_Error( 'unexpected_write', 'Outgoing reaction reached the PDS write path.' );
+				return new \WP_Error( 'unexpected_write', 'A comment reached the PDS write path.' );
 			}
 		);
 
@@ -1517,7 +1517,7 @@ class Test_Atmosphere extends WP_UnitTestCase {
 	 * Permanent post cleanup still removes the post and document while the
 	 * outgoing-reaction switch keeps existing comment replies unchanged.
 	 */
-	public function test_on_before_delete_omits_comment_tids_when_outgoing_reactions_disabled() {
+	public function test_on_before_delete_omits_comment_tids_when_comment_publishing_disabled() {
 		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
 		\update_post_meta( $post_id, Post::META_TID, 'bsky-tid-root' );
 		\update_post_meta( $post_id, Document::META_TID, 'doc-tid-root' );
@@ -1525,7 +1525,7 @@ class Test_Atmosphere extends WP_UnitTestCase {
 		$comment_id = self::factory()->comment->create( array( 'comment_post_ID' => $post_id ) );
 		\update_comment_meta( $comment_id, Comment::META_TID, 'reply-tid' );
 		\update_comment_meta( $comment_id, Comment::META_URI, 'at://did:plc:test123/app.bsky.feed.post/reply-tid' );
-		\update_option( 'atmosphere_publish_reactions', '' );
+		\update_option( 'atmosphere_publish_comments', '' );
 
 		$this->atmosphere->on_before_delete( $post_id );
 
@@ -1853,14 +1853,14 @@ class Test_Atmosphere extends WP_UnitTestCase {
 	 * retain the successful result instead of scheduling a new outbound
 	 * delete that the disabled state is explicitly meant to prevent.
 	 */
-	public function test_reconcile_keeps_inflight_result_when_outgoing_reactions_disabled_mid_publish() {
+	public function test_reconcile_keeps_inflight_result_when_comment_publishing_disabled_mid_publish() {
 		$comment    = $this->make_eligible_comment();
 		$comment_id = (int) $comment->comment_ID;
 
 		\add_filter(
 			'atmosphere_pre_apply_writes',
 			static function ( $short, $writes ) {
-				\update_option( 'atmosphere_publish_reactions', '' );
+				\update_option( 'atmosphere_publish_comments', '' );
 				$rkey = $writes[0]['rkey'] ?? 'tid';
 
 				return array(

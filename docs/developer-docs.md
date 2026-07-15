@@ -8,7 +8,7 @@
 - [Extending Content Formats](#extending-content-formats)
 - [Custom Post Type Support](#custom-post-type-support)
 - [Publishing Programmatically](#publishing-programmatically)
-- [Outgoing Reaction Controls](#outgoing-reaction-controls)
+- [Outgoing Comment Controls](#outgoing-comment-controls)
 - [Token Encryption](#token-encryption)
 - [Templates and Admin UI](#templates-and-admin-ui)
 
@@ -353,26 +353,19 @@ landing page, so their `source_url` is intentionally empty and
 Integrations can react to each via
 [`atmosphere_reaction_synced`](#public-hooks).
 
-## Outgoing Reaction Controls
+## Outgoing Comment Controls
 
-Outbound reactions are WordPress comments that ATmosphere publishes as
-Bluesky replies. Administrators can turn these writes off under
-**Settings → ATmosphere → Reactions**. The underlying
-`atmosphere_publish_reactions` option defaults to enabled so existing sites
+ATmosphere publishes eligible WordPress comments as Bluesky replies.
+Administrators can turn these writes off under
+**Settings → ATmosphere → Reactions** ("Outgoing replies"). The underlying
+`atmosphere_publish_comments` option defaults to enabled so existing sites
 keep their current behavior.
-
-The naming is deliberately broader than today's behavior: comment replies
-are currently the only outgoing reaction type, so the settings-screen label
-says "Outgoing replies" — but the option, the filter, and
-`outgoing_reactions_enabled()` are the switch for *all* outgoing reaction
-writes. If ATmosphere ever publishes other reaction types (likes, reposts),
-they will honor the same switch rather than growing parallel ones.
 
 Host plugins can enforce the boundary with a behavior filter that runs
 *after* the stored preference and has the final say:
 
 ```php
-add_filter( 'atmosphere_should_publish_reactions', '__return_false' );
+add_filter( 'atmosphere_should_publish_comments', '__return_false' );
 ```
 
 The override is on effective behavior, not the option — the saved
@@ -381,15 +374,15 @@ removing the filter restores whatever the site had configured. Because the
 filter runs last, it can also force the lane back *on* while the option is
 off.
 
-While outgoing reactions are disabled, ATmosphere does not create, update,
+While comment publishing is disabled, ATmosphere does not create, update,
 or delete Bluesky reply records for WordPress comments, including work that
 was already queued in WP-Cron. Replies that were previously published
 remain unchanged. Post and standard.site document publishing continues
 normally, as does inbound syncing of Bluesky replies, likes, and reposts.
 
 Direct calls to the `Publisher` comment methods return a WP_Error with the
-`atmosphere_outgoing_reactions_disabled` code while the control is off. Use
-`\Atmosphere\outgoing_reactions_enabled()` when an integration needs to inspect
+`atmosphere_comment_publishing_disabled` code while the control is off. Use
+`\Atmosphere\is_comment_publishing_enabled()` when an integration needs to inspect
 the effective state.
 
 ## Token Encryption
