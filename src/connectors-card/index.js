@@ -249,7 +249,10 @@ function makeCard( Shell ) {
 					size: 'compact',
 					onClick: () => connect(),
 					isBusy: busy,
-					disabled: busy || ! handle,
+					// Match connect()'s precondition, which trims: a
+					// whitespace-only handle must leave the button disabled
+					// rather than clickable-but-inert.
+					disabled: busy || ! handle.trim(),
 					accessibleWhenDisabled: true,
 				},
 				needsReauth

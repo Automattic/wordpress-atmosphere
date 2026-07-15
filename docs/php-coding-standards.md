@@ -224,8 +224,12 @@ use function Atmosphere\is_connected;
 **Behaviour / gating filters:**
 ```php
 \apply_filters( 'atmosphere_syncable_post_types',         array( 'post' ) );
+\apply_filters( 'atmosphere_connection_only_mode',        false ); // Return true to embed ATmosphere purely as a connection layer: auto cross-posting, reaction/reply import, comment publishing, and the settings screen all default off.
+\apply_filters( 'atmosphere_should_auto_publish',         $bool ); // Feature switch for automatic post cross-posting; runs after the stored setting and connection-only mode, final say.
 \apply_filters( 'atmosphere_should_publish_comment',      $bool, $comment );
-\apply_filters( 'atmosphere_should_publish_comments',     $bool ); // Feature switch for publishing WP comments to Bluesky; runs after the stored setting, final say. NOT the per-comment `_comment` filter above.
+\apply_filters( 'atmosphere_should_publish_comments',     $bool ); // Feature switch for publishing WP comments to Bluesky; runs after the stored setting and connection-only mode, final say. NOT the per-comment `_comment` filter above.
+\apply_filters( 'atmosphere_should_sync_reactions',       $bool ); // Feature switch for importing Bluesky likes/reposts; runs after the stored setting and connection-only mode, final say.
+\apply_filters( 'atmosphere_should_sync_replies',         $bool ); // Feature switch for importing Bluesky replies as comments; runs after the stored setting and connection-only mode, final say. NOT the per-reply `_reply` filter below.
 \apply_filters( 'atmosphere_should_sync_reply',           $bool, $notification, $post_id );
 \apply_filters( 'atmosphere_backfill_query_chunk_size',   500 );
 \apply_filters( 'atmosphere_publish_retry_delays',        array( 60, 300, 900 ) ); // Backoff ladder for failed publish/update cron workers; length = retry budget; empty array disables retries.
