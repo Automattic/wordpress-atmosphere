@@ -8,6 +8,7 @@
 /vendor          export-ignore
 /docs            export-ignore
 /node_modules    export-ignore
+/src             export-ignore
 /tests           export-ignore
 
 # Files excluded from release archives
@@ -20,6 +21,10 @@
 /package-lock.json export-ignore
 /phpcs.xml        export-ignore
 /phpunit.xml.dist export-ignore
+/webpack.config.js export-ignore
+/jest.setup.js    export-ignore
+/jest-unit.config.js export-ignore
+/integrations/README.md export-ignore
 /CHANGELOG.md     export-ignore
 /CLAUDE.md        export-ignore
 /AGENTS.md        export-ignore
