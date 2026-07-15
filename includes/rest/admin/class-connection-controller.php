@@ -87,7 +87,7 @@ class Connection_Controller extends \WP_REST_Controller {
 							'description'       => \__( 'The AT Protocol handle to connect, e.g. alice.bsky.social.', 'atmosphere' ),
 							'type'              => 'string',
 							'required'          => true,
-							'sanitize_callback' => 'sanitize_text_field',
+							'sanitize_callback' => '\sanitize_text_field',
 						),
 					),
 				),
