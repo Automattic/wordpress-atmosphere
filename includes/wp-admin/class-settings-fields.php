@@ -528,7 +528,7 @@ class Settings_Fields {
 	 */
 	public static function render_reactions_section(): void {
 		?>
-		<p><?php \esc_html_e( 'Choose which interactions are sent to Bluesky and saved to WordPress.', 'atmosphere' ); ?></p>
+		<p><?php \esc_html_e( 'Choose which interactions are sent to Bluesky and which are saved to WordPress.', 'atmosphere' ); ?></p>
 		<?php
 	}
 
@@ -557,7 +557,12 @@ class Settings_Fields {
 		<?php if ( $forced_disabled ) : ?>
 			<p class="description">
 				<?php
-				\esc_html_e( 'Outgoing replies are disabled by ATMOSPHERE_DISABLE_OUTGOING_REACTIONS in the site configuration. The saved preference will apply again if the constant is removed. Existing Bluesky replies are unchanged.', 'atmosphere' );
+				// phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- Constant name is a static, safe literal.
+				\printf(
+					/* translators: %s: the wp-config constant name, wrapped in a code tag. */
+					\esc_html__( 'Outgoing replies are disabled by %s in the site configuration. The saved preference will apply again if the constant is removed. Existing Bluesky replies are unchanged.', 'atmosphere' ),
+					'<code>ATMOSPHERE_DISABLE_OUTGOING_REACTIONS</code>'
+				);
 				?>
 			</p>
 		<?php else : ?>

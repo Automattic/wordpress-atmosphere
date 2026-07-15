@@ -1523,7 +1523,9 @@ class Publisher {
 	 *
 	 * The comment batch is not attempted when the root batch fails or
 	 * outgoing reactions are disabled before it starts. The effective
-	 * setting is re-checked between comment chunks of a long cascade.
+	 * setting is re-checked between comment chunks of a long cascade —
+	 * an in-process check: a toggle flipped in another PHP process is
+	 * not visible to this request's option cache.
 	 *
 	 * @param array $root_writes    Post + document delete writes (may be empty).
 	 * @param array $comment_writes Outbound comment-reply delete writes (may be empty).
@@ -1547,7 +1549,7 @@ class Publisher {
 			? null
 			: self::apply_writes_chunked(
 				$comment_writes,
-				static fn (): ?\WP_Error => outgoing_reactions_enabled() ? null : self::outgoing_reactions_disabled_error()
+				static fn(): ?\WP_Error => outgoing_reactions_enabled() ? null : self::outgoing_reactions_disabled_error()
 			);
 
 		return array(
