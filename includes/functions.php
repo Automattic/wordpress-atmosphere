@@ -642,6 +642,7 @@ function get_cron_hooks(): array {
 	return array(
 		'atmosphere_refresh_token',
 		'atmosphere_sync_reactions',
+		'atmosphere_backfill_replies',
 		'atmosphere_sync_publication',
 		'atmosphere_publish_post',
 		'atmosphere_update_post',

@@ -72,6 +72,7 @@ class Test_Atmosphere extends WP_UnitTestCase {
 		\wp_unschedule_hook( 'atmosphere_update_comment' );
 		\wp_unschedule_hook( 'atmosphere_delete_comment' );
 		\wp_unschedule_hook( 'atmosphere_delete_comment_record' );
+		\wp_unschedule_hook( 'atmosphere_backfill_replies' );
 
 		\remove_all_filters( 'atmosphere_should_publish_comment' );
 		\remove_all_filters( 'atmosphere_pre_apply_writes' );
@@ -2289,7 +2290,7 @@ class Test_Atmosphere extends WP_UnitTestCase {
 			 * framework does not roll back between tests. Roll back the
 			 * pieces our action triggers so a later test changing
 			 * `blogname` / `home` / etc. is not surprised by a spurious
-			 * `atmosphere_sync_publication` schedule, and clear the two
+			 * `atmosphere_sync_publication` schedule, and clear the three
 			 * recurring crons `init()` queues so they do not survive
 			 * either.
 			 */
@@ -2299,6 +2300,31 @@ class Test_Atmosphere extends WP_UnitTestCase {
 			\wp_clear_scheduled_hook( 'atmosphere_sync_publication' );
 			\wp_clear_scheduled_hook( 'atmosphere_refresh_token' );
 			\wp_clear_scheduled_hook( 'atmosphere_sync_reactions' );
+			\wp_clear_scheduled_hook( 'atmosphere_backfill_replies' );
+		}
+	}
+
+	/**
+	 * Connected sites schedule and register the bounded daily reply audit.
+	 */
+	public function test_init_schedules_daily_reply_backfill() {
+		\update_option( 'atmosphere_identity', array( 'did' => 'did:plc:test123' ), false );
+		\wp_unschedule_hook( 'atmosphere_backfill_replies' );
+
+		$this->atmosphere->init();
+
+		try {
+			$this->assertNotFalse(
+				\has_action(
+					'atmosphere_backfill_replies',
+					array( Reaction_Sync::class, 'backfill_scheduled_replies' )
+				)
+			);
+			$this->assertSame( 'daily', \wp_get_schedule( 'atmosphere_backfill_replies' ) );
+		} finally {
+			\wp_unschedule_hook( 'atmosphere_backfill_replies' );
+			\wp_unschedule_hook( 'atmosphere_refresh_token' );
+			\wp_unschedule_hook( 'atmosphere_sync_reactions' );
 		}
 	}
 

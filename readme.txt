@@ -87,6 +87,8 @@ Plugins can enforce this with the `atmosphere_should_publish_comments` filter, w
 
 Yes. ATmosphere checks Bluesky periodically and turns replies, likes, and reposts into WordPress comments on the matching post. Likes and reposts have their own comment types so they show up as engagement counts, not as duplicate comment text.
 
+ATmosphere also checks a small rolling batch of published posts each day, so older missed replies are recovered automatically without requiring post IDs. To check a specific post immediately, run `wp atmosphere replies backfill <post-id>` from WP-CLI. Both paths scan replies currently visible through Bluesky's public API and import those that are not already present.
+
 = What about posts I already published before installing? =
 
 By default, only new posts are shared. You can publish older ones on demand by running `wp atmosphere backfill` from WP-CLI.
