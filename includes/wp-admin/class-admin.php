@@ -300,9 +300,18 @@ class Admin {
 			\sanitize_text_field( $state )
 		);
 
+		// Return the browser to wherever the flow started, on success *or*
+		// failure. Consume the flag before branching so a failed callback still
+		// lands somewhere sane instead of stranding the admin on a hidden
+		// settings page (see render_page()), and so a stale flag can't leak.
+		$destination = self::oauth_return_destination();
+
 		if ( \is_wp_error( $result ) ) {
 			\add_settings_error( 'atmosphere', 'callback_failed', $result->get_error_message() );
-			return;
+			\set_transient( 'settings_errors', \get_settings_errors(), 30 );
+
+			\wp_safe_redirect( \add_query_arg( 'atmosphere_error', '1', $destination ) );
+			exit;
 		}
 
 		// Auto-create publication on first connect.
@@ -316,24 +325,31 @@ class Admin {
 		);
 		\set_transient( 'settings_errors', \get_settings_errors(), 30 );
 
-		/*
-		 * Return the browser to wherever the flow started. A Connectors-card
-		 * connect sets the `atmosphere_oauth_from_connectors` flag (see
-		 * {@see \Atmosphere\Rest\Admin\Connection_Controller::authorize()}); honor
-		 * it by returning to the Connectors screen, otherwise fall back to the
-		 * settings page. The destination is hardcoded here — the flag is a
-		 * boolean, so nothing off the wire can steer the redirect. Always consume
-		 * the flag so a stale one can't leak into a later, unrelated connect.
-		 */
+		\wp_safe_redirect( \add_query_arg( 'connected', '1', $destination ) );
+		exit;
+	}
+
+	/**
+	 * Resolve where the OAuth callback should return the browser, consuming the
+	 * Connectors-origin flag in the process.
+	 *
+	 * A Connectors-card connect sets the `atmosphere_oauth_from_connectors` flag
+	 * (see {@see \Atmosphere\Rest\Admin\Connection_Controller::authorize()});
+	 * honor it by returning to the Connectors screen, otherwise fall back to the
+	 * settings page. The destination is hardcoded — the flag is a boolean, so
+	 * nothing off the wire can steer the redirect. The flag is always consumed
+	 * (deleted), so it can't survive its TTL and leak into a later, unrelated
+	 * connect regardless of whether that connect succeeds or fails.
+	 *
+	 * @return string The admin URL to redirect to.
+	 */
+	private static function oauth_return_destination(): string {
 		$from_connectors = (bool) \get_transient( 'atmosphere_oauth_from_connectors' );
 		\delete_transient( 'atmosphere_oauth_from_connectors' );
 
-		$destination = $from_connectors
+		return $from_connectors
 			? \admin_url( Connectors::SCREEN )
 			: settings_url();
-
-		\wp_safe_redirect( \add_query_arg( 'connected', '1', $destination ) );
-		exit;
 	}
 
 	/**
