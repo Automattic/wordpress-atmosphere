@@ -84,10 +84,6 @@ class Admin {
 	 * Register the settings page under Settings.
 	 */
 	public static function add_menu(): void {
-		if ( ! self::is_settings_page_visible() ) {
-			return;
-		}
-
 		$hook = \add_options_page(
 			\__( 'ATmosphere', 'atmosphere' ),
 			\__( 'ATmosphere', 'atmosphere' ),
@@ -98,6 +94,22 @@ class Admin {
 
 		if ( ! $hook ) {
 			return;
+		}
+
+		/*
+		 * When a third-party plugin hides the settings screen, drop it from the
+		 * Settings menu but keep the page itself registered. The OAuth callback
+		 * lands on this page's own URL (`options-general.php?page=atmosphere`);
+		 * leaving the page registered keeps that URL accessible so `admin_init`
+		 * can run `handle_oauth_callback()` and redirect on to the Connectors
+		 * screen. An unregistered page would trip core's
+		 * `user_can_access_admin_page()` gate, which `wp_die`s before
+		 * `admin_init` ever fires — stranding the browser on the callback URL.
+		 * `render_page()` shows a short "managed elsewhere" notice for anyone
+		 * who reaches the hidden page directly.
+		 */
+		if ( ! self::is_settings_page_visible() ) {
+			\remove_submenu_page( 'options-general.php', 'atmosphere' );
 		}
 
 		/*
@@ -148,6 +160,12 @@ class Admin {
 	 */
 	public static function enqueue_assets( string $hook_suffix ): void {
 		if ( 'settings_page_atmosphere' !== $hook_suffix ) {
+			return;
+		}
+
+		// While hidden the page renders only a short notice (see render_page()),
+		// so none of the settings assets below are needed.
+		if ( ! self::is_settings_page_visible() ) {
 			return;
 		}
 
@@ -211,7 +229,41 @@ class Admin {
 			return;
 		}
 
+		/*
+		 * The page stays registered while hidden so the OAuth callback URL
+		 * resolves (see add_menu()). A direct visit that is not an OAuth
+		 * callback reaches here after headers are sent — too late to redirect —
+		 * so show a short explanation instead of the settings form.
+		 */
+		if ( ! self::is_settings_page_visible() ) {
+			self::render_hidden_notice();
+			return;
+		}
+
 		include ATMOSPHERE_PLUGIN_DIR . 'templates/settings-page.php';
+	}
+
+	/**
+	 * Render the placeholder shown when the settings screen is hidden.
+	 *
+	 * The screen is hidden from the menu but kept registered so the OAuth
+	 * callback URL still resolves; anyone who lands on it directly sees this
+	 * instead of the settings form.
+	 */
+	private static function render_hidden_notice(): void {
+		?>
+		<div class="wrap">
+			<h1><?php echo \esc_html__( 'ATmosphere', 'atmosphere' ); ?></h1>
+			<p>
+				<?php
+				\esc_html_e(
+					'The ATmosphere settings are currently managed by another plugin on this site.',
+					'atmosphere'
+				);
+				?>
+			</p>
+		</div>
+		<?php
 	}
 
 	/**

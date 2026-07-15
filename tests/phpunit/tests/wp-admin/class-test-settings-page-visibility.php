@@ -26,15 +26,60 @@ use WP_UnitTestCase;
 class Test_Settings_Page_Visibility extends WP_UnitTestCase {
 
 	/**
-	 * Remove any visibility filter and reset request state after each test.
+	 * Snapshot of the admin-menu globals the menu tests mutate.
+	 *
+	 * @var array<string, mixed>
+	 */
+	private array $menu_globals = array();
+
+	/**
+	 * Load the admin menu functions and snapshot the globals they touch.
+	 */
+	public function set_up(): void {
+		parent::set_up();
+
+		require_once ABSPATH . 'wp-admin/includes/plugin.php';
+
+		$this->menu_globals = array(
+			'menu'              => $GLOBALS['menu'] ?? null,
+			'submenu'           => $GLOBALS['submenu'] ?? null,
+			'_registered_pages' => $GLOBALS['_registered_pages'] ?? null,
+			'_parent_pages'     => $GLOBALS['_parent_pages'] ?? null,
+		);
+	}
+
+	/**
+	 * Remove any visibility filter, restore menu globals, and reset request
+	 * state after each test.
 	 */
 	public function tear_down(): void {
+		foreach ( $this->menu_globals as $key => $value ) {
+			if ( null === $value ) {
+				unset( $GLOBALS[ $key ] );
+			} else {
+				$GLOBALS[ $key ] = $value;
+			}
+		}
+
 		\remove_all_filters( 'atmosphere_show_settings_page' );
 		\wp_set_current_user( 0 );
 		\delete_option( 'atmosphere_identity' );
 		\delete_option( Client::DISCONNECTED_OPTION );
 
 		parent::tear_down();
+	}
+
+	/**
+	 * Collect the submenu slugs registered under Settings.
+	 *
+	 * @return string[] Menu slugs currently under `options-general.php`.
+	 */
+	private function settings_submenu_slugs(): array {
+		$slugs = array();
+		foreach ( (array) ( $GLOBALS['submenu']['options-general.php'] ?? array() ) as $item ) {
+			$slugs[] = $item[2];
+		}
+		return $slugs;
 	}
 
 	/**
@@ -126,5 +171,71 @@ class Test_Settings_Page_Visibility extends WP_UnitTestCase {
 		$html = (string) \ob_get_clean();
 
 		$this->assertSame( '', $html );
+	}
+
+	/**
+	 * Regression: hiding the screen must NOT unregister the page. The OAuth
+	 * callback lands on `options-general.php?page=atmosphere`; if that page is
+	 * unregistered, core's access gate `wp_die`s before `admin_init` fires and
+	 * `handle_oauth_callback()` never gets to redirect to the Connectors
+	 * screen. So the page hook must stay registered even while hidden.
+	 */
+	public function test_hidden_page_stays_registered_for_oauth_callback(): void {
+		$admin = self::factory()->user->create( array( 'role' => 'administrator' ) );
+		\wp_set_current_user( $admin );
+
+		\add_filter( 'atmosphere_show_settings_page', '__return_false' );
+
+		Admin::add_menu();
+
+		$hookname = \get_plugin_page_hookname( 'atmosphere', 'options-general.php' );
+		$this->assertArrayHasKey(
+			$hookname,
+			(array) $GLOBALS['_registered_pages'],
+			'Hidden settings page must remain registered so the OAuth callback URL resolves.'
+		);
+	}
+
+	/**
+	 * Hiding the screen removes it from the Settings menu.
+	 */
+	public function test_hidden_page_is_removed_from_settings_menu(): void {
+		$admin = self::factory()->user->create( array( 'role' => 'administrator' ) );
+		\wp_set_current_user( $admin );
+
+		\add_filter( 'atmosphere_show_settings_page', '__return_false' );
+
+		Admin::add_menu();
+
+		$this->assertNotContains( 'atmosphere', $this->settings_submenu_slugs() );
+	}
+
+	/**
+	 * When visible, the screen appears in the Settings menu as usual.
+	 */
+	public function test_visible_page_appears_in_settings_menu(): void {
+		$admin = self::factory()->user->create( array( 'role' => 'administrator' ) );
+		\wp_set_current_user( $admin );
+
+		Admin::add_menu();
+
+		$this->assertContains( 'atmosphere', $this->settings_submenu_slugs() );
+	}
+
+	/**
+	 * A direct visit to the hidden page renders the "managed elsewhere" notice
+	 * instead of the settings form.
+	 */
+	public function test_render_page_shows_notice_when_hidden(): void {
+		$admin = self::factory()->user->create( array( 'role' => 'administrator' ) );
+		\wp_set_current_user( $admin );
+
+		\add_filter( 'atmosphere_show_settings_page', '__return_false' );
+
+		\ob_start();
+		Admin::render_page();
+		$html = (string) \ob_get_clean();
+
+		$this->assertStringContainsString( 'managed by another plugin', $html );
 	}
 }
