@@ -337,7 +337,7 @@ class Admin {
 	 * (see {@see \Atmosphere\Rest\Admin\Connection_Controller::authorize()});
 	 * honor it by returning to the Connectors screen, otherwise fall back to the
 	 * settings page. The Connectors screen has two possible URLs (core's
-	 * `options-connectors.php` and nav unification's Settings submenu), so the
+	 * `options-connectors.php` and the Gutenberg plugin's Settings submenu), so the
 	 * concrete URL is resolved server-side from the registered admin menu via
 	 * {@see Connectors::screen_url()} — the flag is a boolean and the URL is never
 	 * taken from request input, so nothing off the wire can steer the redirect. The

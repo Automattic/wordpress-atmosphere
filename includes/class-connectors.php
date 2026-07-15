@@ -55,10 +55,9 @@ class Connectors {
 	 * The core Connectors admin page.
 	 *
 	 * Stock WordPress ships the Connectors screen as this top-level admin page.
-	 * Nav unification (the Gutenberg plugin, e.g. on WordPress.com/Atomic) instead
-	 * re-registers it as a Settings submenu at
-	 * `options-general.php?page=options-connectors-wp-admin`, so the screen has two
-	 * possible URLs. Both are matched through the shared {@see self::SCREEN_SLUG}
+	 * The Gutenberg plugin (and hosts that bundle it) instead re-registers it as a
+	 * Settings submenu at `options-general.php?page=options-connectors-wp-admin`, so
+	 * the screen has two possible URLs. Both are matched through the shared {@see self::SCREEN_SLUG}
 	 * marker rather than this exact filename — for the card enqueue (see
 	 * {@see self::is_connectors_screen()}) and for the OAuth return destination
 	 * (see {@see self::screen_url()} and
@@ -74,7 +73,7 @@ class Connectors {
 	/**
 	 * The stable marker shared by every variant of the Connectors screen slug.
 	 *
-	 * Core's page is `options-connectors.php`; nav unification re-registers it
+	 * Core's page is `options-connectors.php`; the Gutenberg plugin re-registers it
 	 * under Settings with a slug like `options-connectors-wp-admin`. Both contain
 	 * this substring, so matching on it recognizes the screen regardless of how a
 	 * given install exposes it, while staying scoped enough not to match anything
@@ -174,8 +173,8 @@ class Connectors {
 	/**
 	 * Whether an admin hook suffix identifies the Connectors screen.
 	 *
-	 * Core passes `options-connectors.php`; nav unification remaps the screen to a
-	 * Settings submenu whose hook suffix is `settings_page_options-connectors-wp-admin`
+	 * Core passes `options-connectors.php`; the Gutenberg plugin remaps the screen to
+	 * a Settings submenu whose hook suffix is `settings_page_options-connectors-wp-admin`
 	 * (and any similar `{parent}_page_options-connectors-*` variant). Match both by
 	 * looking for the shared {@see self::SCREEN_SLUG} marker, which stays scoped to
 	 * this one screen so the card never enqueues elsewhere.
@@ -192,7 +191,7 @@ class Connectors {
 	 * The admin URL of the Connectors screen for this install.
 	 *
 	 * Used as the OAuth return destination for a Connectors-initiated connect.
-	 * Stock core serves the screen at `options-connectors.php`; nav unification
+	 * Stock core serves the screen at `options-connectors.php`; the Gutenberg plugin
 	 * re-registers it as a Settings submenu at
 	 * `options-general.php?page=options-connectors-wp-admin`. Prefer the
 	 * re-registered submenu URL when it is present in the admin menu, so the flow
@@ -214,8 +213,8 @@ class Connectors {
 	/**
 	 * Locate a re-registered Connectors screen in the admin submenu, if any.
 	 *
-	 * Nav unification nests the screen under a parent (Settings) with a menu slug
-	 * that still carries the {@see self::SCREEN_SLUG} marker (e.g.
+	 * The Gutenberg plugin nests the screen under a parent (Settings) with a menu
+	 * slug that still carries the {@see self::SCREEN_SLUG} marker (e.g.
 	 * `options-connectors-wp-admin`). Walk the registered submenus for such an
 	 * entry and build its admin URL from the parent it lives under. Returns null on
 	 * stock core, where the screen is its own top-level page rather than a submenu.

@@ -247,9 +247,9 @@ class Test_Connectors extends WP_UnitTestCase {
 	}
 
 	/**
-	 * The card also enqueues when nav unification (the Gutenberg plugin, e.g. on
-	 * WordPress.com/Atomic) re-registers the screen as a Settings submenu — the
-	 * regression this fix addresses, where the exact-match check silently bailed.
+	 * The card also enqueues when the Gutenberg plugin re-registers the screen as a
+	 * Settings submenu — the regression this fix addresses, where the exact-match
+	 * check silently bailed.
 	 *
 	 * @covers ::is_connectors_screen
 	 */
@@ -280,7 +280,7 @@ class Test_Connectors extends WP_UnitTestCase {
 	}
 
 	/**
-	 * When nav unification has re-registered the screen as a Settings submenu, the
+	 * When the Gutenberg plugin has re-registered the screen as a Settings submenu, the
 	 * return destination resolves to that submenu URL — server-side, from the
 	 * registered admin menu, never from request input.
 	 *
@@ -290,7 +290,7 @@ class Test_Connectors extends WP_UnitTestCase {
 		global $submenu;
 		$saved = $submenu;
 
-		// phpcs:ignore WordPress.WP.GlobalVariablesOverride.Prohibited -- Test fixture: simulate a nav-unified admin menu, restored below.
+		// phpcs:ignore WordPress.WP.GlobalVariablesOverride.Prohibited -- Test fixture: simulate the Gutenberg plugin's remapped admin menu, restored below.
 		$submenu = array(
 			'options-general.php' => array(
 				array( 'Settings', 'manage_options', 'options-general.php' ),
