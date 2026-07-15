@@ -448,6 +448,36 @@ function is_connected(): bool {
 }
 
 /**
+ * Whether local WordPress comments may be published to Bluesky as replies.
+ *
+ * Unsaved installs default to enabled. The stored per-site preference is
+ * resolved first; the `atmosphere_should_publish_comments` filter then
+ * has the final say, so host plugins can override the effective behavior
+ * without touching the saved option.
+ *
+ * @since unreleased
+ *
+ * @return bool
+ */
+function is_comment_publishing_enabled(): bool {
+	$enabled = '1' === (string) \get_option( 'atmosphere_publish_comments', '1' );
+
+	/**
+	 * Filters whether local WordPress comments may be published to Bluesky as replies.
+	 *
+	 * Runs last, so it has the final say over the stored setting — a host
+	 * plugin can force outgoing writes off (or back on) regardless of the
+	 * saved preference. The override is on effective behavior, not the
+	 * option, so the stored preference survives untouched.
+	 *
+	 * @since unreleased
+	 *
+	 * @param bool $enabled Whether comment publishing is enabled.
+	 */
+	return (bool) \apply_filters( 'atmosphere_should_publish_comments', $enabled );
+}
+
+/**
  * Whether the connection requires the user to re-authorize.
  *
  * True when an identity is on file but the credentials option is

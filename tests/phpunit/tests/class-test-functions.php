@@ -19,6 +19,7 @@ use function Atmosphere\is_post_publishable;
 use function Atmosphere\is_sharing_enabled;
 use function Atmosphere\get_connection;
 use function Atmosphere\debug_log;
+use function Atmosphere\is_comment_publishing_enabled;
 
 /**
  * Function tests.
@@ -405,6 +406,26 @@ class Test_Functions extends \WP_UnitTestCase {
 		$this->assertSame( array(), $conn );
 
 		\delete_option( 'atmosphere_connection' );
+	}
+
+	/**
+	 * Comment publishing retains the historical enabled default until an
+	 * administrator explicitly turns them off.
+	 */
+	public function test_comment_publishing_option_controls_effective_state() {
+		\delete_option( 'atmosphere_publish_comments' );
+		$this->assertTrue( is_comment_publishing_enabled() );
+
+		\update_option( 'atmosphere_publish_comments', '' );
+		$this->assertFalse( is_comment_publishing_enabled() );
+
+		\update_option( 'atmosphere_publish_comments', '0' );
+		$this->assertFalse( is_comment_publishing_enabled() );
+
+		\update_option( 'atmosphere_publish_comments', '1' );
+		$this->assertTrue( is_comment_publishing_enabled() );
+
+		\delete_option( 'atmosphere_publish_comments' );
 	}
 
 	/**

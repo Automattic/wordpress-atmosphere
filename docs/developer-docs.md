@@ -8,6 +8,7 @@
 - [Extending Content Formats](#extending-content-formats)
 - [Custom Post Type Support](#custom-post-type-support)
 - [Publishing Programmatically](#publishing-programmatically)
+- [Outgoing Comment Controls](#outgoing-comment-controls)
 - [Token Encryption](#token-encryption)
 - [Templates and Admin UI](#templates-and-admin-ui)
 
@@ -44,7 +45,7 @@ ATmosphere exposes a small set of filters and actions for plugins to extend beha
 | `atmosphere_publication_labels` | filter | Add standard self-labels to `site.standard.publication` records. |
 | `atmosphere_publication_show_in_discover` | filter | Override `preferences.showInDiscover` (defaults to the site's `blog_public` option) for `site.standard.publication` records. |
 | `atmosphere_syncable_post_types` | filter | Add or remove post types eligible for cross-posting. |
-| `atmosphere_should_publish_comment` | filter | Customise which approved comments are mirrored as Bluesky replies. |
+| `atmosphere_should_publish_comment` | filter | Customise which approved comments from users allowed to publish posts are mirrored as Bluesky replies. |
 | `atmosphere_should_sync_reply` | filter | Customise which inbound Bluesky replies become WordPress comments. |
 | `atmosphere_transform_bsky_post` | filter | Mutate the Bluesky post record before write. |
 | `atmosphere_transform_document` | filter | Mutate the document record before write. |
@@ -351,6 +352,38 @@ landing page, so their `source_url` is intentionally empty and
 `comment_author_url` (the author's profile) is the outbound link.
 Integrations can react to each via
 [`atmosphere_reaction_synced`](#public-hooks).
+
+## Outgoing Comment Controls
+
+ATmosphere publishes eligible WordPress comments as Bluesky replies.
+Administrators can turn these writes off under
+**Settings → ATmosphere → Reactions** ("Outgoing replies"). The underlying
+`atmosphere_publish_comments` option defaults to enabled so existing sites
+keep their current behavior.
+
+Host plugins can enforce the boundary with a behavior filter that runs
+*after* the stored preference and has the final say:
+
+```php
+add_filter( 'atmosphere_should_publish_comments', '__return_false' );
+```
+
+The override is on effective behavior, not the option — the saved
+preference stays untouched (and the settings form keeps editing it), so
+removing the filter restores whatever the site had configured. Because the
+filter runs last, it can also force the lane back *on* while the option is
+off.
+
+While comment publishing is disabled, ATmosphere does not create, update,
+or delete Bluesky reply records for WordPress comments, including work that
+was already queued in WP-Cron. Replies that were previously published
+remain unchanged. Post and standard.site document publishing continues
+normally, as does inbound syncing of Bluesky replies, likes, and reposts.
+
+Direct calls to the `Publisher` comment methods return a WP_Error with the
+`atmosphere_comment_publishing_disabled` code while the control is off. Use
+`\Atmosphere\is_comment_publishing_enabled()` when an integration needs to inspect
+the effective state.
 
 ## Token Encryption
 
