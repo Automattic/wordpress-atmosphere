@@ -361,6 +361,14 @@ Bluesky replies. Administrators can turn these writes off under
 `atmosphere_publish_reactions` option defaults to enabled so existing sites
 keep their current behavior.
 
+The naming is deliberately broader than today's behavior: comment replies
+are currently the only outgoing reaction type, so the settings-screen label
+says "Outgoing replies" — but the option, the constant, and
+`outgoing_reactions_enabled()` are the switch for *all* outgoing reaction
+writes. If ATmosphere ever publishes other reaction types (likes, reposts),
+they will honor the same option and constant rather than growing parallel
+switches.
+
 Managed environments can enforce the boundary in `wp-config.php`:
 
 ```php
