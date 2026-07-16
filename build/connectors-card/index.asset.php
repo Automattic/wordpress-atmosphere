@@ -1,1 +1,1 @@
-<?php return array('dependencies' => array(array('id' => '@wordpress/connectors', 'import' => 'dynamic')), 'version' => '67ab4bd658f0fe091870', 'type' => 'module');
+<?php return array('dependencies' => array(array('id' => '@wordpress/connectors', 'import' => 'dynamic')), 'version' => '8d1eeca99d28f5766914', 'type' => 'module');

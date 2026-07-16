@@ -9,7 +9,7 @@
  */
 
 const { createElement: el, useState, useRef, useEffect } = window.wp.element;
-const { __ } = window.wp.i18n;
+const { __, _n, sprintf } = window.wp.i18n;
 
 const TYPEAHEAD_LIMIT = 8;
 const TYPEAHEAD_MIN_CHARS = 2;
@@ -83,6 +83,10 @@ export function HandleTypeahead( {
 	const [ open, setOpen ] = useState( false );
 	const [ active, setActive ] = useState( -1 );
 	const [ loading, setLoading ] = useState( false );
+	// Announced to screen readers via the visually-hidden status region below;
+	// keyboard navigation keeps DOM focus on the input, so nothing else tells an
+	// SR user that suggestions appeared or that none matched.
+	const [ status, setStatus ] = useState( '' );
 	const timer = useRef( null );
 	const seq = useRef( 0 );
 	const baseUrl = typeaheadUrl || '';
@@ -98,6 +102,7 @@ export function HandleTypeahead( {
 			setOpen( false );
 			setActive( -1 );
 			setLoading( false );
+			setStatus( '' );
 			return;
 		}
 		// Guard against out-of-order responses: only the latest query wins.
@@ -111,6 +116,20 @@ export function HandleTypeahead( {
 			setOpen( actors.length > 0 );
 			setActive( actors.length ? 0 : -1 );
 			setLoading( false );
+			setStatus(
+				actors.length
+					? sprintf(
+							/* translators: %d: number of matching handles. */
+							_n(
+								'%d handle found.',
+								'%d handles found.',
+								actors.length,
+								'atmosphere'
+							),
+							actors.length
+					  )
+					: __( 'No matching handles found.', 'atmosphere' )
+			);
 		} );
 	};
 
@@ -180,7 +199,9 @@ export function HandleTypeahead( {
 				value,
 				disabled,
 				'aria-expanded': open,
-				'aria-controls': suggestionsId,
+				// Only reference the listbox while it exists; the element is
+				// unmounted when closed, so a permanent idref would dangle.
+				'aria-controls': open ? suggestionsId : undefined,
 				'aria-autocomplete': 'list',
 				'aria-activedescendant':
 					active >= 0 ? `${ suggestionsId }-${ active }` : undefined,
@@ -245,6 +266,18 @@ export function HandleTypeahead( {
 							)
 					)
 				)
-			)
+			),
+		// Visually-hidden live region: announces the suggestion count (or "no
+		// matches") to screen readers, which otherwise get no signal since the
+		// spinner is purely visual and focus never leaves the input.
+		el(
+			'span',
+			{
+				className: 'screen-reader-text',
+				role: 'status',
+				'aria-live': 'polite',
+			},
+			status
+		)
 	);
 }

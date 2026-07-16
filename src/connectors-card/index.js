@@ -43,6 +43,23 @@ const MODULE_ID = '@atmosphere/connectors-card';
 // payload — it is a fixed constant, not per-request state.
 const CONNECTOR_ID = 'atmosphere';
 
+// id linking the "Details" disclosure toggle to the panel it reveals.
+const DETAILS_PANEL_ID = 'atmosphere-connector-card__details';
+
+/**
+ * Announce a message to assistive technology, if wp-a11y is available.
+ *
+ * The card is a script module and can't declare a wp-a11y dependency, so this
+ * degrades to a no-op when the global isn't present rather than throwing. Used
+ * so a connect/disconnect failure isn't silent to screen readers — the error
+ * Notice is otherwise a purely visual change.
+ *
+ * @param {string} message Text to announce.
+ */
+function announce( message ) {
+	window.wp?.a11y?.speak?.( message, 'assertive' );
+}
+
 const dataEl = document.getElementById(
 	`wp-script-module-data-${ MODULE_ID }`
 );
@@ -125,6 +142,7 @@ function makeCard( Shell ) {
 				window.location.href = json.url;
 			} catch ( e ) {
 				setError( e.message );
+				announce( e.message );
 				setBusy( false );
 			}
 		};
@@ -140,6 +158,7 @@ function makeCard( Shell ) {
 				window.location.reload();
 			} catch ( e ) {
 				setError( e.message );
+				announce( e.message );
 				setBusy( false );
 			}
 		};
@@ -179,6 +198,10 @@ function makeCard( Shell ) {
 						size: 'compact',
 						onClick: () => setExpanded( ( value ) => ! value ),
 						'aria-expanded': expanded,
+						// Only reference the panel while it's rendered (expanded).
+						'aria-controls': expanded
+							? DETAILS_PANEL_ID
+							: undefined,
 					},
 					expanded
 						? __( 'Close', 'atmosphere' )
@@ -190,6 +213,7 @@ function makeCard( Shell ) {
 						VStack,
 						{
 							spacing: 5,
+							id: DETAILS_PANEL_ID,
 							className: 'atmosphere-connector-card__expanded',
 						},
 						( data.handle || data.profileUrl ) &&

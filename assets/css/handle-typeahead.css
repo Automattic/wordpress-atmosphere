@@ -60,7 +60,19 @@
 }
 
 .atmosphere-handle-field__option.is-active {
-	background: #f0f0f0;
+	/*
+	 * During keyboard navigation DOM focus stays on the input, so this is the
+	 * only visual cue for which suggestion Enter will pick. Admin-blue with
+	 * inverted text clears WCAG 1.4.11's 3:1 non-text-contrast bar, which the
+	 * former near-white `#f0f0f0` did not.
+	 */
+	background: #2271b1;
+	color: #fff;
+}
+
+/* Keep the secondary handle/name text legible on the highlighted row. */
+.atmosphere-handle-field__option.is-active .atmosphere-handle-field__name {
+	color: inherit;
 }
 
 .atmosphere-handle-field__avatar {
