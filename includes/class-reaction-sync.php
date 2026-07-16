@@ -382,8 +382,15 @@ class Reaction_Sync {
 		 * the per-setting toggles: if the host later leaves connection-only
 		 * mode, the interactions that arrived meanwhile are picked up rather
 		 * than skipped for good.
+		 *
+		 * Defer to the per-feature helpers rather than raw
+		 * is_connection_only_mode() so the documented contract holds: the
+		 * `atmosphere_should_sync_reactions` / `atmosphere_should_sync_replies`
+		 * filters run last and can re-enable a lane even in connection-only
+		 * mode. When either lane is on, the poll proceeds and the per-item
+		 * gates keep the disabled lane's writes out.
 		 */
-		if ( is_connection_only_mode() ) {
+		if ( ! is_reaction_sync_enabled() && ! is_reply_sync_enabled() ) {
 			return;
 		}
 

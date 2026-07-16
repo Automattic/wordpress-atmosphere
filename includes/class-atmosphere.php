@@ -332,8 +332,14 @@ class Atmosphere {
 
 		// Skip scheduling in connection-only mode: the sync would short-circuit
 		// anyway (see Reaction_Sync::sync()), so there's no point running the
-		// hourly event against a connection another plugin is managing.
-		if ( ! \wp_next_scheduled( 'atmosphere_sync_reactions' ) && is_connected() && ! is_connection_only_mode() ) {
+		// hourly event against a connection another plugin is managing. Mirror
+		// that method's contract, though — a host that re-enables a sync lane
+		// through the `atmosphere_should_sync_*` filters still needs the event,
+		// so honor the per-feature helpers rather than raw connection-only mode.
+		$sync_scheduling_wanted = ! is_connection_only_mode()
+			|| is_reaction_sync_enabled()
+			|| is_reply_sync_enabled();
+		if ( ! \wp_next_scheduled( 'atmosphere_sync_reactions' ) && is_connected() && $sync_scheduling_wanted ) {
 			\wp_schedule_event( \time(), 'hourly', 'atmosphere_sync_reactions' );
 		}
 

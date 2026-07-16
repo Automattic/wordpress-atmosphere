@@ -3010,4 +3010,28 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 
 		$this->assertSame( '', $requested_url, 'sync() must not touch the PDS in connection-only mode.' );
 	}
+
+	/**
+	 * Regression: connection-only mode forces the sync lanes off by default, but
+	 * the `atmosphere_should_sync_*` filters run last and can re-enable one. When
+	 * a host does, sync() must still poll — the early bail defers to the
+	 * per-feature helpers, so it no longer short-circuits on raw connection-only
+	 * mode alone.
+	 */
+	public function test_connection_only_mode_reenabled_lane_still_polls() {
+		$this->connect_site_for_sync();
+		\add_filter( 'atmosphere_connection_only_mode', '__return_true' );
+		\add_filter( 'atmosphere_should_sync_reactions', '__return_true' );
+
+		$requested_url = '';
+		$this->spy_on_http( $requested_url );
+
+		Reaction_Sync::sync();
+
+		$this->assertNotSame(
+			'',
+			$requested_url,
+			'sync() should poll the PDS when a lane is re-enabled via the atmosphere_should_sync_* filter, even in connection-only mode.'
+		);
+	}
 }
