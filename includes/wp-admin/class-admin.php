@@ -32,6 +32,14 @@ use function Atmosphere\settings_url;
 class Admin {
 
 	/**
+	 * Transient holding the one-time notice the OAuth callback stashes for the
+	 * post-redirect screen to display.
+	 *
+	 * @var string
+	 */
+	private const OAUTH_NOTICE_TRANSIENT = 'atmosphere_oauth_notice';
+
+	/**
 	 * Boot admin hooks.
 	 *
 	 * Settings API option registration and Settings page UI assembly
@@ -48,6 +56,7 @@ class Admin {
 		\add_action( 'admin_init', array( self::class, 'maybe_set_domain_handle' ) );
 		\add_action( 'admin_enqueue_scripts', array( self::class, 'enqueue_assets' ) );
 		\add_action( 'admin_notices', array( self::class, 'maybe_render_reauth_notice' ) );
+		\add_action( 'admin_notices', array( self::class, 'maybe_render_oauth_notice' ) );
 		\add_action( 'load-settings_page_atmosphere', array( self::class, 'maybe_warn_missing_post_types' ) );
 
 		\add_action( 'admin_post_atmosphere_disconnect', array( self::class, 'handle_disconnect' ) );
@@ -157,8 +166,10 @@ class Admin {
 			return;
 		}
 
-		// While hidden the page renders only a short notice (see render_page()),
-		// so none of the settings assets below are needed.
+		/*
+		 * While hidden the page renders only a short notice (see render_page()),
+		 * so none of the settings assets below are needed.
+		 */
 		if ( ! self::is_settings_page_visible() ) {
 			return;
 		}
@@ -170,8 +181,10 @@ class Admin {
 			ATMOSPHERE_VERSION
 		);
 
-		// The connect handle field — and so the typeahead that enhances it —
-		// only renders while disconnected.
+		/*
+		 * The connect handle field — and so the typeahead that enhances it —
+		 * only renders while disconnected.
+		 */
 		if ( is_connected() ) {
 			return;
 		}
@@ -183,9 +196,11 @@ class Admin {
 
 		$asset = include $asset_file;
 
-		// No wp-components dependency: the typeahead's loading indicator uses
-		// core's own `.spinner` (free on every wp-admin page), so the classic
-		// settings page never pulls the wp-components bundle just for a spinner.
+		/*
+		 * No wp-components dependency: the typeahead's loading indicator uses
+		 * core's own `.spinner` (free on every wp-admin page), so the classic
+		 * settings page never pulls the wp-components bundle just for a spinner.
+		 */
 		\wp_enqueue_style(
 			'atmosphere-handle-typeahead',
 			ATMOSPHERE_PLUGIN_URL . 'assets/css/handle-typeahead.css',
@@ -203,6 +218,14 @@ class Admin {
 			$asset['version'] ?? ATMOSPHERE_VERSION,
 			true
 		);
+
+		/*
+		 * Load the JS translations for this script's `__()` strings — a classic
+		 * admin page doesn't set them up on its own. (The Connectors card is a
+		 * script module; core's script-module i18n story is still limited, so
+		 * its strings stay a known untranslated gap for now.)
+		 */
+		\wp_set_script_translations( 'atmosphere-settings-connect', 'atmosphere' );
 
 		\wp_localize_script(
 			'atmosphere-settings-connect',
@@ -284,15 +307,16 @@ class Admin {
 			\sanitize_text_field( $state )
 		);
 
-		// Return the browser to wherever the flow started, on success *or*
-		// failure. Consume the flag before branching so a failed callback still
-		// lands somewhere sane instead of stranding the admin on a hidden
-		// settings page (see render_page()), and so a stale flag can't leak.
+		/*
+		 * Return the browser to wherever the flow started, on success *or*
+		 * failure. Consume the flag before branching so a failed callback still
+		 * lands somewhere sane instead of stranding the admin on a hidden
+		 * settings page (see render_page()), and so a stale flag can't leak.
+		 */
 		$destination = self::oauth_return_destination();
 
 		if ( \is_wp_error( $result ) ) {
-			\add_settings_error( 'atmosphere', 'callback_failed', $result->get_error_message() );
-			\set_transient( 'settings_errors', \get_settings_errors(), 30 );
+			self::store_oauth_notice( 'error', $result->get_error_message() );
 
 			\wp_safe_redirect( \add_query_arg( 'atmosphere_error', '1', $destination ) );
 			exit;
@@ -301,16 +325,66 @@ class Admin {
 		// Auto-create publication on first connect.
 		Publisher::sync_publication();
 
-		\add_settings_error(
-			'atmosphere',
-			'connected',
-			\__( 'Successfully connected to AT Protocol.', 'atmosphere' ),
-			'success'
+		self::store_oauth_notice(
+			'success',
+			\__( 'Successfully connected to AT Protocol.', 'atmosphere' )
 		);
-		\set_transient( 'settings_errors', \get_settings_errors(), 30 );
 
 		\wp_safe_redirect( \add_query_arg( 'connected', '1', $destination ) );
 		exit;
+	}
+
+	/**
+	 * Stash a one-time notice for the post-OAuth-callback redirect to display.
+	 *
+	 * The callback redirects the browser to the origin screen (the settings page
+	 * or the Connectors screen), so the outcome can't be printed inline. Core's
+	 * `settings_errors` transient is unreliable for this: it is only merged back
+	 * when `settings-updated` is set, the Connectors screen never calls
+	 * `settings_errors()` at all, and reusing it risks the stashed message
+	 * surfacing on an unrelated `options.php` save. Use a plugin-owned transient,
+	 * read by {@see self::maybe_render_oauth_notice()} on `admin_notices`, which
+	 * fires on whichever screen the redirect lands on.
+	 *
+	 * @param string $type    Notice type: `error` or `success`.
+	 * @param string $message Human-readable notice text.
+	 */
+	private static function store_oauth_notice( string $type, string $message ): void {
+		\set_transient(
+			self::OAUTH_NOTICE_TRANSIENT,
+			array(
+				'type'    => $type,
+				'message' => $message,
+			),
+			MINUTE_IN_SECONDS
+		);
+	}
+
+	/**
+	 * Print the OAuth-callback outcome as an admin notice, once.
+	 *
+	 * Runs on `admin_notices`, so it displays on the settings page and the
+	 * Connectors screen alike — unlike the `settings_errors` transient, which
+	 * either screen may never surface. The notice is deleted on first render so
+	 * it shows exactly once, on the screen the callback redirected to.
+	 */
+	public static function maybe_render_oauth_notice(): void {
+		if ( ! \current_user_can( 'manage_options' ) ) {
+			return;
+		}
+
+		$notice = \get_transient( self::OAUTH_NOTICE_TRANSIENT );
+		if ( ! \is_array( $notice ) || empty( $notice['message'] ) ) {
+			return;
+		}
+
+		\delete_transient( self::OAUTH_NOTICE_TRANSIENT );
+
+		\printf(
+			'<div class="notice %s is-dismissible"><p>%s</p></div>',
+			\esc_attr( 'success' === ( $notice['type'] ?? '' ) ? 'notice-success' : 'notice-error' ),
+			\esc_html( (string) $notice['message'] )
+		);
 	}
 
 	/**

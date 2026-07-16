@@ -216,9 +216,13 @@ class Test_Connection_Controller extends WP_UnitTestCase {
 
 		$response = \rest_do_request( $request );
 
-		if ( 200 !== $response->get_status() ) {
-			$this->markTestSkipped( 'Resolver chain rejected the stubbed handle.' );
-		}
+		// Hard assertion, not markTestSkipped(): the return flag is the
+		// security-relevant contract of this route, so a stubbed-chain
+		// regression should turn the build red rather than silently stop
+		// verifying it. The handle's DNS `_atproto` TXT lookup returns nothing
+		// for this fake domain, so resolution falls through to the stubbed
+		// well-known — deterministic without DNS egress.
+		$this->assertSame( 200, $response->get_status() );
 
 		$this->assertNotFalse(
 			\get_transient( 'atmosphere_oauth_from_connectors' ),

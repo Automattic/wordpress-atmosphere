@@ -126,12 +126,13 @@ class Test_Sanitize_Handle extends WP_UnitTestCase {
 	/**
 	 * Register a filter and remember it for tearDown removal.
 	 *
-	 * @param string   $hook     Hook name.
-	 * @param callable $callback Callback.
-	 * @param int      $priority Priority.
+	 * @param string   $hook          Hook name.
+	 * @param callable $callback      Callback.
+	 * @param int      $priority      Priority.
+	 * @param int      $accepted_args Number of arguments the callback accepts.
 	 */
-	private function add_filter_tracked( string $hook, callable $callback, int $priority = 10 ): void {
-		\add_filter( $hook, $callback, $priority, PHP_INT_MAX );
+	private function add_filter_tracked( string $hook, callable $callback, int $priority = 10, int $accepted_args = 1 ): void {
+		\add_filter( $hook, $callback, $priority, $accepted_args );
 		$this->tracked_filters[] = array( $hook, $callback, $priority );
 	}
 

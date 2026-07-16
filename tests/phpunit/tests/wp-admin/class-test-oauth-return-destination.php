@@ -34,11 +34,59 @@ use WP_UnitTestCase;
 class Test_OAuth_Return_Destination extends WP_UnitTestCase {
 
 	/**
-	 * Clean up the origin flag between tests.
+	 * Admin-menu `$submenu` global, snapshotted before it is overwritten.
+	 *
+	 * @var mixed
+	 */
+	private $submenu_snapshot;
+
+	/**
+	 * Simulate the Gutenberg plugin's Connectors submenu so the "returns to the
+	 * Connectors screen" cases resolve to a real screen URL.
+	 *
+	 * On WP < 7.0 (this test environment) there is no top-level
+	 * `options-connectors.php`, so {@see Connectors::screen_url()} only routes to
+	 * a Connectors screen when that submenu is registered — which is exactly the
+	 * host-plugin embedding scenario these tests model.
+	 */
+	public function set_up(): void {
+		parent::set_up();
+
+		$this->submenu_snapshot = $GLOBALS['submenu'] ?? null;
+
+		// phpcs:ignore WordPress.WP.GlobalVariablesOverride.Prohibited -- Test fixture; restored in tear_down().
+		$GLOBALS['submenu'] = array(
+			'options-general.php' => array(
+				array( 'Settings', 'manage_options', 'options-general.php' ),
+				array( 'Connectors', 'manage_options', 'options-connectors-wp-admin' ),
+			),
+		);
+	}
+
+	/**
+	 * Restore the menu global and clean up the origin flag between tests.
 	 */
 	public function tear_down(): void {
+		if ( null === $this->submenu_snapshot ) {
+			unset( $GLOBALS['submenu'] );
+		} else {
+			$GLOBALS['submenu'] = $this->submenu_snapshot; // phpcs:ignore WordPress.WP.GlobalVariablesOverride.Prohibited -- Restore the snapshot from set_up().
+		}
+
 		\delete_transient( 'atmosphere_oauth_from_connectors' );
+		\delete_transient( 'atmosphere_oauth_notice' );
+		\wp_set_current_user( 0 );
 		parent::tear_down();
+	}
+
+	/**
+	 * The Connectors screen URL these tests expect while the Gutenberg submenu
+	 * fixture is installed.
+	 *
+	 * @return string
+	 */
+	private function connectors_screen_url(): string {
+		return \admin_url( 'options-general.php?page=options-connectors-wp-admin' );
 	}
 
 	/**
@@ -64,7 +112,7 @@ class Test_OAuth_Return_Destination extends WP_UnitTestCase {
 
 		$destination = $this->resolve();
 
-		$this->assertSame( \admin_url( Connectors::SCREEN ), $destination );
+		$this->assertSame( $this->connectors_screen_url(), $destination );
 		$this->assertFalse(
 			\get_transient( 'atmosphere_oauth_from_connectors' ),
 			'The origin flag must be consumed so it cannot leak into a later connect.'
@@ -92,10 +140,71 @@ class Test_OAuth_Return_Destination extends WP_UnitTestCase {
 		\set_transient( 'atmosphere_oauth_from_connectors', 1, HOUR_IN_SECONDS );
 
 		// First resolution consumes the flag and routes to Connectors.
-		$this->assertSame( \admin_url( Connectors::SCREEN ), $this->resolve() );
+		$this->assertSame( $this->connectors_screen_url(), $this->resolve() );
 
 		// A second resolution now falls back to the settings page: the flag is
 		// gone, mirroring what a failed-then-retried callback would see.
 		$this->assertSame( \admin_url( 'options-general.php?page=atmosphere' ), $this->resolve() );
+	}
+
+	/**
+	 * A stored OAuth-callback notice renders once, on `admin_notices`, and is
+	 * consumed — the fix for the failure branch that was previously invisible
+	 * because the `settings_errors` transient never surfaced on the redirect
+	 * destination.
+	 *
+	 * @covers ::maybe_render_oauth_notice
+	 */
+	public function test_oauth_notice_renders_once_and_is_consumed(): void {
+		\wp_set_current_user( self::factory()->user->create( array( 'role' => 'administrator' ) ) );
+		\set_transient(
+			'atmosphere_oauth_notice',
+			array(
+				'type'    => 'error',
+				'message' => 'Handle resolution failed.',
+			),
+			MINUTE_IN_SECONDS
+		);
+
+		\ob_start();
+		Admin::maybe_render_oauth_notice();
+		$html = (string) \ob_get_clean();
+
+		$this->assertStringContainsString( 'notice-error', $html );
+		$this->assertStringContainsString( 'Handle resolution failed.', $html );
+		$this->assertFalse(
+			\get_transient( 'atmosphere_oauth_notice' ),
+			'The notice must be consumed so it renders exactly once.'
+		);
+
+		\ob_start();
+		Admin::maybe_render_oauth_notice();
+		$this->assertSame( '', (string) \ob_get_clean(), 'A consumed notice must not render again.' );
+	}
+
+	/**
+	 * The notice is gated on `manage_options`: an unprivileged user never sees it
+	 * and, crucially, does not consume it.
+	 *
+	 * @covers ::maybe_render_oauth_notice
+	 */
+	public function test_oauth_notice_requires_manage_options(): void {
+		\wp_set_current_user( self::factory()->user->create( array( 'role' => 'subscriber' ) ) );
+		\set_transient(
+			'atmosphere_oauth_notice',
+			array(
+				'type'    => 'success',
+				'message' => 'Connected.',
+			),
+			MINUTE_IN_SECONDS
+		);
+
+		\ob_start();
+		Admin::maybe_render_oauth_notice();
+		$this->assertSame( '', (string) \ob_get_clean() );
+		$this->assertNotFalse(
+			\get_transient( 'atmosphere_oauth_notice' ),
+			'An unprivileged view must not consume the notice.'
+		);
 	}
 }

@@ -19,8 +19,6 @@ namespace Atmosphere;
 
 use Atmosphere\Rest\Admin\Connection_Controller;
 
-use function Atmosphere\handle_typeahead_url;
-
 \defined( 'ABSPATH' ) || exit;
 
 /**
@@ -201,16 +199,31 @@ class Connectors {
 	 * when it is present in the admin menu, so the flow returns to the screen the user
 	 * actually came from; otherwise fall back to core's top-level page.
 	 *
+	 * The REST authorize route registers on WP 6.5+, so a host plugin can drive a
+	 * Connectors-origin connect on a site that has no Connectors screen at all
+	 * (WP < 7.0, where `options-connectors.php` does not exist). Falling back to
+	 * that file there would 404 after the callback, so land on the settings page
+	 * instead when the Connectors API is absent.
+	 *
 	 * The URL is resolved from the server-side admin menu, never from request
 	 * input, so it stays a trusted, hardcoded-shape destination for
 	 * `wp_safe_redirect()`.
 	 *
-	 * @return string Admin URL of the Connectors screen.
+	 * @return string Admin URL of the Connectors screen, or the settings page on WP < 7.0.
 	 */
 	public static function screen_url(): string {
 		$submenu_url = self::submenu_screen_url();
+		if ( null !== $submenu_url ) {
+			return $submenu_url;
+		}
 
-		return null !== $submenu_url ? $submenu_url : \admin_url( self::SCREEN );
+		// WP < 7.0 has no top-level Connectors page; `options-connectors.php`
+		// would 404. Send the flow to the settings page instead.
+		if ( ! \class_exists( 'WP_Connector_Registry' ) ) {
+			return settings_url();
+		}
+
+		return \admin_url( self::SCREEN );
 	}
 
 	/**
@@ -239,8 +252,10 @@ class Connectors {
 			}
 
 			foreach ( $items as $item ) {
-				// WP submenu items are [ title, capability, slug, ... ]; index 2
-				// is the menu slug, regardless of the item's position in the menu.
+				/*
+				 * WP submenu items are [ title, capability, slug, ... ]; index 2
+				 * is the menu slug, regardless of the item's position in the menu.
+				 */
 				$slug = $item[2] ?? '';
 				if (
 					\is_string( $slug )

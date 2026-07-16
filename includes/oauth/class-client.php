@@ -1149,9 +1149,11 @@ class Client {
 			return;
 		}
 
-		// Fire the lifecycle action only on the first transition into the
-		// reauth-required state, not on every repeated mark (this method is
-		// idempotent and can be reached by several failure paths).
+		/*
+		 * Fire the lifecycle action only on the first transition into the
+		 * reauth-required state, not on every repeated mark (this method is
+		 * idempotent and can be reached by several failure paths).
+		 */
 		$was_flagged = ! empty( $current['needs_reauth'] );
 
 		$current['needs_reauth'] = true;

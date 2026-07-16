@@ -234,14 +234,15 @@ class Test_Client_Authorize extends WP_UnitTestCase {
 
 		$result = Client::authorize( $handle );
 
-		// If the resolution chain refused the stubbed handle for any reason,
-		// the test environment can't exercise this path — skip rather than
-		// silently miss the storage assertion.
-		if ( \is_wp_error( $result ) ) {
-			$this->markTestSkipped(
-				'Resolver chain rejected the stubbed handle: ' . $result->get_error_code()
-			);
-		}
+		// Hard assertion, not markTestSkipped(): the encrypted-transient storage
+		// this test pins (ATM-002) is security-relevant, so a stubbed-chain
+		// regression should turn the build red rather than silently skip. The
+		// resolver's DNS `_atproto` TXT lookup returns nothing for this fake
+		// domain, so resolution falls through to the stubbed well-known.
+		$this->assertNotWPError(
+			$result,
+			'authorize() must return the auth URL for the fully stubbed resolver chain.'
+		);
 
 		$query = array();
 		\parse_str( (string) \wp_parse_url( $result, \PHP_URL_QUERY ), $query );

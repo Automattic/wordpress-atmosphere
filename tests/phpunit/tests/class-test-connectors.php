@@ -24,9 +24,39 @@ use WP_UnitTestCase;
 class Test_Connectors extends WP_UnitTestCase {
 
 	/**
-	 * Reset connection state between tests.
+	 * Admin-menu globals snapshotted before tests that mutate them.
+	 *
+	 * @var array<string, mixed>
+	 */
+	private array $menu_globals = array();
+
+	/**
+	 * Snapshot the admin-menu globals the screen_url() tests overwrite.
+	 */
+	public function set_up(): void {
+		parent::set_up();
+
+		$this->menu_globals = array(
+			'submenu' => $GLOBALS['submenu'] ?? null,
+		);
+	}
+
+	/**
+	 * Restore menu globals, screen, and connection state between tests.
+	 *
+	 * Restoring the fixtures here rather than inline means a failing assertion
+	 * can't leak the mutated `$submenu` / current screen into later tests.
 	 */
 	public function tear_down(): void {
+		foreach ( $this->menu_globals as $key => $value ) {
+			if ( null === $value ) {
+				unset( $GLOBALS[ $key ] );
+			} else {
+				$GLOBALS[ $key ] = $value; // phpcs:ignore WordPress.WP.GlobalVariablesOverride.Prohibited -- Restoring the snapshot taken in set_up().
+			}
+		}
+
+		\set_current_screen( 'front' );
 		\delete_option( 'atmosphere_connection' );
 		\delete_option( 'atmosphere_identity' );
 		parent::tear_down();
@@ -202,8 +232,6 @@ class Test_Connectors extends WP_UnitTestCase {
 
 		$this->assertArrayNotHasKey( 'returnScreen', $data );
 		$this->assertArrayNotHasKey( 'returnTo', $data );
-
-		\set_current_screen( 'front' );
 	}
 
 	/**
@@ -239,8 +267,15 @@ class Test_Connectors extends WP_UnitTestCase {
 	}
 
 	/**
-	 * With no Gutenberg submenu present, the OAuth return destination falls back to
-	 * core's top-level Connectors page.
+	 * With the Connectors API present (WP 7.0+, this test environment) but no
+	 * Gutenberg submenu, the return destination falls back to core's top-level
+	 * Connectors page.
+	 *
+	 * The complementary WP < 7.0 branch — no Connectors API, so screen_url()
+	 * returns {@see settings_url()} rather than 404ing on a non-existent
+	 * `options-connectors.php` — can't be exercised here, since the test
+	 * environment defines `WP_Connector_Registry` and a class can't be
+	 * un-defined mid-run.
 	 *
 	 * @covers ::screen_url
 	 */
@@ -256,11 +291,8 @@ class Test_Connectors extends WP_UnitTestCase {
 	 * @covers ::screen_url
 	 */
 	public function test_screen_url_prefers_gutenberg_submenu() {
-		global $submenu;
-		$saved = $submenu;
-
-		// phpcs:ignore WordPress.WP.GlobalVariablesOverride.Prohibited -- Test fixture: simulate the Gutenberg plugin's Connectors submenu, restored below.
-		$submenu = array(
+		// phpcs:ignore WordPress.WP.GlobalVariablesOverride.Prohibited -- Test fixture: simulate the Gutenberg plugin's Connectors submenu; restored in tear_down().
+		$GLOBALS['submenu'] = array(
 			'options-general.php' => array(
 				array( 'Settings', 'manage_options', 'options-general.php' ),
 				array( 'Connectors', 'manage_options', 'options-connectors-wp-admin' ),
@@ -271,31 +303,23 @@ class Test_Connectors extends WP_UnitTestCase {
 			\admin_url( 'options-general.php?page=options-connectors-wp-admin' ),
 			Connectors::screen_url()
 		);
-
-		// phpcs:ignore WordPress.WP.GlobalVariablesOverride.Prohibited -- Restore the real admin menu.
-		$submenu = $saved;
 	}
 
 	/**
 	 * Core's own `options-connectors.php` submenu entries are not a Gutenberg
-	 * submenu, so the top-level page URL is still used when only they are present.
+	 * submenu, so they're ignored and the top-level page URL is still used (with
+	 * the Connectors API present, as in this test environment).
 	 *
 	 * @covers ::screen_url
 	 */
 	public function test_screen_url_ignores_core_screen_submenu_entries() {
-		global $submenu;
-		$saved = $submenu;
-
-		// phpcs:ignore WordPress.WP.GlobalVariablesOverride.Prohibited -- Test fixture: simulate core's own submenu entries, restored below.
-		$submenu = array(
+		// phpcs:ignore WordPress.WP.GlobalVariablesOverride.Prohibited -- Test fixture: simulate core's own submenu entries; restored in tear_down().
+		$GLOBALS['submenu'] = array(
 			'options-connectors.php' => array(
 				array( 'Connectors', 'manage_options', 'options-connectors.php' ),
 			),
 		);
 
 		$this->assertSame( \admin_url( 'options-connectors.php' ), Connectors::screen_url() );
-
-		// phpcs:ignore WordPress.WP.GlobalVariablesOverride.Prohibited -- Restore the real admin menu.
-		$submenu = $saved;
 	}
 }
