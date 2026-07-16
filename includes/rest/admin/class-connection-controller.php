@@ -24,6 +24,7 @@ namespace Atmosphere\Rest\Admin;
 \defined( 'ABSPATH' ) || exit;
 
 use Atmosphere\OAuth\Client;
+use Atmosphere\Sanitize;
 use WP_Error;
 use WP_REST_Request;
 use WP_REST_Response;
@@ -164,6 +165,22 @@ class Connection_Controller extends \WP_REST_Controller {
 		if ( \is_wp_error( $url ) ) {
 			$url->add_data( array( 'status' => 400 ) );
 			return $url;
+		}
+
+		/*
+		 * Re-validate the scheme + host before handing the URL to the card,
+		 * which navigates to it client-side. Mirrors the defence-in-depth check
+		 * the settings-page flow runs before its server-side redirect (see
+		 * {@see Sanitize::handle()}): a `javascript:` / `data:` URI slipping
+		 * through a misconfigured `atmosphere_*` filter would be worse here,
+		 * since the browser follows it directly.
+		 */
+		if ( ! Sanitize::is_safe_authorize_url( $url ) ) {
+			return new WP_Error(
+				'atmosphere_unsafe_authorize_url',
+				\__( 'Authorization URL is not a safe HTTPS target.', 'atmosphere' ),
+				array( 'status' => 400 )
+			);
 		}
 
 		\set_transient( 'atmosphere_oauth_from_connectors', 1, HOUR_IN_SECONDS );

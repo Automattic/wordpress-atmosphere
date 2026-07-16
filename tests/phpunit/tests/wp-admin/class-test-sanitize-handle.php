@@ -77,6 +77,45 @@ class Test_Sanitize_Handle extends WP_UnitTestCase {
 	}
 
 	/**
+	 * The shared authorize-URL safety gate accepts absolute HTTPS URLs.
+	 *
+	 * @covers \Atmosphere\Sanitize::is_safe_authorize_url
+	 */
+	public function test_is_safe_authorize_url_accepts_https(): void {
+		$this->assertTrue( Sanitize::is_safe_authorize_url( 'https://auth.example.com/oauth/authorize?client_id=x' ) );
+	}
+
+	/**
+	 * The gate rejects anything that is not an absolute HTTPS URL — the
+	 * `javascript:` / `data:` / `http:` / scheme-relative cases both connect
+	 * entry points guard against before acting on the URL.
+	 *
+	 * @dataProvider provide_unsafe_authorize_urls
+	 * @covers \Atmosphere\Sanitize::is_safe_authorize_url
+	 *
+	 * @param string $url Candidate authorization URL.
+	 */
+	public function test_is_safe_authorize_url_rejects_unsafe( string $url ): void {
+		$this->assertFalse( Sanitize::is_safe_authorize_url( $url ) );
+	}
+
+	/**
+	 * Unsafe authorization URLs the gate must reject.
+	 *
+	 * @return array<string, array{0: string}>
+	 */
+	public static function provide_unsafe_authorize_urls(): array {
+		return array(
+			'javascript scheme'    => array( 'javascript:alert(1)' ),
+			'data scheme'          => array( 'data:text/html,<script>alert(1)</script>' ),
+			'plain http'           => array( 'http://auth.example.com/oauth/authorize' ),
+			'no scheme'            => array( 'auth.example.com/oauth/authorize' ),
+			'scheme-relative host' => array( '//auth.example.com/oauth/authorize' ),
+			'empty string'         => array( '' ),
+		);
+	}
+
+	/**
 	 * Become an admin so `current_user_can('manage_options')` passes.
 	 */
 	private function become_admin(): void {
