@@ -695,6 +695,21 @@ class Client {
 		 */
 		Atmosphere::maybe_flush_wellknown_rewrites();
 
+		/**
+		 * Fires after an AT Protocol account is connected.
+		 *
+		 * The OAuth callback has succeeded and the connection is persisted. Lets
+		 * a host plugin embedding ATmosphere purely as a connection layer react
+		 * to a card-driven connect without polling {@see \Atmosphere\is_connected()}
+		 * — e.g. to invalidate its own caches or surface a confirmation.
+		 *
+		 * @since unreleased
+		 *
+		 * @param string $did    The connected account's DID.
+		 * @param string $handle The connected account's handle.
+		 */
+		\do_action( 'atmosphere_connected', (string) $resolved['did'], (string) $resolved['handle'] );
+
 		return true;
 	}
 
@@ -1134,6 +1149,11 @@ class Client {
 			return;
 		}
 
+		// Fire the lifecycle action only on the first transition into the
+		// reauth-required state, not on every repeated mark (this method is
+		// idempotent and can be reached by several failure paths).
+		$was_flagged = ! empty( $current['needs_reauth'] );
+
 		$current['needs_reauth'] = true;
 		$current['access_token'] = '';
 		unset( $current['expires_at'] );
@@ -1145,6 +1165,25 @@ class Client {
 		}
 
 		\update_option( 'atmosphere_connection', $current, false );
+
+		if ( ! $was_flagged ) {
+			/**
+			 * Fires when the connection first enters a reauth-required state.
+			 *
+			 * A permanent OAuth failure (rejected/expired refresh token, a
+			 * changed encryption key, ...) has left the stored token unusable:
+			 * the account stays on file but publishing and sync short-circuit
+			 * until the user reconnects. Lets a host plugin surface its own
+			 * reconnect prompt without polling {@see \Atmosphere\needs_reauth()}.
+			 * Fires once per transition, not on every repeated mark.
+			 *
+			 * @since unreleased
+			 *
+			 * @param string $did    The affected account's DID, or '' if unknown.
+			 * @param string $reason Machine-readable reauth reason (e.g. 'refresh_token', 'key_changed'), or '' if unspecified.
+			 */
+			\do_action( 'atmosphere_reauth_required', (string) ( $current['did'] ?? '' ), $reason );
+		}
 	}
 
 	/**
@@ -1526,6 +1565,19 @@ class Client {
 				$revoke_args
 			);
 		}
+
+		/**
+		 * Fires after the AT Protocol connection is torn down.
+		 *
+		 * The local connection has been wiped (token revocation, if any, is
+		 * queued separately). Counterpart to {@see 'atmosphere_connected'}: lets
+		 * a host plugin drop its own connection-derived state without polling.
+		 *
+		 * @since unreleased
+		 *
+		 * @param string $did The DID of the account that was disconnected, or '' if unknown.
+		 */
+		\do_action( 'atmosphere_disconnected', \is_array( $conn ) ? (string) ( $conn['did'] ?? '' ) : '' );
 	}
 
 	/**

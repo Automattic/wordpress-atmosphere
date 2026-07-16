@@ -61,6 +61,9 @@ ATmosphere exposes a small set of filters and actions for plugins to extend beha
 | `atmosphere_publish_post_result` | action | React to a post-publish outcome (success or `WP_Error`). |
 | `atmosphere_publish_comment_result` | action | React to a comment-publish outcome. |
 | `atmosphere_reaction_synced` | action | React when a Bluesky reaction is stored as a WordPress comment. |
+| `atmosphere_connected` | action | React when an AT Protocol account is connected (OAuth callback succeeded). Useful for a host plugin embedding ATmosphere as a connection layer. |
+| `atmosphere_disconnected` | action | React when the AT Protocol connection is torn down. |
+| `atmosphere_reauth_required` | action | React when the connection first enters a reauth-required state after a permanent OAuth failure. Fires once per transition. |
 
 When adding a new public hook, mark its `@since` tag as `unreleased` — the release script rewrites it (see [Release Process → Marking Unreleased Code](release-process.md#marking-unreleased-code)).
 

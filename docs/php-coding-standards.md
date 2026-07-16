@@ -248,6 +248,9 @@ use function Atmosphere\is_connected;
 \do_action( 'atmosphere_update_skipped_unsynced_post', $post );
 \do_action( 'atmosphere_long_form_strategy_downgraded', $post, $from, $to );
 \do_action( 'atmosphere_reaction_synced', $comment_id, $notification, $post_id, $comment_type );
+\do_action( 'atmosphere_connected',        $did, $handle );                        // Account connected (OAuth callback succeeded).
+\do_action( 'atmosphere_disconnected',     $did );                                 // Connection torn down.
+\do_action( 'atmosphere_reauth_required',  $did, $reason );                        // First transition into a reauth-required state.
 ```
 
 **Test-only short-circuit:**

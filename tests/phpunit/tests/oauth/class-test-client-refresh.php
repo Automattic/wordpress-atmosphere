@@ -74,6 +74,7 @@ class Test_Client_Refresh extends WP_UnitTestCase {
 		\delete_option( Client::REFRESH_LOCK_OPTION );
 		\delete_option( Client::DISCONNECTED_OPTION );
 		\remove_all_filters( 'pre_http_request' );
+		\remove_all_actions( 'atmosphere_reauth_required' );
 
 		parent::tear_down();
 	}
@@ -243,6 +244,38 @@ class Test_Client_Refresh extends WP_UnitTestCase {
 			\get_option( Client::DISCONNECTED_OPTION ),
 			'Refresh failures must not set the operator-initiated disconnect marker.'
 		);
+	}
+
+	/**
+	 * A permanent refresh failure fires `atmosphere_reauth_required` once, with
+	 * the affected DID and the machine-readable reason, so a host plugin can
+	 * surface its own reconnect prompt without polling.
+	 */
+	public function test_permanent_failure_fires_reauth_required_action() {
+		$this->mock_token_response(
+			400,
+			array(
+				'error'             => 'invalid_grant',
+				'error_description' => 'Refresh token expired.',
+			)
+		);
+
+		$fired = array();
+		\add_action(
+			'atmosphere_reauth_required',
+			static function ( $did, $reason ) use ( &$fired ) {
+				$fired[] = array( $did, $reason );
+			},
+			10,
+			2
+		);
+
+		Client::refresh();
+
+		$this->assertCount( 1, $fired, 'atmosphere_reauth_required should fire exactly once per transition.' );
+		// The invalid_grant refresh path leaves the reason unspecified; the DID
+		// identifies the affected account.
+		$this->assertSame( array( 'did:plc:test123', '' ), $fired[0] );
 	}
 
 	/**
