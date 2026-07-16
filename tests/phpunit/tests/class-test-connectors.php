@@ -16,6 +16,8 @@ namespace Atmosphere\Tests;
 use Atmosphere\Connectors;
 use WP_UnitTestCase;
 
+use function Atmosphere\settings_url;
+
 /**
  * Connectors integration tests.
  *
@@ -267,20 +269,22 @@ class Test_Connectors extends WP_UnitTestCase {
 	}
 
 	/**
-	 * With the Connectors API present (WP 7.0+, this test environment) but no
-	 * Gutenberg submenu, the return destination falls back to core's top-level
-	 * Connectors page.
+	 * With no Gutenberg submenu, the return destination depends on the WP
+	 * version: core's top-level Connectors page when the Connectors API (WP 7.0+)
+	 * is present, or the settings page when it isn't — since returning to a
+	 * non-existent `options-connectors.php` on WP < 7.0 would 404.
 	 *
-	 * The complementary WP < 7.0 branch — no Connectors API, so screen_url()
-	 * returns {@see settings_url()} rather than 404ing on a non-existent
-	 * `options-connectors.php` — can't be exercised here, since the test
-	 * environment defines `WP_Connector_Registry` and a class can't be
-	 * un-defined mid-run.
+	 * The expectation is derived from the same `class_exists()` gate as the code,
+	 * so each leg of the CI matrix (WP 6.5 vs 7.0) exercises its own branch.
 	 *
 	 * @covers ::screen_url
 	 */
-	public function test_screen_url_defaults_to_core_page() {
-		$this->assertSame( \admin_url( 'options-connectors.php' ), Connectors::screen_url() );
+	public function test_screen_url_defaults_by_connectors_api_availability() {
+		$expected = \class_exists( 'WP_Connector_Registry' )
+			? \admin_url( 'options-connectors.php' )
+			: settings_url();
+
+		$this->assertSame( $expected, Connectors::screen_url() );
 	}
 
 	/**
@@ -307,8 +311,9 @@ class Test_Connectors extends WP_UnitTestCase {
 
 	/**
 	 * Core's own `options-connectors.php` submenu entries are not a Gutenberg
-	 * submenu, so they're ignored and the top-level page URL is still used (with
-	 * the Connectors API present, as in this test environment).
+	 * submenu, so they're ignored: `submenu_screen_url()` returns null and
+	 * screen_url() lands on its version-dependent fallback (top-level page with
+	 * the Connectors API present, settings page without it).
 	 *
 	 * @covers ::screen_url
 	 */
@@ -320,6 +325,10 @@ class Test_Connectors extends WP_UnitTestCase {
 			),
 		);
 
-		$this->assertSame( \admin_url( 'options-connectors.php' ), Connectors::screen_url() );
+		$expected = \class_exists( 'WP_Connector_Registry' )
+			? \admin_url( 'options-connectors.php' )
+			: settings_url();
+
+		$this->assertSame( $expected, Connectors::screen_url() );
 	}
 }
