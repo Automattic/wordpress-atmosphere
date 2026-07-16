@@ -98,7 +98,9 @@ class Connectors {
 	 *
 	 * Runs on `wp_connectors_init` (WP 7.0+ only). The registry is passed by
 	 * core; we register once with `method => 'none'` so core skips its API-key
-	 * form and lets our script module render the card.
+	 * form and lets our script module render the card. The `plugin.file` entry
+	 * lets core derive the connector's installed/active state for the card UI,
+	 * defaulting `is_active` to its own `is_plugin_active()` check.
 	 *
 	 * @param \WP_Connector_Registry $registry The core connector registry.
 	 * @return void
@@ -111,6 +113,9 @@ class Connectors {
 				'description'    => \__( 'Connect your account to publish to the AT Protocol network with ATmosphere.', 'atmosphere' ),
 				'type'           => 'cloud_service',
 				'logo_url'       => ATMOSPHERE_PLUGIN_URL . 'assets/images/atmosphere.svg',
+				'plugin'         => array(
+					'file' => \plugin_basename( ATMOSPHERE_PLUGIN_FILE ),
+				),
 				'authentication' => array(
 					'method' => 'none',
 				),

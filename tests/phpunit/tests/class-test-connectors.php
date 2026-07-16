@@ -99,6 +99,7 @@ class Test_Connectors extends WP_UnitTestCase {
 		$this->assertArrayHasKey( 'name', $registry->args );
 		$this->assertArrayHasKey( 'description', $registry->args );
 		$this->assertStringContainsString( 'atmosphere.svg', $registry->args['logo_url'] );
+		$this->assertStringEndsWith( '/atmosphere.php', $registry->args['plugin']['file'] );
 	}
 
 	/**
