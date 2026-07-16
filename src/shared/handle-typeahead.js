@@ -10,7 +10,6 @@
 
 const { createElement: el, useState, useRef, useEffect } = window.wp.element;
 const { __ } = window.wp.i18n;
-const { Spinner } = window.wp.components;
 
 const TYPEAHEAD_LIMIT = 8;
 const TYPEAHEAD_MIN_CHARS = 2;
@@ -192,7 +191,10 @@ export function HandleTypeahead( {
 				// tears the list down.
 				onBlur: () => setTimeout( () => setOpen( false ), 150 ),
 			} ),
-			loading && el( Spinner, null )
+			// Core's admin spinner rather than the wp-components one, so this
+			// component never pulls the wp-components bundle onto a classic admin
+			// page just for a loading indicator.
+			loading && el( 'span', { className: 'spinner is-active' } )
 		),
 		open &&
 			suggestions.length > 0 &&

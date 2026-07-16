@@ -10,9 +10,8 @@
  * connection immediately.
  *
  * A classic script (not a script module): it reads `window.wp.*` globals, and
- * its `wp-element`/`wp-components`/`wp-i18n` dependencies are declared at enqueue
- * time (see Admin::enqueue_assets), since classic admin pages don't load them by
- * default.
+ * its `wp-element`/`wp-i18n` dependencies are declared at enqueue time (see
+ * Admin::enqueue_assets), since classic admin pages don't load them by default.
  */
 
 import { HandleTypeahead } from '../shared/handle-typeahead';

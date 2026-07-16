@@ -186,7 +186,7 @@ function handle_typeahead_url(): string {
 		'https://public.api.bsky.app/xrpc/app.bsky.actor.searchActorsTypeahead'
 	);
 
-	return '' === $url ? '' : \esc_url_raw( $url );
+	return \esc_url_raw( $url );
 }
 
 /**

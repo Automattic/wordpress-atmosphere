@@ -115,7 +115,6 @@ class Test_Connectors extends WP_UnitTestCase {
 		$this->assertFalse( $data['needsReauth'] );
 		$this->assertSame( '', $data['handle'] );
 		$this->assertSame( '', $data['profileUrl'] );
-		$this->assertSame( 'atmosphere', $data['connectorId'] );
 		$this->assertStringContainsString( 'admin/connection/authorize', $data['authorizePath'] );
 		$this->assertStringContainsString( 'admin/connection/disconnect', $data['disconnectPath'] );
 		$this->assertNotEmpty( $data['restNonce'] );
@@ -179,7 +178,6 @@ class Test_Connectors extends WP_UnitTestCase {
 	 * defaulting to Bluesky's official public appview.
 	 *
 	 * @covers ::get_connector_data
-	 * @covers ::typeahead_url
 	 */
 	public function test_get_connector_data_includes_typeahead_url() {
 		$data = Connectors::get_connector_data( array() );
@@ -205,36 +203,6 @@ class Test_Connectors extends WP_UnitTestCase {
 		$this->assertArrayNotHasKey( 'returnTo', $data );
 
 		\set_current_screen( 'front' );
-	}
-
-	/**
-	 * A site can repoint the typeahead endpoint through the filter.
-	 *
-	 * @covers ::typeahead_url
-	 */
-	public function test_typeahead_url_is_filterable() {
-		\add_filter(
-			'atmosphere_handle_typeahead_url',
-			static fn () => 'https://example.test/xrpc/app.bsky.actor.searchActorsTypeahead'
-		);
-
-		$this->assertStringStartsWith( 'https://example.test/', Connectors::typeahead_url() );
-
-		\remove_all_filters( 'atmosphere_handle_typeahead_url' );
-	}
-
-	/**
-	 * Filtering the endpoint to an empty string disables typeahead entirely,
-	 * leaving the card's manual handle entry as the only path.
-	 *
-	 * @covers ::typeahead_url
-	 */
-	public function test_typeahead_url_can_be_disabled() {
-		\add_filter( 'atmosphere_handle_typeahead_url', '__return_empty_string' );
-
-		$this->assertSame( '', Connectors::typeahead_url() );
-
-		\remove_all_filters( 'atmosphere_handle_typeahead_url' );
 	}
 
 	/**

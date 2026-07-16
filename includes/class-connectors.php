@@ -183,8 +183,7 @@ class Connectors {
 	 * @return bool True on the Connectors screen in any of its registered forms.
 	 */
 	public static function is_connectors_screen( string $hook_suffix ): bool {
-		return self::SCREEN === $hook_suffix
-			|| \str_contains( $hook_suffix, self::SCREEN_SLUG );
+		return \str_contains( $hook_suffix, self::SCREEN_SLUG );
 	}
 
 	/**
@@ -269,7 +268,6 @@ class Connectors {
 		return \array_merge(
 			(array) $data,
 			array(
-				'connectorId'    => self::CONNECTOR_ID,
 				'isConnected'    => is_connected(),
 				'needsReauth'    => needs_reauth(),
 				'handle'         => $identity['handle'] ?? '',
@@ -286,20 +284,8 @@ class Connectors {
 				'restNonce'      => \wp_create_nonce( 'wp_rest' ),
 				'authorizePath'  => $base . '/authorize',
 				'disconnectPath' => $base . '/disconnect',
-				'typeaheadUrl'   => self::typeahead_url(),
+				'typeaheadUrl'   => handle_typeahead_url(),
 			)
 		);
-	}
-
-	/**
-	 * The handle typeahead endpoint the card queries as the user types.
-	 *
-	 * Thin wrapper over {@see handle_typeahead_url()}, kept so the card's
-	 * hydration payload and existing callers have a stable entry point.
-	 *
-	 * @return string The typeahead XRPC endpoint, or '' to disable typeahead.
-	 */
-	public static function typeahead_url(): string {
-		return handle_typeahead_url();
 	}
 }

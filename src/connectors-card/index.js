@@ -38,6 +38,11 @@ const VStack =
 
 const MODULE_ID = '@atmosphere/connectors-card';
 
+// The connector id, matching `Connectors::CONNECTOR_ID` server-side. Hardcoded
+// both sides like MODULE_ID rather than round-tripped through the hydration
+// payload — it is a fixed constant, not per-request state.
+const CONNECTOR_ID = 'atmosphere';
+
 const dataEl = document.getElementById(
 	`wp-script-module-data-${ MODULE_ID }`
 );
@@ -327,7 +332,7 @@ if ( connectors ) {
 	// Without the card chrome there's nothing to render into, so skip
 	// registration and leave the settings page as the baseline UI.
 	if ( registerConnector && ConnectorItem ) {
-		registerConnector( data.connectorId || 'atmosphere', {
+		registerConnector( CONNECTOR_ID, {
 			render: makeCard( ConnectorItem ),
 		} );
 	}

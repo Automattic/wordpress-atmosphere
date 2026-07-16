@@ -132,7 +132,7 @@ class Admin {
 		if ( self::is_settings_page_visible() ) {
 			$settings_link = \sprintf(
 				'<a href="%s">%s</a>',
-				\esc_url( \admin_url( 'options-general.php?page=atmosphere' ) ),
+				\esc_url( settings_url() ),
 				\esc_html__( 'Settings', 'atmosphere' )
 			);
 		} else {
@@ -183,14 +183,13 @@ class Admin {
 
 		$asset = include $asset_file;
 
-		// Depend on the wp-components stylesheet: the typeahead's loading Spinner
-		// is styled by its `.components-spinner` rules, which a classic admin
-		// page does not load by default. wp-components is a core-registered
-		// handle, so this pulls it in wherever the stylesheet loads.
+		// No wp-components dependency: the typeahead's loading indicator uses
+		// core's own `.spinner` (free on every wp-admin page), so the classic
+		// settings page never pulls the wp-components bundle just for a spinner.
 		\wp_enqueue_style(
 			'atmosphere-handle-typeahead',
 			ATMOSPHERE_PLUGIN_URL . 'assets/css/handle-typeahead.css',
-			array( 'wp-components' ),
+			array(),
 			ATMOSPHERE_VERSION
 		);
 
@@ -199,7 +198,7 @@ class Admin {
 			ATMOSPHERE_PLUGIN_URL . 'build/settings-connect/index.js',
 			\array_merge(
 				$asset['dependencies'] ?? array(),
-				array( 'wp-element', 'wp-components', 'wp-i18n' )
+				array( 'wp-element', 'wp-i18n' )
 			),
 			$asset['version'] ?? ATMOSPHERE_VERSION,
 			true

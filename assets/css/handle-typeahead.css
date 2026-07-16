@@ -28,9 +28,11 @@
 	width: 100%;
 }
 
-.atmosphere-handle-field__control .components-spinner {
+.atmosphere-handle-field__control .spinner {
 	position: absolute;
 	inset-inline-end: 8px;
+	float: none;
+	margin: 0;
 }
 
 .atmosphere-handle-field__list {
