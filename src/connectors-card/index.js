@@ -28,7 +28,7 @@
  */
 import { HandleTypeahead } from '../shared/handle-typeahead';
 
-const { createElement: el, useState } = window.wp.element;
+const { createElement: el, useState, useEffect } = window.wp.element;
 const { __ } = window.wp.i18n;
 const { Button, Notice, ExternalLink } = window.wp.components;
 const HStack =
@@ -122,6 +122,20 @@ function makeCard( Shell ) {
 		const [ busy, setBusy ] = useState( false );
 		const [ error, setError ] = useState( '' );
 		const [ expanded, setExpanded ] = useState( false );
+		// Outcome of a just-completed OAuth callback, handed in via hydration
+		// (see Connectors::get_connector_data). Rendered here because classic
+		// admin_notices isn't reliable on this React screen.
+		const [ callout, setCallout ] = useState(
+			data.notice && data.notice.message ? data.notice : null
+		);
+
+		useEffect( () => {
+			if ( callout ) {
+				announce( callout.message );
+			}
+			// Announce once, on mount.
+			// eslint-disable-next-line react-hooks/exhaustive-deps
+		}, [] );
 
 		const connect = async ( explicit ) => {
 			const target = (
@@ -316,6 +330,19 @@ function makeCard( Shell ) {
 			el(
 				VStack,
 				{ spacing: 3 },
+				callout &&
+					el(
+						Notice,
+						{
+							status:
+								'success' === callout.type
+									? 'success'
+									: 'error',
+							isDismissible: true,
+							onRemove: () => setCallout( null ),
+						},
+						callout.message
+					),
 				body,
 				error &&
 					el(

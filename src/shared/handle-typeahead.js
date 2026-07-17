@@ -114,7 +114,13 @@ export function HandleTypeahead( {
 			}
 			setSuggestions( actors );
 			setOpen( actors.length > 0 );
-			setActive( actors.length ? 0 : -1 );
+			// Do NOT auto-highlight the first result: while the list is open,
+			// Enter must submit the handle the user actually typed, not
+			// suggestions[0]. Otherwise fully typing a handle the index doesn't
+			// know (e.g. a self-hosted PDS handle) and hitting Enter would start
+			// the OAuth flow for a different account. A suggestion is only picked
+			// once the user explicitly navigates to it (arrows/hover).
+			setActive( -1 );
 			setLoading( false );
 			setStatus(
 				actors.length
@@ -135,6 +141,9 @@ export function HandleTypeahead( {
 
 	const onInput = ( text ) => {
 		onChange( text );
+		// Editing the text invalidates any highlighted suggestion, so Enter
+		// falls back to submitting the typed value until the next search settles.
+		setActive( -1 );
 		clearTimeout( timer.current );
 		timer.current = setTimeout(
 			() => runSearch( text ),
@@ -143,6 +152,9 @@ export function HandleTypeahead( {
 	};
 
 	const choose = ( handle ) => {
+		// Cancel any pending debounced search so a stale lookup can't reopen the
+		// dropdown over the field after a selection is made.
+		clearTimeout( timer.current );
 		setOpen( false );
 		onChange( handle );
 		onSubmit( handle );
@@ -163,8 +175,10 @@ export function HandleTypeahead( {
 			);
 		} else if ( 'Enter' === e.key ) {
 			e.preventDefault();
-			if ( open && suggestions.length ) {
-				choose( suggestions[ active >= 0 ? active : 0 ].handle );
+			// Only pick a suggestion the user explicitly navigated to; otherwise
+			// submit exactly what they typed.
+			if ( open && active >= 0 && suggestions[ active ] ) {
+				choose( suggestions[ active ].handle );
 			} else if ( value.trim() ) {
 				onSubmit( value.trim() );
 			}
