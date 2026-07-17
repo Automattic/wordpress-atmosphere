@@ -30,6 +30,8 @@ use WP_REST_Request;
 use WP_REST_Response;
 use WP_REST_Server;
 
+use function Atmosphere\normalize_handle;
+
 /**
  * Connection controller.
  */
@@ -150,7 +152,7 @@ class Connection_Controller extends \WP_REST_Controller {
 	 * @return WP_REST_Response|WP_Error `{ url }` on success, error otherwise.
 	 */
 	public function authorize( WP_REST_Request $request ) {
-		$handle = \ltrim( (string) $request['handle'], '@' );
+		$handle = normalize_handle( $request['handle'] );
 
 		if ( '' === $handle ) {
 			return new WP_Error(
@@ -160,7 +162,11 @@ class Connection_Controller extends \WP_REST_Controller {
 			);
 		}
 
-		$url = Client::authorize( $handle );
+		// Tag the flow as Connectors-initiated so the OAuth callback returns the
+		// browser to the Connectors screen. The origin rides in the flow's own
+		// resolved record (see Client::authorize) rather than a separate,
+		// clobberable site-wide flag.
+		$url = Client::authorize( $handle, 'connectors' );
 
 		if ( \is_wp_error( $url ) ) {
 			$url->add_data( array( 'status' => 400 ) );
@@ -182,8 +188,6 @@ class Connection_Controller extends \WP_REST_Controller {
 				array( 'status' => 400 )
 			);
 		}
-
-		\set_transient( 'atmosphere_oauth_from_connectors', 1, HOUR_IN_SECONDS );
 
 		return new WP_REST_Response( array( 'url' => $url ) );
 	}

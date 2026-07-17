@@ -240,9 +240,13 @@ class Client {
 	 * request, and returns the authorization URL to redirect to.
 	 *
 	 * @param string $handle AT Protocol handle.
+	 * @param string $origin Which surface started the flow: `settings` (default)
+	 *                       or `connectors`. Persisted with the flow so the
+	 *                       callback returns the browser to the right screen
+	 *                       without a separate, clobberable flag transient.
 	 * @return string|\WP_Error Authorization URL or error.
 	 */
-	public static function authorize( string $handle ): string|\WP_Error {
+	public static function authorize( string $handle, string $origin = 'settings' ): string|\WP_Error {
 		/*
 		 * Rate-limit AFTER a successful `Resolver::resolve()`, not
 		 * before. The earlier ordering charged the per-user bucket on
@@ -307,6 +311,7 @@ class Client {
 				'pds_endpoint' => $resolved['pds_endpoint'],
 				'auth_server'  => $auth_meta,
 				'handle'       => $handle,
+				'origin'       => 'connectors' === $origin ? 'connectors' : 'settings',
 			),
 			HOUR_IN_SECONDS
 		);
@@ -338,6 +343,24 @@ class Client {
 		);
 
 		return $auth_meta['authorization_endpoint'] . '?' . \http_build_query( $params );
+	}
+
+	/**
+	 * The origin surface of the OAuth flow currently awaiting its callback.
+	 *
+	 * Read from the same per-flow `atmosphere_oauth_resolved` record the callback
+	 * validates, so the return destination can never diverge from the flow that
+	 * is actually in progress — there is one flow at a time (the state, verifier,
+	 * and DPoP key are all single site-wide transients).
+	 *
+	 * @return string `connectors` or `settings` (the default when unknown).
+	 */
+	public static function pending_origin(): string {
+		$resolved = \get_transient( 'atmosphere_oauth_resolved' );
+
+		return \is_array( $resolved ) && 'connectors' === ( $resolved['origin'] ?? '' )
+			? 'connectors'
+			: 'settings';
 	}
 
 	/**

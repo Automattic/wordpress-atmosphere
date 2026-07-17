@@ -145,10 +145,12 @@ class Test_Settings_Page_Visibility extends WP_UnitTestCase {
 	}
 
 	/**
-	 * The reauth notice hard-links to the settings page, so hiding the page
-	 * must suppress the notice entirely — otherwise it points at a dead URL.
+	 * When the settings page is hidden (connection-only mode), the reauth notice
+	 * points its reconnect link at the Connectors screen (which can also
+	 * reconnect) instead of the hidden settings page — and is only suppressed
+	 * entirely when there's genuinely no screen to link to (WP < 7.0).
 	 */
-	public function test_reauth_notice_suppressed_when_settings_page_hidden(): void {
+	public function test_reauth_notice_uses_connectors_screen_when_settings_page_hidden(): void {
 		$admin = self::factory()->user->create( array( 'role' => 'administrator' ) );
 		\wp_set_current_user( $admin );
 
@@ -170,7 +172,17 @@ class Test_Settings_Page_Visibility extends WP_UnitTestCase {
 		Admin::maybe_render_reauth_notice();
 		$html = (string) \ob_get_clean();
 
-		$this->assertSame( '', $html );
+		if ( \class_exists( 'WP_Connector_Registry' ) ) {
+			// A Connectors screen exists: the notice renders and its reconnect
+			// link points there, not at the hidden settings page.
+			$this->assertStringContainsString( 'notice-warning', $html );
+			$this->assertStringContainsString( \admin_url( 'options-connectors.php' ), $html );
+			$this->assertStringNotContainsString( 'page=atmosphere', $html );
+		} else {
+			// No Connectors screen and the settings page is hidden — nothing to
+			// link to, so the notice is suppressed.
+			$this->assertSame( '', $html );
+		}
 	}
 
 	/**

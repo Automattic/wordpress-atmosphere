@@ -18,6 +18,7 @@
 namespace Atmosphere;
 
 use Atmosphere\Rest\Admin\Connection_Controller;
+use Atmosphere\WP_Admin\Admin;
 
 \defined( 'ABSPATH' ) || exit;
 
@@ -305,6 +306,11 @@ class Connectors {
 				'authorizePath'  => $base . '/authorize',
 				'disconnectPath' => $base . '/disconnect',
 				'typeaheadUrl'   => handle_typeahead_url(),
+				// The OAuth callback redirects back here on success/failure and
+				// the card re-renders fresh, so surface the outcome from the
+				// per-user notice the callback stashed. Classic `admin_notices`
+				// isn't reliable on this React screen, so the card owns it here.
+				'notice'         => Admin::consume_oauth_notice(),
 			)
 		);
 	}

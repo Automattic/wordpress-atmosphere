@@ -53,28 +53,16 @@ class Sanitize {
 			return '';
 		}
 
-		$handle = \sanitize_text_field( $value );
-
-		/*
-		 * Strip a leading "@". Bluesky surfaces handles as "@alice.bsky.social",
-		 * so people naturally type the "@" in — but the resolver expects a bare
-		 * DNS-style identifier and would reject the "@"-prefixed form as invalid.
-		 */
-		$handle = \ltrim( $handle, '@' );
+		$handle = normalize_handle( $value );
 
 		if ( empty( $handle ) ) {
 			return '';
 		}
 
-		/*
-		 * A settings-page connect must land back on the settings page. Clear any
-		 * `atmosphere_oauth_from_connectors` flag left over from an earlier,
-		 * abandoned Connectors-card flow so it can't survive its TTL and bounce
-		 * this connect to the Connectors screen once the callback completes.
-		 */
-		\delete_transient( 'atmosphere_oauth_from_connectors' );
-
-		$auth_url = Client::authorize( $handle );
+		// A settings-page connect lands back on the settings page: the origin
+		// travels inside this flow's own resolved record (see Client::authorize),
+		// so it can't be crossed with a Connectors-card flow.
+		$auth_url = Client::authorize( $handle, 'settings' );
 
 		if ( \is_wp_error( $auth_url ) ) {
 			\add_settings_error( 'atmosphere', 'auth_failed', $auth_url->get_error_message() );

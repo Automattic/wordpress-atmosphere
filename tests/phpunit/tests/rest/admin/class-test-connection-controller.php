@@ -16,6 +16,7 @@
 
 namespace Atmosphere\Tests\Rest\Admin;
 
+use Atmosphere\OAuth\Client;
 use Atmosphere\Rest\Admin\Connection_Controller;
 use WP_REST_Request;
 use WP_UnitTestCase;
@@ -57,7 +58,6 @@ class Test_Connection_Controller extends WP_UnitTestCase {
 	public function tear_down(): void {
 		\delete_option( 'atmosphere_connection' );
 		\delete_option( 'atmosphere_identity' );
-		\delete_transient( 'atmosphere_oauth_from_connectors' );
 		\delete_transient( 'atmosphere_oauth_verifier' );
 		\delete_transient( 'atmosphere_oauth_state' );
 		\delete_transient( 'atmosphere_oauth_dpop_jwk' );
@@ -216,7 +216,7 @@ class Test_Connection_Controller extends WP_UnitTestCase {
 
 		$response = \rest_do_request( $request );
 
-		// Hard assertion, not markTestSkipped(): the return flag is the
+		// Hard assertion, not markTestSkipped(): the return origin is the
 		// security-relevant contract of this route, so a stubbed-chain
 		// regression should turn the build red rather than silently stop
 		// verifying it. The handle's DNS `_atproto` TXT lookup returns nothing
@@ -224,9 +224,12 @@ class Test_Connection_Controller extends WP_UnitTestCase {
 		// well-known — deterministic without DNS egress.
 		$this->assertSame( 200, $response->get_status() );
 
-		$this->assertNotFalse(
-			\get_transient( 'atmosphere_oauth_from_connectors' ),
-			'A successful Connectors authorize must set the return flag.'
+		// The origin rides inside the flow's own resolved record, so the
+		// callback returns to the Connectors screen without a separate flag.
+		$this->assertSame(
+			'connectors',
+			Client::pending_origin(),
+			'A successful Connectors authorize must mark the flow origin as connectors.'
 		);
 	}
 }
