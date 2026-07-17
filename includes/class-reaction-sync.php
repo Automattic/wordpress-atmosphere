@@ -383,14 +383,15 @@ class Reaction_Sync {
 		 * mode, the interactions that arrived meanwhile are picked up rather
 		 * than skipped for good.
 		 *
-		 * Defer to the per-feature helpers rather than raw
-		 * is_connection_only_mode() so the documented contract holds: the
-		 * `atmosphere_should_sync_reactions` / `atmosphere_should_sync_replies`
-		 * filters run last and can re-enable a lane even in connection-only
-		 * mode. When either lane is on, the poll proceeds and the per-item
-		 * gates keep the disabled lane's writes out.
+		 * Gate on connection-only mode AND both lanes being off, so the
+		 * documented filter contract still holds — a host that re-enables a
+		 * lane via `atmosphere_should_sync_reactions` / `_replies` reaches the
+		 * poll. Crucially, this must NOT fire for a regular site that simply
+		 * unchecks both sync toggles: there the poll must still run so the
+		 * per-item gates skip writes *while the watermarks advance*, keeping the
+		 * off period "skipped for good" rather than replayed on re-enable.
 		 */
-		if ( ! is_reaction_sync_enabled() && ! is_reply_sync_enabled() ) {
+		if ( is_connection_only_mode() && ! is_reaction_sync_enabled() && ! is_reply_sync_enabled() ) {
 			return;
 		}
 
@@ -470,9 +471,15 @@ class Reaction_Sync {
 		}
 
 		if ( ! self::replies_enabled() ) {
+			// Distinguish the user's own setting from an external override
+			// (connection-only mode or the `atmosphere_should_sync_replies`
+			// filter) so the reported reason matches the actual cause.
+			$stored_on = '1' === (string) \get_option( 'atmosphere_sync_replies', '1' );
 			return new \WP_Error(
 				'atmosphere_reply_sync_disabled',
-				\__( 'Reply syncing is disabled in the ATmosphere settings.', 'atmosphere' )
+				$stored_on
+					? \__( 'Reply syncing is turned off by another plugin on this site.', 'atmosphere' )
+					: \__( 'Reply syncing is disabled in the ATmosphere settings.', 'atmosphere' )
 			);
 		}
 

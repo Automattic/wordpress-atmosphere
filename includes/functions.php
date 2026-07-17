@@ -190,6 +190,24 @@ function handle_typeahead_url(): string {
 }
 
 /**
+ * Normalise a submitted AT Protocol handle for resolution.
+ *
+ * Sanitises the raw value and strips a leading `@`: Bluesky surfaces handles as
+ * `@alice.bsky.social`, so people naturally type the `@`, but the resolver
+ * expects a bare DNS-style identifier and rejects the prefixed form. Shared by
+ * both connect entry points — the settings-page sanitize callback
+ * ({@see Sanitize::handle()}) and the Connectors REST route
+ * ({@see \Atmosphere\Rest\Admin\Connection_Controller::authorize()}) — so the two
+ * flows normalise identically by construction.
+ *
+ * @param mixed $value Raw submitted handle.
+ * @return string Sanitised, bare handle.
+ */
+function normalize_handle( $value ): string {
+	return \ltrim( \sanitize_text_field( (string) $value ), '@' );
+}
+
+/**
  * Decode entities, strip HTML, normalise whitespace.
  *
  * @param string $text Raw text.
@@ -493,11 +511,7 @@ function is_connected(): bool {
  * @return bool
  */
 function is_comment_publishing_enabled(): bool {
-	$enabled = '1' === (string) \get_option( 'atmosphere_publish_comments', '1' );
-
-	if ( is_connection_only_mode() ) {
-		$enabled = false;
-	}
+	$enabled = feature_option_enabled( 'atmosphere_publish_comments' );
 
 	/**
 	 * Filters whether local WordPress comments may be published to Bluesky as replies.
@@ -805,6 +819,25 @@ function is_connection_only_mode(): bool {
 }
 
 /**
+ * Resolve a per-feature opt-out flag through the two layers every behavioural
+ * lane shares before its own filter: the stored option (default on), then a
+ * hard off in {@see is_connection_only_mode()}.
+ *
+ * Each lane still applies its own literal `atmosphere_should_*` filter to the
+ * result at its call site — kept there so the hook stays greppable and
+ * documented — so this centralises only the shared option-read + connection-only
+ * override, preventing the four copies from drifting apart.
+ *
+ * @param string $option Option name storing the opt-out preference.
+ * @return bool Effective state before the per-lane filter runs.
+ */
+function feature_option_enabled( string $option ): bool {
+	$enabled = '1' === (string) \get_option( $option, '1' );
+
+	return is_connection_only_mode() ? false : $enabled;
+}
+
+/**
  * Whether posts are automatically cross-posted to Bluesky on publish.
  *
  * Resolves the effective auto-publish state from three layers, in order: the
@@ -818,11 +851,7 @@ function is_connection_only_mode(): bool {
  * @return bool
  */
 function is_auto_publish_enabled(): bool {
-	$enabled = '1' === (string) \get_option( 'atmosphere_auto_publish', '1' );
-
-	if ( is_connection_only_mode() ) {
-		$enabled = false;
-	}
+	$enabled = feature_option_enabled( 'atmosphere_auto_publish' );
 
 	/**
 	 * Filters whether posts are automatically cross-posted to Bluesky on publish.
@@ -852,11 +881,7 @@ function is_auto_publish_enabled(): bool {
  * @return bool
  */
 function is_reaction_sync_enabled(): bool {
-	$enabled = '1' === (string) \get_option( 'atmosphere_sync_reactions', '1' );
-
-	if ( is_connection_only_mode() ) {
-		$enabled = false;
-	}
+	$enabled = feature_option_enabled( 'atmosphere_sync_reactions' );
 
 	/**
 	 * Filters whether Bluesky likes and reposts are imported as comments.
@@ -884,11 +909,7 @@ function is_reaction_sync_enabled(): bool {
  * @return bool
  */
 function is_reply_sync_enabled(): bool {
-	$enabled = '1' === (string) \get_option( 'atmosphere_sync_replies', '1' );
-
-	if ( is_connection_only_mode() ) {
-		$enabled = false;
-	}
+	$enabled = feature_option_enabled( 'atmosphere_sync_replies' );
 
 	/**
 	 * Filters whether Bluesky replies are imported as comments.
@@ -901,6 +922,36 @@ function is_reply_sync_enabled(): bool {
 	 * @param bool $enabled Whether reply import is effectively enabled.
 	 */
 	return (bool) \apply_filters( 'atmosphere_should_sync_replies', $enabled );
+}
+
+/**
+ * Whether the `site.standard.publication` record is written/refreshed automatically.
+ *
+ * Establishing the site's standard.site publication is ATmosphere acting on its
+ * own, so a host embedding it purely as a connection layer shouldn't get a
+ * public publication record written to the connected repo the moment a user
+ * connects. Unlike the other lanes this has no stored user option — it defaults
+ * on, is forced off in {@see is_connection_only_mode()}, and a dedicated filter
+ * has the final say so a host can opt back in.
+ *
+ * @since unreleased
+ *
+ * @return bool
+ */
+function is_publication_sync_enabled(): bool {
+	$enabled = ! is_connection_only_mode();
+
+	/**
+	 * Filters whether the site.standard.publication record is synced automatically.
+	 *
+	 * Runs after {@see is_connection_only_mode()}, so it has the final say: a host
+	 * running ATmosphere as a connection layer can re-enable publication upkeep.
+	 *
+	 * @since unreleased
+	 *
+	 * @param bool $enabled Whether publication sync is effectively enabled.
+	 */
+	return (bool) \apply_filters( 'atmosphere_should_sync_publication', $enabled );
 }
 
 /**

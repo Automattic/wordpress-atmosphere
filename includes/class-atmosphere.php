@@ -331,28 +331,68 @@ class Atmosphere {
 		Reaction_Sync::register();
 
 		/*
-		 * Skip scheduling in connection-only mode: the sync would short-circuit
-		 * anyway (see Reaction_Sync::sync()), so there's no point running the
-		 * hourly event against a connection another plugin is managing. Mirror
-		 * that method's contract, though — a host that re-enables a sync lane
-		 * through the `atmosphere_should_sync_*` filters still needs the event,
-		 * so honor the per-feature helpers rather than raw connection-only mode.
+		 * Reconcile the reaction-sync cron events on `init`, not here on
+		 * `plugins_loaded`: a host that re-enables a lane via the
+		 * `atmosphere_should_sync_*` filters from its own plugins_loaded/init
+		 * callback must have that filter attached before the gate is read, or
+		 * the event would never be scheduled even though the lane runs by
+		 * cron-dispatch time. Priority 20 leaves room for host filters on the
+		 * default init priority.
 		 */
-		$sync_scheduling_wanted = ! is_connection_only_mode()
-			|| is_reaction_sync_enabled()
-			|| is_reply_sync_enabled();
-		if ( ! \wp_next_scheduled( 'atmosphere_sync_reactions' ) && is_connected() && $sync_scheduling_wanted ) {
-			\wp_schedule_event( \time(), 'hourly', 'atmosphere_sync_reactions' );
+		\add_action( 'init', array( self::class, 'maybe_schedule_reaction_crons' ), 20 );
+	}
+
+	/**
+	 * Schedule (or unschedule) the reaction-sync cron events to match the site's
+	 * effective settings.
+	 *
+	 * Both events are reconciled every request: scheduled when wanted and absent,
+	 * cleared when unwanted but lingering — so a site that enters connection-only
+	 * mode after connecting doesn't keep an hourly no-op cron running forever.
+	 */
+	public static function maybe_schedule_reaction_crons(): void {
+		if ( ! is_connected() ) {
+			return;
 		}
 
-		if ( ! \wp_next_scheduled( 'atmosphere_backfill_replies' ) && is_connected() ) {
-			/*
-			 * The half-hour offset keeps the daily audit's due timestamps
-			 * from ever coinciding with the hourly sync's — a whole-hour
-			 * offset would collide every day, and both compete for the
-			 * same reaction-sync lock.
-			 */
-			\wp_schedule_event( \time() + \HOUR_IN_SECONDS / 2, 'daily', 'atmosphere_backfill_replies' );
+		// Hourly like/repost + reply poll. Wanted unless connection-only mode
+		// has both sync lanes off (a re-enabling filter keeps it on).
+		self::reconcile_cron_event(
+			'atmosphere_sync_reactions',
+			'hourly',
+			\time(),
+			! is_connection_only_mode() || is_reaction_sync_enabled() || is_reply_sync_enabled()
+		);
+
+		/*
+		 * Daily reply-backfill audit — reply-specific, so gate on reply sync.
+		 * The half-hour offset keeps its due timestamps from ever coinciding
+		 * with the hourly sync's; a whole-hour offset would collide every day,
+		 * and both compete for the same reaction-sync lock.
+		 */
+		self::reconcile_cron_event(
+			'atmosphere_backfill_replies',
+			'daily',
+			\time() + \HOUR_IN_SECONDS / 2,
+			! is_connection_only_mode() || is_reply_sync_enabled()
+		);
+	}
+
+	/**
+	 * Bring one recurring cron event in line with whether it's currently wanted.
+	 *
+	 * @param string $hook       Cron hook name.
+	 * @param string $recurrence Schedule recurrence (e.g. `hourly`, `daily`).
+	 * @param int    $first_run  Timestamp of the first run when (re)scheduling.
+	 * @param bool   $wanted     Whether the event should be scheduled right now.
+	 */
+	private static function reconcile_cron_event( string $hook, string $recurrence, int $first_run, bool $wanted ): void {
+		$scheduled = (bool) \wp_next_scheduled( $hook );
+
+		if ( $wanted && ! $scheduled ) {
+			\wp_schedule_event( $first_run, $recurrence, $hook );
+		} elseif ( ! $wanted && $scheduled ) {
+			\wp_clear_scheduled_hook( $hook );
 		}
 	}
 
@@ -1722,7 +1762,11 @@ class Atmosphere {
 		\add_action(
 			'atmosphere_sync_publication',
 			static function (): void {
-				Publisher::sync_publication();
+				// Respect connection-only mode: no automatic publication write
+				// when a host owns the connection (see is_publication_sync_enabled()).
+				if ( is_publication_sync_enabled() ) {
+					Publisher::sync_publication();
+				}
 			}
 		);
 

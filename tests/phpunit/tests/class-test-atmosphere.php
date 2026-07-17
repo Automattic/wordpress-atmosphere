@@ -2312,6 +2312,9 @@ class Test_Atmosphere extends WP_UnitTestCase {
 		\wp_unschedule_hook( 'atmosphere_backfill_replies' );
 
 		$this->atmosphere->init();
+		// Scheduling is deferred to the `init` hook (so host filters are
+		// attached first), so run the reconciler the hook would fire.
+		Atmosphere::maybe_schedule_reaction_crons();
 
 		try {
 			$this->assertNotFalse(

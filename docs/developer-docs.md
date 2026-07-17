@@ -51,6 +51,7 @@ ATmosphere exposes a small set of filters and actions for plugins to extend beha
 | `atmosphere_should_publish_comment` | filter | Customise which approved comments from users allowed to publish posts are mirrored as Bluesky replies. |
 | `atmosphere_should_sync_reactions` | filter | Effective on/off for importing Bluesky likes and reposts; runs after the stored setting and connection-only mode, and has the final say. |
 | `atmosphere_should_sync_replies` | filter | Effective on/off for importing Bluesky replies as comments; runs after the stored setting and connection-only mode, and has the final say. Re-enable this lane while in connection-only mode. Not the per-reply `_reply` filter below. |
+| `atmosphere_should_sync_publication` | filter | Effective on/off for writing/refreshing the `site.standard.publication` record. Defaults on, forced off in connection-only mode, and this has the final say — so a connection-layer host doesn't get a public publication record written on connect unless it opts back in. |
 | `atmosphere_should_sync_reply` | filter | Customise which inbound Bluesky replies become WordPress comments. |
 | `atmosphere_transform_bsky_post` | filter | Mutate the Bluesky post record before write. |
 | `atmosphere_transform_document` | filter | Mutate the document record before write. |

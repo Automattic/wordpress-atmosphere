@@ -30,7 +30,11 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 		\delete_option( 'atmosphere_reaction_sync_pagination' );
 		\delete_option( 'atmosphere_reaction_sync_did' );
 		\delete_option( '_atmosphere_reaction_sync_lock' );
+		\delete_option( 'atmosphere_sync_reactions' );
+		\delete_option( 'atmosphere_sync_replies' );
 		\remove_all_filters( 'atmosphere_connection_only_mode' );
+		\remove_all_filters( 'atmosphere_should_sync_reactions' );
+		\remove_all_filters( 'atmosphere_should_sync_replies' );
 		\remove_all_filters( 'pre_http_request' );
 		\remove_all_filters( 'atmosphere_reply_backfill_batch_size' );
 
@@ -3032,6 +3036,30 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 			'',
 			$requested_url,
 			'sync() should poll the PDS when a lane is re-enabled via the atmosphere_should_sync_* filter, even in connection-only mode.'
+		);
+	}
+
+	/**
+	 * Regression: a regular site (not connection-only) that unchecks BOTH sync
+	 * toggles must still poll, so the per-item gates skip writes while the
+	 * watermarks advance. Bailing early here — as a broader `! reactions && !
+	 * replies` gate would — froze the watermarks, so re-enabling a toggle later
+	 * replayed the whole off-period backlog as brand-new comments.
+	 */
+	public function test_sync_still_polls_with_both_toggles_off_off_connection_only() {
+		$this->connect_site_for_sync();
+		\update_option( 'atmosphere_sync_reactions', '' );
+		\update_option( 'atmosphere_sync_replies', '' );
+
+		$requested_url = '';
+		$this->spy_on_http( $requested_url );
+
+		Reaction_Sync::sync();
+
+		$this->assertNotSame(
+			'',
+			$requested_url,
+			'sync() must still poll on a regular site with both toggles off, so the off period stays skipped-for-good rather than replayed on re-enable.'
 		);
 	}
 }
