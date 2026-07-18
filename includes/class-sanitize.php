@@ -11,6 +11,7 @@ namespace Atmosphere;
 
 use Atmosphere\Content_Parser\Registry;
 use Atmosphere\OAuth\Client;
+use Atmosphere\Transformer\Publication;
 
 /**
  * Stateless sanitize helpers wired to `register_setting()` callbacks.
@@ -153,5 +154,35 @@ class Sanitize {
 		}
 
 		return Registry::has( $value ) ? $value : '';
+	}
+
+	/**
+	 * Sanitize a publication-theme hex color.
+	 *
+	 * Accepts empty string or a valid `#RGB` / `#RRGGBB` value.
+	 * Valid colors are normalized to lowercase `#rrggbb`.
+	 *
+	 * @param mixed $value Submitted value.
+	 * @return string
+	 */
+	public static function hex_color( $value ): string {
+		if ( ! \is_string( $value ) ) {
+			return '';
+		}
+
+		$value = \sanitize_text_field( $value );
+		$value = \trim( $value );
+
+		if ( '' === $value ) {
+			return '';
+		}
+
+		$rgb = Publication::hex_to_rgb( $value );
+
+		if ( null === $rgb ) {
+			return '';
+		}
+
+		return \sprintf( '#%02x%02x%02x', $rgb['r'], $rgb['g'], $rgb['b'] );
 	}
 }

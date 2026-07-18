@@ -22,8 +22,12 @@ class Test_Publication extends \WP_UnitTestCase {
 	public function tear_down(): void {
 		\remove_all_filters( 'atmosphere_publication_labels' );
 		\remove_all_filters( 'atmosphere_publication_show_in_discover' );
+		\remove_all_filters( 'atmosphere_publication_basic_theme' );
 		\delete_option( 'site_icon' );
 		\update_option( 'blog_public', 1 );
+		\delete_option( Publication::OPTION_THEME_BACKGROUND );
+		\delete_option( Publication::OPTION_THEME_FOREGROUND );
+		\delete_option( Publication::OPTION_THEME_ACCENT );
 
 		parent::tear_down();
 	}
@@ -630,6 +634,87 @@ class Test_Publication extends \WP_UnitTestCase {
 			$dark['accentForeground'],
 			'Dark accent should yield white foreground.'
 		);
+	}
+
+	/**
+	 * Stored publication-theme options override the derived theme colors.
+	 */
+	public function test_publication_theme_options_override_basic_theme_colors() {
+		\update_option( Publication::OPTION_THEME_BACKGROUND, '#112233' );
+		\update_option( Publication::OPTION_THEME_FOREGROUND, '#fafafa' );
+		\update_option( Publication::OPTION_THEME_ACCENT, '#ff0000' );
+
+		$record = ( new Publication( null ) )->transform();
+
+		$this->assertArrayHasKey( 'basicTheme', $record );
+		$this->assertSame( 17, $record['basicTheme']['background']['r'] );
+		$this->assertSame( 34, $record['basicTheme']['background']['g'] );
+		$this->assertSame( 51, $record['basicTheme']['background']['b'] );
+		$this->assertSame( 250, $record['basicTheme']['foreground']['r'] );
+		$this->assertSame( 250, $record['basicTheme']['foreground']['g'] );
+		$this->assertSame( 250, $record['basicTheme']['foreground']['b'] );
+		$this->assertSame( 255, $record['basicTheme']['accent']['r'] );
+		$this->assertSame( 0, $record['basicTheme']['accent']['g'] );
+		$this->assertSame( 0, $record['basicTheme']['accent']['b'] );
+
+		// Red is dark enough to require a white accent foreground at our threshold.
+		$this->assertSame( 255, $record['basicTheme']['accentForeground']['r'] );
+		$this->assertSame( 255, $record['basicTheme']['accentForeground']['g'] );
+		$this->assertSame( 255, $record['basicTheme']['accentForeground']['b'] );
+	}
+
+	/**
+	 * The dedicated basicTheme filter can override the transformed value.
+	 */
+	public function test_publication_basic_theme_filter_overrides_theme() {
+		\add_filter(
+			'atmosphere_publication_basic_theme',
+			static function () {
+				return array(
+					'$type'            => 'site.standard.theme.basic',
+					'background'       => array(
+						'$type' => 'site.standard.theme.color#rgb',
+						'r'     => 1,
+						'g'     => 2,
+						'b'     => 3,
+					),
+					'foreground'       => array(
+						'$type' => 'site.standard.theme.color#rgb',
+						'r'     => 4,
+						'g'     => 5,
+						'b'     => 6,
+					),
+					'accent'           => array(
+						'$type' => 'site.standard.theme.color#rgb',
+						'r'     => 7,
+						'g'     => 8,
+						'b'     => 9,
+					),
+					'accentForeground' => array(
+						'$type' => 'site.standard.theme.color#rgb',
+						'r'     => 10,
+						'g'     => 11,
+						'b'     => 12,
+					),
+				);
+			}
+		);
+
+		$record = ( new Publication( null ) )->transform();
+
+		$this->assertSame( 1, $record['basicTheme']['background']['r'] );
+		$this->assertSame( 10, $record['basicTheme']['accentForeground']['r'] );
+	}
+
+	/**
+	 * A null return from the basicTheme filter omits the field.
+	 */
+	public function test_publication_basic_theme_filter_can_omit_basic_theme() {
+		\add_filter( 'atmosphere_publication_basic_theme', '__return_null' );
+
+		$record = ( new Publication( null ) )->transform();
+
+		$this->assertArrayNotHasKey( 'basicTheme', $record );
 	}
 
 	/**

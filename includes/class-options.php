@@ -10,6 +10,7 @@ namespace Atmosphere;
 \defined( 'ABSPATH' ) || exit;
 
 use Atmosphere\Content_Parser\Registry;
+use Atmosphere\Transformer\Publication;
 
 /**
  * Registers every stored plugin option with the Settings API.
@@ -124,6 +125,42 @@ class Options {
 						'items' => array( 'type' => 'string' ),
 					),
 				),
+			)
+		);
+
+		\register_setting(
+			'atmosphere',
+			Publication::OPTION_THEME_BACKGROUND,
+			array(
+				'type'              => 'string',
+				'description'       => 'Custom background color for the publication basic theme.',
+				'default'           => '',
+				'show_in_rest'      => true,
+				'sanitize_callback' => array( Sanitize::class, 'hex_color' ),
+			)
+		);
+
+		\register_setting(
+			'atmosphere',
+			Publication::OPTION_THEME_FOREGROUND,
+			array(
+				'type'              => 'string',
+				'description'       => 'Custom foreground color for the publication basic theme.',
+				'default'           => '',
+				'show_in_rest'      => true,
+				'sanitize_callback' => array( Sanitize::class, 'hex_color' ),
+			)
+		);
+
+		\register_setting(
+			'atmosphere',
+			Publication::OPTION_THEME_ACCENT,
+			array(
+				'type'              => 'string',
+				'description'       => 'Custom accent color for the publication basic theme.',
+				'default'           => '',
+				'show_in_rest'      => true,
+				'sanitize_callback' => array( Sanitize::class, 'hex_color' ),
 			)
 		);
 

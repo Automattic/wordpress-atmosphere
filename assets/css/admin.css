@@ -10,3 +10,11 @@
 	display: inline-block;
 	margin-top: 2px;
 }
+
+.atmosphere-color-input {
+	width: 8rem;
+}
+
+.wp-picker-container {
+	vertical-align: middle;
+}
