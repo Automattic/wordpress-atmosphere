@@ -182,6 +182,14 @@ class Admin {
 			ATMOSPHERE_VERSION
 		);
 
+		\wp_enqueue_style( 'wp-color-picker' );
+		\wp_enqueue_script( 'wp-color-picker' );
+
+		\wp_add_inline_script(
+			'wp-color-picker',
+			"jQuery( function ( $ ) { $( '.atmosphere-color-input' ).wpColorPicker(); } );"
+		);
+
 		/*
 		 * The connect handle field — and so the typeahead that enhances it —
 		 * only renders while disconnected.

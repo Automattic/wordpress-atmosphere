@@ -46,6 +46,30 @@ class Publication extends Base {
 	public const OPTION_CID = 'atmosphere_publication_cid';
 
 	/**
+	 * Option key for a custom publication background color.
+	 *
+	 * @since unreleased
+	 * @var string
+	 */
+	public const OPTION_THEME_BACKGROUND = 'atmosphere_publication_theme_background';
+
+	/**
+	 * Option key for a custom publication foreground color.
+	 *
+	 * @since unreleased
+	 * @var string
+	 */
+	public const OPTION_THEME_FOREGROUND = 'atmosphere_publication_theme_foreground';
+
+	/**
+	 * Option key for a custom publication accent color.
+	 *
+	 * @since unreleased
+	 * @var string
+	 */
+	public const OPTION_THEME_ACCENT = 'atmosphere_publication_theme_accent';
+
+	/**
 	 * Whether the current transform is a read-only preview projection.
 	 *
 	 * Set for the duration of {@see self::get_preview_records()}. In
@@ -269,8 +293,106 @@ class Publication extends Base {
 
 		$styles  = \wp_get_global_styles();
 		$palette = self::get_palette_lookup();
+		$styles  = \is_array( $styles ) ? $styles : array();
 
-		return self::build_basic_theme( \is_array( $styles ) ? $styles : array(), $palette );
+		$basic_theme = self::build_basic_theme( $styles, $palette );
+		$basic_theme = self::apply_theme_option_overrides( $basic_theme );
+
+		/**
+		 * Filters the publication basicTheme object before record assembly.
+		 *
+		 * Return a `site.standard.theme.basic`-shaped array to override
+		 * the derived value, or null to omit `basicTheme`.
+		 *
+		 * @since unreleased
+		 *
+		 * @param array|null          $basic_theme Current basicTheme object or null.
+		 * @param array               $styles      Output of `wp_get_global_styles()`.
+		 * @param array<string,string> $palette    Slug => hex palette lookup.
+		 */
+		$filtered_theme = \apply_filters( 'atmosphere_publication_basic_theme', $basic_theme, $styles, $palette );
+
+		if ( null !== $filtered_theme && ! \is_array( $filtered_theme ) ) {
+			\_doing_it_wrong(
+				__METHOD__,
+				\esc_html__( 'atmosphere_publication_basic_theme must return an array or null; falling back to the unfiltered basicTheme value.', 'atmosphere' ),
+				'unreleased'
+			);
+
+			return $basic_theme;
+		}
+
+		return $filtered_theme;
+	}
+
+	/**
+	 * Override derived theme colors with user-defined option values.
+	 *
+	 * Custom values are optional; when present they always override the
+	 * corresponding derived color. A full spec record is returned only when
+	 * all required colors can be resolved from the merged result.
+	 *
+	 * @param array|null $basic_theme Derived basicTheme object.
+	 * @return array|null
+	 */
+	private static function apply_theme_option_overrides( ?array $basic_theme ): ?array {
+		$background_override = self::hex_to_rgb( (string) \get_option( self::OPTION_THEME_BACKGROUND, '' ) );
+		$foreground_override = self::hex_to_rgb( (string) \get_option( self::OPTION_THEME_FOREGROUND, '' ) );
+		$accent_override     = self::hex_to_rgb( (string) \get_option( self::OPTION_THEME_ACCENT, '' ) );
+
+		if ( null === $background_override && null === $foreground_override && null === $accent_override ) {
+			return $basic_theme;
+		}
+
+		$background = null !== $background_override
+			? $background_override
+			: self::color_object_to_rgb( $basic_theme['background'] ?? null );
+
+		$foreground = null !== $foreground_override
+			? $foreground_override
+			: self::color_object_to_rgb( $basic_theme['foreground'] ?? null );
+
+		$accent = null !== $accent_override
+			? $accent_override
+			: self::color_object_to_rgb( $basic_theme['accent'] ?? null );
+
+		if ( null === $background || null === $foreground || null === $accent ) {
+			return null;
+		}
+
+		return array(
+			'$type'            => 'site.standard.theme.basic',
+			'background'       => self::color_object( $background ),
+			'foreground'       => self::color_object( $foreground ),
+			'accent'           => self::color_object( $accent ),
+			'accentForeground' => self::color_object( self::contrast_color( $accent ) ),
+		);
+	}
+
+	/**
+	 * Extract an RGB triple from a `site.standard.theme.color#rgb` object.
+	 *
+	 * @param mixed $color Color object candidate.
+	 * @return array{r: int, g: int, b: int}|null
+	 */
+	private static function color_object_to_rgb( $color ): ?array {
+		if ( ! \is_array( $color ) ) {
+			return null;
+		}
+
+		if ( ! isset( $color['r'], $color['g'], $color['b'] ) ) {
+			return null;
+		}
+
+		if ( ! \is_int( $color['r'] ) || ! \is_int( $color['g'] ) || ! \is_int( $color['b'] ) ) {
+			return null;
+		}
+
+		return array(
+			'r' => $color['r'],
+			'g' => $color['g'],
+			'b' => $color['b'],
+		);
 	}
 
 	/**

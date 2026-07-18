@@ -16,6 +16,7 @@ use Atmosphere\Content_Parser\Markpub;
 use Atmosphere\Content_Parser\Pckt;
 use Atmosphere\Content_Parser\Registry;
 use Atmosphere\Handle;
+use Atmosphere\Transformer\Publication;
 use function Atmosphere\get_connection;
 use function Atmosphere\get_supported_post_types;
 use function Atmosphere\has_identity;
@@ -113,6 +114,38 @@ class Settings_Fields {
 			array( self::class, 'render_content_format_field' ),
 			'atmosphere',
 			'atmosphere_publishing'
+		);
+
+		// Publication theme section.
+		\add_settings_section(
+			'atmosphere_publication_theme',
+			\__( 'Publication theme', 'atmosphere' ),
+			array( self::class, 'render_publication_theme_section' ),
+			'atmosphere'
+		);
+
+		\add_settings_field(
+			Publication::OPTION_THEME_BACKGROUND,
+			\__( 'Background color', 'atmosphere' ),
+			array( self::class, 'render_publication_theme_background_field' ),
+			'atmosphere',
+			'atmosphere_publication_theme'
+		);
+
+		\add_settings_field(
+			Publication::OPTION_THEME_FOREGROUND,
+			\__( 'Foreground color', 'atmosphere' ),
+			array( self::class, 'render_publication_theme_foreground_field' ),
+			'atmosphere',
+			'atmosphere_publication_theme'
+		);
+
+		\add_settings_field(
+			Publication::OPTION_THEME_ACCENT,
+			\__( 'Accent color', 'atmosphere' ),
+			array( self::class, 'render_publication_theme_accent_field' ),
+			'atmosphere',
+			'atmosphere_publication_theme'
 		);
 
 		// Reactions section.
@@ -529,6 +562,64 @@ class Settings_Fields {
 	public static function render_reactions_section(): void {
 		?>
 		<p><?php \esc_html_e( 'Choose which interactions are sent to Bluesky and which are saved to WordPress.', 'atmosphere' ); ?></p>
+		<?php
+	}
+
+	/**
+	 * Render the Publication theme section description.
+	 */
+	public static function render_publication_theme_section(): void {
+		echo '<p>' . \esc_html__( 'Set custom colors for your standard.site basic theme. Leave a field blank to keep the color derived from your active WordPress theme.', 'atmosphere' ) . '</p>';
+	}
+
+	/**
+	 * Render the publication background color field.
+	 */
+	public static function render_publication_theme_background_field(): void {
+		$value = (string) \get_option( Publication::OPTION_THEME_BACKGROUND, '' );
+		?>
+		<input
+			type="text"
+			name="<?php echo \esc_attr( Publication::OPTION_THEME_BACKGROUND ); ?>"
+			id="<?php echo \esc_attr( Publication::OPTION_THEME_BACKGROUND ); ?>"
+			class="atmosphere-color-input"
+			value="<?php echo \esc_attr( $value ); ?>"
+		>
+		<p class="description"><?php \esc_html_e( 'Overrides the publication background color.', 'atmosphere' ); ?></p>
+		<?php
+	}
+
+	/**
+	 * Render the publication foreground color field.
+	 */
+	public static function render_publication_theme_foreground_field(): void {
+		$value = (string) \get_option( Publication::OPTION_THEME_FOREGROUND, '' );
+		?>
+		<input
+			type="text"
+			name="<?php echo \esc_attr( Publication::OPTION_THEME_FOREGROUND ); ?>"
+			id="<?php echo \esc_attr( Publication::OPTION_THEME_FOREGROUND ); ?>"
+			class="atmosphere-color-input"
+			value="<?php echo \esc_attr( $value ); ?>"
+		>
+		<p class="description"><?php \esc_html_e( 'Overrides the publication foreground/text color.', 'atmosphere' ); ?></p>
+		<?php
+	}
+
+	/**
+	 * Render the publication accent color field.
+	 */
+	public static function render_publication_theme_accent_field(): void {
+		$value = (string) \get_option( Publication::OPTION_THEME_ACCENT, '' );
+		?>
+		<input
+			type="text"
+			name="<?php echo \esc_attr( Publication::OPTION_THEME_ACCENT ); ?>"
+			id="<?php echo \esc_attr( Publication::OPTION_THEME_ACCENT ); ?>"
+			class="atmosphere-color-input"
+			value="<?php echo \esc_attr( $value ); ?>"
+		>
+		<p class="description"><?php \esc_html_e( 'Overrides the publication accent color. Accent foreground is computed automatically for contrast.', 'atmosphere' ); ?></p>
 		<?php
 	}
 

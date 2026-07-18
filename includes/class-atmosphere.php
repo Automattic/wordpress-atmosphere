@@ -285,6 +285,9 @@ class Atmosphere {
 		\add_action( 'update_option_site_icon', array( $this, 'schedule_publication_sync' ) );
 		\add_action( 'update_option_home', array( $this, 'schedule_publication_sync' ) );
 		\add_action( 'update_option_siteurl', array( $this, 'schedule_publication_sync' ) );
+		\add_action( 'update_option_atmosphere_publication_theme_background', array( $this, 'schedule_publication_sync' ) );
+		\add_action( 'update_option_atmosphere_publication_theme_foreground', array( $this, 'schedule_publication_sync' ) );
+		\add_action( 'update_option_atmosphere_publication_theme_accent', array( $this, 'schedule_publication_sync' ) );
 		\add_action( 'switch_theme', array( $this, 'schedule_publication_sync' ) );
 		\add_action( 'save_post_wp_global_styles', array( $this, 'schedule_publication_sync' ) );
 		\add_action( 'customize_save_after', array( $this, 'schedule_publication_sync' ) );
