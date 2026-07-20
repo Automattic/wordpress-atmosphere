@@ -580,7 +580,7 @@ class Settings_Fields {
 	 * Render the Publication theme section description.
 	 */
 	public static function render_publication_theme_section(): void {
-		echo '<p>' . \esc_html__( 'Choose the colors apps use when they display your site. Leave a field blank to keep the matching color from your active WordPress theme. If a color cannot be read from your theme, set all three here so your colors are published.', 'atmosphere' ) . '</p>';
+		echo '<p>' . \esc_html__( 'Choose the colors apps use when they display your site. Empty a field to go back to the matching color from your active WordPress theme. If a color cannot be read from your theme, set all three here so your colors are published.', 'atmosphere' ) . '</p>';
 	}
 
 	/**
@@ -605,6 +605,7 @@ class Settings_Fields {
 			id="<?php echo \esc_attr( $option ); ?>"
 			class="atmosphere-color-input"
 			value="<?php echo \esc_attr( (string) \get_option( $option, '' ) ); ?>"
+			data-default-color="<?php echo \esc_attr( $derived ); ?>"
 		>
 		<p class="description">
 			<?php echo \esc_html( (string) ( $args['description'] ?? '' ) ); ?>
