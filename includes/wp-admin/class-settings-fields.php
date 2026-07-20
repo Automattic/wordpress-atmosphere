@@ -586,9 +586,17 @@ class Settings_Fields {
 	/**
 	 * Render a publication theme color field.
 	 *
-	 * @param array $args Field args: `option` and `description`.
+	 * @param array $args {
+	 *     Field arguments.
+	 *
+	 *     @type string $option      Option name to read and save.
+	 *     @type string $key         Derived-color key: background, foreground, or accent.
+	 *     @type string $description Help text shown under the input.
+	 * }
 	 */
 	public static function render_publication_theme_color_field( array $args ): void {
+		static $derived_colors = null;
+
 		$option = (string) ( $args['option'] ?? '' );
 		$key    = (string) ( $args['key'] ?? '' );
 
@@ -596,7 +604,12 @@ class Settings_Fields {
 			return;
 		}
 
-		$derived = Publication::get_derived_theme_colors()[ $key ] ?? '';
+		// Resolved once per request; all three fields render on the same screen.
+		if ( null === $derived_colors ) {
+			$derived_colors = Publication::get_derived_theme_colors();
+		}
+
+		$derived = $derived_colors[ $key ] ?? '';
 
 		?>
 		<input

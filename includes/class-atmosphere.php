@@ -285,9 +285,25 @@ class Atmosphere {
 		\add_action( 'update_option_site_icon', array( $this, 'schedule_publication_sync' ) );
 		\add_action( 'update_option_home', array( $this, 'schedule_publication_sync' ) );
 		\add_action( 'update_option_siteurl', array( $this, 'schedule_publication_sync' ) );
-		\add_action( 'update_option_atmosphere_publication_theme_background', array( $this, 'schedule_publication_sync' ) );
-		\add_action( 'update_option_atmosphere_publication_theme_foreground', array( $this, 'schedule_publication_sync' ) );
-		\add_action( 'update_option_atmosphere_publication_theme_accent', array( $this, 'schedule_publication_sync' ) );
+
+		/*
+		 * Both `add_option_*` and `update_option_*` for the theme colours:
+		 * they have no option row until a colour is first picked, and
+		 * WordPress routes that first save through `add_option()`, where
+		 * `update_option_*` never fires. Without the add hook the opening
+		 * colour choice would not reach the publication record. The core
+		 * options above always exist, so they need the update hook only.
+		 */
+		foreach (
+			array(
+				Publication::OPTION_THEME_BACKGROUND,
+				Publication::OPTION_THEME_FOREGROUND,
+				Publication::OPTION_THEME_ACCENT,
+			) as $theme_color_option
+		) {
+			\add_action( 'add_option_' . $theme_color_option, array( $this, 'schedule_publication_sync' ) );
+			\add_action( 'update_option_' . $theme_color_option, array( $this, 'schedule_publication_sync' ) );
+		}
 		\add_action( 'switch_theme', array( $this, 'schedule_publication_sync' ) );
 		\add_action( 'save_post_wp_global_styles', array( $this, 'schedule_publication_sync' ) );
 		\add_action( 'customize_save_after', array( $this, 'schedule_publication_sync' ) );

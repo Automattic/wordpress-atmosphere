@@ -9,6 +9,7 @@
 
 namespace Atmosphere\Tests\WP_Admin;
 
+use Atmosphere\Atmosphere;
 use Atmosphere\Options;
 use Atmosphere\Sanitize;
 use Atmosphere\Transformer\Publication;
@@ -25,6 +26,9 @@ class Test_Theme_Color_Setting extends \WP_UnitTestCase {
 		\delete_option( Publication::OPTION_THEME_BACKGROUND );
 		\delete_option( Publication::OPTION_THEME_FOREGROUND );
 		\delete_option( Publication::OPTION_THEME_ACCENT );
+		\delete_option( 'atmosphere_connection' );
+		\delete_option( 'atmosphere_identity' );
+		\wp_unschedule_hook( 'atmosphere_sync_publication' );
 
 		parent::tear_down();
 	}
@@ -75,11 +79,49 @@ class Test_Theme_Color_Setting extends \WP_UnitTestCase {
 	 * reflects the new colors.
 	 */
 	public function test_saving_theme_color_schedules_publication_sync() {
+		\update_option(
+			'atmosphere_connection',
+			array(
+				'access_token' => 'encrypted-token',
+				'did'          => 'did:plc:test123',
+				'pds_endpoint' => 'https://pds.example.com',
+			)
+		);
+		\update_option(
+			'atmosphere_identity',
+			array(
+				'did'          => 'did:plc:test123',
+				'handle'       => 'example.com',
+				'pds_endpoint' => 'https://pds.example.com',
+			)
+		);
+
+		( new Atmosphere() )->init();
+
+		/*
+		 * The first save of a colour creates the option row, which
+		 * WordPress routes through add_option() rather than
+		 * update_option(). That path is the one a site owner hits when
+		 * they pick a colour for the first time.
+		 */
+		\delete_option( Publication::OPTION_THEME_BACKGROUND );
+		\wp_unschedule_hook( 'atmosphere_sync_publication' );
+
 		\update_option( Publication::OPTION_THEME_BACKGROUND, '#123456' );
 
 		$this->assertNotFalse(
-			\has_action( 'update_option_' . Publication::OPTION_THEME_BACKGROUND ),
-			'The background color option must trigger a publication sync.'
+			\wp_next_scheduled( 'atmosphere_sync_publication' ),
+			'Picking a color for the first time must queue a publication sync.'
+		);
+
+		// Changing an existing colour must keep working too.
+		\wp_unschedule_hook( 'atmosphere_sync_publication' );
+
+		\update_option( Publication::OPTION_THEME_BACKGROUND, '#654321' );
+
+		$this->assertNotFalse(
+			\wp_next_scheduled( 'atmosphere_sync_publication' ),
+			'Changing a stored color must queue a publication sync.'
 		);
 	}
 }
