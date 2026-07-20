@@ -119,7 +119,7 @@ class Settings_Fields {
 		// Publication theme section.
 		\add_settings_section(
 			'atmosphere_publication_theme',
-			\__( 'Publication theme', 'atmosphere' ),
+			\__( 'Theme', 'atmosphere' ),
 			array( self::class, 'render_publication_theme_section' ),
 			'atmosphere'
 		);
