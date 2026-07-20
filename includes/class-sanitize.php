@@ -11,7 +11,6 @@ namespace Atmosphere;
 
 use Atmosphere\Content_Parser\Registry;
 use Atmosphere\OAuth\Client;
-use Atmosphere\Transformer\Publication;
 
 /**
  * Stateless sanitize helpers wired to `register_setting()` callbacks.
@@ -174,8 +173,11 @@ class Sanitize {
 	/**
 	 * Sanitize a publication-theme hex color.
 	 *
-	 * Accepts empty string or a valid `#RGB` / `#RRGGBB` value.
-	 * Valid colors are normalized to lowercase `#rrggbb`.
+	 * Accepts an empty string — which means "keep the colour derived from
+	 * the active theme" — or a `#RGB` / `#RRGGBB` value, lower-cased.
+	 * Anything else sanitizes to empty rather than being stored, so a
+	 * malformed paste degrades to the derived colour instead of dropping
+	 * the whole theme object from the record.
 	 *
 	 * @param mixed $value Submitted value.
 	 * @return string
@@ -185,19 +187,14 @@ class Sanitize {
 			return '';
 		}
 
-		$value = \sanitize_text_field( $value );
-		$value = \trim( $value );
+		// Core validates the `#RGB` / `#RRGGBB` shape and returns null otherwise.
+		$color = \strtolower( (string) \sanitize_hex_color( \trim( $value ) ) );
 
-		if ( '' === $value ) {
-			return '';
+		// Normalize the shorthand form so stored values are always `#rrggbb`.
+		if ( 4 === \strlen( $color ) ) {
+			$color = '#' . $color[1] . $color[1] . $color[2] . $color[2] . $color[3] . $color[3];
 		}
 
-		$rgb = Publication::hex_to_rgb( $value );
-
-		if ( null === $rgb ) {
-			return '';
-		}
-
-		return \sprintf( '#%02x%02x%02x', $rgb['r'], $rgb['g'], $rgb['b'] );
+		return $color;
 	}
 }

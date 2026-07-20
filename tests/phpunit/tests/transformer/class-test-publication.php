@@ -664,6 +664,102 @@ class Test_Publication extends \WP_UnitTestCase {
 	}
 
 	/**
+	 * A single stored override replaces only its own colour; the rest
+	 * stay derived from the active theme.
+	 */
+	public function test_publication_theme_option_overrides_single_color() {
+		$styles = array(
+			'color'    => array(
+				'background' => '#ffffff',
+				'text'       => '#111111',
+			),
+			'elements' => array(
+				'link' => array( 'color' => array( 'text' => '#0000ff' ) ),
+			),
+		);
+
+		$derived = Publication::build_basic_theme( $styles, array() );
+		$merged  = Publication::build_basic_theme(
+			$styles,
+			array(),
+			array(
+				'accent' => array(
+					'r' => 255,
+					'g' => 0,
+					'b' => 0,
+				),
+			)
+		);
+
+		// Background and foreground keep the derived values.
+		$this->assertSame( $derived['background'], $merged['background'] );
+		$this->assertSame( $derived['foreground'], $merged['foreground'] );
+
+		// Only the accent changes — and its contrast colour is recomputed.
+		$this->assertSame( 255, $merged['accent']['r'] );
+		$this->assertSame( 0, $merged['accent']['g'] );
+		$this->assertSame( 255, $merged['accentForeground']['r'] );
+	}
+
+	/**
+	 * Overrides still apply when the active theme exposes no usable
+	 * colours, as long as all three are set — otherwise the record has
+	 * no complete theme to publish.
+	 */
+	public function test_publication_theme_options_apply_without_derivable_theme() {
+		$this->assertNull( Publication::build_basic_theme( array(), array() ) );
+
+		$complete = Publication::build_basic_theme(
+			array(),
+			array(),
+			array(
+				'background' => array(
+					'r' => 1,
+					'g' => 2,
+					'b' => 3,
+				),
+				'foreground' => array(
+					'r' => 4,
+					'g' => 5,
+					'b' => 6,
+				),
+				'accent'     => array(
+					'r' => 7,
+					'g' => 8,
+					'b' => 9,
+				),
+			)
+		);
+
+		$this->assertSame( 1, $complete['background']['r'] );
+		$this->assertSame( 'site.standard.theme.basic', $complete['$type'] );
+
+		$partial = Publication::build_basic_theme(
+			array(),
+			array(),
+			array(
+				'accent' => array(
+					'r' => 7,
+					'g' => 8,
+					'b' => 9,
+				),
+			)
+		);
+
+		$this->assertNull( $partial, 'An incomplete theme must be omitted rather than half-published.' );
+	}
+
+	/**
+	 * A malformed stored value is ignored rather than dropping the whole
+	 * theme object from the record.
+	 */
+	public function test_publication_theme_option_ignores_unparseable_value() {
+		\update_option( Publication::OPTION_THEME_ACCENT, 'not-a-color' );
+
+		$this->assertSame( array(), Publication::get_theme_option_overrides() );
+	}
+
+	/**
 	 * The dedicated basicTheme filter can override the transformed value.
 	 */
 	public function test_publication_basic_theme_filter_overrides_theme() {

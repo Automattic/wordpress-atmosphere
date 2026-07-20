@@ -287,16 +287,17 @@ class Publication extends Base {
 	 * @return array|null
 	 */
 	private function extract_basic_theme(): ?array {
-		if ( ! \function_exists( 'wp_get_global_styles' ) ) {
-			return null;
-		}
+		/*
+		 * Global styles drive the *derived* colours only. Stored
+		 * overrides and the filter below still apply without them, so
+		 * this degrades to an empty style array rather than bailing.
+		 */
+		$styles = \function_exists( 'wp_get_global_styles' ) ? \wp_get_global_styles() : array();
+		$styles = \is_array( $styles ) ? $styles : array();
 
-		$styles  = \wp_get_global_styles();
 		$palette = self::get_palette_lookup();
-		$styles  = \is_array( $styles ) ? $styles : array();
 
-		$basic_theme = self::build_basic_theme( $styles, $palette );
-		$basic_theme = self::apply_theme_option_overrides( $basic_theme );
+		$basic_theme = self::build_basic_theme( $styles, $palette, self::get_theme_option_overrides() );
 
 		/**
 		 * Filters the publication basicTheme object before record assembly.
@@ -326,73 +327,32 @@ class Publication extends Base {
 	}
 
 	/**
-	 * Override derived theme colors with user-defined option values.
+	 * Read the stored theme-colour overrides as resolved RGB triples.
 	 *
-	 * Custom values are optional; when present they always override the
-	 * corresponding derived color. A full spec record is returned only when
-	 * all required colors can be resolved from the merged result.
+	 * Unset or unparseable options are omitted, so each colour falls
+	 * through to the value derived from the active theme.
 	 *
-	 * @param array|null $basic_theme Derived basicTheme object.
-	 * @return array|null
+	 * @return array<string, array{r: int, g: int, b: int}> Keyed by
+	 *                background / foreground / accent.
 	 */
-	private static function apply_theme_option_overrides( ?array $basic_theme ): ?array {
-		$background_override = self::hex_to_rgb( (string) \get_option( self::OPTION_THEME_BACKGROUND, '' ) );
-		$foreground_override = self::hex_to_rgb( (string) \get_option( self::OPTION_THEME_FOREGROUND, '' ) );
-		$accent_override     = self::hex_to_rgb( (string) \get_option( self::OPTION_THEME_ACCENT, '' ) );
-
-		if ( null === $background_override && null === $foreground_override && null === $accent_override ) {
-			return $basic_theme;
-		}
-
-		$background = null !== $background_override
-			? $background_override
-			: self::color_object_to_rgb( $basic_theme['background'] ?? null );
-
-		$foreground = null !== $foreground_override
-			? $foreground_override
-			: self::color_object_to_rgb( $basic_theme['foreground'] ?? null );
-
-		$accent = null !== $accent_override
-			? $accent_override
-			: self::color_object_to_rgb( $basic_theme['accent'] ?? null );
-
-		if ( null === $background || null === $foreground || null === $accent ) {
-			return null;
-		}
-
-		return array(
-			'$type'            => 'site.standard.theme.basic',
-			'background'       => self::color_object( $background ),
-			'foreground'       => self::color_object( $foreground ),
-			'accent'           => self::color_object( $accent ),
-			'accentForeground' => self::color_object( self::contrast_color( $accent ) ),
+	public static function get_theme_option_overrides(): array {
+		$options = array(
+			'background' => self::OPTION_THEME_BACKGROUND,
+			'foreground' => self::OPTION_THEME_FOREGROUND,
+			'accent'     => self::OPTION_THEME_ACCENT,
 		);
-	}
 
-	/**
-	 * Extract an RGB triple from a `site.standard.theme.color#rgb` object.
-	 *
-	 * @param mixed $color Color object candidate.
-	 * @return array{r: int, g: int, b: int}|null
-	 */
-	private static function color_object_to_rgb( $color ): ?array {
-		if ( ! \is_array( $color ) ) {
-			return null;
+		$overrides = array();
+
+		foreach ( $options as $key => $option ) {
+			$rgb = self::hex_to_rgb( (string) \get_option( $option, '' ) );
+
+			if ( null !== $rgb ) {
+				$overrides[ $key ] = $rgb;
+			}
 		}
 
-		if ( ! isset( $color['r'], $color['g'], $color['b'] ) ) {
-			return null;
-		}
-
-		if ( ! \is_int( $color['r'] ) || ! \is_int( $color['g'] ) || ! \is_int( $color['b'] ) ) {
-			return null;
-		}
-
-		return array(
-			'r' => $color['r'],
-			'g' => $color['g'],
-			'b' => $color['b'],
-		);
+		return $overrides;
 	}
 
 	/**
@@ -404,14 +364,23 @@ class Publication extends Base {
 	 * theme.json merge. The record carries the `site.standard.theme.basic`
 	 * `$type` discriminator so it passes lexicon validation.
 	 *
-	 * @param array                $styles  Output of `wp_get_global_styles()`.
-	 * @param array<string,string> $palette Slug => hex map from the theme palette.
+	 * Site-owner overrides take precedence over the derived colours,
+	 * per colour: an override for one channel leaves the rest derived.
+	 * `accentForeground` is always computed from the winning accent, so
+	 * a custom accent keeps its contrast guarantee.
+	 *
+	 * @param array                $styles    Output of `wp_get_global_styles()`.
+	 * @param array<string,string> $palette   Slug => hex map from the theme palette.
+	 * @param array                $overrides Optional. Resolved RGB triples keyed by
+	 *                                        background / foreground / accent.
 	 * @return array|null Spec-shaped record, or null when any required colour
 	 *                    is missing.
 	 */
-	public static function build_basic_theme( array $styles, array $palette ): ?array {
-		$background = self::resolve_color( (string) ( $styles['color']['background'] ?? '' ), $palette );
-		$foreground = self::resolve_color( (string) ( $styles['color']['text'] ?? '' ), $palette );
+	public static function build_basic_theme( array $styles, array $palette, array $overrides = array() ): ?array {
+		$background = $overrides['background']
+			?? self::resolve_color( (string) ( $styles['color']['background'] ?? '' ), $palette );
+		$foreground = $overrides['foreground']
+			?? self::resolve_color( (string) ( $styles['color']['text'] ?? '' ), $palette );
 
 		/*
 		 * Link colour is the conventional accent source in WP themes —
@@ -419,7 +388,7 @@ class Publication extends Base {
 		 * Falls back to a palette slug literally named `accent` for
 		 * themes that don't restyle links.
 		 */
-		$accent = self::resolve_color(
+		$accent = $overrides['accent'] ?? self::resolve_color(
 			(string) ( $styles['elements']['link']['color']['text'] ?? '' ),
 			$palette
 		);

@@ -14,6 +14,7 @@ use Atmosphere\Connectors;
 use Atmosphere\Handle;
 use Atmosphere\OAuth\Client;
 use Atmosphere\Publisher;
+use Atmosphere\Transformer\Publication;
 use function Atmosphere\get_identity;
 use function Atmosphere\get_supported_post_types;
 use function Atmosphere\handle_typeahead_url;
@@ -185,9 +186,27 @@ class Admin {
 		\wp_enqueue_style( 'wp-color-picker' );
 		\wp_enqueue_script( 'wp-color-picker' );
 
+		/*
+		 * Offer the active theme's own palette as swatches: those are the
+		 * colours the publication record would otherwise derive, so the
+		 * common case ("same as my theme, but pinned") is one click.
+		 */
+		$swatches = array();
+
+		foreach ( Publication::get_palette_lookup() as $hex ) {
+			$hex = \sanitize_hex_color( (string) $hex );
+
+			if ( $hex && ! \in_array( $hex, $swatches, true ) ) {
+				$swatches[] = $hex;
+			}
+		}
+
 		\wp_add_inline_script(
 			'wp-color-picker',
-			"jQuery( function ( $ ) { $( '.atmosphere-color-input' ).wpColorPicker(); } );"
+			\sprintf(
+				'jQuery( function ( $ ) { $( ".atmosphere-color-input" ).wpColorPicker( %s ); } );',
+				\wp_json_encode( array( 'palettes' => \array_slice( $swatches, 0, 8 ) ) )
+			)
 		);
 
 		/*
