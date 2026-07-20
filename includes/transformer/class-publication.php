@@ -327,6 +327,40 @@ class Publication extends Base {
 	}
 
 	/**
+	 * The colours derived from the active theme, as hex strings.
+	 *
+	 * Mirrors what {@see self::build_basic_theme()} derives with no
+	 * overrides applied, so the settings screen can show a site owner
+	 * what a blank field will actually publish. Channels that can't be
+	 * derived are omitted.
+	 *
+	 * @return array<string, string> Keyed by background / foreground / accent.
+	 */
+	public static function get_derived_theme_colors(): array {
+		$styles = \function_exists( 'wp_get_global_styles' ) ? \wp_get_global_styles() : array();
+		$styles = \is_array( $styles ) ? $styles : array();
+
+		$palette = self::get_palette_lookup();
+
+		$derived = array(
+			'background' => self::resolve_color( (string) ( $styles['color']['background'] ?? '' ), $palette ),
+			'foreground' => self::resolve_color( (string) ( $styles['color']['text'] ?? '' ), $palette ),
+			'accent'     => self::resolve_color( (string) ( $styles['elements']['link']['color']['text'] ?? '' ), $palette )
+				?? self::resolve_palette_accent( $palette ),
+		);
+
+		$colors = array();
+
+		foreach ( $derived as $key => $rgb ) {
+			if ( null !== $rgb ) {
+				$colors[ $key ] = \sprintf( '#%02x%02x%02x', $rgb['r'], $rgb['g'], $rgb['b'] );
+			}
+		}
+
+		return $colors;
+	}
+
+	/**
 	 * Read the stored theme-colour overrides as resolved RGB triples.
 	 *
 	 * Unset or unparseable options are omitted, so each colour falls
@@ -393,8 +427,8 @@ class Publication extends Base {
 			$palette
 		);
 
-		if ( null === $accent && isset( $palette['accent'] ) ) {
-			$accent = self::resolve_color( $palette['accent'], $palette );
+		if ( null === $accent ) {
+			$accent = self::resolve_palette_accent( $palette );
 		}
 
 		if ( null === $background || null === $foreground || null === $accent ) {
@@ -408,6 +442,49 @@ class Publication extends Base {
 			'accent'           => self::color_object( $accent ),
 			'accentForeground' => self::color_object( self::contrast_color( $accent ) ),
 		);
+	}
+
+	/**
+	 * Pick an accent colour out of the theme palette.
+	 *
+	 * Themes that style links with `currentColor` — including the default
+	 * Twenty Twenty-Five — leave nothing to derive from the link element,
+	 * so fall back to the palette's own accent slugs. An exact `accent`
+	 * wins; otherwise the lowest-numbered `accent-N` does, which is the
+	 * slug core's own themes use for their primary accent. Values that
+	 * aren't plain colours (`color-mix(...)`, gradients) are skipped.
+	 *
+	 * @param array<string,string> $palette Slug => hex map.
+	 * @return array{r: int, g: int, b: int}|null
+	 */
+	private static function resolve_palette_accent( array $palette ): ?array {
+		if ( isset( $palette['accent'] ) ) {
+			$accent = self::resolve_color( $palette['accent'], $palette );
+
+			if ( null !== $accent ) {
+				return $accent;
+			}
+		}
+
+		$numbered = array();
+
+		foreach ( $palette as $slug => $value ) {
+			if ( \preg_match( '/^accent-(\d+)$/', (string) $slug, $matches ) ) {
+				$numbered[ (int) $matches[1] ] = $value;
+			}
+		}
+
+		\ksort( $numbered );
+
+		foreach ( $numbered as $value ) {
+			$accent = self::resolve_color( (string) $value, $palette );
+
+			if ( null !== $accent ) {
+				return $accent;
+			}
+		}
+
+		return null;
 	}
 
 	/**

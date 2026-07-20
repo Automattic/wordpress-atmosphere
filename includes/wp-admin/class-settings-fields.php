@@ -126,14 +126,17 @@ class Settings_Fields {
 
 		$theme_color_fields = array(
 			Publication::OPTION_THEME_BACKGROUND => array(
+				'key'         => 'background',
 				'label'       => \__( 'Background color', 'atmosphere' ),
 				'description' => \__( 'Overrides the publication background color.', 'atmosphere' ),
 			),
 			Publication::OPTION_THEME_FOREGROUND => array(
+				'key'         => 'foreground',
 				'label'       => \__( 'Foreground color', 'atmosphere' ),
 				'description' => \__( 'Overrides the publication foreground/text color.', 'atmosphere' ),
 			),
 			Publication::OPTION_THEME_ACCENT     => array(
+				'key'         => 'accent',
 				'label'       => \__( 'Accent color', 'atmosphere' ),
 				'description' => \__( 'Overrides the publication accent color. Accent foreground is computed automatically for contrast.', 'atmosphere' ),
 			),
@@ -150,6 +153,7 @@ class Settings_Fields {
 					// Ties the row's <th> label to the input for screen readers.
 					'label_for'   => $option,
 					'option'      => $option,
+					'key'         => $field['key'],
 					'description' => $field['description'],
 				)
 			);
@@ -576,7 +580,7 @@ class Settings_Fields {
 	 * Render the Publication theme section description.
 	 */
 	public static function render_publication_theme_section(): void {
-		echo '<p>' . \esc_html__( 'Choose the colors apps use when they display your site. Leave a field blank to keep the matching color from your active WordPress theme — but if a color cannot be read from your theme, set all three here so your colors are published.', 'atmosphere' ) . '</p>';
+		echo '<p>' . \esc_html__( 'Choose the colors apps use when they display your site. Leave a field blank to keep the matching color from your active WordPress theme. If a color cannot be read from your theme, set all three here so your colors are published.', 'atmosphere' ) . '</p>';
 	}
 
 	/**
@@ -586,10 +590,13 @@ class Settings_Fields {
 	 */
 	public static function render_publication_theme_color_field( array $args ): void {
 		$option = (string) ( $args['option'] ?? '' );
+		$key    = (string) ( $args['key'] ?? '' );
 
 		if ( '' === $option ) {
 			return;
 		}
+
+		$derived = Publication::get_derived_theme_colors()[ $key ] ?? '';
 
 		?>
 		<input
@@ -598,8 +605,24 @@ class Settings_Fields {
 			id="<?php echo \esc_attr( $option ); ?>"
 			class="atmosphere-color-input"
 			value="<?php echo \esc_attr( (string) \get_option( $option, '' ) ); ?>"
+			data-default-color="<?php echo \esc_attr( $derived ); ?>"
 		>
-		<p class="description"><?php echo \esc_html( (string) ( $args['description'] ?? '' ) ); ?></p>
+		<p class="description">
+			<?php echo \esc_html( (string) ( $args['description'] ?? '' ) ); ?>
+			<?php if ( '' !== $derived ) : ?>
+				<br>
+				<?php
+				\printf(
+					/* translators: %s: hex color derived from the active theme, e.g. #ffffff. */
+					\esc_html__( 'Your theme currently provides %s.', 'atmosphere' ),
+					'<code>' . \esc_html( $derived ) . '</code>'
+				);
+				?>
+			<?php else : ?>
+				<br>
+				<strong><?php \esc_html_e( 'Your theme does not provide this color. Set it here, along with the other two, for any colors to be published.', 'atmosphere' ); ?></strong>
+			<?php endif; ?>
+		</p>
 		<?php
 	}
 

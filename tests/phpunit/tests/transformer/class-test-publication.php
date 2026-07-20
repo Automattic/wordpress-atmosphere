@@ -664,6 +664,65 @@ class Test_Publication extends \WP_UnitTestCase {
 	}
 
 	/**
+	 * Themes that style links with `currentColor` and number their accent
+	 * palette slugs — Twenty Twenty-Five, the default theme, does both —
+	 * still yield an accent, and therefore a complete theme object.
+	 */
+	public function test_build_basic_theme_falls_back_to_numbered_palette_accent() {
+		$styles = array(
+			'color'    => array(
+				'background' => '#ffffff',
+				'text'       => '#111111',
+			),
+			'elements' => array(
+				'link' => array( 'color' => array( 'text' => 'currentColor' ) ),
+			),
+		);
+
+		$palette = array(
+			'base'     => '#ffffff',
+			'contrast' => '#111111',
+			'accent-1' => '#ffee58',
+			'accent-2' => '#f6cff4',
+		);
+
+		$theme = Publication::build_basic_theme( $styles, $palette );
+
+		$this->assertNotNull( $theme, 'A numbered accent slug must satisfy the accent requirement.' );
+		$this->assertSame( 255, $theme['accent']['r'] );
+		$this->assertSame( 238, $theme['accent']['g'] );
+		$this->assertSame( 88, $theme['accent']['b'] );
+	}
+
+	/**
+	 * Palette entries that are not plain colours are skipped when
+	 * picking a numbered accent.
+	 */
+	public function test_build_basic_theme_skips_unresolvable_palette_accents() {
+		$styles = array(
+			'color'    => array(
+				'background' => '#ffffff',
+				'text'       => '#111111',
+			),
+			'elements' => array(
+				'link' => array( 'color' => array( 'text' => 'currentColor' ) ),
+			),
+		);
+
+		$palette = array(
+			'accent-1' => 'color-mix(in srgb, currentColor 20%, transparent)',
+			'accent-2' => '#0693e3',
+		);
+
+		$theme = Publication::build_basic_theme( $styles, $palette );
+
+		$this->assertNotNull( $theme );
+		$this->assertSame( 6, $theme['accent']['r'] );
+		$this->assertSame( 147, $theme['accent']['g'] );
+		$this->assertSame( 227, $theme['accent']['b'] );
+	}
+
+	/**
 	 * A single stored override replaces only its own colour; the rest
 	 * stay derived from the active theme.
 	 */
