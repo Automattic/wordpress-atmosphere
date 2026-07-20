@@ -605,7 +605,6 @@ class Settings_Fields {
 			id="<?php echo \esc_attr( $option ); ?>"
 			class="atmosphere-color-input"
 			value="<?php echo \esc_attr( (string) \get_option( $option, '' ) ); ?>"
-			data-default-color="<?php echo \esc_attr( $derived ); ?>"
 		>
 		<p class="description">
 			<?php echo \esc_html( (string) ( $args['description'] ?? '' ) ); ?>
