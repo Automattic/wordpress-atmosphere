@@ -140,7 +140,12 @@ class Settings_Fields {
 		);
 
 		foreach ( Publication::get_theme_color_options() as $key => $option ) {
-			list( $label, $description ) = $theme_color_labels[ $key ];
+			/*
+			 * Falls back to the raw option name so a channel added to the
+			 * canonical map without a label here still renders — visibly
+			 * unlabelled, rather than warning and rendering blank.
+			 */
+			list( $label, $description ) = $theme_color_labels[ $key ] ?? array( $option, '' );
 
 			\add_settings_field(
 				$option,
