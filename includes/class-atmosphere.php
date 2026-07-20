@@ -279,30 +279,22 @@ class Atmosphere {
 		 * theme colours from: classic-theme Customizer saves
 		 * (`customize_save_after`) and block-theme Site Editor saves
 		 * (the `wp_global_styles` post update).
-		 */
-		\add_action( 'update_option_blogname', array( $this, 'schedule_publication_sync' ) );
-		\add_action( 'update_option_blogdescription', array( $this, 'schedule_publication_sync' ) );
-		\add_action( 'update_option_site_icon', array( $this, 'schedule_publication_sync' ) );
-		\add_action( 'update_option_home', array( $this, 'schedule_publication_sync' ) );
-		\add_action( 'update_option_siteurl', array( $this, 'schedule_publication_sync' ) );
-
-		/*
-		 * Both `add_option_*` and `update_option_*` for the theme colours:
-		 * they have no option row until a colour is first picked, and
-		 * WordPress routes that first save through `add_option()`, where
-		 * `update_option_*` never fires. Without the add hook the opening
-		 * colour choice would not reach the publication record. The core
-		 * options above always exist, so they need the update hook only.
+		 *
+		 * Each option gets both `add_option_*` and `update_option_*`: an
+		 * option with no row yet is written by `add_option()`, where
+		 * `update_option_*` never fires, which is the case a plugin
+		 * option hits the first time it is saved. Registering both for
+		 * every option keeps the list uniform, and the add hook is
+		 * simply never reached for the core options, which always exist.
 		 */
 		foreach (
-			array(
-				Publication::OPTION_THEME_BACKGROUND,
-				Publication::OPTION_THEME_FOREGROUND,
-				Publication::OPTION_THEME_ACCENT,
-			) as $theme_color_option
+			\array_merge(
+				array( 'blogname', 'blogdescription', 'site_icon', 'home', 'siteurl' ),
+				\array_values( Publication::get_theme_color_options() )
+			) as $publication_option
 		) {
-			\add_action( 'add_option_' . $theme_color_option, array( $this, 'schedule_publication_sync' ) );
-			\add_action( 'update_option_' . $theme_color_option, array( $this, 'schedule_publication_sync' ) );
+			\add_action( 'add_option_' . $publication_option, array( $this, 'schedule_publication_sync' ) );
+			\add_action( 'update_option_' . $publication_option, array( $this, 'schedule_publication_sync' ) );
 		}
 		\add_action( 'switch_theme', array( $this, 'schedule_publication_sync' ) );
 		\add_action( 'save_post_wp_global_styles', array( $this, 'schedule_publication_sync' ) );

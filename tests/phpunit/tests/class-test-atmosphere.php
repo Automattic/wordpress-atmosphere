@@ -2264,16 +2264,26 @@ class Test_Atmosphere extends WP_UnitTestCase {
 	 * trigger set so a future refactor can't silently drop one.
 	 */
 	public function test_init_wires_publication_sync_triggers() {
+		$option_triggers = \array_merge(
+			array( 'blogname', 'blogdescription', 'site_icon', 'home', 'siteurl' ),
+			\array_values( \Atmosphere\Transformer\Publication::get_theme_color_options() )
+		);
+
 		$triggers = array(
-			'update_option_blogname',
-			'update_option_blogdescription',
-			'update_option_site_icon',
-			'update_option_home',
-			'update_option_siteurl',
 			'switch_theme',
 			'save_post_wp_global_styles',
 			'customize_save_after',
 		);
+
+		/*
+		 * Both hooks per option: an option with no row yet is written by
+		 * `add_option()`, where `update_option_*` never fires — the case a
+		 * plugin option hits the first time it is saved.
+		 */
+		foreach ( $option_triggers as $option ) {
+			$triggers[] = 'add_option_' . $option;
+			$triggers[] = 'update_option_' . $option;
+		}
 
 		$this->atmosphere->init();
 

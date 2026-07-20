@@ -124,28 +124,27 @@ class Settings_Fields {
 			'atmosphere'
 		);
 
-		$theme_color_fields = array(
-			Publication::OPTION_THEME_BACKGROUND => array(
-				'key'         => 'background',
-				'label'       => \__( 'Background color', 'atmosphere' ),
-				'description' => \__( 'Overrides the publication background color.', 'atmosphere' ),
+		$theme_color_labels = array(
+			'background' => array(
+				\__( 'Background color', 'atmosphere' ),
+				\__( 'Overrides the publication background color.', 'atmosphere' ),
 			),
-			Publication::OPTION_THEME_FOREGROUND => array(
-				'key'         => 'foreground',
-				'label'       => \__( 'Foreground color', 'atmosphere' ),
-				'description' => \__( 'Overrides the publication foreground/text color.', 'atmosphere' ),
+			'foreground' => array(
+				\__( 'Foreground color', 'atmosphere' ),
+				\__( 'Overrides the publication foreground/text color.', 'atmosphere' ),
 			),
-			Publication::OPTION_THEME_ACCENT     => array(
-				'key'         => 'accent',
-				'label'       => \__( 'Accent color', 'atmosphere' ),
-				'description' => \__( 'Overrides the publication accent color. Accent foreground is computed automatically for contrast.', 'atmosphere' ),
+			'accent'     => array(
+				\__( 'Accent color', 'atmosphere' ),
+				\__( 'Overrides the publication accent color. Accent foreground is computed automatically for contrast.', 'atmosphere' ),
 			),
 		);
 
-		foreach ( $theme_color_fields as $option => $field ) {
+		foreach ( Publication::get_theme_color_options() as $key => $option ) {
+			list( $label, $description ) = $theme_color_labels[ $key ];
+
 			\add_settings_field(
 				$option,
-				$field['label'],
+				$label,
 				array( self::class, 'render_publication_theme_color_field' ),
 				'atmosphere',
 				'atmosphere_publication_theme',
@@ -153,8 +152,8 @@ class Settings_Fields {
 					// Ties the row's <th> label to the input for screen readers.
 					'label_for'   => $option,
 					'option'      => $option,
-					'key'         => $field['key'],
-					'description' => $field['description'],
+					'key'         => $key,
+					'description' => $description,
 				)
 			);
 		}
@@ -597,19 +596,14 @@ class Settings_Fields {
 	public static function render_publication_theme_color_field( array $args ): void {
 		static $derived_colors = null;
 
-		$option = (string) ( $args['option'] ?? '' );
-		$key    = (string) ( $args['key'] ?? '' );
-
-		if ( '' === $option ) {
-			return;
-		}
-
-		// Resolved once per request; all three fields render on the same screen.
+		// Resolved once per request; all three fields render on the same
+		// screen and the derivation runs an uncached theme.json merge.
 		if ( null === $derived_colors ) {
 			$derived_colors = Publication::get_derived_theme_colors();
 		}
 
-		$derived = $derived_colors[ $key ] ?? '';
+		$option  = $args['option'];
+		$derived = $derived_colors[ $args['key'] ] ?? '';
 
 		?>
 		<input
