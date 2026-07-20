@@ -21,6 +21,7 @@ use Atmosphere\Transformer\Post;
 use Atmosphere\Transformer\Preview;
 use Atmosphere\Transformer\Publication;
 use Atmosphere\Integrations\Load;
+use Atmosphere\Rest\Admin\Connection_Controller;
 use Atmosphere\Rest\Admin\Pre_Publish_Controller;
 use Atmosphere\Rest\Client_Metadata_Controller;
 use Atmosphere\Rest\Reactions_Controller;
@@ -182,6 +183,8 @@ class Atmosphere {
 		 */
 		\add_action( 'init', array( Mention::class, 'init' ), 5 );
 
+		\add_action( 'init', array( Connectors::class, 'init' ), 5 );
+
 		/*
 		 * Seed the long-form composition strategy from the user's
 		 * setting. Priority 1 so any downstream filter at the default
@@ -327,18 +330,69 @@ class Atmosphere {
 		\add_action( 'atmosphere_backfill_replies', array( Reaction_Sync::class, 'backfill_scheduled_replies' ) );
 		Reaction_Sync::register();
 
-		if ( ! \wp_next_scheduled( 'atmosphere_sync_reactions' ) && is_connected() ) {
-			\wp_schedule_event( \time(), 'hourly', 'atmosphere_sync_reactions' );
+		/*
+		 * Reconcile the reaction-sync cron events on `init`, not here on
+		 * `plugins_loaded`: a host that re-enables a lane via the
+		 * `atmosphere_should_sync_*` filters from its own plugins_loaded/init
+		 * callback must have that filter attached before the gate is read, or
+		 * the event would never be scheduled even though the lane runs by
+		 * cron-dispatch time. Priority 20 leaves room for host filters on the
+		 * default init priority.
+		 */
+		\add_action( 'init', array( self::class, 'maybe_schedule_reaction_crons' ), 20 );
+	}
+
+	/**
+	 * Schedule (or unschedule) the reaction-sync cron events to match the site's
+	 * effective settings.
+	 *
+	 * Both events are reconciled every request: scheduled when wanted and absent,
+	 * cleared when unwanted but lingering — so a site that enters connection-only
+	 * mode after connecting doesn't keep an hourly no-op cron running forever.
+	 */
+	public static function maybe_schedule_reaction_crons(): void {
+		if ( ! is_connected() ) {
+			return;
 		}
 
-		if ( ! \wp_next_scheduled( 'atmosphere_backfill_replies' ) && is_connected() ) {
-			/*
-			 * The half-hour offset keeps the daily audit's due timestamps
-			 * from ever coinciding with the hourly sync's — a whole-hour
-			 * offset would collide every day, and both compete for the
-			 * same reaction-sync lock.
-			 */
-			\wp_schedule_event( \time() + \HOUR_IN_SECONDS / 2, 'daily', 'atmosphere_backfill_replies' );
+		// Hourly like/repost + reply poll. Wanted unless connection-only mode
+		// has both sync lanes off (a re-enabling filter keeps it on).
+		self::reconcile_cron_event(
+			'atmosphere_sync_reactions',
+			'hourly',
+			\time(),
+			! is_connection_only_mode() || is_reaction_sync_enabled() || is_reply_sync_enabled()
+		);
+
+		/*
+		 * Daily reply-backfill audit — reply-specific, so gate on reply sync.
+		 * The half-hour offset keeps its due timestamps from ever coinciding
+		 * with the hourly sync's; a whole-hour offset would collide every day,
+		 * and both compete for the same reaction-sync lock.
+		 */
+		self::reconcile_cron_event(
+			'atmosphere_backfill_replies',
+			'daily',
+			\time() + \HOUR_IN_SECONDS / 2,
+			! is_connection_only_mode() || is_reply_sync_enabled()
+		);
+	}
+
+	/**
+	 * Bring one recurring cron event in line with whether it's currently wanted.
+	 *
+	 * @param string $hook       Cron hook name.
+	 * @param string $recurrence Schedule recurrence (e.g. `hourly`, `daily`).
+	 * @param int    $first_run  Timestamp of the first run when (re)scheduling.
+	 * @param bool   $wanted     Whether the event should be scheduled right now.
+	 */
+	private static function reconcile_cron_event( string $hook, string $recurrence, int $first_run, bool $wanted ): void {
+		$scheduled = (bool) \wp_next_scheduled( $hook );
+
+		if ( $wanted && ! $scheduled ) {
+			\wp_schedule_event( $first_run, $recurrence, $hook );
+		} elseif ( ! $wanted && $scheduled ) {
+			\wp_clear_scheduled_hook( $hook );
 		}
 	}
 
@@ -707,13 +761,13 @@ class Atmosphere {
 		}
 
 		/*
-		 * Publish only when auto-publish is explicitly on. An unchecked
-		 * checkbox submits no value, so a saved "off" state is stored as
-		 * an empty string rather than '0' — comparing against '1' (with a
-		 * '1' default for never-saved installs) treats every non-'1' value
-		 * as off, the same way the ActivityPub plugin gates its toggles.
+		 * Publish only when auto-publish is effectively on. The gate folds
+		 * together the stored `atmosphere_auto_publish` option (opt-out, off
+		 * for any non-'1' value the same way the ActivityPub plugin gates its
+		 * toggles), connection-only mode, and the `atmosphere_should_auto_publish`
+		 * filter. See {@see \Atmosphere\is_auto_publish_enabled()}.
 		 */
-		if ( '1' !== \get_option( 'atmosphere_auto_publish', '1' ) ) {
+		if ( ! is_auto_publish_enabled() ) {
 			return;
 		}
 
@@ -1396,6 +1450,7 @@ class Atmosphere {
 	 */
 	public function register_rest_controllers(): void {
 		( new Client_Metadata_Controller() )->register_routes();
+		( new Connection_Controller() )->register_routes();
 		( new Pre_Publish_Controller() )->register_routes();
 		( new Reactions_Controller() )->register_routes();
 	}
@@ -1424,7 +1479,7 @@ class Atmosphere {
 			return;
 		}
 
-		if ( ! is_connected() || '1' !== \get_option( 'atmosphere_auto_publish', '1' ) ) {
+		if ( ! is_connected() || ! is_auto_publish_enabled() ) {
 			return;
 		}
 
@@ -1707,7 +1762,11 @@ class Atmosphere {
 		\add_action(
 			'atmosphere_sync_publication',
 			static function (): void {
-				Publisher::sync_publication();
+				// Respect connection-only mode: no automatic publication write
+				// when a host owns the connection (see is_publication_sync_enabled()).
+				if ( is_publication_sync_enabled() ) {
+					Publisher::sync_publication();
+				}
 			}
 		);
 

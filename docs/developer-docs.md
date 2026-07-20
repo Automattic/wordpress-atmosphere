@@ -45,7 +45,13 @@ ATmosphere exposes a small set of filters and actions for plugins to extend beha
 | `atmosphere_publication_labels` | filter | Add standard self-labels to `site.standard.publication` records. |
 | `atmosphere_publication_show_in_discover` | filter | Override `preferences.showInDiscover` (defaults to the site's `blog_public` option) for `site.standard.publication` records. |
 | `atmosphere_syncable_post_types` | filter | Add or remove post types eligible for cross-posting. |
+| `atmosphere_connection_only_mode` | filter | Return `true` to embed ATmosphere purely as a connection layer: auto cross-posting, reaction/reply import, and comment publishing all default off, and the Settings → ATmosphere screen is hidden. |
+| `atmosphere_should_auto_publish` | filter | Effective on/off for automatic post cross-posting; runs after the stored setting and connection-only mode, and has the final say. |
+| `atmosphere_should_publish_comments` | filter | Effective on/off for publishing local comments as Bluesky replies; runs after the stored setting and connection-only mode, and has the final say. Re-enable this lane while in connection-only mode. Not the per-comment `_comment` filter below. |
 | `atmosphere_should_publish_comment` | filter | Customise which approved comments from users allowed to publish posts are mirrored as Bluesky replies. |
+| `atmosphere_should_sync_reactions` | filter | Effective on/off for importing Bluesky likes and reposts; runs after the stored setting and connection-only mode, and has the final say. |
+| `atmosphere_should_sync_replies` | filter | Effective on/off for importing Bluesky replies as comments; runs after the stored setting and connection-only mode, and has the final say. Re-enable this lane while in connection-only mode. Not the per-reply `_reply` filter below. |
+| `atmosphere_should_sync_publication` | filter | Effective on/off for writing/refreshing the `site.standard.publication` record. Defaults on, forced off in connection-only mode, and this has the final say — so a connection-layer host doesn't get a public publication record written on connect unless it opts back in. |
 | `atmosphere_should_sync_reply` | filter | Customise which inbound Bluesky replies become WordPress comments. |
 | `atmosphere_transform_bsky_post` | filter | Mutate the Bluesky post record before write. |
 | `atmosphere_transform_document` | filter | Mutate the document record before write. |
@@ -56,6 +62,9 @@ ATmosphere exposes a small set of filters and actions for plugins to extend beha
 | `atmosphere_publish_post_result` | action | React to a post-publish outcome (success or `WP_Error`). |
 | `atmosphere_publish_comment_result` | action | React to a comment-publish outcome. |
 | `atmosphere_reaction_synced` | action | React when a Bluesky reaction is stored as a WordPress comment. |
+| `atmosphere_connected` | action | React when an AT Protocol account is connected (OAuth callback succeeded). Useful for a host plugin embedding ATmosphere as a connection layer. |
+| `atmosphere_disconnected` | action | React when the AT Protocol connection is torn down. |
+| `atmosphere_reauth_required` | action | React when the connection first enters a reauth-required state after a permanent OAuth failure. Fires once per transition. |
 
 When adding a new public hook, mark its `@since` tag as `unreleased` — the release script rewrites it (see [Release Process → Marking Unreleased Code](release-process.md#marking-unreleased-code)).
 

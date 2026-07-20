@@ -26,6 +26,7 @@ use function Atmosphere\get_pds_endpoint;
 use function Atmosphere\get_reauth_reason;
 use function Atmosphere\get_supported_post_types;
 use function Atmosphere\has_identity;
+use function Atmosphere\is_auto_publish_enabled;
 use function Atmosphere\is_connected;
 use function Atmosphere\is_operator_disconnected;
 use function Atmosphere\reauth_reason_lead;
@@ -254,9 +255,7 @@ class Health_Check {
 				),
 				'auto_publish'      => array(
 					'label'   => \__( 'Auto-Publish', 'atmosphere' ),
-					'value'   => '1' === \get_option( 'atmosphere_auto_publish', '1' )
-						? \__( 'Enabled', 'atmosphere' )
-						: \__( 'Disabled', 'atmosphere' ),
+					'value'   => self::auto_publish_debug_value(),
 					'private' => false,
 				),
 				'post_types'        => array(
@@ -268,6 +267,31 @@ class Health_Check {
 		);
 
 		return $info;
+	}
+
+	/**
+	 * Auto-publish state for the debug panel, stored setting *and* effective.
+	 *
+	 * Report both so a support thread can see the user's actual saved preference
+	 * even when connection-only mode or the `atmosphere_should_auto_publish`
+	 * filter overrides it — the stored-vs-effective discrepancy is exactly what
+	 * such a thread needs to diagnose.
+	 *
+	 * @return string
+	 */
+	private static function auto_publish_debug_value(): string {
+		$stored_on = '1' === (string) \get_option( 'atmosphere_auto_publish', '1' );
+		$effective = is_auto_publish_enabled();
+
+		if ( $stored_on === $effective ) {
+			return $effective
+				? \__( 'Enabled', 'atmosphere' )
+				: \__( 'Disabled', 'atmosphere' );
+		}
+
+		return $effective
+			? \__( 'Disabled in settings, overridden on by another plugin', 'atmosphere' )
+			: \__( 'Enabled in settings, overridden off by another plugin', 'atmosphere' );
 	}
 
 	/**

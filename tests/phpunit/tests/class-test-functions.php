@@ -17,6 +17,10 @@ use function Atmosphere\grapheme_length;
 use function Atmosphere\to_iso8601;
 use function Atmosphere\is_post_publishable;
 use function Atmosphere\is_sharing_enabled;
+use function Atmosphere\is_connection_only_mode;
+use function Atmosphere\is_auto_publish_enabled;
+use function Atmosphere\is_reaction_sync_enabled;
+use function Atmosphere\is_reply_sync_enabled;
 use function Atmosphere\get_connection;
 use function Atmosphere\debug_log;
 use function Atmosphere\is_comment_publishing_enabled;
@@ -878,5 +882,189 @@ class Test_Functions extends \WP_UnitTestCase {
 			),
 			'The queued revoke event must be cleared at deactivation/uninstall.'
 		);
+	}
+
+	/**
+	 * The typeahead resolver defaults to Bluesky's official public appview
+	 * searchActorsTypeahead endpoint.
+	 */
+	public function test_handle_typeahead_url_default() {
+		$url = \Atmosphere\handle_typeahead_url();
+
+		$this->assertStringContainsString( 'public.api.bsky.app', $url );
+		$this->assertStringContainsString( 'searchActorsTypeahead', $url );
+	}
+
+	/**
+	 * A site can repoint the endpoint through the filter.
+	 */
+	public function test_handle_typeahead_url_is_filterable() {
+		\add_filter(
+			'atmosphere_handle_typeahead_url',
+			static fn () => 'https://example.test/xrpc/app.bsky.actor.searchActorsTypeahead'
+		);
+
+		$this->assertStringStartsWith( 'https://example.test/', \Atmosphere\handle_typeahead_url() );
+
+		\remove_all_filters( 'atmosphere_handle_typeahead_url' );
+	}
+
+	/**
+	 * Filtering to an empty string disables typeahead entirely.
+	 */
+	public function test_handle_typeahead_url_can_be_disabled() {
+		\add_filter( 'atmosphere_handle_typeahead_url', '__return_empty_string' );
+
+		$this->assertSame( '', \Atmosphere\handle_typeahead_url() );
+
+		\remove_all_filters( 'atmosphere_handle_typeahead_url' );
+	}
+
+	/**
+	 * Clean up the connection-only-mode filters after each relevant test so a
+	 * lingering callback can't bleed into an unrelated test.
+	 */
+	public function tear_down(): void {
+		\remove_all_filters( 'atmosphere_connection_only_mode' );
+		\remove_all_filters( 'atmosphere_should_auto_publish' );
+		\remove_all_filters( 'atmosphere_should_sync_reactions' );
+		\remove_all_filters( 'atmosphere_should_sync_replies' );
+		\remove_all_filters( 'atmosphere_should_publish_comments' );
+
+		parent::tear_down();
+	}
+
+	/**
+	 * Connection-only mode is off unless a plugin opts in.
+	 */
+	public function test_connection_only_mode_off_by_default() {
+		$this->assertFalse( is_connection_only_mode() );
+	}
+
+	/**
+	 * A host plugin flips connection-only mode on through the filter.
+	 */
+	public function test_connection_only_mode_is_filterable() {
+		\add_filter( 'atmosphere_connection_only_mode', '__return_true' );
+
+		$this->assertTrue( is_connection_only_mode() );
+	}
+
+	/**
+	 * Auto-publish is opt-out: on for a never-configured install.
+	 */
+	public function test_auto_publish_enabled_by_default() {
+		$this->assertTrue( is_auto_publish_enabled() );
+	}
+
+	/**
+	 * A saved "off" (any non-'1' value) turns auto-publish off.
+	 */
+	public function test_auto_publish_disabled_when_option_off() {
+		\update_option( 'atmosphere_auto_publish', '0' );
+
+		$this->assertFalse( is_auto_publish_enabled() );
+	}
+
+	/**
+	 * Regression: an option stored programmatically as the integer 1 (rather than
+	 * the string '1') must still read as enabled. The gates compare against '1',
+	 * so they cast to string first — otherwise `'1' === 1` is false and a genuinely
+	 * enabled feature would be mis-read as disabled. Covers all three sync gates.
+	 */
+	public function test_feature_gates_treat_integer_one_as_enabled() {
+		\update_option( 'atmosphere_auto_publish', 1 );
+		\update_option( 'atmosphere_sync_reactions', 1 );
+		\update_option( 'atmosphere_sync_replies', 1 );
+
+		$this->assertTrue( is_auto_publish_enabled() );
+		$this->assertTrue( is_reaction_sync_enabled() );
+		$this->assertTrue( is_reply_sync_enabled() );
+	}
+
+	/**
+	 * Connection-only mode forces auto-publish off even when the stored option
+	 * says on — the override is on effective behaviour, not just the default.
+	 */
+	public function test_auto_publish_forced_off_in_connection_only_mode() {
+		\update_option( 'atmosphere_auto_publish', '1' );
+		\add_filter( 'atmosphere_connection_only_mode', '__return_true' );
+
+		$this->assertFalse( is_auto_publish_enabled() );
+	}
+
+	/**
+	 * The per-feature filter is evaluated last, so a host can keep cross-posting
+	 * on while otherwise running in connection-only mode.
+	 */
+	public function test_auto_publish_filter_can_reenable_in_connection_only_mode() {
+		\add_filter( 'atmosphere_connection_only_mode', '__return_true' );
+		\add_filter( 'atmosphere_should_auto_publish', '__return_true' );
+
+		$this->assertTrue( is_auto_publish_enabled() );
+	}
+
+	/**
+	 * Reaction import is opt-out and forced off in connection-only mode.
+	 */
+	public function test_reaction_sync_forced_off_in_connection_only_mode() {
+		$this->assertTrue( is_reaction_sync_enabled() );
+
+		\add_filter( 'atmosphere_connection_only_mode', '__return_true' );
+
+		$this->assertFalse( is_reaction_sync_enabled() );
+	}
+
+	/**
+	 * The reaction filter has the final say over connection-only mode.
+	 */
+	public function test_reaction_sync_filter_can_reenable_in_connection_only_mode() {
+		\add_filter( 'atmosphere_connection_only_mode', '__return_true' );
+		\add_filter( 'atmosphere_should_sync_reactions', '__return_true' );
+
+		$this->assertTrue( is_reaction_sync_enabled() );
+	}
+
+	/**
+	 * Reply import is opt-out and forced off in connection-only mode.
+	 */
+	public function test_reply_sync_forced_off_in_connection_only_mode() {
+		$this->assertTrue( is_reply_sync_enabled() );
+
+		\add_filter( 'atmosphere_connection_only_mode', '__return_true' );
+
+		$this->assertFalse( is_reply_sync_enabled() );
+	}
+
+	/**
+	 * The reply filter has the final say over connection-only mode.
+	 */
+	public function test_reply_sync_filter_can_reenable_in_connection_only_mode() {
+		\add_filter( 'atmosphere_connection_only_mode', '__return_true' );
+		\add_filter( 'atmosphere_should_sync_replies', '__return_true' );
+
+		$this->assertTrue( is_reply_sync_enabled() );
+	}
+
+	/**
+	 * Comment publishing (WordPress comments → Bluesky replies) is opt-out and
+	 * forced off in connection-only mode, closing the outgoing lane too.
+	 */
+	public function test_comment_publishing_forced_off_in_connection_only_mode() {
+		$this->assertTrue( is_comment_publishing_enabled() );
+
+		\add_filter( 'atmosphere_connection_only_mode', '__return_true' );
+
+		$this->assertFalse( is_comment_publishing_enabled() );
+	}
+
+	/**
+	 * The comment-publishing filter has the final say over connection-only mode.
+	 */
+	public function test_comment_publishing_filter_can_reenable_in_connection_only_mode() {
+		\add_filter( 'atmosphere_connection_only_mode', '__return_true' );
+		\add_filter( 'atmosphere_should_publish_comments', '__return_true' );
+
+		$this->assertTrue( is_comment_publishing_enabled() );
 	}
 }

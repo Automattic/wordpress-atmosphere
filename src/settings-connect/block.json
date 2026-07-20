@@ -1,0 +1,10 @@
+{
+	"$schema": "https://schemas.wp.org/trunk/block.json",
+	"apiVersion": 3,
+	"name": "atmosphere/settings-connect",
+	"title": "ATmosphere Settings Connect Field",
+	"category": "widgets",
+	"description": "Handle typeahead for the Settings → ATmosphere connect field.",
+	"textdomain": "atmosphere",
+	"script": "file:./index.js"
+}

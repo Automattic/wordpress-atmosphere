@@ -11,6 +11,8 @@ namespace Atmosphere\Tests;
 
 use WP_UnitTestCase;
 use Atmosphere\Reaction_Sync;
+use Atmosphere\OAuth\DPoP;
+use Atmosphere\OAuth\Encryption;
 use Atmosphere\Transformer\Post as BskyPost;
 
 /**
@@ -23,9 +25,17 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 	 */
 	public function tear_down(): void {
 		\delete_option( 'atmosphere_support_post_types' );
+		\delete_option( 'atmosphere_connection' );
+		\delete_option( 'atmosphere_identity' );
 		\delete_option( 'atmosphere_reaction_sync_pagination' );
 		\delete_option( 'atmosphere_reaction_sync_did' );
 		\delete_option( '_atmosphere_reaction_sync_lock' );
+		\delete_option( 'atmosphere_sync_reactions' );
+		\delete_option( 'atmosphere_sync_replies' );
+		\remove_all_filters( 'atmosphere_connection_only_mode' );
+		\remove_all_filters( 'atmosphere_should_sync_reactions' );
+		\remove_all_filters( 'atmosphere_should_sync_replies' );
+		\remove_all_filters( 'pre_http_request' );
 		\remove_all_filters( 'atmosphere_reply_backfill_batch_size' );
 
 		if ( \post_type_exists( 'atmos_hidden_cpt' ) ) {
@@ -2832,6 +2842,224 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 				)
 			),
 			'No reply comment should be written when replies are off.'
+		);
+	}
+
+	/**
+	 * Connection-only mode forces reaction import off even with the stored
+	 * setting on, so likes and reposts are skipped.
+	 */
+	public function test_connection_only_mode_skips_reaction_import() {
+		$post_id  = self::factory()->post->create();
+		$post_uri = 'at://did:plc:me/app.bsky.feed.post/reactionconnonly';
+		\update_post_meta( $post_id, BskyPost::META_URI, $post_uri );
+
+		\update_option( 'atmosphere_sync_reactions', '1' );
+		\add_filter( 'atmosphere_connection_only_mode', '__return_true' );
+
+		$method       = new \ReflectionMethod( Reaction_Sync::class, 'process_subject_reaction' );
+		$notification = array(
+			'uri'    => 'at://did:plc:liker/app.bsky.feed.like/likeconnonly',
+			'cid'    => 'bafyreilikeconnonly',
+			'record' => array(
+				'subject' => array( 'uri' => $post_uri ),
+			),
+			'author' => array(
+				'did'    => 'did:plc:liker',
+				'handle' => 'liker.bsky.social',
+			),
+		);
+
+		$this->assertFalse( $method->invoke( null, $notification, 'like' ) );
+
+		$this->assertCount(
+			0,
+			\get_comments(
+				array(
+					'post_id'  => $post_id,
+					'type__in' => array( 'like', 'repost' ),
+				)
+			),
+			'No like/repost row should be written in connection-only mode.'
+		);
+	}
+
+	/**
+	 * Connection-only mode forces reply import off even with the stored setting
+	 * on, so replies are skipped.
+	 */
+	public function test_connection_only_mode_skips_reply_import() {
+		$post_id  = self::factory()->post->create();
+		$post_uri = 'at://did:plc:me/app.bsky.feed.post/replyconnonly';
+		\update_post_meta( $post_id, BskyPost::META_URI, $post_uri );
+
+		\update_option( 'atmosphere_sync_replies', '1' );
+		\add_filter( 'atmosphere_connection_only_mode', '__return_true' );
+
+		$method       = new \ReflectionMethod( Reaction_Sync::class, 'process_reply' );
+		$notification = array(
+			'uri'    => 'at://did:plc:replier/app.bsky.feed.post/replyconnonly',
+			'cid'    => 'bafyreireplyconnonly',
+			'record' => array(
+				'text'  => 'Nice one',
+				'reply' => array(
+					'parent' => array( 'uri' => $post_uri ),
+					'root'   => array( 'uri' => $post_uri ),
+				),
+			),
+			'author' => array(
+				'did'    => 'did:plc:replier',
+				'handle' => 'replier.bsky.social',
+			),
+		);
+
+		$this->assertFalse( $method->invoke( null, $notification ) );
+
+		$this->assertCount(
+			0,
+			\get_comments(
+				array(
+					'post_id'  => $post_id,
+					'type__in' => array( 'comment' ),
+				)
+			),
+			'No reply comment should be written in connection-only mode.'
+		);
+	}
+
+	/**
+	 * A connected fixture whose access token and DPoP key decrypt cleanly, so
+	 * sync() can get past is_connected()/access_token() to the PDS fetch.
+	 */
+	private function connect_site_for_sync(): void {
+		\update_option(
+			'atmosphere_connection',
+			array(
+				'access_token' => Encryption::encrypt( 'test-token' ),
+				'did'          => 'did:plc:me',
+				'handle'       => 'me.example.com',
+				'pds_endpoint' => 'https://pds.example.com',
+				'dpop_jwk'     => Encryption::encrypt( (string) \wp_json_encode( DPoP::generate_key() ) ),
+				'expires_at'   => \time() + HOUR_IN_SECONDS,
+			)
+		);
+		\update_option(
+			'atmosphere_identity',
+			array(
+				'did'          => 'did:plc:me',
+				'handle'       => 'me.example.com',
+				'pds_endpoint' => 'https://pds.example.com',
+			),
+			true
+		);
+	}
+
+	/**
+	 * Capture the URL of any outgoing HTTP request and answer it with an empty,
+	 * well-formed response so paginate() completes cleanly.
+	 *
+	 * @param string $captured_url Set to the requested URL by reference.
+	 */
+	private function spy_on_http( string &$captured_url ): void {
+		\add_filter(
+			'pre_http_request',
+			static function ( $response, $args, $url ) use ( &$captured_url ) {
+				$captured_url = (string) $url;
+				return array(
+					'response' => array( 'code' => 200 ),
+					'body'     => (string) \wp_json_encode(
+						array(
+							'notifications' => array(),
+							'records'       => array(),
+						)
+					),
+					'headers'  => array(),
+				);
+			},
+			5,
+			3
+		);
+	}
+
+	/**
+	 * Positive control: with a live connection and connection-only mode off,
+	 * sync() reaches out to the PDS. Proves the fixture and the HTTP spy are
+	 * wired, so the negative test below is meaningful rather than passing on an
+	 * earlier bail.
+	 */
+	public function test_sync_polls_the_pds_when_not_connection_only() {
+		$this->connect_site_for_sync();
+
+		$requested_url = '';
+		$this->spy_on_http( $requested_url );
+
+		Reaction_Sync::sync();
+
+		$this->assertNotSame( '', $requested_url, 'sync() should poll the PDS when not in connection-only mode.' );
+	}
+
+	/**
+	 * Regression: connection-only mode short-circuits sync() before any PDS
+	 * call, so a host embedding ATmosphere purely as a connection layer gets no
+	 * hourly background polling.
+	 */
+	public function test_connection_only_mode_skips_pds_polling() {
+		$this->connect_site_for_sync();
+		\add_filter( 'atmosphere_connection_only_mode', '__return_true' );
+
+		$requested_url = '';
+		$this->spy_on_http( $requested_url );
+
+		Reaction_Sync::sync();
+
+		$this->assertSame( '', $requested_url, 'sync() must not touch the PDS in connection-only mode.' );
+	}
+
+	/**
+	 * Regression: connection-only mode forces the sync lanes off by default, but
+	 * the `atmosphere_should_sync_*` filters run last and can re-enable one. When
+	 * a host does, sync() must still poll — the early bail defers to the
+	 * per-feature helpers, so it no longer short-circuits on raw connection-only
+	 * mode alone.
+	 */
+	public function test_connection_only_mode_reenabled_lane_still_polls() {
+		$this->connect_site_for_sync();
+		\add_filter( 'atmosphere_connection_only_mode', '__return_true' );
+		\add_filter( 'atmosphere_should_sync_reactions', '__return_true' );
+
+		$requested_url = '';
+		$this->spy_on_http( $requested_url );
+
+		Reaction_Sync::sync();
+
+		$this->assertNotSame(
+			'',
+			$requested_url,
+			'sync() should poll the PDS when a lane is re-enabled via the atmosphere_should_sync_* filter, even in connection-only mode.'
+		);
+	}
+
+	/**
+	 * Regression: a regular site (not connection-only) that unchecks BOTH sync
+	 * toggles must still poll, so the per-item gates skip writes while the
+	 * watermarks advance. Bailing early here — as a broader `! reactions && !
+	 * replies` gate would — froze the watermarks, so re-enabling a toggle later
+	 * replayed the whole off-period backlog as brand-new comments.
+	 */
+	public function test_sync_still_polls_with_both_toggles_off_off_connection_only() {
+		$this->connect_site_for_sync();
+		\update_option( 'atmosphere_sync_reactions', '' );
+		\update_option( 'atmosphere_sync_replies', '' );
+
+		$requested_url = '';
+		$this->spy_on_http( $requested_url );
+
+		Reaction_Sync::sync();
+
+		$this->assertNotSame(
+			'',
+			$requested_url,
+			'sync() must still poll on a regular site with both toggles off, so the off period stays skipped-for-good rather than replayed on re-enable.'
 		);
 	}
 }

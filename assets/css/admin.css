@@ -10,3 +10,13 @@
 	display: inline-block;
 	margin-top: 2px;
 }
+
+/*
+ * Keep the connect field's handle typeahead at a readable width. The shared
+ * control fills its container (so it fits the narrow Connectors card), but on
+ * the settings page that container is a full-width table cell — cap it to match
+ * WordPress's `.regular-text` inputs instead of spanning the whole page.
+ */
+.atmosphere-handle-typeahead-mount .atmosphere-handle-field {
+	max-width: 25em;
+}

@@ -55,6 +55,7 @@ class Test_Pre_Publish_Controller extends WP_UnitTestCase {
 		\delete_option( 'atmosphere_auto_publish' );
 		\delete_option( 'atmosphere_support_post_types' );
 		\remove_all_filters( 'atmosphere_long_form_composition' );
+		\remove_all_filters( 'atmosphere_connection_only_mode' );
 		parent::tear_down();
 	}
 
@@ -268,6 +269,25 @@ class Test_Pre_Publish_Controller extends WP_UnitTestCase {
 
 		$this->assertFalse( $data['will_publish'] );
 		$this->assertStringContainsString( 'turned off', $data['reason'] );
+	}
+
+	/**
+	 * Connection-only mode forces auto-publish off, so the preview reports
+	 * will_publish=false even with the stored auto-publish option on.
+	 *
+	 * @covers ::get_preview
+	 */
+	public function test_preview_connection_only_mode_reports_not_publishing() {
+		\add_filter( 'atmosphere_connection_only_mode', '__return_true' );
+
+		$post = self::factory()->post->create_and_get();
+
+		$data = $this->controller->get_preview(
+			$this->make_request( $post->ID, array( 'content' => 'Hi.' ) )
+		)->get_data();
+
+		$this->assertFalse( $data['will_publish'] );
+		$this->assertNotNull( $data['reason'] );
 	}
 
 	/**

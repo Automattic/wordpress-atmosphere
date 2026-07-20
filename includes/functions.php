@@ -157,6 +157,57 @@ function appview_base_url( string $base ): string {
 }
 
 /**
+ * The handle typeahead endpoint queried as the user types a handle (an
+ * `app.bsky.actor.searchActorsTypeahead` XRPC endpoint).
+ *
+ * Used by both the Settings → ATmosphere connect field and the Settings →
+ * Connectors card. Defaults to Bluesky's official unauthenticated public
+ * appview (`public.api.bsky.app`), which is CORS-enabled so the browser can
+ * call it directly. Centralized and filterable the same way {@see appview_url()}
+ * centralizes the appview host: a site can point it elsewhere — e.g. a
+ * network-wide index such as `typeahead.waow.tech` — or return an empty string
+ * to disable typeahead entirely and fall back to manual handle entry.
+ *
+ * @since unreleased
+ *
+ * @return string The typeahead XRPC endpoint, or '' to disable typeahead.
+ */
+function handle_typeahead_url(): string {
+	/**
+	 * Filters the handle typeahead endpoint used across the plugin's admin UI.
+	 *
+	 * @since unreleased
+	 *
+	 * @param string $url Default typeahead XRPC endpoint. Return '' to disable
+	 *                    typeahead and require manual handle entry.
+	 */
+	$url = (string) \apply_filters(
+		'atmosphere_handle_typeahead_url',
+		'https://public.api.bsky.app/xrpc/app.bsky.actor.searchActorsTypeahead'
+	);
+
+	return \esc_url_raw( $url );
+}
+
+/**
+ * Normalise a submitted AT Protocol handle for resolution.
+ *
+ * Sanitises the raw value and strips a leading `@`: Bluesky surfaces handles as
+ * `@alice.bsky.social`, so people naturally type the `@`, but the resolver
+ * expects a bare DNS-style identifier and rejects the prefixed form. Shared by
+ * both connect entry points — the settings-page sanitize callback
+ * ({@see Sanitize::handle()}) and the Connectors REST route
+ * ({@see \Atmosphere\Rest\Admin\Connection_Controller::authorize()}) — so the two
+ * flows normalise identically by construction.
+ *
+ * @param mixed $value Raw submitted handle.
+ * @return string Sanitised, bare handle.
+ */
+function normalize_handle( $value ): string {
+	return \ltrim( \sanitize_text_field( (string) $value ), '@' );
+}
+
+/**
  * Decode entities, strip HTML, normalise whitespace.
  *
  * @param string $text Raw text.
@@ -460,15 +511,16 @@ function is_connected(): bool {
  * @return bool
  */
 function is_comment_publishing_enabled(): bool {
-	$enabled = '1' === (string) \get_option( 'atmosphere_publish_comments', '1' );
+	$enabled = feature_option_enabled( 'atmosphere_publish_comments' );
 
 	/**
 	 * Filters whether local WordPress comments may be published to Bluesky as replies.
 	 *
-	 * Runs last, so it has the final say over the stored setting — a host
-	 * plugin can force outgoing writes off (or back on) regardless of the
-	 * saved preference. The override is on effective behavior, not the
-	 * option, so the stored preference survives untouched.
+	 * Runs last, so it has the final say over the stored setting and
+	 * {@see is_connection_only_mode()} — a host plugin can force outgoing
+	 * writes off (or back on) regardless of the saved preference. The override
+	 * is on effective behavior, not the option, so the stored preference
+	 * survives untouched.
 	 *
 	 * @since unreleased
 	 *
@@ -717,6 +769,189 @@ function is_post_publishable( \WP_Post $post ): bool {
  */
 function is_sharing_enabled( \WP_Post $post ): bool {
 	return '1' !== (string) \get_post_meta( $post->ID, ATMOSPHERE_META_DISABLED, true );
+}
+
+/**
+ * Whether the plugin is running purely as a connection layer for another plugin.
+ *
+ * A host plugin that embeds ATmosphere only to reuse its AT Protocol
+ * connection — driving everything through the Settings → Connectors card and
+ * its own UI — can return true from the `atmosphere_connection_only_mode`
+ * filter. In that mode ATmosphere stops acting on its own: automatic
+ * cross-posting ({@see is_auto_publish_enabled()}), reaction import
+ * ({@see is_reaction_sync_enabled()}), reply import
+ * ({@see is_reply_sync_enabled()}), and publishing local comments as Bluesky
+ * replies ({@see is_comment_publishing_enabled()}) are all off, and the
+ * plugin's own Settings → ATmosphere screen is hidden
+ * ({@see \Atmosphere\WP_Admin\Admin::is_settings_page_visible()}).
+ *
+ * This is a hard override of the *effective* behaviour, not merely a change of
+ * default: it forces those features off regardless of the stored per-site
+ * option, so the outcome does not depend on whether the site previously saved a
+ * value. Each behavioural lane keeps its own dedicated filter, evaluated last, so
+ * a host that wants to re-enable one (say, keep cross-posting while suppressing
+ * reactions) still can. Settings-page visibility, by contrast, follows
+ * connection-only mode directly, with no separate override.
+ *
+ * @since unreleased
+ *
+ * @return bool True when ATmosphere is embedded purely as a connection layer.
+ */
+function is_connection_only_mode(): bool {
+	/**
+	 * Filters whether ATmosphere runs purely as a connection layer.
+	 *
+	 * Return true when another plugin embeds ATmosphere solely to reuse its
+	 * AT Protocol connection. Automatic cross-posting, reaction import,
+	 * reply import, and comment publishing then default off, and Settings →
+	 * ATmosphere is hidden. The per-feature filters
+	 * ({@see 'atmosphere_should_auto_publish'},
+	 * {@see 'atmosphere_should_sync_reactions'},
+	 * {@see 'atmosphere_should_sync_replies'}, and
+	 * {@see 'atmosphere_should_publish_comments'}) are evaluated afterwards and
+	 * have the final say, so individual behavioural lanes can still be re-enabled.
+	 *
+	 * @since unreleased
+	 *
+	 * @param bool $connection_only Whether ATmosphere is embedded as a connection layer only. Default false.
+	 */
+	return (bool) \apply_filters( 'atmosphere_connection_only_mode', false );
+}
+
+/**
+ * Resolve a per-feature opt-out flag through the two layers every behavioural
+ * lane shares before its own filter: the stored option (default on), then a
+ * hard off in {@see is_connection_only_mode()}.
+ *
+ * Each lane still applies its own literal `atmosphere_should_*` filter to the
+ * result at its call site — kept there so the hook stays greppable and
+ * documented — so this centralises only the shared option-read + connection-only
+ * override, preventing the four copies from drifting apart.
+ *
+ * @param string $option Option name storing the opt-out preference.
+ * @return bool Effective state before the per-lane filter runs.
+ */
+function feature_option_enabled( string $option ): bool {
+	$enabled = '1' === (string) \get_option( $option, '1' );
+
+	return is_connection_only_mode() ? false : $enabled;
+}
+
+/**
+ * Whether posts are automatically cross-posted to Bluesky on publish.
+ *
+ * Resolves the effective auto-publish state from three layers, in order: the
+ * stored `atmosphere_auto_publish` option (opt-out — on unless the user turned
+ * it off), forced off in {@see is_connection_only_mode()}, and finally the
+ * `atmosphere_should_auto_publish` filter, which has the last word so a host in
+ * connection-only mode can re-enable cross-posting on its own terms.
+ *
+ * @since unreleased
+ *
+ * @return bool
+ */
+function is_auto_publish_enabled(): bool {
+	$enabled = feature_option_enabled( 'atmosphere_auto_publish' );
+
+	/**
+	 * Filters whether posts are automatically cross-posted to Bluesky on publish.
+	 *
+	 * Evaluated after the stored option and {@see is_connection_only_mode()},
+	 * so it is the final authority: a host that keeps ATmosphere in
+	 * connection-only mode but still wants automatic cross-posting can return
+	 * true here.
+	 *
+	 * @since unreleased
+	 *
+	 * @param bool $enabled Whether auto-publish is effectively enabled.
+	 */
+	return (bool) \apply_filters( 'atmosphere_should_auto_publish', $enabled );
+}
+
+/**
+ * Whether Bluesky likes and reposts are imported as comments.
+ *
+ * Same three-layer resolution as {@see is_auto_publish_enabled()}: the stored
+ * `atmosphere_sync_reactions` option, forced off in
+ * {@see is_connection_only_mode()}, then the `atmosphere_should_sync_reactions`
+ * filter as the final say.
+ *
+ * @since unreleased
+ *
+ * @return bool
+ */
+function is_reaction_sync_enabled(): bool {
+	$enabled = feature_option_enabled( 'atmosphere_sync_reactions' );
+
+	/**
+	 * Filters whether Bluesky likes and reposts are imported as comments.
+	 *
+	 * Evaluated after the stored option and {@see is_connection_only_mode()},
+	 * so it has the final say over the effective reaction-import state.
+	 *
+	 * @since unreleased
+	 *
+	 * @param bool $enabled Whether reaction import is effectively enabled.
+	 */
+	return (bool) \apply_filters( 'atmosphere_should_sync_reactions', $enabled );
+}
+
+/**
+ * Whether Bluesky replies are imported as comments.
+ *
+ * Same three-layer resolution as {@see is_auto_publish_enabled()}: the stored
+ * `atmosphere_sync_replies` option, forced off in
+ * {@see is_connection_only_mode()}, then the `atmosphere_should_sync_replies`
+ * filter as the final say.
+ *
+ * @since unreleased
+ *
+ * @return bool
+ */
+function is_reply_sync_enabled(): bool {
+	$enabled = feature_option_enabled( 'atmosphere_sync_replies' );
+
+	/**
+	 * Filters whether Bluesky replies are imported as comments.
+	 *
+	 * Evaluated after the stored option and {@see is_connection_only_mode()},
+	 * so it has the final say over the effective reply-import state.
+	 *
+	 * @since unreleased
+	 *
+	 * @param bool $enabled Whether reply import is effectively enabled.
+	 */
+	return (bool) \apply_filters( 'atmosphere_should_sync_replies', $enabled );
+}
+
+/**
+ * Whether the `site.standard.publication` record is written/refreshed automatically.
+ *
+ * Establishing the site's standard.site publication is ATmosphere acting on its
+ * own, so a host embedding it purely as a connection layer shouldn't get a
+ * public publication record written to the connected repo the moment a user
+ * connects. Unlike the other lanes this has no stored user option — it defaults
+ * on, is forced off in {@see is_connection_only_mode()}, and a dedicated filter
+ * has the final say so a host can opt back in.
+ *
+ * @since unreleased
+ *
+ * @return bool
+ */
+function is_publication_sync_enabled(): bool {
+	$enabled = ! is_connection_only_mode();
+
+	/**
+	 * Filters whether the site.standard.publication record is synced automatically.
+	 *
+	 * Runs after {@see is_connection_only_mode()}, so it has the final say: a host
+	 * running ATmosphere as a connection layer can re-enable publication upkeep.
+	 *
+	 * @since unreleased
+	 *
+	 * @param bool $enabled Whether publication sync is effectively enabled.
+	 */
+	return (bool) \apply_filters( 'atmosphere_should_sync_publication', $enabled );
 }
 
 /**

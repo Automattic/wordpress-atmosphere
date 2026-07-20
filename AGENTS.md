@@ -15,15 +15,23 @@ WordPress plugin that publishes posts to AT Protocol in both `app.bsky.feed.post
 ```
 atmosphere.php                  # Main plugin file.
 includes/
-├── class-*.php                 # Core classes (Atmosphere, API, Publisher, Backfill, Handle, Post_Types, Reaction_Sync).
+├── class-*.php                 # Core classes (Atmosphere, API, Publisher, Backfill, Handle, Post_Types, Reaction_Sync, Connectors).
 ├── functions.php               # Helper functions.
 ├── content-parser/             # Pluggable content formats for site.standard.document (interface only by default).
 ├── oauth/                      # OAuth flow (Client, DPoP, Encryption, Resolver, Nonce).
+├── rest/                       # REST controllers (public + admin-only under rest/admin/).
 ├── transformer/                # AT Protocol record transformers (Post, Document, Publication, Comment, Facet, TID).
 └── wp-admin/                   # Admin UI (settings page, sidebar panel).
 integrations/                   # Plugin-specific content-parser integrations (stubs).
 templates/                      # PHP template files.
-assets/                         # CSS and JS.
+assets/                         # CSS, JS, and images.
+src/                            # Source for the wp-scripts build (editor panels, reactions block, connectors card, settings typeahead).
+├── editor-plugin/              # Document sidebar share-to-Bluesky panel.
+├── pre-publish-panel/          # Pre-publish share status panel.
+├── reactions/                  # Bluesky likes/reposts block.
+├── connectors-card/            # Connectors screen connect/disconnect card.
+├── settings-connect/           # Settings page connect-field typeahead enhancement.
+└── shared/                     # Shared JS reused across the above (incl. the handle typeahead component).
 tests/
 └── phpunit/                    # PHPUnit tests.
 ```
@@ -95,6 +103,18 @@ Test files live in `tests/phpunit/tests/` mirroring `includes/` structure. Files
 **Publisher** — Atomic batch `applyWrites` for both bsky post + standard.site document. See `includes/class-publisher.php`.
 
 **Well-known endpoints** — Rewrite rules + `template_redirect` handlers in `Atmosphere` class serve `/.well-known/atproto-did` (domain handle verification) and `/.well-known/site.standard.publication` (publication AT-URI). All share the `atmosphere_wellknown` query var.
+
+**Connectors API** — Progressive-enhancement registration on the WordPress 7.0 Settings → Connectors screen. `Atmosphere\Connectors` (`includes/class-connectors.php`), guarded throughout by `class_exists( 'WP_Connector_Registry' )`.
+
+- **Registration & card.** Registers an `atmosphere` connector on `wp_connectors_init` with `authentication.method => 'none'` (core only auto-renders a UI for `api_key` connectors) and ships a script module (`src/connectors-card/`) that renders the connect/disconnect card. The card drives the flow through `Atmosphere\Rest\Admin\Connection_Controller` (authorize/disconnect), reusing the OAuth `Client`.
+- **Two screen URLs.** Core's top-level `options-connectors.php` (`Connectors::SCREEN`) vs. the Gutenberg plugin's Settings submenu (`options-general.php?page=options-connectors-wp-admin`). Both matched via the shared `Connectors::SCREEN_SLUG` marker: `Connectors::is_connectors_screen()` gates the card enqueue; `Connectors::screen_url()` resolves the OAuth return destination.
+- **Return destination is server-side only.** The card sets a boolean `atmosphere_oauth_from_connectors` transient — no URL crosses the wire. `Admin::handle_oauth_callback()` derives the destination from `screen_url()` (which reads the registered admin `$submenu`), so nothing external can steer the `wp_safe_redirect()`.
+- **Handle typeahead.** The card's handle field uses the `atmosphere_handle_typeahead_url` filter (default `public.api.bsky.app`; `''` disables). Shared with the plugin's own Settings connect field via `Atmosphere\handle_typeahead_url()` and `src/shared/handle-typeahead.js`.
+
+**Embedding as a connection layer** — one filter lets a host plugin reuse just the connection:
+
+- **`atmosphere_connection_only_mode`** (via `Atmosphere\is_connection_only_mode()`, default `false`) forces cross-posting, reaction sync, reply sync, comment publishing, and `site.standard.publication` upkeep **off**, unschedules the reaction-sync crons, and hides the plugin's own settings page. The settings page stays *registered* (`add_options_page`) because the OAuth callback lands on its URL, but drops from the menu. The reauth notice still renders in this mode, pointing its reconnect link at the Connectors screen when one exists.
+- **Layered gating.** Each *behavior* resolves through a dedicated helper (`is_auto_publish_enabled()`, `is_reaction_sync_enabled()`, `is_reply_sync_enabled()`, `is_comment_publishing_enabled()`, `is_publication_sync_enabled()`): read the stored option (via the shared `feature_option_enabled()` resolver, except publication which has no user option) → force off in connection-only mode → apply a per-feature filter **last** (`atmosphere_should_auto_publish`, `atmosphere_should_sync_publication`, etc.), so a host can re-enable a single lane. Settings-page visibility (`Admin::is_settings_page_visible()`) has no separate override — it simply follows connection-only mode. All behavioral call sites route through these helpers; only the settings form fields read the raw option.
 
 ## Documentation Index
 
