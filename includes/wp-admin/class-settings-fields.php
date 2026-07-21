@@ -16,6 +16,7 @@ use Atmosphere\Content_Parser\Markpub;
 use Atmosphere\Content_Parser\Pckt;
 use Atmosphere\Content_Parser\Registry;
 use Atmosphere\Handle;
+use Atmosphere\Transformer\Publication;
 use function Atmosphere\get_connection;
 use function Atmosphere\get_supported_post_types;
 use function Atmosphere\has_identity;
@@ -114,6 +115,53 @@ class Settings_Fields {
 			'atmosphere',
 			'atmosphere_publishing'
 		);
+
+		// Publication theme section.
+		\add_settings_section(
+			'atmosphere_publication_theme',
+			\__( 'Theme', 'atmosphere' ),
+			array( self::class, 'render_publication_theme_section' ),
+			'atmosphere'
+		);
+
+		$theme_color_labels = array(
+			'background' => array(
+				\__( 'Background color', 'atmosphere' ),
+				\__( 'Overrides the publication background color.', 'atmosphere' ),
+			),
+			'foreground' => array(
+				\__( 'Foreground color', 'atmosphere' ),
+				\__( 'Overrides the publication foreground/text color.', 'atmosphere' ),
+			),
+			'accent'     => array(
+				\__( 'Accent color', 'atmosphere' ),
+				\__( 'Overrides the publication accent color. Accent foreground is computed automatically for contrast.', 'atmosphere' ),
+			),
+		);
+
+		foreach ( Publication::get_theme_color_options() as $key => $option ) {
+			/*
+			 * Falls back to the raw option name so a channel added to the
+			 * canonical map without a label here still renders — visibly
+			 * unlabelled, rather than warning and rendering blank.
+			 */
+			list( $label, $description ) = $theme_color_labels[ $key ] ?? array( $option, '' );
+
+			\add_settings_field(
+				$option,
+				$label,
+				array( self::class, 'render_publication_theme_color_field' ),
+				'atmosphere',
+				'atmosphere_publication_theme',
+				array(
+					// Ties the row's <th> label to the input for screen readers.
+					'label_for'   => $option,
+					'option'      => $option,
+					'key'         => $key,
+					'description' => $description,
+				)
+			);
+		}
 
 		// Reactions section.
 		\add_settings_section(
@@ -529,6 +577,64 @@ class Settings_Fields {
 	public static function render_reactions_section(): void {
 		?>
 		<p><?php \esc_html_e( 'Choose which interactions are sent to Bluesky and which are saved to WordPress.', 'atmosphere' ); ?></p>
+		<?php
+	}
+
+	/**
+	 * Render the Publication theme section description.
+	 */
+	public static function render_publication_theme_section(): void {
+		echo '<p>' . \esc_html__( 'Choose the colors apps use when they display your site. Empty a field to go back to the matching color from your active WordPress theme. If a color cannot be read from your theme, set all three here so your colors are published.', 'atmosphere' ) . '</p>';
+	}
+
+	/**
+	 * Render a publication theme color field.
+	 *
+	 * @param array $args {
+	 *     Field arguments.
+	 *
+	 *     @type string $option      Option name to read and save.
+	 *     @type string $key         Derived-color key: background, foreground, or accent.
+	 *     @type string $description Help text shown under the input.
+	 * }
+	 */
+	public static function render_publication_theme_color_field( array $args ): void {
+		static $derived_colors = null;
+
+		// Resolved once per request; all three fields render on the same
+		// screen and the derivation runs an uncached theme.json merge.
+		if ( null === $derived_colors ) {
+			$derived_colors = Publication::get_derived_theme_colors();
+		}
+
+		$option  = $args['option'];
+		$derived = $derived_colors[ $args['key'] ] ?? '';
+
+		?>
+		<input
+			type="text"
+			name="<?php echo \esc_attr( $option ); ?>"
+			id="<?php echo \esc_attr( $option ); ?>"
+			class="atmosphere-color-input"
+			value="<?php echo \esc_attr( (string) \get_option( $option, '' ) ); ?>"
+			data-default-color="<?php echo \esc_attr( $derived ); ?>"
+		>
+		<p class="description">
+			<?php echo \esc_html( (string) ( $args['description'] ?? '' ) ); ?>
+			<?php if ( '' !== $derived ) : ?>
+				<br>
+				<?php
+				\printf(
+					/* translators: %s: hex color derived from the active theme, e.g. #ffffff. */
+					\esc_html__( 'Your theme currently provides %s.', 'atmosphere' ),
+					'<code>' . \esc_html( $derived ) . '</code>'
+				);
+				?>
+			<?php else : ?>
+				<br>
+				<strong><?php \esc_html_e( 'Your theme does not provide this color. Set it here, along with the other two, for any colors to be published.', 'atmosphere' ); ?></strong>
+			<?php endif; ?>
+		</p>
 		<?php
 	}
 

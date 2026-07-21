@@ -46,6 +46,30 @@ class Publication extends Base {
 	public const OPTION_CID = 'atmosphere_publication_cid';
 
 	/**
+	 * Option key for a custom publication background color.
+	 *
+	 * @since unreleased
+	 * @var string
+	 */
+	public const OPTION_THEME_BACKGROUND = 'atmosphere_publication_theme_background';
+
+	/**
+	 * Option key for a custom publication foreground color.
+	 *
+	 * @since unreleased
+	 * @var string
+	 */
+	public const OPTION_THEME_FOREGROUND = 'atmosphere_publication_theme_foreground';
+
+	/**
+	 * Option key for a custom publication accent color.
+	 *
+	 * @since unreleased
+	 * @var string
+	 */
+	public const OPTION_THEME_ACCENT = 'atmosphere_publication_theme_accent';
+
+	/**
 	 * Whether the current transform is a read-only preview projection.
 	 *
 	 * Set for the duration of {@see self::get_preview_records()}. In
@@ -263,14 +287,141 @@ class Publication extends Base {
 	 * @return array|null
 	 */
 	private function extract_basic_theme(): ?array {
-		if ( ! \function_exists( 'wp_get_global_styles' ) ) {
-			return null;
-		}
-
-		$styles  = \wp_get_global_styles();
+		$styles  = self::get_global_styles();
 		$palette = self::get_palette_lookup();
 
-		return self::build_basic_theme( \is_array( $styles ) ? $styles : array(), $palette );
+		$basic_theme = self::build_basic_theme( $styles, $palette, self::get_theme_option_overrides() );
+
+		/**
+		 * Filters the publication basicTheme object before record assembly.
+		 *
+		 * Return a `site.standard.theme.basic`-shaped array to override
+		 * the derived value, or null to omit `basicTheme`.
+		 *
+		 * @since unreleased
+		 *
+		 * @param array|null          $basic_theme Current basicTheme object or null.
+		 * @param array               $styles      Output of `wp_get_global_styles()`.
+		 * @param array<string,string> $palette    Slug => hex palette lookup.
+		 */
+		$filtered_theme = \apply_filters( 'atmosphere_publication_basic_theme', $basic_theme, $styles, $palette );
+
+		if ( null !== $filtered_theme && ! \is_array( $filtered_theme ) ) {
+			\_doing_it_wrong(
+				__METHOD__,
+				\esc_html__( 'atmosphere_publication_basic_theme must return an array or null; falling back to the unfiltered basicTheme value.', 'atmosphere' ),
+				'unreleased'
+			);
+
+			return $basic_theme;
+		}
+
+		return $filtered_theme;
+	}
+
+	/**
+	 * The theme colours a site owner can override, mapped to the option
+	 * that stores each one.
+	 *
+	 * Single source of truth for the channel set: the transformer, the
+	 * settings screen, and the publication-sync triggers all build off
+	 * this, so adding a channel is one edit rather than four.
+	 *
+	 * @return array<string, string> Channel key => option name.
+	 */
+	public static function get_theme_color_options(): array {
+		return array(
+			'background' => self::OPTION_THEME_BACKGROUND,
+			'foreground' => self::OPTION_THEME_FOREGROUND,
+			'accent'     => self::OPTION_THEME_ACCENT,
+		);
+	}
+
+	/**
+	 * The colours derived from the active theme, as hex strings.
+	 *
+	 * The settings screen shows these so a site owner can see what a
+	 * blank field will publish. Channels that can't be derived are
+	 * omitted.
+	 *
+	 * @return array<string, string> Keyed by background / foreground / accent.
+	 */
+	public static function get_derived_theme_colors(): array {
+		$colors = array();
+
+		foreach ( self::derive_colors( self::get_global_styles(), self::get_palette_lookup() ) as $key => $rgb ) {
+			if ( null !== $rgb ) {
+				$colors[ $key ] = \sprintf( '#%02x%02x%02x', $rgb['r'], $rgb['g'], $rgb['b'] );
+			}
+		}
+
+		return $colors;
+	}
+
+	/**
+	 * Resolve the active theme's global styles.
+	 *
+	 * Global styles drive the *derived* colours only. Stored overrides
+	 * and the `atmosphere_publication_basic_theme` filter still apply
+	 * without them, so a missing or malformed result degrades to an
+	 * empty array rather than bailing out of theme assembly.
+	 *
+	 * @return array
+	 */
+	private static function get_global_styles(): array {
+		$styles = \function_exists( 'wp_get_global_styles' ) ? \wp_get_global_styles() : array();
+
+		return \is_array( $styles ) ? $styles : array();
+	}
+
+	/**
+	 * Derive each theme colour from global styles and the palette.
+	 *
+	 * The single definition of where each colour comes from. Every
+	 * channel is present in the return value; a channel that cannot be
+	 * resolved is null.
+	 *
+	 * @param array                $styles  Output of `wp_get_global_styles()`.
+	 * @param array<string,string> $palette Slug => hex map from the theme palette.
+	 * @return array<string, array{r: int, g: int, b: int}|null>
+	 */
+	private static function derive_colors( array $styles, array $palette ): array {
+		return array(
+			'background' => self::resolve_color( (string) ( $styles['color']['background'] ?? '' ), $palette ),
+			'foreground' => self::resolve_color( (string) ( $styles['color']['text'] ?? '' ), $palette ),
+
+			/*
+			 * Link colour is the conventional accent source in WP themes —
+			 * it's the one element nearly every theme styles explicitly.
+			 * Falls back to the palette's own accent slugs for themes that
+			 * don't restyle links.
+			 */
+			'accent'     => self::resolve_color( (string) ( $styles['elements']['link']['color']['text'] ?? '' ), $palette )
+				?? self::resolve_palette_accent( $palette ),
+		);
+	}
+
+	/**
+	 * Read the stored theme-colour overrides as resolved RGB triples.
+	 *
+	 * Unset or unparseable options are omitted, so each colour falls
+	 * through to the value derived from the active theme.
+	 *
+	 * @return array<string, array{r: int, g: int, b: int}> Keyed by
+	 *                background / foreground / accent.
+	 */
+	private static function get_theme_option_overrides(): array {
+		$overrides = array();
+
+		foreach ( self::get_theme_color_options() as $key => $option ) {
+			$rgb = self::hex_to_rgb( (string) \get_option( $option, '' ) );
+
+			if ( null !== $rgb ) {
+				$overrides[ $key ] = $rgb;
+			}
+		}
+
+		return $overrides;
 	}
 
 	/**
@@ -282,41 +433,72 @@ class Publication extends Base {
 	 * theme.json merge. The record carries the `site.standard.theme.basic`
 	 * `$type` discriminator so it passes lexicon validation.
 	 *
-	 * @param array                $styles  Output of `wp_get_global_styles()`.
-	 * @param array<string,string> $palette Slug => hex map from the theme palette.
+	 * Site-owner overrides take precedence over the derived colours,
+	 * per colour: an override for one channel leaves the rest derived.
+	 * `accentForeground` is always computed from the winning accent, so
+	 * a custom accent keeps its contrast guarantee.
+	 *
+	 * @param array                $styles    Output of `wp_get_global_styles()`.
+	 * @param array<string,string> $palette   Slug => hex map from the theme palette.
+	 * @param array                $overrides Optional. Resolved RGB triples keyed by
+	 *                                        background / foreground / accent.
 	 * @return array|null Spec-shaped record, or null when any required colour
 	 *                    is missing.
 	 */
-	public static function build_basic_theme( array $styles, array $palette ): ?array {
-		$background = self::resolve_color( (string) ( $styles['color']['background'] ?? '' ), $palette );
-		$foreground = self::resolve_color( (string) ( $styles['color']['text'] ?? '' ), $palette );
+	public static function build_basic_theme( array $styles, array $palette, array $overrides = array() ): ?array {
+		// Union, not merge: a stored override wins per channel, and every
+		// channel the owner left blank falls through to the derived value.
+		$colors = $overrides + self::derive_colors( $styles, $palette );
 
-		/*
-		 * Link colour is the conventional accent source in WP themes —
-		 * it's the one element nearly every theme styles explicitly.
-		 * Falls back to a palette slug literally named `accent` for
-		 * themes that don't restyle links.
-		 */
-		$accent = self::resolve_color(
-			(string) ( $styles['elements']['link']['color']['text'] ?? '' ),
-			$palette
-		);
-
-		if ( null === $accent && isset( $palette['accent'] ) ) {
-			$accent = self::resolve_color( $palette['accent'], $palette );
-		}
-
-		if ( null === $background || null === $foreground || null === $accent ) {
+		if ( null === $colors['background'] || null === $colors['foreground'] || null === $colors['accent'] ) {
 			return null;
 		}
 
 		return array(
 			'$type'            => 'site.standard.theme.basic',
-			'background'       => self::color_object( $background ),
-			'foreground'       => self::color_object( $foreground ),
-			'accent'           => self::color_object( $accent ),
-			'accentForeground' => self::color_object( self::contrast_color( $accent ) ),
+			'background'       => self::color_object( $colors['background'] ),
+			'foreground'       => self::color_object( $colors['foreground'] ),
+			'accent'           => self::color_object( $colors['accent'] ),
+			'accentForeground' => self::color_object( self::contrast_color( $colors['accent'] ) ),
 		);
+	}
+
+	/**
+	 * Pick an accent colour out of the theme palette.
+	 *
+	 * Themes that style links with `currentColor` — including the default
+	 * Twenty Twenty-Five — leave nothing to derive from the link element,
+	 * so fall back to the palette's own accent slugs. An exact `accent`
+	 * wins; otherwise the lowest-numbered `accent-N` does, which is the
+	 * slug core's own themes use for their primary accent. Values that
+	 * aren't plain colours (`color-mix(...)`, gradients) are skipped.
+	 *
+	 * @param array<string,string> $palette Slug => hex map.
+	 * @return array{r: int, g: int, b: int}|null
+	 */
+	private static function resolve_palette_accent( array $palette ): ?array {
+		$candidates = array();
+
+		foreach ( $palette as $slug => $value ) {
+			if ( 'accent' === $slug ) {
+				// Ranks ahead of every numbered slug.
+				$candidates[-1] = $value;
+			} elseif ( \preg_match( '/^accent-(\d+)$/', (string) $slug, $matches ) ) {
+				$candidates[ (int) $matches[1] ] = $value;
+			}
+		}
+
+		\ksort( $candidates );
+
+		foreach ( $candidates as $value ) {
+			$accent = self::resolve_color( (string) $value, $palette );
+
+			if ( null !== $accent ) {
+				return $accent;
+			}
+		}
+
+		return null;
 	}
 
 	/**

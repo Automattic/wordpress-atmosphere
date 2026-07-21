@@ -169,4 +169,32 @@ class Sanitize {
 
 		return Registry::has( $value ) ? $value : '';
 	}
+
+	/**
+	 * Sanitize a publication-theme hex color.
+	 *
+	 * Accepts an empty string — which means "keep the colour derived from
+	 * the active theme" — or a `#RGB` / `#RRGGBB` value, lower-cased.
+	 * Anything else sanitizes to empty rather than being stored, so a
+	 * malformed paste degrades to the derived colour instead of dropping
+	 * the whole theme object from the record.
+	 *
+	 * @param mixed $value Submitted value.
+	 * @return string
+	 */
+	public static function hex_color( $value ): string {
+		if ( ! \is_string( $value ) ) {
+			return '';
+		}
+
+		// Core validates the `#RGB` / `#RRGGBB` shape and returns null otherwise.
+		$color = \strtolower( (string) \sanitize_hex_color( \trim( $value ) ) );
+
+		// Normalize the shorthand form so stored values are always `#rrggbb`.
+		if ( 4 === \strlen( $color ) ) {
+			$color = '#' . $color[1] . $color[1] . $color[2] . $color[2] . $color[3] . $color[3];
+		}
+
+		return $color;
+	}
 }
