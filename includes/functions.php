@@ -966,10 +966,14 @@ function is_publication_sync_enabled(): bool {
  * published before it was enabled.
  *
  * Unlike the other lane helpers (see {@see is_publication_sync_enabled()}), this
- * one has no connection-only pass: it shapes *what* a publish writes, not
- * *whether* the site publishes, and connection-only mode already disables
- * publishing wholesale upstream — so the lane never runs there and there is
- * nothing to force off. It is deliberately a pure filter, not the
+ * one has no connection-only pass. Connection-only mode only forces *automatic*
+ * publishing off ({@see is_auto_publish_enabled()}); manual paths such as the
+ * Backfill CLI still call {@see \Atmosphere\Publisher} directly, so this helper
+ * can — and should — still run in that mode. That is deliberate: it shapes
+ * *what* a publish writes, not *whether* the site publishes, so a host embedded
+ * as a connection layer that runs a manual backfill can still choose
+ * document-only output. Forcing it off in connection-only mode would take that
+ * choice away. It is therefore a pure filter, not the
  * "option → force off in connection-only → filter last" contract.
  *
  * @since unreleased
