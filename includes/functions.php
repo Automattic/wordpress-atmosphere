@@ -965,6 +965,13 @@ function is_publication_sync_enabled(): bool {
  * Forward-only: it governs new writes and does not remove Bluesky posts
  * published before it was enabled.
  *
+ * Unlike the other lane helpers (see {@see is_publication_sync_enabled()}), this
+ * one has no connection-only pass: it shapes *what* a publish writes, not
+ * *whether* the site publishes, and connection-only mode already disables
+ * publishing wholesale upstream — so the lane never runs there and there is
+ * nothing to force off. It is deliberately a pure filter, not the
+ * "option → force off in connection-only → filter last" contract.
+ *
  * @since unreleased
  *
  * @return bool True when the Bluesky companion post should be published. Default true.
