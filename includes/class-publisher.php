@@ -304,15 +304,36 @@ class Publisher {
 	 * @return array|\WP_Error applyWrites response or error.
 	 */
 	private static function publish_document_only( \WP_Post $post ): array|\WP_Error {
+		return self::write_document_only( $post, 'create', ( new Document( $post ) )->get_rkey() );
+	}
+
+	/**
+	 * Write a single `site.standard.document` record and persist its meta.
+	 *
+	 * Shared writer for {@see self::publish_document_only()} (create) and
+	 * {@see self::update_document_only()} (update): the two differ only in the
+	 * applyWrites op and the rkey source, so the batch shape, error handling,
+	 * and document-meta persistence live here in one place. Persists only the
+	 * `Document::*` meta — no `Post::*` meta — so downstream bsky-oriented paths
+	 * (reaction/reply sync, in-place thread updates) stay inert for this post.
+	 *
+	 * @since unreleased
+	 *
+	 * @param \WP_Post $post WordPress post.
+	 * @param string   $op   applyWrites op — `create` or `update`.
+	 * @param string   $rkey Record key for the write.
+	 * @return array|\WP_Error applyWrites response or error.
+	 */
+	private static function write_document_only( \WP_Post $post, string $op, string $rkey ): array|\WP_Error {
 		self::maybe_heal_publication();
 
 		$doc_transformer = new Document( $post );
 
 		$writes = array(
 			array(
-				'$type'      => 'com.atproto.repo.applyWrites#create',
+				'$type'      => "com.atproto.repo.applyWrites#{$op}",
 				'collection' => 'site.standard.document',
-				'rkey'       => $doc_transformer->get_rkey(),
+				'rkey'       => $rkey,
 				'value'      => $doc_transformer->transform(),
 			),
 		);
@@ -995,28 +1016,7 @@ class Publisher {
 			);
 		}
 
-		self::maybe_heal_publication();
-
-		$doc_transformer = new Document( $post );
-
-		$writes = array(
-			array(
-				'$type'      => 'com.atproto.repo.applyWrites#update',
-				'collection' => 'site.standard.document',
-				'rkey'       => (string) $doc_tid,
-				'value'      => $doc_transformer->transform(),
-			),
-		);
-
-		$result = API::apply_writes( $writes );
-
-		if ( \is_wp_error( $result ) ) {
-			return $result;
-		}
-
-		self::store_document_meta( $post->ID, $result, $doc_transformer, 0 );
-
-		return $result;
+		return self::write_document_only( $post, 'update', (string) $doc_tid );
 	}
 
 	/**
