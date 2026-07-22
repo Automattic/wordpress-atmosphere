@@ -109,11 +109,14 @@ class Publisher {
 		 * Document-only mode: the operator has disabled the Bluesky
 		 * companion post site-wide. Write just the site.standard.document
 		 * record and skip the bsky post, strongRef precompute, and thread
-		 * machinery entirely. Still fire the result action so subscribers
-		 * (metrics, notices) behave the same as any other publish.
+		 * machinery entirely. Still run the shared post-write tail — the
+		 * reconcile race-guard (so a document that raced a visibility change
+		 * is cleaned up) and the result action (so metrics/notice subscribers
+		 * behave the same as any other publish).
 		 */
 		if ( ! is_bluesky_post_enabled() ) {
 			$result = self::publish_document_only( $post );
+			$result = self::reconcile_post_after_write( $post, $result );
 
 			\do_action( 'atmosphere_publish_post_result', $post, $result );
 
@@ -757,9 +760,11 @@ class Publisher {
 		 * mistaken for the "half-synced" skip case below. The not-publishable
 		 * branch above already delegates deletion to delete_post(), which is
 		 * meta-driven and removes only the document when no bsky meta exists.
+		 * Run the same reconcile race-guard the dual update paths end with, so
+		 * a document edit that races a visibility change is still cleaned up.
 		 */
 		if ( ! is_bluesky_post_enabled() ) {
-			return self::update_document_only( $post );
+			return self::reconcile_post_after_write( $post, self::update_document_only( $post ) );
 		}
 
 		$stored = self::stored_thread_records( $post->ID );

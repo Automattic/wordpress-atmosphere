@@ -646,6 +646,67 @@ class Test_Publisher extends WP_UnitTestCase {
 	}
 
 	/**
+	 * A document-only publish that races a visibility change runs the same
+	 * reconcile race-guard as the dual path: the document record it just wrote
+	 * is deleted when the post becomes non-publishable mid-flight.
+	 *
+	 * @group atmosphere
+	 * @group publisher
+	 */
+	public function test_publish_document_only_reconciles_when_post_protected_mid_publish() {
+		\add_filter( 'atmosphere_should_publish_bluesky_post', '__return_false' );
+
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_status'  => 'publish',
+				'post_title'   => 'Race window',
+				'post_content' => 'This starts public.',
+			)
+		);
+
+		$captured_calls = array();
+		\add_filter(
+			'atmosphere_pre_apply_writes',
+			static function ( $short, $writes ) use ( $post, &$captured_calls ) {
+				$captured_calls[] = $writes;
+
+				if ( 1 === \count( $captured_calls ) ) {
+					\wp_update_post(
+						array(
+							'ID'            => $post->ID,
+							'post_password' => 'secret',
+						)
+					);
+				}
+
+				return array(
+					'results' => \array_map(
+						static fn ( $write ) => array(
+							'uri' => 'at://did:plc:test123/' . $write['collection'] . '/' . $write['rkey'],
+							'cid' => 'bafy' . $write['rkey'],
+						),
+						$writes
+					),
+				);
+			},
+			10,
+			2
+		);
+
+		$result = Publisher::publish_post( $post );
+
+		\wp_clear_scheduled_hook( 'atmosphere_delete_post', array( $post->ID ) );
+
+		$this->assertIsArray( $result );
+		$this->assertCount( 2, $captured_calls, 'Document-only publish must be followed by cleanup.' );
+		$this->assertSame( 'com.atproto.repo.applyWrites#create', $captured_calls[0][0]['$type'] );
+		$this->assertSame( 'site.standard.document', $captured_calls[0][0]['collection'] );
+		$this->assertSame( 'com.atproto.repo.applyWrites#delete', $captured_calls[1][0]['$type'] );
+		$this->assertSame( 'site.standard.document', $captured_calls[1][0]['collection'] );
+		$this->assertSame( '', \get_post_meta( $post->ID, Document::META_URI, true ) );
+	}
+
+	/**
 	 * Test that delete() returns error when not connected.
 	 *
 	 * The API layer requires a valid OAuth connection. Without one,
