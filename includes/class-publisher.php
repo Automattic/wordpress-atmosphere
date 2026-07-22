@@ -1885,8 +1885,9 @@ class Publisher {
 	/**
 	 * Persist the document record's URI/CID from an applyWrites response.
 	 *
-	 * The document is always written at index 1 of the first applyWrites
-	 * batch in every publish flow (root + doc, atomically). Post meta
+	 * The document is written at `$doc_index` (index 1 in dual-record
+	 * batches, 0 in document-only batches) of the first applyWrites
+	 * batch. Post meta
 	 * (`Post::META_URI` / `META_TID` / `META_CID`) is owned by
 	 * `mirror_thread_records_meta()` and intentionally not touched here
 	 * — single mirroring point keeps the two paths from drifting.
@@ -1894,9 +1895,10 @@ class Publisher {
 	 * @param int      $post_id         Post ID.
 	 * @param array    $result          applyWrites response.
 	 * @param Document $doc_transformer Document transformer.
+	 * @param int      $doc_index       Index of the document entry in `results`. Default 1 (dual-record batch); 0 for a document-only batch.
 	 */
-	private static function store_document_meta( int $post_id, array $result, Document $doc_transformer ): void {
-		$doc_entry = $result['results'][1] ?? null;
+	private static function store_document_meta( int $post_id, array $result, Document $doc_transformer, int $doc_index = 1 ): void {
+		$doc_entry = $result['results'][ $doc_index ] ?? null;
 
 		if ( null === $doc_entry ) {
 			return;
