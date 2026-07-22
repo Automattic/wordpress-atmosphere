@@ -88,13 +88,21 @@ class Block_Editor {
 	 * Keeps the REST route and the share-toggle meta key defined once on the
 	 * PHP side so the JS never hardcodes (and drifts from) them.
 	 *
-	 * @return array{previewPath: string, disabledMetaKey: string, customTextMetaKey: string}
+	 * @return array{previewPath: string, disabledMetaKey: string, customTextMetaKey: string, settingsUrl: string, canManage: bool}
 	 */
 	private static function script_data(): array {
 		return array(
 			'previewPath'       => Pre_Publish_Controller::full_route(),
 			'disabledMetaKey'   => ATMOSPHERE_META_DISABLED,
 			'customTextMetaKey' => ATMOSPHERE_META_CUSTOM_TEXT,
+			'settingsUrl'       => settings_url(),
+
+			/*
+			 * The settings page needs `manage_options`; authors and
+			 * editors see the panel too, so reconnect prompts must not
+			 * link them into an authorization error.
+			 */
+			'canManage'         => \current_user_can( 'manage_options' ),
 		);
 	}
 }

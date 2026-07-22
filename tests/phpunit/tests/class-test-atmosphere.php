@@ -56,6 +56,7 @@ class Test_Atmosphere extends WP_UnitTestCase {
 		\delete_option( 'atmosphere_connection' );
 		\delete_option( 'atmosphere_identity' );
 		\delete_option( 'atmosphere_publication_tid' );
+		\delete_option( 'atmosphere_publish_comments' );
 		\delete_option( \Atmosphere\OAuth\Client::DISCONNECTED_OPTION );
 
 		/*
@@ -67,7 +68,11 @@ class Test_Atmosphere extends WP_UnitTestCase {
 		\wp_unschedule_hook( 'atmosphere_update_post' );
 		\wp_unschedule_hook( 'atmosphere_delete_post' );
 		\wp_unschedule_hook( 'atmosphere_delete_records' );
+		\wp_unschedule_hook( 'atmosphere_publish_comment' );
+		\wp_unschedule_hook( 'atmosphere_update_comment' );
+		\wp_unschedule_hook( 'atmosphere_delete_comment' );
 		\wp_unschedule_hook( 'atmosphere_delete_comment_record' );
+		\wp_unschedule_hook( 'atmosphere_backfill_replies' );
 
 		\remove_all_filters( 'atmosphere_should_publish_comment' );
 		\remove_all_filters( 'atmosphere_pre_apply_writes' );
@@ -82,6 +87,15 @@ class Test_Atmosphere extends WP_UnitTestCase {
 	private function reset_publishing_action(): void {
 		global $wp_actions;
 		unset( $wp_actions['atmosphere_publishing'] );
+	}
+
+	/**
+	 * Create a user authorized to publish outbound comments.
+	 *
+	 * @return int User ID.
+	 */
+	private function make_publishing_user(): int {
+		return self::factory()->user->create( array( 'role' => 'author' ) );
 	}
 
 	/**
@@ -104,7 +118,7 @@ class Test_Atmosphere extends WP_UnitTestCase {
 			'comment_post_ID'  => $post_id,
 			'comment_approved' => '1',
 			'comment_type'     => 'comment',
-			'user_id'          => self::factory()->user->create(),
+			'user_id'          => $this->make_publishing_user(),
 			'comment_content'  => 'Hello.',
 		);
 
@@ -693,13 +707,28 @@ class Test_Atmosphere extends WP_UnitTestCase {
 	}
 
 	/**
-	 * Baseline: approved comment from a registered user on a published
-	 * post is publishable.
+	 * Baseline: an approved comment from an author on a published post
+	 * is publishable.
 	 */
-	public function test_eligible_registered_user_approved_comment_publishes() {
+	public function test_eligible_author_approved_comment_publishes() {
 		$comment = $this->make_eligible_comment();
 
 		$this->assertTrue( Atmosphere::should_publish_comment( $comment ) );
+	}
+
+	/**
+	 * A registered Subscriber can comment but cannot publish site content.
+	 */
+	public function test_subscriber_comment_is_skipped() {
+		$subscriber_id = self::factory()->user->create( array( 'role' => 'subscriber' ) );
+		$comment       = $this->make_eligible_comment( array( 'user_id' => $subscriber_id ) );
+
+		$this->assertFalse( Atmosphere::should_publish_comment( $comment ) );
+		$this->atmosphere->on_comment_insert( (int) $comment->comment_ID, 1 );
+		$this->assertFalse(
+			\wp_next_scheduled( 'atmosphere_publish_comment', array( (int) $comment->comment_ID ) ),
+			'Subscriber comments must not schedule an outbound publish.'
+		);
 	}
 
 	/**
@@ -800,7 +829,7 @@ class Test_Atmosphere extends WP_UnitTestCase {
 
 	/**
 	 * Third parties can force-allow publication via filter (e.g.
-	 * overriding the anonymous-only guard for a specific integration).
+	 * overriding the core eligibility gates for a specific integration).
 	 */
 	public function test_comment_filter_can_force_publish() {
 		$comment = $this->make_eligible_comment( array( 'user_id' => 0 ) );
@@ -808,6 +837,71 @@ class Test_Atmosphere extends WP_UnitTestCase {
 		\add_filter( 'atmosphere_should_publish_comment', '__return_true' );
 
 		$this->assertTrue( Atmosphere::should_publish_comment( $comment ) );
+	}
+
+	/**
+	 * Turning off comment publishing blocks every comment lifecycle
+	 * scheduler, and the hard boundary cannot be bypassed by the legacy
+	 * eligibility filter.
+	 */
+	public function test_disabled_comment_publishing_do_not_schedule_comment_writes() {
+		$comment    = $this->make_eligible_comment();
+		$comment_id = (int) $comment->comment_ID;
+		\update_comment_meta( $comment_id, Comment::META_TID, 'reply-tid' );
+		\update_comment_meta( $comment_id, Comment::META_URI, 'at://did:plc:test123/app.bsky.feed.post/reply-tid' );
+		\update_option( 'atmosphere_publish_comments', '' );
+		\add_filter( 'atmosphere_should_publish_comment', '__return_true' );
+
+		$this->assertFalse( Atmosphere::should_publish_comment( $comment ) );
+
+		$this->atmosphere->on_comment_insert( $comment_id, 1 );
+		$this->atmosphere->on_comment_edit( $comment_id );
+		$this->atmosphere->on_comment_status_change( 'unapproved', 'approved', $comment );
+		$this->atmosphere->on_comment_before_delete( $comment_id );
+
+		$this->assertFalse( \wp_next_scheduled( 'atmosphere_publish_comment', array( $comment_id ) ) );
+		$this->assertFalse( \wp_next_scheduled( 'atmosphere_update_comment', array( $comment_id ) ) );
+		$this->assertFalse( \wp_next_scheduled( 'atmosphere_delete_comment', array( $comment_id ) ) );
+		$this->assertFalse( \wp_next_scheduled( 'atmosphere_delete_comment_record', array( 'reply-tid' ) ) );
+	}
+
+	/**
+	 * Events queued while the feature was enabled become no-ops when an
+	 * administrator disables comment publishing before WP-Cron runs.
+	 */
+	public function test_queued_comment_cron_events_do_not_write_after_disable() {
+		$comment    = $this->make_eligible_comment();
+		$comment_id = (int) $comment->comment_ID;
+
+		$this->atmosphere->on_comment_insert( $comment_id, 1 );
+		\update_comment_meta( $comment_id, Comment::META_TID, 'reply-tid' );
+		\update_comment_meta( $comment_id, Comment::META_URI, 'at://did:plc:test123/app.bsky.feed.post/reply-tid' );
+		$this->atmosphere->on_comment_edit( $comment_id );
+		$this->atmosphere->on_comment_status_change( 'unapproved', 'approved', $comment );
+		$this->atmosphere->on_comment_before_delete( $comment_id );
+
+		$this->assertNotFalse( \wp_next_scheduled( 'atmosphere_publish_comment', array( $comment_id ) ) );
+		$this->assertNotFalse( \wp_next_scheduled( 'atmosphere_update_comment', array( $comment_id ) ) );
+		$this->assertNotFalse( \wp_next_scheduled( 'atmosphere_delete_comment', array( $comment_id ) ) );
+		$this->assertNotFalse( \wp_next_scheduled( 'atmosphere_delete_comment_record', array( 'reply-tid' ) ) );
+
+		\update_option( 'atmosphere_publish_comments', '' );
+
+		$writes = 0;
+		\add_filter(
+			'atmosphere_pre_apply_writes',
+			static function () use ( &$writes ) {
+				++$writes;
+				return new \WP_Error( 'unexpected_write', 'A comment reached the PDS write path.' );
+			}
+		);
+
+		\do_action( 'atmosphere_publish_comment', $comment_id );
+		\do_action( 'atmosphere_update_comment', $comment_id );
+		\do_action( 'atmosphere_delete_comment', $comment_id );
+		\do_action( 'atmosphere_delete_comment_record', 'reply-tid' );
+
+		$this->assertSame( 0, $writes );
 	}
 
 	/**
@@ -837,7 +931,7 @@ class Test_Atmosphere extends WP_UnitTestCase {
 			array(
 				'comment_post_ID'  => $post_id,
 				'comment_approved' => '1',
-				'user_id'          => self::factory()->user->create(),
+				'user_id'          => $this->make_publishing_user(),
 			)
 		);
 
@@ -859,7 +953,7 @@ class Test_Atmosphere extends WP_UnitTestCase {
 			array(
 				'comment_post_ID'  => $post_id,
 				'comment_approved' => '1',
-				'user_id'          => self::factory()->user->create(),
+				'user_id'          => $this->make_publishing_user(),
 			)
 		);
 		\update_comment_meta( $comment_id, Comment::META_URI, 'at://did:plc:test123/app.bsky.feed.post/reply' );
@@ -885,7 +979,7 @@ class Test_Atmosphere extends WP_UnitTestCase {
 		$comment_id = self::factory()->comment->create(
 			array(
 				'comment_post_ID' => $post_id,
-				'user_id'         => self::factory()->user->create(),
+				'user_id'         => $this->make_publishing_user(),
 			)
 		);
 		\update_comment_meta( $comment_id, Comment::META_TID, 'deadbeef' );
@@ -940,6 +1034,39 @@ class Test_Atmosphere extends WP_UnitTestCase {
 		\remove_all_filters( 'pre_http_request' );
 
 		$this->assertFalse( $captured, 'applyWrites must not be called for a no-longer-eligible comment.' );
+	}
+
+	/**
+	 * The publish cron handler must use the comment author's current
+	 * capabilities, not the user who happens to run WP-Cron.
+	 */
+	public function test_publish_comment_cron_rechecks_author_capability() {
+		$comment    = $this->make_eligible_comment();
+		$comment_id = (int) $comment->comment_ID;
+		$author     = \get_user_by( 'id', (int) $comment->user_id );
+
+		$this->assertInstanceOf( \WP_User::class, $author );
+		$this->atmosphere->on_comment_insert( $comment_id, 1 );
+		$this->assertNotFalse(
+			\wp_next_scheduled( 'atmosphere_publish_comment', array( $comment_id ) ),
+			'Author comment should be queued before the role downgrade.'
+		);
+		$author->set_role( 'subscriber' );
+
+		$captured = false;
+		\add_filter(
+			'atmosphere_pre_apply_writes',
+			static function () use ( &$captured ) {
+				$captured = true;
+				return new \WP_Error( 'unexpected_write', 'Subscriber comment reached the PDS write path.' );
+			}
+		);
+
+		\do_action( 'atmosphere_publish_comment', $comment_id );
+		\remove_all_filters( 'atmosphere_pre_apply_writes' );
+		\wp_clear_scheduled_hook( 'atmosphere_publish_comment', array( $comment_id ) );
+
+		$this->assertFalse( $captured, 'A role downgrade before cron execution must prevent publication.' );
 	}
 
 	/**
@@ -1141,7 +1268,7 @@ class Test_Atmosphere extends WP_UnitTestCase {
 		\update_post_meta( $post_id, Post::META_URI, 'at://did:plc:test123/app.bsky.feed.post/root' );
 		\update_post_meta( $post_id, Post::META_CID, 'bafyroot' );
 
-		$user_id = self::factory()->user->create();
+		$user_id = $this->make_publishing_user();
 
 		$parent_id = self::factory()->comment->create(
 			array(
@@ -1354,7 +1481,7 @@ class Test_Atmosphere extends WP_UnitTestCase {
 		\update_post_meta( $post_id, Post::META_URI, 'at://did:plc:test123/app.bsky.feed.post/root' );
 		\update_post_meta( $post_id, Post::META_CID, 'bafyroot' );
 
-		$user_id = self::factory()->user->create();
+		$user_id = $this->make_publishing_user();
 
 		$parent_id = self::factory()->comment->create(
 			array(
@@ -1441,6 +1568,31 @@ class Test_Atmosphere extends WP_UnitTestCase {
 		$this->assertNotFalse(
 			\wp_next_scheduled( 'atmosphere_delete_records', $expected_args ),
 			'Expected atmosphere_delete_records to be scheduled with the published comment TIDs.'
+		);
+	}
+
+	/**
+	 * Permanent post cleanup still removes the post and document while the
+	 * comment-publishing setting keeps existing comment replies unchanged.
+	 */
+	public function test_on_before_delete_omits_comment_tids_when_comment_publishing_disabled() {
+		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		\update_post_meta( $post_id, Post::META_TID, 'bsky-tid-root' );
+		\update_post_meta( $post_id, Document::META_TID, 'doc-tid-root' );
+
+		$comment_id = self::factory()->comment->create( array( 'comment_post_ID' => $post_id ) );
+		\update_comment_meta( $comment_id, Comment::META_TID, 'reply-tid' );
+		\update_comment_meta( $comment_id, Comment::META_URI, 'at://did:plc:test123/app.bsky.feed.post/reply-tid' );
+		\update_option( 'atmosphere_publish_comments', '' );
+
+		$this->atmosphere->on_before_delete( $post_id );
+
+		$this->assertNotFalse(
+			\wp_next_scheduled(
+				'atmosphere_delete_records',
+				array( array( 'bsky-tid-root' ), 'doc-tid-root', array() )
+			),
+			'Post cleanup should be queued without the comment-reply TID.'
 		);
 	}
 
@@ -1752,6 +1904,39 @@ class Test_Atmosphere extends WP_UnitTestCase {
 
 		\remove_all_filters( 'atmosphere_pre_apply_writes' );
 		\wp_clear_scheduled_hook( 'atmosphere_delete_comment_record' );
+	}
+
+	/**
+	 * If the setting changes while applyWrites is already in flight,
+	 * retain the successful result instead of scheduling a new outbound
+	 * delete that the disabled state is explicitly meant to prevent.
+	 */
+	public function test_reconcile_keeps_inflight_result_when_comment_publishing_disabled_mid_publish() {
+		$comment    = $this->make_eligible_comment();
+		$comment_id = (int) $comment->comment_ID;
+
+		/* Flip the setting while the applyWrites call is in flight. */
+		\add_filter(
+			'atmosphere_pre_apply_writes',
+			static function ( $short_circuit ) {
+				\update_option( 'atmosphere_publish_comments', '' );
+
+				return $short_circuit;
+			},
+			5
+		);
+		$this->force_apply_writes_success();
+
+		\do_action( 'atmosphere_publish_comment', $comment_id );
+
+		$this->assertNotEmpty( \get_comment_meta( $comment_id, Comment::META_TID, true ) );
+		$this->assertNotEmpty( \get_comment_meta( $comment_id, Comment::META_URI, true ) );
+		$this->assertFalse(
+			\wp_next_scheduled( 'atmosphere_delete_comment_record' ),
+			'Disabling outgoing writes must not enqueue a compensating delete.'
+		);
+
+		\remove_all_filters( 'atmosphere_pre_apply_writes' );
 	}
 
 	/**
@@ -2079,16 +2264,26 @@ class Test_Atmosphere extends WP_UnitTestCase {
 	 * trigger set so a future refactor can't silently drop one.
 	 */
 	public function test_init_wires_publication_sync_triggers() {
+		$option_triggers = \array_merge(
+			array( 'blogname', 'blogdescription', 'site_icon', 'home', 'siteurl' ),
+			\array_values( \Atmosphere\Transformer\Publication::get_theme_color_options() )
+		);
+
 		$triggers = array(
-			'update_option_blogname',
-			'update_option_blogdescription',
-			'update_option_site_icon',
-			'update_option_home',
-			'update_option_siteurl',
 			'switch_theme',
 			'save_post_wp_global_styles',
 			'customize_save_after',
 		);
+
+		/*
+		 * Both hooks per option: an option with no row yet is written by
+		 * `add_option()`, where `update_option_*` never fires — the case a
+		 * plugin option hits the first time it is saved.
+		 */
+		foreach ( $option_triggers as $option ) {
+			$triggers[] = 'add_option_' . $option;
+			$triggers[] = 'update_option_' . $option;
+		}
 
 		$this->atmosphere->init();
 
@@ -2105,7 +2300,7 @@ class Test_Atmosphere extends WP_UnitTestCase {
 			 * framework does not roll back between tests. Roll back the
 			 * pieces our action triggers so a later test changing
 			 * `blogname` / `home` / etc. is not surprised by a spurious
-			 * `atmosphere_sync_publication` schedule, and clear the two
+			 * `atmosphere_sync_publication` schedule, and clear the three
 			 * recurring crons `init()` queues so they do not survive
 			 * either.
 			 */
@@ -2115,6 +2310,34 @@ class Test_Atmosphere extends WP_UnitTestCase {
 			\wp_clear_scheduled_hook( 'atmosphere_sync_publication' );
 			\wp_clear_scheduled_hook( 'atmosphere_refresh_token' );
 			\wp_clear_scheduled_hook( 'atmosphere_sync_reactions' );
+			\wp_clear_scheduled_hook( 'atmosphere_backfill_replies' );
+		}
+	}
+
+	/**
+	 * Connected sites schedule and register the bounded daily reply audit.
+	 */
+	public function test_init_schedules_daily_reply_backfill() {
+		\update_option( 'atmosphere_identity', array( 'did' => 'did:plc:test123' ), false );
+		\wp_unschedule_hook( 'atmosphere_backfill_replies' );
+
+		$this->atmosphere->init();
+		// Scheduling is deferred to the `init` hook (so host filters are
+		// attached first), so run the reconciler the hook would fire.
+		Atmosphere::maybe_schedule_reaction_crons();
+
+		try {
+			$this->assertNotFalse(
+				\has_action(
+					'atmosphere_backfill_replies',
+					array( Reaction_Sync::class, 'backfill_scheduled_replies' )
+				)
+			);
+			$this->assertSame( 'daily', \wp_get_schedule( 'atmosphere_backfill_replies' ) );
+		} finally {
+			\wp_unschedule_hook( 'atmosphere_backfill_replies' );
+			\wp_unschedule_hook( 'atmosphere_refresh_token' );
+			\wp_unschedule_hook( 'atmosphere_sync_reactions' );
 		}
 	}
 
@@ -2150,7 +2373,7 @@ class Test_Atmosphere extends WP_UnitTestCase {
 				'comment_post_ID'  => $post_id,
 				'comment_approved' => '1',
 				'comment_type'     => 'comment',
-				'user_id'          => self::factory()->user->create(),
+				'user_id'          => $this->make_publishing_user(),
 				'comment_content'  => 'Reply to anon.',
 				'comment_parent'   => $parent_id,
 			)
@@ -2201,7 +2424,7 @@ class Test_Atmosphere extends WP_UnitTestCase {
 				'comment_post_ID'  => $post_id,
 				'comment_approved' => '1',
 				'comment_type'     => 'comment',
-				'user_id'          => self::factory()->user->create(),
+				'user_id'          => $this->make_publishing_user(),
 				'comment_content'  => 'Already-published parent.',
 			)
 		);
@@ -2213,7 +2436,7 @@ class Test_Atmosphere extends WP_UnitTestCase {
 				'comment_post_ID'  => $post_id,
 				'comment_approved' => '1',
 				'comment_type'     => 'comment',
-				'user_id'          => self::factory()->user->create(),
+				'user_id'          => $this->make_publishing_user(),
 				'comment_content'  => 'Reply.',
 				'comment_parent'   => $parent_id,
 			)
@@ -2276,7 +2499,7 @@ class Test_Atmosphere extends WP_UnitTestCase {
 				'comment_post_ID'  => $post_id,
 				'comment_approved' => '1',
 				'comment_type'     => 'comment',
-				'user_id'          => self::factory()->user->create(),
+				'user_id'          => $this->make_publishing_user(),
 				'comment_content'  => 'Reply to federated.',
 				'comment_parent'   => $parent_id,
 			)
@@ -2320,7 +2543,7 @@ class Test_Atmosphere extends WP_UnitTestCase {
 				'comment_post_ID'  => $post_id,
 				'comment_approved' => '1',
 				'comment_type'     => 'comment',
-				'user_id'          => self::factory()->user->create(),
+				'user_id'          => $this->make_publishing_user(),
 				'comment_content'  => 'Top-level comment.',
 			)
 		);
@@ -2368,7 +2591,7 @@ class Test_Atmosphere extends WP_UnitTestCase {
 				'comment_post_ID'  => $post_id,
 				'comment_approved' => '1',
 				'comment_type'     => 'comment',
-				'user_id'          => self::factory()->user->create(),
+				'user_id'          => $this->make_publishing_user(),
 				'comment_content'  => 'Half-published parent.',
 			)
 		);
@@ -2382,7 +2605,7 @@ class Test_Atmosphere extends WP_UnitTestCase {
 				'comment_post_ID'  => $post_id,
 				'comment_approved' => '1',
 				'comment_type'     => 'comment',
-				'user_id'          => self::factory()->user->create(),
+				'user_id'          => $this->make_publishing_user(),
 				'comment_content'  => 'Reply to half-state.',
 				'comment_parent'   => $parent_id,
 			)
@@ -2889,6 +3112,63 @@ class Test_Atmosphere extends WP_UnitTestCase {
 	}
 
 	/**
+	 * `needs_reconnect` reflects the live connection: a reconnect-class
+	 * stored error raises it only while the site is still disconnected,
+	 * so a stale per-post error cannot keep telling the author to
+	 * reconnect after the operator already has.
+	 */
+	public function test_publish_error_needs_reconnect_drops_after_reconnect() {
+		$admin = self::factory()->user->create( array( 'role' => 'administrator' ) );
+		\wp_set_current_user( $admin );
+
+		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
+
+		\update_post_meta(
+			$post_id,
+			'_atmosphere_last_publish_error',
+			array(
+				'code'     => 'atmosphere_needs_reauth',
+				'message'  => 'Session expired',
+				'retrying' => false,
+				'time'     => 1234567890,
+			)
+		);
+
+		/* The failure state: the connection is flagged for reauth. */
+		$conn                 = \get_option( 'atmosphere_connection' );
+		$conn['needs_reauth'] = true;
+		\update_option( 'atmosphere_connection', $conn, false );
+
+		$error = $this->rest_get_publish_error( $post_id );
+
+		$this->assertTrue(
+			$error['needs_reconnect'],
+			'A reconnect-class error on a disconnected site must raise needs_reconnect.'
+		);
+		$this->assertSame(
+			'Session expired',
+			$error['message'],
+			'While disconnected, the stored reconnect instruction is accurate and must surface.'
+		);
+
+		/* The operator reconnected: flag cleared, token present again. */
+		$conn['needs_reauth'] = false;
+		\update_option( 'atmosphere_connection', $conn, false );
+
+		$error = $this->rest_get_publish_error( $post_id );
+
+		$this->assertFalse(
+			$error['needs_reconnect'],
+			'Once the site is reconnected the stale error must not claim otherwise.'
+		);
+		$this->assertSame(
+			'',
+			$error['message'],
+			'The stored reconnect instruction is stale prose once reconnected and must be suppressed.'
+		);
+	}
+
+	/**
 	 * The stored message is stripped of markup and truncated: PDS error
 	 * strings are attacker-influenced and end up rendered in the editor.
 	 */
@@ -2966,6 +3246,20 @@ class Test_Atmosphere extends WP_UnitTestCase {
 			\get_post_meta( $post->ID, '_atmosphere_last_publish_error', true ),
 			'A successful reconcile-republish must clear the stale failure record.'
 		);
+	}
+
+	/**
+	 * Decrypt failures are deterministic — the ciphertext can never be
+	 * read until the user reconnects — so neither classification may
+	 * enter the retry ladder.
+	 */
+	public function test_decrypt_failures_are_not_retried() {
+		$reflection = new \ReflectionClass( Atmosphere::class );
+		$method     = $reflection->getMethod( 'is_transient_publish_error' );
+		$method->setAccessible( true );
+
+		$this->assertFalse( $method->invoke( null, new \WP_Error( 'atmosphere_decrypt', 'nope' ) ) );
+		$this->assertFalse( $method->invoke( null, new \WP_Error( 'atmosphere_key_changed', 'nope' ) ) );
 	}
 
 	/**

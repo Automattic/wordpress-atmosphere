@@ -10,6 +10,7 @@ namespace Atmosphere;
 \defined( 'ABSPATH' ) || exit;
 
 use Atmosphere\Content_Parser\Registry;
+use Atmosphere\Transformer\Publication;
 
 /**
  * Registers every stored plugin option with the Settings API.
@@ -50,10 +51,23 @@ class Options {
 			'atmosphere',
 			'atmosphere_auto_publish',
 			array(
-				'type'         => 'boolean',
-				'description'  => 'Whether new posts are automatically published to AT Protocol.',
-				'default'      => '1',
-				'show_in_rest' => true,
+				'type'              => 'boolean',
+				'description'       => 'Whether new posts are automatically published to AT Protocol.',
+				'default'           => '1',
+				'show_in_rest'      => true,
+				'sanitize_callback' => array( Sanitize::class, 'boolean_option' ),
+			)
+		);
+
+		\register_setting(
+			'atmosphere',
+			'atmosphere_publish_comments',
+			array(
+				'type'              => 'boolean',
+				'description'       => 'Whether eligible WordPress comments are published as Bluesky replies.',
+				'default'           => '1',
+				'show_in_rest'      => true,
+				'sanitize_callback' => array( Sanitize::class, 'boolean_option' ),
 			)
 		);
 
@@ -61,10 +75,11 @@ class Options {
 			'atmosphere',
 			'atmosphere_sync_reactions',
 			array(
-				'type'         => 'boolean',
-				'description'  => 'Whether Bluesky likes and reposts are imported.',
-				'default'      => '1',
-				'show_in_rest' => true,
+				'type'              => 'boolean',
+				'description'       => 'Whether Bluesky likes and reposts are imported.',
+				'default'           => '1',
+				'show_in_rest'      => true,
+				'sanitize_callback' => array( Sanitize::class, 'boolean_option' ),
 			)
 		);
 
@@ -72,10 +87,11 @@ class Options {
 			'atmosphere',
 			'atmosphere_sync_replies',
 			array(
-				'type'         => 'boolean',
-				'description'  => 'Whether Bluesky replies are imported as comments.',
-				'default'      => '1',
-				'show_in_rest' => true,
+				'type'              => 'boolean',
+				'description'       => 'Whether Bluesky replies are imported as comments.',
+				'default'           => '1',
+				'show_in_rest'      => true,
+				'sanitize_callback' => array( Sanitize::class, 'boolean_option' ),
 			)
 		);
 
@@ -109,6 +125,42 @@ class Options {
 						'items' => array( 'type' => 'string' ),
 					),
 				),
+			)
+		);
+
+		\register_setting(
+			'atmosphere',
+			Publication::OPTION_THEME_BACKGROUND,
+			array(
+				'type'              => 'string',
+				'description'       => 'Custom background color for the publication basic theme.',
+				'default'           => '',
+				'show_in_rest'      => true,
+				'sanitize_callback' => array( Sanitize::class, 'hex_color' ),
+			)
+		);
+
+		\register_setting(
+			'atmosphere',
+			Publication::OPTION_THEME_FOREGROUND,
+			array(
+				'type'              => 'string',
+				'description'       => 'Custom foreground color for the publication basic theme.',
+				'default'           => '',
+				'show_in_rest'      => true,
+				'sanitize_callback' => array( Sanitize::class, 'hex_color' ),
+			)
+		);
+
+		\register_setting(
+			'atmosphere',
+			Publication::OPTION_THEME_ACCENT,
+			array(
+				'type'              => 'string',
+				'description'       => 'Custom accent color for the publication basic theme.',
+				'default'           => '',
+				'show_in_rest'      => true,
+				'sanitize_callback' => array( Sanitize::class, 'hex_color' ),
 			)
 		);
 

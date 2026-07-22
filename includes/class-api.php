@@ -14,7 +14,6 @@ namespace Atmosphere;
 
 use Atmosphere\OAuth\Client;
 use Atmosphere\OAuth\DPoP;
-use Atmosphere\OAuth\Encryption;
 
 /**
  * PDS API client.
@@ -60,9 +59,9 @@ class API {
 		 */
 		$access_token_snapshot = (string) ( $conn['access_token'] ?? '' );
 
-		$dpop_jwk_json = Encryption::decrypt( $conn['dpop_jwk'] ?? '' );
-		if ( false === $dpop_jwk_json ) {
-			return new \WP_Error( 'atmosphere_decrypt', \__( 'Failed to decrypt DPoP key.', 'atmosphere' ) );
+		$dpop_jwk_json = Client::decrypt_field( $conn, 'dpop_jwk' );
+		if ( \is_wp_error( $dpop_jwk_json ) ) {
+			return $dpop_jwk_json;
 		}
 
 		$dpop_jwk = \json_decode( $dpop_jwk_json, true );

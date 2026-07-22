@@ -33,3 +33,20 @@ export const CUSTOM_TEXT_META_KEY =
  */
 export const PREVIEW_PATH =
 	options.previewPath || '/atmosphere/1.0/admin/pre-publish-preview';
+
+/**
+ * URL of the ATmosphere settings page, for reconnect prompts.
+ *
+ * @type {string}
+ */
+export const SETTINGS_URL =
+	options.settingsUrl || 'options-general.php?page=atmosphere';
+
+/**
+ * Whether the current user can open the settings page (manage_options).
+ *
+ * Reconnect prompts link there only for users who can act on them.
+ *
+ * @type {boolean}
+ */
+export const CAN_MANAGE = !! options.canManage;

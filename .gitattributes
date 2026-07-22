@@ -8,9 +8,16 @@
 /vendor          export-ignore
 /docs            export-ignore
 /node_modules    export-ignore
+/src             export-ignore
 /tests           export-ignore
 
 # Files excluded from release archives
+# wp-scripts writes a block.json for every src entry, but the connectors card
+# and settings-connect typeahead are enqueued by path (a script module and a
+# classic script), never registered as blocks — so their build block.json is
+# dead weight that a plugin scanner could flag. Keep them out of the archive.
+/build/connectors-card/block.json export-ignore
+/build/settings-connect/block.json export-ignore
 /.gitattributes   export-ignore
 /.gitignore       export-ignore
 /.wp-env.json     export-ignore
@@ -20,6 +27,10 @@
 /package-lock.json export-ignore
 /phpcs.xml        export-ignore
 /phpunit.xml.dist export-ignore
+/webpack.config.js export-ignore
+/jest.setup.js    export-ignore
+/jest-unit.config.js export-ignore
+/integrations/README.md export-ignore
 /CHANGELOG.md     export-ignore
 /CLAUDE.md        export-ignore
 /AGENTS.md        export-ignore

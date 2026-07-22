@@ -16,6 +16,7 @@ use Atmosphere\Content_Parser\Markpub;
 use Atmosphere\Content_Parser\Pckt;
 use Atmosphere\Content_Parser\Registry;
 use Atmosphere\Handle;
+use Atmosphere\Transformer\Publication;
 use function Atmosphere\get_connection;
 use function Atmosphere\get_supported_post_types;
 use function Atmosphere\has_identity;
@@ -58,7 +59,8 @@ class Settings_Fields {
 				\__( 'Handle', 'atmosphere' ),
 				array( self::class, 'render_handle_field' ),
 				'atmosphere',
-				'atmosphere_connection'
+				'atmosphere_connection',
+				array( 'label_for' => 'atmosphere_handle' )
 			);
 
 			/*
@@ -114,6 +116,53 @@ class Settings_Fields {
 			'atmosphere_publishing'
 		);
 
+		// Publication theme section.
+		\add_settings_section(
+			'atmosphere_publication_theme',
+			\__( 'Theme', 'atmosphere' ),
+			array( self::class, 'render_publication_theme_section' ),
+			'atmosphere'
+		);
+
+		$theme_color_labels = array(
+			'background' => array(
+				\__( 'Background color', 'atmosphere' ),
+				\__( 'Overrides the publication background color.', 'atmosphere' ),
+			),
+			'foreground' => array(
+				\__( 'Foreground color', 'atmosphere' ),
+				\__( 'Overrides the publication foreground/text color.', 'atmosphere' ),
+			),
+			'accent'     => array(
+				\__( 'Accent color', 'atmosphere' ),
+				\__( 'Overrides the publication accent color. Accent foreground is computed automatically for contrast.', 'atmosphere' ),
+			),
+		);
+
+		foreach ( Publication::get_theme_color_options() as $key => $option ) {
+			/*
+			 * Falls back to the raw option name so a channel added to the
+			 * canonical map without a label here still renders — visibly
+			 * unlabelled, rather than warning and rendering blank.
+			 */
+			list( $label, $description ) = $theme_color_labels[ $key ] ?? array( $option, '' );
+
+			\add_settings_field(
+				$option,
+				$label,
+				array( self::class, 'render_publication_theme_color_field' ),
+				'atmosphere',
+				'atmosphere_publication_theme',
+				array(
+					// Ties the row's <th> label to the input for screen readers.
+					'label_for'   => $option,
+					'option'      => $option,
+					'key'         => $key,
+					'description' => $description,
+				)
+			);
+		}
+
 		// Reactions section.
 		\add_settings_section(
 			'atmosphere_reactions',
@@ -123,8 +172,16 @@ class Settings_Fields {
 		);
 
 		\add_settings_field(
+			'atmosphere_publish_comments',
+			\__( 'Outgoing replies', 'atmosphere' ),
+			array( self::class, 'render_publish_comments_field' ),
+			'atmosphere',
+			'atmosphere_reactions'
+		);
+
+		\add_settings_field(
 			'atmosphere_sync_reactions',
-			\__( 'Likes and reposts', 'atmosphere' ),
+			\__( 'Incoming reactions', 'atmosphere' ),
 			array( self::class, 'render_sync_reactions_field' ),
 			'atmosphere',
 			'atmosphere_reactions'
@@ -132,7 +189,7 @@ class Settings_Fields {
 
 		\add_settings_field(
 			'atmosphere_sync_replies',
-			\__( 'Replies', 'atmosphere' ),
+			\__( 'Incoming replies', 'atmosphere' ),
 			array( self::class, 'render_sync_replies_field' ),
 			'atmosphere',
 			'atmosphere_reactions'
@@ -325,11 +382,12 @@ class Settings_Fields {
 				type="checkbox"
 				name="atmosphere_auto_publish"
 				value="1"
+				aria-describedby="atmosphere-auto-publish-description"
 				<?php \checked( \get_option( 'atmosphere_auto_publish', '1' ), '1' ); ?>
 			>
 			<?php \esc_html_e( 'Automatically publish new posts to AT Protocol', 'atmosphere' ); ?>
 		</label>
-		<p class="description"><?php \esc_html_e( 'When enabled, posts are sent to your PDS as soon as they are published in WordPress.', 'atmosphere' ); ?></p>
+		<p class="description" id="atmosphere-auto-publish-description"><?php \esc_html_e( 'When enabled, posts are sent to your PDS as soon as they are published in WordPress.', 'atmosphere' ); ?></p>
 		<?php
 	}
 
@@ -518,7 +576,84 @@ class Settings_Fields {
 	 */
 	public static function render_reactions_section(): void {
 		?>
-		<p><?php \esc_html_e( 'Choose which Bluesky interactions are saved to your posts.', 'atmosphere' ); ?></p>
+		<p><?php \esc_html_e( 'Choose which interactions are sent to Bluesky and which are saved to WordPress.', 'atmosphere' ); ?></p>
+		<?php
+	}
+
+	/**
+	 * Render the Publication theme section description.
+	 */
+	public static function render_publication_theme_section(): void {
+		echo '<p>' . \esc_html__( 'Choose the colors apps use when they display your site. Empty a field to go back to the matching color from your active WordPress theme. If a color cannot be read from your theme, set all three here so your colors are published.', 'atmosphere' ) . '</p>';
+	}
+
+	/**
+	 * Render a publication theme color field.
+	 *
+	 * @param array $args {
+	 *     Field arguments.
+	 *
+	 *     @type string $option      Option name to read and save.
+	 *     @type string $key         Derived-color key: background, foreground, or accent.
+	 *     @type string $description Help text shown under the input.
+	 * }
+	 */
+	public static function render_publication_theme_color_field( array $args ): void {
+		static $derived_colors = null;
+
+		// Resolved once per request; all three fields render on the same
+		// screen and the derivation runs an uncached theme.json merge.
+		if ( null === $derived_colors ) {
+			$derived_colors = Publication::get_derived_theme_colors();
+		}
+
+		$option  = $args['option'];
+		$derived = $derived_colors[ $args['key'] ] ?? '';
+
+		?>
+		<input
+			type="text"
+			name="<?php echo \esc_attr( $option ); ?>"
+			id="<?php echo \esc_attr( $option ); ?>"
+			class="atmosphere-color-input"
+			value="<?php echo \esc_attr( (string) \get_option( $option, '' ) ); ?>"
+			data-default-color="<?php echo \esc_attr( $derived ); ?>"
+		>
+		<p class="description">
+			<?php echo \esc_html( (string) ( $args['description'] ?? '' ) ); ?>
+			<?php if ( '' !== $derived ) : ?>
+				<br>
+				<?php
+				\printf(
+					/* translators: %s: hex color derived from the active theme, e.g. #ffffff. */
+					\esc_html__( 'Your theme currently provides %s.', 'atmosphere' ),
+					'<code>' . \esc_html( $derived ) . '</code>'
+				);
+				?>
+			<?php else : ?>
+				<br>
+				<strong><?php \esc_html_e( 'Your theme does not provide this color. Set it here, along with the other two, for any colors to be published.', 'atmosphere' ); ?></strong>
+			<?php endif; ?>
+		</p>
+		<?php
+	}
+
+	/**
+	 * Render the outgoing WordPress comment toggle.
+	 */
+	public static function render_publish_comments_field(): void {
+		?>
+		<label>
+			<input
+				type="checkbox"
+				name="atmosphere_publish_comments"
+				value="1"
+				aria-describedby="atmosphere-publish-comments-description"
+				<?php \checked( \get_option( 'atmosphere_publish_comments', '1' ), '1' ); ?>
+			>
+			<?php \esc_html_e( 'Publish eligible WordPress comments as Bluesky replies', 'atmosphere' ); ?>
+		</label>
+		<p class="description" id="atmosphere-publish-comments-description"><?php \esc_html_e( 'Comments are not sent to Bluesky while this is disabled. Replies that were already published to Bluesky are kept.', 'atmosphere' ); ?></p>
 		<?php
 	}
 
@@ -579,11 +714,12 @@ class Settings_Fields {
 				type="checkbox"
 				name="atmosphere_sync_reactions"
 				value="1"
+				aria-describedby="atmosphere-sync-reactions-description"
 				<?php \checked( \get_option( 'atmosphere_sync_reactions', '1' ), '1' ); ?>
 			>
 			<?php \esc_html_e( 'Save likes and reposts', 'atmosphere' ); ?>
 		</label>
-		<p class="description"><?php \esc_html_e( 'New likes and reposts are skipped while this is disabled and will not be imported when you turn it back on. Reactions that were already imported are kept.', 'atmosphere' ); ?></p>
+		<p class="description" id="atmosphere-sync-reactions-description"><?php \esc_html_e( 'New likes and reposts are skipped while this is disabled and will not be imported when you turn it back on. Reactions that were already imported are kept.', 'atmosphere' ); ?></p>
 		<?php
 	}
 
@@ -597,11 +733,12 @@ class Settings_Fields {
 				type="checkbox"
 				name="atmosphere_sync_replies"
 				value="1"
+				aria-describedby="atmosphere-sync-replies-description"
 				<?php \checked( \get_option( 'atmosphere_sync_replies', '1' ), '1' ); ?>
 			>
 			<?php \esc_html_e( 'Save replies as comments', 'atmosphere' ); ?>
 		</label>
-		<p class="description"><?php \esc_html_e( 'New replies are skipped while this is disabled and will not be imported when you turn it back on. Replies that were already imported are kept.', 'atmosphere' ); ?></p>
+		<p class="description" id="atmosphere-sync-replies-description"><?php \esc_html_e( 'New replies are skipped while this is disabled and will not be imported when you turn it back on. Replies that were already imported are kept.', 'atmosphere' ); ?></p>
 		<?php
 	}
 }

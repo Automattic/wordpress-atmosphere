@@ -21,6 +21,7 @@ use WP_REST_Request;
 use WP_REST_Response;
 use WP_REST_Server;
 use function Atmosphere\debug_log;
+use function Atmosphere\is_auto_publish_enabled;
 use function Atmosphere\is_connected;
 use function Atmosphere\is_supported_post_type;
 
@@ -320,10 +321,19 @@ class Pre_Publish_Controller extends \WP_REST_Controller {
 			);
 		}
 
-		if ( '1' !== \get_option( 'atmosphere_auto_publish', '1' ) ) {
+		if ( ! is_auto_publish_enabled() ) {
+			// Attribute the off state to "another plugin" whenever something
+			// external forces it off despite the user's saved preference being
+			// on — connection-only mode OR the `atmosphere_should_auto_publish`
+			// filter. Only blame settings when the stored option is itself off,
+			// so the editor never tells the author "turned off in settings" while
+			// their checkbox is checked.
+			$stored_on = '1' === (string) \get_option( 'atmosphere_auto_publish', '1' );
 			return array(
 				'will_publish' => false,
-				'reason'       => \__( 'Automatic publishing to Bluesky is turned off in settings.', 'atmosphere' ),
+				'reason'       => $stored_on
+					? \__( 'Automatic publishing to Bluesky is turned off by another plugin on this site.', 'atmosphere' )
+					: \__( 'Automatic publishing to Bluesky is turned off in settings.', 'atmosphere' ),
 			);
 		}
 
