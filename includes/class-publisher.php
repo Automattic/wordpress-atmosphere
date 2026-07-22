@@ -34,7 +34,6 @@ use Atmosphere\Transformer\Comment;
 use Atmosphere\Transformer\Document;
 use Atmosphere\Transformer\Post;
 use Atmosphere\Transformer\Publication;
-use Atmosphere\Transformer\TID;
 
 /**
  * Publisher class.
@@ -90,10 +89,11 @@ class Publisher {
 	 * regardless of which internal path (short-form, long-form single,
 	 * long-form thread) produced it.
 	 *
-	 * @param \WP_Post $post WordPress post.
+	 * @param \WP_Post $post          WordPress post.
+	 * @param bool     $original_time Reserve rkeys from the post's original publish date rather than "now". Default false.
 	 * @return array|\WP_Error applyWrites response(s) or error.
 	 */
-	public static function publish_post( \WP_Post $post ): array|\WP_Error {
+	public static function publish_post( \WP_Post $post, bool $original_time = false ): array|\WP_Error {
 		if ( ! is_post_publishable( $post ) ) {
 			$result = new \WP_Error(
 				'atmosphere_post_not_publishable',
@@ -111,6 +111,15 @@ class Publisher {
 
 		$bsky_transformer = new Post( $post );
 		$doc_transformer  = new Document( $post );
+
+		if ( $original_time ) {
+			// Reserve rkeys from the post's original publish date so a
+			// backfilled record sorts chronologically rather than at the
+			// backfill-run time. Must run before the document-CID
+			// precompute below (the first get_rkey() call).
+			$bsky_transformer->use_original_time();
+			$doc_transformer->use_original_time();
+		}
 
 		/*
 		 * Pre-compute the document's CID locally and inject the
@@ -458,7 +467,7 @@ class Publisher {
 
 		$count = \count( $records );
 		for ( $i = 1; $i < $count; $i++ ) {
-			$reply_rkey   = TID::generate();
+			$reply_rkey   = $bsky_transformer->mint_reply_rkey( $i );
 			$reply_record = $records[ $i ];
 
 			if ( empty( $reply_record['createdAt'] ) ) {

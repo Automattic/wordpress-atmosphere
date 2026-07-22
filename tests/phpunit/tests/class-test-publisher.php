@@ -22,6 +22,7 @@ use Atmosphere\Transformer\Comment;
 use Atmosphere\Transformer\Document;
 use Atmosphere\Transformer\Post;
 use Atmosphere\Transformer\Publication;
+use Atmosphere\Transformer\TID;
 
 /**
  * Publisher tests.
@@ -2723,5 +2724,81 @@ class Test_Publisher extends WP_UnitTestCase {
 
 		$this->assertIsArray( $result );
 		$this->assertCount( 0, $put_calls );
+	}
+
+	/**
+	 * Publishing with `$original_time` reserves historical rkeys: both
+	 * the bsky post TID and the document TID decode to the post's
+	 * original date, not "now".
+	 */
+	public function test_publish_post_original_time_reserves_historical_rkeys() {
+		\add_filter(
+			'atmosphere_pre_apply_writes',
+			static function ( $short_circuit, array $writes ) {
+				$results = array();
+				foreach ( $writes as $write ) {
+					$results[] = array(
+						'uri' => 'at://did:plc:test123/' . ( $write['collection'] ?? 'x' ) . '/' . ( $write['rkey'] ?? '' ),
+						'cid' => 'bafyreib' . \substr( \md5( (string) ( $write['rkey'] ?? '' ) ), 0, 20 ),
+					);
+				}
+				return array( 'results' => $results );
+			},
+			10,
+			2
+		);
+
+		$post_id = self::factory()->post->create(
+			array(
+				'post_status'   => 'publish',
+				'post_title'    => 'Old post',
+				'post_content'  => 'Body.',
+				'post_date'     => '2019-05-04 09:00:00',
+				'post_date_gmt' => '2019-05-04 09:00:00',
+			)
+		);
+
+		$result = Publisher::publish_post( \get_post( $post_id ), true );
+		$this->assertNotWPError( $result );
+
+		$expected = \strtotime( '2019-05-04 09:00:00' ) * 1_000_000 + ( $post_id % 1_000_000 );
+
+		$this->assertSame( $expected, TID::decode( \get_post_meta( $post_id, Post::META_TID, true ) ) );
+		$this->assertSame( $expected, TID::decode( \get_post_meta( $post_id, Document::META_TID, true ) ) );
+	}
+
+	/**
+	 * The default (no flag) still mints live rkeys.
+	 */
+	public function test_publish_post_defaults_to_live_rkeys() {
+		\add_filter(
+			'atmosphere_pre_apply_writes',
+			static function ( $short_circuit, array $writes ) {
+				$results = array();
+				foreach ( $writes as $write ) {
+					$results[] = array(
+						'uri' => 'at://did:plc:test123/' . ( $write['collection'] ?? 'x' ) . '/' . ( $write['rkey'] ?? '' ),
+						'cid' => 'bafyreib' . \substr( \md5( (string) ( $write['rkey'] ?? '' ) ), 0, 20 ),
+					);
+				}
+				return array( 'results' => $results );
+			},
+			10,
+			2
+		);
+
+		$post_id = self::factory()->post->create(
+			array(
+				'post_status'   => 'publish',
+				'post_content'  => 'Body.',
+				'post_date'     => '2019-05-04 09:00:00',
+				'post_date_gmt' => '2019-05-04 09:00:00',
+			)
+		);
+
+		Publisher::publish_post( \get_post( $post_id ) );
+
+		$historic = \strtotime( '2019-05-04 09:00:00' ) * 1_000_000;
+		$this->assertGreaterThan( $historic, TID::decode( \get_post_meta( $post_id, Post::META_TID, true ) ) );
 	}
 }
