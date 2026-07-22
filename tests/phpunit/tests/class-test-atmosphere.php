@@ -2050,10 +2050,16 @@ class Test_Atmosphere extends WP_UnitTestCase {
 			true
 		);
 		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		// A dual publish writes both the Bluesky post URI and the document URI.
 		\update_post_meta(
 			$post_id,
 			\Atmosphere\Transformer\Post::META_URI,
 			'at://did:plc:test123/app.bsky.feed.post/3krealrecord00'
+		);
+		\update_post_meta(
+			$post_id,
+			\Atmosphere\Transformer\Document::META_URI,
+			'at://did:plc:test123/site.standard.document/3kdocrecord000'
 		);
 
 		$this->go_to_post( $post_id );
@@ -2063,6 +2069,41 @@ class Test_Atmosphere extends WP_UnitTestCase {
 			'<link rel="site.standard.document" href="at://did:plc:test123/site.standard.document/',
 			$output,
 			'A previously-published post must continue advertising its document link even after disconnect.'
+		);
+	}
+
+	/**
+	 * Document link emits for a document-only post — one that carries
+	 * `Document::META_URI` but never a companion `app.bsky.feed.post`
+	 * (`Post::META_URI` absent). Keying the gate on the document URI is what
+	 * keeps standard.site-only publications discoverable via HTML; gating on
+	 * the Bluesky post URI (as the code used to) would leave them silent.
+	 */
+	public function test_output_document_link_emits_for_document_only_post() {
+		\update_option(
+			'atmosphere_identity',
+			array(
+				'did'          => 'did:plc:test123',
+				'handle'       => 'example.com',
+				'pds_endpoint' => 'https://pds.example.com',
+			),
+			true
+		);
+		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		// Document-only: the document record exists, no Bluesky companion post.
+		\update_post_meta(
+			$post_id,
+			\Atmosphere\Transformer\Document::META_URI,
+			'at://did:plc:test123/site.standard.document/3kdoconly00000'
+		);
+
+		$this->go_to_post( $post_id );
+		$output = $this->capture_document_link();
+
+		$this->assertStringContainsString(
+			'<link rel="site.standard.document" href="at://did:plc:test123/site.standard.document/',
+			$output,
+			'A document-only post must advertise its document link even with no Bluesky companion.'
 		);
 	}
 

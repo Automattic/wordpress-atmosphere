@@ -418,14 +418,17 @@ class Atmosphere {
 	 * the document AT-URI is computed from the DID, which is stable
 	 * across session expiry and `needs_reauth` states.
 	 *
-	 * Also gated on `META_URI` so the link is emitted only for posts
-	 * the Publisher actually wrote to the PDS. Without this check, a
-	 * disconnected site (identity preserved, no live session) would
-	 * advertise document AT-URIs for every published WP post and lazy-
-	 * mint META_TID rows for posts that have no corresponding record
-	 * on the PDS — federation/discovery consumers would 404 each one.
-	 * Posts published before a disconnect already carry META_URI and
-	 * remain correctly advertised; new posts created during a disconnect
+	 * Also gated on the document record's own `Document::META_URI` so the
+	 * link is emitted only for posts the Publisher actually wrote a
+	 * `site.standard.document` for. Keying on this (rather than the Bluesky
+	 * post's `Post::META_URI`) is what lets document-only sites — which never
+	 * write a companion `app.bsky.feed.post` — still advertise their document
+	 * records. Without the check, a disconnected site (identity preserved, no
+	 * live session) would advertise document AT-URIs for every published WP
+	 * post and lazy-mint `META_TID` rows for posts that have no corresponding
+	 * record on the PDS — federation/discovery consumers would 404 each one.
+	 * Posts published before a disconnect already carry `Document::META_URI`
+	 * and remain correctly advertised; new posts created during a disconnect
 	 * stay silent until reconnect + publish lands a real record.
 	 */
 	public function output_document_link(): void {
@@ -443,8 +446,8 @@ class Atmosphere {
 			return;
 		}
 
-		$bsky_uri = \get_post_meta( $post->ID, Post::META_URI, true );
-		if ( empty( $bsky_uri ) ) {
+		$doc_uri = \get_post_meta( $post->ID, Document::META_URI, true );
+		if ( empty( $doc_uri ) ) {
 			return;
 		}
 
