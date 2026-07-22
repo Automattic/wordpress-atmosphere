@@ -399,6 +399,58 @@ class Test_Publisher extends WP_UnitTestCase {
 	}
 
 	/**
+	 * Doc-only update issues a single document #update against the stored TID.
+	 *
+	 * @group atmosphere
+	 * @group publisher
+	 */
+	public function test_update_document_only_updates_existing_document() {
+		\add_filter( 'atmosphere_should_publish_bluesky_post', '__return_false' );
+
+		$post = self::factory()->post->create_and_get( array( 'post_status' => 'publish' ) );
+
+		// Simulate a previously-seeded document-only post: only Document meta.
+		\update_post_meta( $post->ID, Document::META_TID, 'doc-tid-abc' );
+		\update_post_meta( $post->ID, Document::META_URI, 'at://did:plc:test123/site.standard.document/doc-tid-abc' );
+
+		$this->register_capture( $post->ID );
+
+		$result = Publisher::update_post( $post );
+
+		$this->assertNotWPError( $result );
+		$this->assertCount( 1, $this->captured_calls );
+
+		$writes = $this->captured_calls[0]['writes'];
+		$this->assertCount( 1, $writes );
+		$this->assertSame( 'com.atproto.repo.applyWrites#update', $writes[0]['$type'] );
+		$this->assertSame( 'site.standard.document', $writes[0]['collection'] );
+		$this->assertSame( 'doc-tid-abc', $writes[0]['rkey'] );
+	}
+
+	/**
+	 * Doc-only update of a never-seeded post falls back to a fresh doc create.
+	 *
+	 * @group atmosphere
+	 * @group publisher
+	 */
+	public function test_update_document_only_seeds_when_never_published() {
+		\add_filter( 'atmosphere_should_publish_bluesky_post', '__return_false' );
+
+		$post = self::factory()->post->create_and_get( array( 'post_status' => 'publish' ) );
+		$this->register_capture( $post->ID );
+
+		$result = Publisher::update_post( $post );
+
+		$this->assertNotWPError( $result );
+		$this->assertCount( 1, $this->captured_calls );
+
+		$writes = $this->captured_calls[0]['writes'];
+		$this->assertSame( 'com.atproto.repo.applyWrites#create', $writes[0]['$type'] );
+		$this->assertSame( 'site.standard.document', $writes[0]['collection'] );
+		$this->assertNotEmpty( \get_post_meta( $post->ID, Document::META_URI, true ) );
+	}
+
+	/**
 	 * Direct update calls for now-protected posts clean up existing
 	 * records instead of writing protected content.
 	 */

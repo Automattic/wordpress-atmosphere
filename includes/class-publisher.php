@@ -751,6 +751,17 @@ class Publisher {
 			return self::delete_post( $post );
 		}
 
+		/*
+		 * Document-only mode: mirror publish_post()'s gate. Route edits to
+		 * a document-only update so a post with no bsky records is not
+		 * mistaken for the "half-synced" skip case below. The not-publishable
+		 * branch above already delegates deletion to delete_post(), which is
+		 * meta-driven and removes only the document when no bsky meta exists.
+		 */
+		if ( ! is_bluesky_post_enabled() ) {
+			return self::update_document_only( $post );
+		}
+
 		$stored = self::stored_thread_records( $post->ID );
 
 		if ( empty( $stored ) ) {
@@ -915,6 +926,56 @@ class Publisher {
 
 		// Strategy or shape change — delete everything and republish.
 		return self::rewrite_thread( $post, $stored, $doc_tid );
+	}
+
+	/**
+	 * Update only the `site.standard.document` record for a post.
+	 *
+	 * The document-only counterpart to {@see self::update_single()}, used when
+	 * {@see \Atmosphere\is_bluesky_post_enabled()} is false. Reached only for
+	 * publishable posts (the not-publishable case is handled by
+	 * {@see self::delete_post()} at the top of {@see self::update_post()}).
+	 *
+	 * When the document has never been seeded (no stored URI/TID), falls back
+	 * to a fresh {@see self::publish_document_only()} so the edit seeds it.
+	 *
+	 * @since unreleased
+	 *
+	 * @param \WP_Post $post WordPress post.
+	 * @return array|\WP_Error applyWrites response or error.
+	 */
+	private static function update_document_only( \WP_Post $post ): array|\WP_Error {
+		$doc_uri = \get_post_meta( $post->ID, Document::META_URI, true );
+		$doc_tid = \get_post_meta( $post->ID, Document::META_TID, true );
+
+		if ( ! $doc_uri || ! $doc_tid ) {
+			// Never seeded (or a prior create failed before storing a URI):
+			// create the document fresh, reusing any reserved TID via get_rkey().
+			return self::publish_document_only( $post );
+		}
+
+		self::maybe_heal_publication();
+
+		$doc_transformer = new Document( $post );
+
+		$writes = array(
+			array(
+				'$type'      => 'com.atproto.repo.applyWrites#update',
+				'collection' => 'site.standard.document',
+				'rkey'       => (string) $doc_tid,
+				'value'      => $doc_transformer->transform(),
+			),
+		);
+
+		$result = API::apply_writes( $writes );
+
+		if ( \is_wp_error( $result ) ) {
+			return $result;
+		}
+
+		self::store_document_meta( $post->ID, $result, $doc_transformer, 0 );
+
+		return $result;
 	}
 
 	/**
