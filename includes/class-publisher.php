@@ -936,8 +936,12 @@ class Publisher {
 	 * publishable posts (the not-publishable case is handled by
 	 * {@see self::delete_post()} at the top of {@see self::update_post()}).
 	 *
-	 * When the document has never been seeded (no stored URI/TID), falls back
-	 * to a fresh {@see self::publish_document_only()} so the edit seeds it.
+	 * When the document has never been seeded (no stored URI), falls back to a
+	 * fresh {@see self::publish_document_only()} so the edit seeds it. A stored
+	 * URI with a missing TID is a corrupted half-synced state, not an unseeded
+	 * one: creating fresh would mint a second document record and orphan the
+	 * one the stored URI already points at, so it surfaces an
+	 * `atmosphere_missing_tid` error instead — mirroring {@see self::update_post()}.
 	 *
 	 * @since unreleased
 	 *
@@ -948,7 +952,7 @@ class Publisher {
 		$doc_uri = \get_post_meta( $post->ID, Document::META_URI, true );
 		$doc_tid = \get_post_meta( $post->ID, Document::META_TID, true );
 
-		if ( ! $doc_uri || ! $doc_tid ) {
+		if ( ! $doc_uri ) {
 			// Never seeded (or a prior create failed before storing a URI):
 			// create the document fresh, reusing any reserved TID via get_rkey().
 			//
@@ -958,6 +962,16 @@ class Publisher {
 			// rejects as already-existing — surfacing a WP_Error. That mirrors
 			// the dual-record update_post() tolerance for half-synced state.
 			return self::publish_document_only( $post );
+		}
+
+		if ( ! $doc_tid ) {
+			// A stored URI with no TID is a corrupted record: falling back to a
+			// fresh create would mint a second document and orphan the existing
+			// one. Surface the same error the dual-record update_post() raises.
+			return new \WP_Error(
+				'atmosphere_missing_tid',
+				\__( 'Record URIs exist but TIDs are missing.', 'atmosphere' )
+			);
 		}
 
 		self::maybe_heal_publication();

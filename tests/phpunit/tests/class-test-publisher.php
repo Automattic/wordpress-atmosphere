@@ -451,6 +451,31 @@ class Test_Publisher extends WP_UnitTestCase {
 	}
 
 	/**
+	 * Doc-only update of a post whose stored URI has no TID is a corrupted
+	 * half-synced state: it must error rather than mint a second document that
+	 * orphans the existing one — mirroring the dual-record update path.
+	 *
+	 * @group atmosphere
+	 * @group publisher
+	 */
+	public function test_update_document_only_errors_when_uri_present_but_tid_missing() {
+		\add_filter( 'atmosphere_should_publish_bluesky_post', '__return_false' );
+
+		$post = self::factory()->post->create_and_get( array( 'post_status' => 'publish' ) );
+
+		// Corrupted state: a document URI exists but its TID was never stored.
+		\update_post_meta( $post->ID, Document::META_URI, 'at://did:plc:test123/site.standard.document/doc-tid-orphan' );
+
+		$this->register_capture( $post->ID );
+
+		$result = Publisher::update_post( $post );
+
+		$this->assertWPError( $result );
+		$this->assertSame( 'atmosphere_missing_tid', $result->get_error_code() );
+		$this->assertCount( 0, $this->captured_calls, 'No applyWrites call should be made for a corrupted doc-only record.' );
+	}
+
+	/**
 	 * Doc-only: a now-unpublishable, previously-seeded document-only post
 	 * deletes just the document record — one delete op on
 	 * site.standard.document and no app.bsky.feed.post delete.
