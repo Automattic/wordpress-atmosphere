@@ -60,6 +60,7 @@ class Test_Backfill_Command_Invoke extends \WP_UnitTestCase {
 		\delete_option( 'atmosphere_did' );
 
 		\remove_all_filters( 'atmosphere_pre_apply_writes' );
+		\remove_all_filters( 'atmosphere_should_publish_bluesky_post' );
 		\remove_filter( 'atmosphere_syncable_post_types', array( $this, 'force_post_support' ) );
 
 		parent::tear_down();
@@ -440,7 +441,7 @@ class Test_Backfill_Command_Invoke extends \WP_UnitTestCase {
 		$this->run_command( array() );
 		$this->assertSame( array(), $collections, 'Second run should skip the already-synced post.' );
 
-		\remove_all_filters( 'atmosphere_should_publish_bluesky_post' );
-		\remove_all_filters( 'atmosphere_pre_apply_writes' );
+		// Filter cleanup is handled centrally in tear_down() so it always runs,
+		// even if an assertion above fails mid-test.
 	}
 }
