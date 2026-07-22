@@ -23,6 +23,8 @@ use Atmosphere\Cli\Backfill_Command;
 use Atmosphere\OAuth\DPoP;
 use Atmosphere\OAuth\Encryption;
 use Atmosphere\Transformer\Document;
+use Atmosphere\Transformer\Post;
+use Atmosphere\Transformer\TID;
 
 /**
  * Backfill command __invoke() tests.
@@ -220,13 +222,48 @@ class Test_Backfill_Command_Invoke extends \WP_UnitTestCase {
 	}
 
 	/**
-	 * `--original-time` warns that it has no effect yet.
+	 * `--original-time` reserves a historical rkey for a first-time
+	 * publish: the stored bsky TID decodes to the post's original date.
 	 */
-	public function test_original_time_warns() {
-		$this->run_command( array( 'original-time' => true ) );
+	public function test_original_time_mints_historical_rkey() {
+		$post_id = self::factory()->post->create(
+			array(
+				'post_status'   => 'publish',
+				'post_content'  => 'Body.',
+				'post_date'     => '2018-02-03 04:05:00',
+				'post_date_gmt' => '2018-02-03 04:05:00',
+			)
+		);
+		$this->mock_apply_writes_success();
 
-		$warnings = \implode( "\n", \WP_CLI::messages( 'warning' ) );
-		$this->assertStringContainsString( '--original-time is not yet implemented', $warnings );
+		$this->run_command(
+			array(
+				'ids'           => (string) $post_id,
+				'original-time' => true,
+			)
+		);
+
+		$expected = \strtotime( '2018-02-03 04:05:00' ) * 1_000_000 + ( $post_id % 1_000_000 );
+		$this->assertSame( $expected, TID::decode( \get_post_meta( $post_id, Post::META_TID, true ) ) );
+	}
+
+	/**
+	 * `--original-time` prints a one-line note that it only affects
+	 * first-time publishes.
+	 */
+	public function test_original_time_notes_first_time_only() {
+		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		$this->mock_apply_writes_success();
+
+		$this->run_command(
+			array(
+				'ids'           => (string) $post_id,
+				'original-time' => true,
+			)
+		);
+
+		$logs = \implode( "\n", \WP_CLI::messages( 'log' ) );
+		$this->assertStringContainsString( 'original time only affects', \strtolower( $logs ) );
 	}
 
 	/**
