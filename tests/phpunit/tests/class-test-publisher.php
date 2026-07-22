@@ -451,6 +451,50 @@ class Test_Publisher extends WP_UnitTestCase {
 	}
 
 	/**
+	 * Doc-only: a now-unpublishable, previously-seeded document-only post
+	 * deletes just the document record — one delete op on
+	 * site.standard.document and no app.bsky.feed.post delete.
+	 *
+	 * @group atmosphere
+	 * @group publisher
+	 */
+	public function test_update_document_only_deletes_only_document_when_unpublishable() {
+		\add_filter( 'atmosphere_should_publish_bluesky_post', '__return_false' );
+
+		// Password-protected so is_post_publishable() returns false, routing
+		// update_post() straight to delete_post().
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_status'   => 'publish',
+				'post_password' => 'secret',
+			)
+		);
+
+		// Previously-seeded document-only post: only Document meta, no Post
+		// meta. META_DID matches the connected DID so delete_post()'s
+		// DID-mismatch guard lets the document delete through.
+		\update_post_meta( $post->ID, Document::META_TID, 'doc-tid-del' );
+		\update_post_meta( $post->ID, Document::META_URI, 'at://did:plc:test123/site.standard.document/doc-tid-del' );
+		\update_post_meta( $post->ID, Document::META_DID, 'did:plc:test123' );
+
+		$this->register_capture( $post->ID );
+
+		$result = Publisher::update_post( $post );
+
+		$this->assertNotWPError( $result );
+		$this->assertCount( 1, $this->captured_calls, 'Doc-only cleanup should make exactly one applyWrites call.' );
+
+		$writes = $this->captured_calls[0]['writes'];
+		$this->assertCount( 1, $writes, 'Doc-only cleanup should emit exactly one write.' );
+		$this->assertSame( 'com.atproto.repo.applyWrites#delete', $writes[0]['$type'] );
+		$this->assertSame( 'site.standard.document', $writes[0]['collection'] );
+		$this->assertSame( 'doc-tid-del', $writes[0]['rkey'] );
+
+		$collections = \array_column( $writes, 'collection' );
+		$this->assertNotContains( 'app.bsky.feed.post', $collections, 'No Bluesky post delete should be emitted.' );
+	}
+
+	/**
 	 * Direct update calls for now-protected posts clean up existing
 	 * records instead of writing protected content.
 	 */

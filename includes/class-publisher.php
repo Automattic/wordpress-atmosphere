@@ -951,6 +951,12 @@ class Publisher {
 		if ( ! $doc_uri || ! $doc_tid ) {
 			// Never seeded (or a prior create failed before storing a URI):
 			// create the document fresh, reusing any reserved TID via get_rkey().
+			//
+			// Rare edge: if a prior #create actually committed on the PDS but
+			// its URI was never stored (a malformed applyWrites response), this
+			// re-issues a #create against the same reserved TID, which the PDS
+			// rejects as already-existing — surfacing a WP_Error. That mirrors
+			// the dual-record update_post() tolerance for half-synced state.
 			return self::publish_document_only( $post );
 		}
 
