@@ -204,11 +204,13 @@ class TID {
 	 *
 	 * `$disambiguator` occupies the sub-second microsecond slot. WordPress
 	 * post dates are second-precision, so that slot is otherwise always
-	 * zero; passing the post ID keeps two posts that share a second from
-	 * colliding on the same rkey and orders them by creation order.
+	 * zero; a caller-composed disambiguator keeps records that share a
+	 * second from colliding on the same rkey and gives them a stable sort
+	 * order (see {@see Base::historical_rkey()}). It is taken modulo
+	 * 1,000,000 so it can never spill into the seconds component.
 	 *
 	 * @param int $unix_seconds  Unix timestamp in seconds (GMT).
-	 * @param int $disambiguator Sub-second disambiguator (e.g. post ID).
+	 * @param int $disambiguator Sub-second disambiguator (0–999,999).
 	 * @return string 13-character identifier.
 	 */
 	public static function generate_for_time( int $unix_seconds, int $disambiguator = 0 ): string {

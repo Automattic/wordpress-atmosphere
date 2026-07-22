@@ -243,7 +243,7 @@ class Test_Backfill_Command_Invoke extends \WP_UnitTestCase {
 			)
 		);
 
-		$expected = \strtotime( '2018-02-03 04:05:00' ) * 1_000_000 + ( $post_id % 1_000_000 );
+		$expected = \strtotime( '2018-02-03 04:05:00' ) * 1_000_000 + ( $post_id % 100000 ) * 10;
 		$this->assertSame( $expected, TID::decode( \get_post_meta( $post_id, Post::META_TID, true ) ) );
 	}
 

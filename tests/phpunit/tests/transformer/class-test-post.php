@@ -4737,7 +4737,7 @@ class Test_Post extends WP_UnitTestCase {
 		$transformer->use_original_time();
 
 		$rkey     = $transformer->get_rkey();
-		$expected = \strtotime( '2020-03-15 12:00:00' ) * 1_000_000 + ( $post_id % 1_000_000 );
+		$expected = \strtotime( '2020-03-15 12:00:00' ) * 1_000_000 + ( $post_id % 100000 ) * 10;
 
 		$this->assertSame( $expected, TID::decode( $rkey ) );
 		$this->assertSame( $rkey, $transformer->get_rkey() );
@@ -4808,8 +4808,37 @@ class Test_Post extends WP_UnitTestCase {
 
 		$this->assertGreaterThan( $root, $reply );
 		$this->assertSame(
-			\strtotime( '2020-03-15 12:00:00' ) * 1_000_000 + ( ( $post_id + 1 ) % 1_000_000 ),
+			\strtotime( '2020-03-15 12:00:00' ) * 1_000_000 + ( $post_id % 100000 ) * 10 + 1,
 			TID::decode( $reply )
 		);
+	}
+
+	/**
+	 * A thread reply key must not collide with the root key of the post
+	 * published one ID later in the same second. The reply sequence lives
+	 * in a reserved sub-range of the disambiguator, so `mint_reply_rkey(N)`
+	 * can never land on the slot post `ID + N` would use for its root.
+	 * Regression test: summing the ID and sequence made these identical.
+	 */
+	public function test_reply_rkey_does_not_collide_with_next_post_root() {
+		$date    = '2020-03-15 12:00:00';
+		$post_id = self::factory()->post->create(
+			array(
+				'post_status'   => 'publish',
+				'post_date'     => $date,
+				'post_date_gmt' => $date,
+			)
+		);
+
+		$transformer = new Post( \get_post( $post_id ) );
+		$transformer->use_original_time();
+
+		$reply = $transformer->mint_reply_rkey( 1 );
+
+		// The slot the root of post ( $post_id + 1 ), published in the same
+		// second, would occupy under original-time minting.
+		$next_root_slot = \strtotime( $date ) * 1_000_000 + ( ( $post_id + 1 ) % 100000 ) * 10;
+
+		$this->assertNotSame( $next_root_slot, TID::decode( $reply ) );
 	}
 }

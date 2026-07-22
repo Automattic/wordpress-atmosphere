@@ -77,9 +77,19 @@ abstract class Base {
 	/**
 	 * Mint a historical TID from the post's original publish date.
 	 *
-	 * The post ID fills the sub-second slot so two posts sharing a
-	 * second don't collide (see {@see TID::generate_for_time()});
-	 * `$sequence` offsets a thread reply after its root.
+	 * Fills the sub-second slot with a disambiguator so records sharing a
+	 * publish second still sort deterministically without colliding on the
+	 * same rkey. The post ID and the reply `$sequence` occupy disjoint
+	 * ranges of that slot: the ID picks the high part, the sequence the
+	 * reserved low decimal digit. A teaser thread is capped at 5 records
+	 * ({@see Post::build_teaser_thread()}), so a single digit is ample
+	 * headroom for the sequence.
+	 *
+	 * Summing the two instead — `ID + $sequence` — would let reply N of
+	 * post P share a slot with the root of post P+N when both are
+	 * published in the same second, minting an identical rkey. Adjacent
+	 * IDs sharing a second are common in bulk/WXR imports (the backfill
+	 * case this feature targets), so the two ranges are kept disjoint.
 	 *
 	 * @param int $sequence Offset within the post's records (0 = root/doc).
 	 * @return string
@@ -87,7 +97,11 @@ abstract class Base {
 	protected function historical_rkey( int $sequence = 0 ): string {
 		$unix = (int) \get_post_time( 'U', true, $this->object );
 
-		return TID::generate_for_time( $unix, $this->object->ID + $sequence );
+		// Post ID in the high part, reply sequence in the reserved low
+		// digit; `% 100000` keeps the product inside the microsecond slot.
+		$disambiguator = ( $this->object->ID % 100000 ) * 10 + $sequence;
+
+		return TID::generate_for_time( $unix, $disambiguator );
 	}
 
 	/**

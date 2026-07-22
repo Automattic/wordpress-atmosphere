@@ -2761,7 +2761,7 @@ class Test_Publisher extends WP_UnitTestCase {
 		$result = Publisher::publish_post( \get_post( $post_id ), true );
 		$this->assertNotWPError( $result );
 
-		$expected = \strtotime( '2019-05-04 09:00:00' ) * 1_000_000 + ( $post_id % 1_000_000 );
+		$expected = \strtotime( '2019-05-04 09:00:00' ) * 1_000_000 + ( $post_id % 100000 ) * 10;
 
 		$this->assertSame( $expected, TID::decode( \get_post_meta( $post_id, Post::META_TID, true ) ) );
 		$this->assertSame( $expected, TID::decode( \get_post_meta( $post_id, Document::META_TID, true ) ) );

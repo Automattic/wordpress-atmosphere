@@ -736,7 +736,7 @@ class Test_Document extends \WP_UnitTestCase {
 		$transformer->use_original_time();
 
 		$rkey     = $transformer->get_rkey();
-		$expected = \strtotime( '2020-03-15 12:00:00' ) * 1_000_000 + ( $post_id % 1_000_000 );
+		$expected = \strtotime( '2020-03-15 12:00:00' ) * 1_000_000 + ( $post_id % 100000 ) * 10;
 
 		$this->assertSame( $expected, TID::decode( $rkey ) );
 		$this->assertSame( $rkey, \get_post_meta( $post_id, Document::META_TID, true ) );
