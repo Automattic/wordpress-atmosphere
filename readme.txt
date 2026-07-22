@@ -4,7 +4,7 @@ Tags: at-protocol, bluesky, connector, atproto, crossposting
 Requires at least: 6.5
 Tested up to: 7.0
 Requires PHP: 8.2
-Stable tag: 2.0.0
+Stable tag: 2.1.0
 License: GPL-2.0-or-later
 License URI: https://spdx.org/licenses/GPL-2.0-or-later.html
 
@@ -102,6 +102,21 @@ Yes. If you delete or unpublish a WordPress post, the matching Bluesky post and 
 Not at this time. ATmosphere is designed for a single WordPress site. On a Network-activated install only the current site's data is read and written, and uninstall only cleans the current site — credentials and records on other sites in the network are left intact.
 
 == Changelog ==
+
+### 2.1.0 - 2026-07-22
+#### Added
+- Add a connection-only mode so another plugin can reuse just the Bluesky connection: automatic cross-posting, likes and reposts, and reply importing all stay off, and the ATmosphere settings screen is hidden.
+- Add a setting — and a filter for plugins — to keep WordPress comment changes from being published to Bluesky while leaving incoming reactions enabled.
+- Add color settings for your publication theme, so you can choose the background, text, and accent colors apps use when they display your site.
+- ATmosphere now appears on the WordPress Settings → Connectors screen (WordPress 7.0 and later), so you can connect your account from there too.
+- Settings: suggest AT Protocol handles as you type when connecting your account.
+- Site Health now shows your Bluesky connection status, explains why a reconnect is needed and how to prevent it, and adds an ATmosphere section to the debug information for easier troubleshooting.
+- Sites that rotate their WordPress security keys can now define a dedicated encryption key in wp-config.php so the Bluesky connection survives the rotation.
+
+#### Fixed
+- Busy Bluesky threads no longer lose older replies and reactions when more than 250 notifications arrive between syncs, and older missed replies are now recovered automatically or on demand with WP-CLI.
+- Comments from Subscribers and other comment-only accounts now stay on WordPress instead of being published through the site's Bluesky account.
+- When your site's security keys change (after a migration or a salt rotation), ATmosphere now explains what happened and asks you to reconnect your Bluesky account, instead of failing on every post with an unhelpful retry message.
 
 ### 2.0.0 - 2026-07-08
 #### Added

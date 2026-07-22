@@ -1,4 +1,0 @@
-Significance: minor
-Type: added
-
-Sites that rotate their WordPress security keys can now define a dedicated encryption key in wp-config.php so the Bluesky connection survives the rotation.
