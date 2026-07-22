@@ -52,4 +52,76 @@ class Test_TID extends WP_UnitTestCase {
 		$this->assertFalse( TID::is_valid( '0000000000000' ) ); // '0' and '1' not in charset.
 		$this->assertFalse( TID::is_valid( 'AAAAAAAAAAAAA' ) ); // Uppercase not in charset.
 	}
+
+	/**
+	 * A historical TID decodes back to the micros it was minted from.
+	 */
+	public function test_generate_for_time_round_trips_through_decode() {
+		$unix     = \strtotime( '2020-01-01 00:00:00' );
+		$expected = $unix * 1_000_000 + 42;
+
+		$tid = TID::generate_for_time( $unix, 42 );
+
+		$this->assertSame( 13, \strlen( $tid ) );
+		$this->assertTrue( TID::is_valid( $tid ) );
+		$this->assertSame( $expected, TID::decode( $tid ) );
+	}
+
+	/**
+	 * A historical TID sorts below a freshly minted live TID.
+	 */
+	public function test_generate_for_time_sorts_below_live() {
+		$hist = TID::generate_for_time( \strtotime( '2020-01-01 00:00:00' ), 1 );
+		$live = TID::generate();
+
+		$this->assertLessThan( $live, $hist );
+	}
+
+	/**
+	 * Historical minting never advances the persisted monotonic floor.
+	 */
+	public function test_generate_for_time_does_not_advance_floor() {
+		\update_option( 'atmosphere_tid_last_ts', '9999999999999999' );
+
+		TID::generate_for_time( \strtotime( '2020-01-01 00:00:00' ), 1 );
+
+		$this->assertSame( '9999999999999999', \get_option( 'atmosphere_tid_last_ts' ) );
+	}
+
+	/**
+	 * The disambiguator separates two posts that share a second and
+	 * orders them by the disambiguator value.
+	 */
+	public function test_generate_for_time_disambiguator_separates_same_second() {
+		$unix = \strtotime( '2020-01-01 00:00:00' );
+
+		$a = TID::generate_for_time( $unix, 100 );
+		$b = TID::generate_for_time( $unix, 200 );
+
+		$this->assertNotSame( $a, $b );
+		$this->assertLessThan( $b, $a );
+	}
+
+	/**
+	 * Different dates sort in date order.
+	 */
+	public function test_generate_for_time_sorts_by_date() {
+		$older = TID::generate_for_time( \strtotime( '2019-06-01 00:00:00' ), 5 );
+		$newer = TID::generate_for_time( \strtotime( '2021-06-01 00:00:00' ), 5 );
+
+		$this->assertLessThan( $newer, $older );
+	}
+
+	/**
+	 * A non-positive timestamp falls back to a live TID rather than
+	 * minting a 1970-epoch rkey.
+	 */
+	public function test_generate_for_time_falls_back_on_bad_date() {
+		$tid = TID::generate_for_time( 0, 1 );
+
+		$this->assertTrue( TID::is_valid( $tid ) );
+		// A live TID is far above any 2020s historical value; a 0-epoch
+		// TID would sort near the bottom of the charset.
+		$this->assertGreaterThan( TID::generate_for_time( \strtotime( '2020-01-01 00:00:00' ), 1 ), $tid );
+	}
 }

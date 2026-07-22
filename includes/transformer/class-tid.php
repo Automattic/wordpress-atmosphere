@@ -167,14 +167,21 @@ class TID {
 			\wp_cache_delete( self::OPTION_LAST_TS, 'options' );
 		}
 
+		return self::encode( ( $ts << 10 ) | self::clock_id() );
+	}
+
+	/**
+	 * Lazily seed and return the per-process 10-bit clock identifier.
+	 *
+	 * `random_int` throws only on a system without a usable CSPRNG
+	 * (essentially never on a working PHP install); `wp_rand` is the
+	 * non-cryptographic fallback. Shared by {@see self::generate()} and
+	 * {@see self::generate_for_time()} so both mint from the same clock.
+	 *
+	 * @return int
+	 */
+	private static function clock_id(): int {
 		if ( null === self::$clock_id ) {
-			/*
-			 * `random_int` throws on systems without a usable CSPRNG
-			 * (essentially never on a working PHP install, but a worth
-			 * a fallback so a missing entropy source can't bring down
-			 * publishing). `wp_rand` is non-cryptographic but the
-			 * collision space is still 1024.
-			 */
 			try {
 				self::$clock_id = \random_int( 0, 1023 );
 			} catch ( \Throwable $e ) {
@@ -182,7 +189,60 @@ class TID {
 			}
 		}
 
-		return self::encode( ( $ts << 10 ) | self::$clock_id );
+		return self::$clock_id;
+	}
+
+	/**
+	 * Generate a TID for a specific historical time.
+	 *
+	 * Mints a sortable rkey from a past timestamp WITHOUT reading or
+	 * advancing the persisted monotonic floor ({@see self::OPTION_LAST_TS}).
+	 * A historical TID is by definition below the live floor, and the
+	 * monotonic guarantee only needs to hold among concurrent *live*
+	 * mints — so a backfill can sort records by their original publish
+	 * date without regressing the floor for live publishing.
+	 *
+	 * `$disambiguator` occupies the sub-second microsecond slot. WordPress
+	 * post dates are second-precision, so that slot is otherwise always
+	 * zero; passing the post ID keeps two posts that share a second from
+	 * colliding on the same rkey and orders them by creation order.
+	 *
+	 * @param int $unix_seconds  Unix timestamp in seconds (GMT).
+	 * @param int $disambiguator Sub-second disambiguator (e.g. post ID).
+	 * @return string 13-character identifier.
+	 */
+	public static function generate_for_time( int $unix_seconds, int $disambiguator = 0 ): string {
+		if ( $unix_seconds <= 0 ) {
+			// Unparseable / zero date (e.g. `0000-00-00`): mint a live TID
+			// rather than a garbage epoch-1970 rkey.
+			return self::generate();
+		}
+
+		$micros = $unix_seconds * 1_000_000 + ( $disambiguator % 1_000_000 );
+
+		return self::encode( ( $micros << 10 ) | self::clock_id() );
+	}
+
+	/**
+	 * Decode a TID to its timestamp component, in microseconds.
+	 *
+	 * Inverse of the 10-bit clock-id shift {@see self::encode()} applies:
+	 * returns the microsecond timestamp the TID sorts on (the low
+	 * clock-id bits are dropped). Lets callers verify a record's rkey
+	 * maps to an expected publish time.
+	 *
+	 * @param string $tid 13-character TID.
+	 * @return int Microseconds since the Unix epoch.
+	 */
+	public static function decode( string $tid ): int {
+		$value = 0;
+		$len   = \strlen( $tid );
+
+		for ( $i = 0; $i < $len; $i++ ) {
+			$value = ( $value << 5 ) | (int) \strpos( self::CHARSET, $tid[ $i ] );
+		}
+
+		return $value >> 10;
 	}
 
 	/**
