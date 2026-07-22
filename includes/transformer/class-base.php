@@ -53,6 +53,44 @@ abstract class Base {
 	}
 
 	/**
+	 * Whether rkeys are minted from the object's original publish time
+	 * instead of the current time.
+	 *
+	 * @var bool
+	 */
+	protected bool $original_time = false;
+
+	/**
+	 * Mint record keys from the object's original publish date.
+	 *
+	 * Used by `--original-time` backfills so historical records sort by
+	 * their original date in feeds/readers instead of by backfill-run
+	 * time. Only affects the *first* `get_rkey()` reservation — an
+	 * already-persisted TID is reused unchanged.
+	 *
+	 * @param bool $on Whether to enable original-time minting.
+	 */
+	public function use_original_time( bool $on = true ): void {
+		$this->original_time = $on;
+	}
+
+	/**
+	 * Mint a historical TID from the post's original publish date.
+	 *
+	 * The post ID fills the sub-second slot so two posts sharing a
+	 * second don't collide (see {@see TID::generate_for_time()});
+	 * `$sequence` offsets a thread reply after its root.
+	 *
+	 * @param int $sequence Offset within the post's records (0 = root/doc).
+	 * @return string
+	 */
+	protected function historical_rkey( int $sequence = 0 ): string {
+		$unix = (int) \get_post_time( 'U', true, $this->object );
+
+		return TID::generate_for_time( $unix, $this->object->ID + $sequence );
+	}
+
+	/**
 	 * Produce the AT Protocol record array.
 	 *
 	 * @return array

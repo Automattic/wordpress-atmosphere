@@ -15,6 +15,7 @@ use Atmosphere\Transformer\Document;
 use Atmosphere\Transformer\Facet;
 use Atmosphere\Transformer\Post;
 use Atmosphere\Transformer\Publication;
+use Atmosphere\Transformer\TID;
 
 /**
  * Post transformer tests.
@@ -4717,5 +4718,73 @@ class Test_Post extends WP_UnitTestCase {
 			static fn( $facet ) => 'app.bsky.richtext.facet#mention' === ( $facet['features'][0]['$type'] ?? '' )
 		);
 		$this->assertCount( 1, $mention_facets, 'Bare-permalink post must still emit a #mention facet.' );
+	}
+
+	/**
+	 * With original-time minting on, get_rkey() reserves a TID that
+	 * decodes to the post's original publish date, and is idempotent.
+	 */
+	public function test_get_rkey_uses_original_time_when_enabled() {
+		$post_id = self::factory()->post->create(
+			array(
+				'post_status'   => 'publish',
+				'post_date'     => '2020-03-15 12:00:00',
+				'post_date_gmt' => '2020-03-15 12:00:00',
+			)
+		);
+
+		$transformer = new Post( \get_post( $post_id ) );
+		$transformer->use_original_time();
+
+		$rkey     = $transformer->get_rkey();
+		$expected = \strtotime( '2020-03-15 12:00:00' ) * 1_000_000 + ( $post_id % 1_000_000 );
+
+		$this->assertSame( $expected, TID::decode( $rkey ) );
+		$this->assertSame( $rkey, $transformer->get_rkey() );
+		$this->assertSame( $rkey, \get_post_meta( $post_id, Post::META_TID, true ) );
+	}
+
+	/**
+	 * Without the flag, get_rkey() mints a live (near-now) TID, not a
+	 * historical one.
+	 */
+	public function test_get_rkey_defaults_to_live_tid() {
+		$post_id = self::factory()->post->create(
+			array(
+				'post_status'   => 'publish',
+				'post_date'     => '2020-03-15 12:00:00',
+				'post_date_gmt' => '2020-03-15 12:00:00',
+			)
+		);
+
+		$rkey     = ( new Post( \get_post( $post_id ) ) )->get_rkey();
+		$historic = \strtotime( '2020-03-15 12:00:00' ) * 1_000_000;
+
+		$this->assertGreaterThan( $historic, TID::decode( $rkey ) );
+	}
+
+	/**
+	 * A thread reply key is historical and sorts just after the root.
+	 */
+	public function test_mint_reply_rkey_is_historical_and_after_root() {
+		$post_id = self::factory()->post->create(
+			array(
+				'post_status'   => 'publish',
+				'post_date'     => '2020-03-15 12:00:00',
+				'post_date_gmt' => '2020-03-15 12:00:00',
+			)
+		);
+
+		$transformer = new Post( \get_post( $post_id ) );
+		$transformer->use_original_time();
+
+		$root  = $transformer->get_rkey();
+		$reply = $transformer->mint_reply_rkey( 1 );
+
+		$this->assertGreaterThan( $root, $reply );
+		$this->assertSame(
+			\strtotime( '2020-03-15 12:00:00' ) * 1_000_000 + ( ( $post_id + 1 ) % 1_000_000 ),
+			TID::decode( $reply )
+		);
 	}
 }
