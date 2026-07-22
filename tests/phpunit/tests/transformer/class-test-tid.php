@@ -124,4 +124,17 @@ class Test_TID extends WP_UnitTestCase {
 		// TID would sort near the bottom of the charset.
 		$this->assertGreaterThan( TID::generate_for_time( \strtotime( '2020-01-01 00:00:00' ), 1 ), $tid );
 	}
+
+	/**
+	 * A negative disambiguator is wrapped back into the sub-second slot
+	 * rather than pushing the key before the target second (PHP's `%`
+	 * keeps the sign of the dividend).
+	 */
+	public function test_generate_for_time_negative_disambiguator_stays_in_second() {
+		$unix    = \strtotime( '2020-01-01 00:00:00' );
+		$decoded = TID::decode( TID::generate_for_time( $unix, -5 ) );
+
+		$this->assertGreaterThanOrEqual( $unix * 1_000_000, $decoded );
+		$this->assertLessThan( ( $unix + 1 ) * 1_000_000, $decoded );
+	}
 }

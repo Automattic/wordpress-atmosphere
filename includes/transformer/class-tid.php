@@ -175,8 +175,12 @@ class TID {
 	 *
 	 * `random_int` throws only on a system without a usable CSPRNG
 	 * (essentially never on a working PHP install); `wp_rand` is the
-	 * non-cryptographic fallback. Shared by {@see self::generate()} and
-	 * {@see self::generate_for_time()} so both mint from the same clock.
+	 * non-cryptographic fallback. Both {@see self::generate()} and
+	 * {@see self::generate_for_time()} draw from this same per-process
+	 * constant, so the clock bits identify the worker but do NOT
+	 * disambiguate two mints that land on the same microsecond — that is
+	 * the sub-second slot's job for historical mints, and the monotonic
+	 * floor's for live ones.
 	 *
 	 * @return int
 	 */
@@ -204,13 +208,14 @@ class TID {
 	 *
 	 * `$disambiguator` occupies the sub-second microsecond slot. WordPress
 	 * post dates are second-precision, so that slot is otherwise always
-	 * zero; a caller-composed disambiguator keeps records that share a
-	 * second from colliding on the same rkey and gives them a stable sort
-	 * order (see {@see Base::historical_rkey()}). It is taken modulo
-	 * 1,000,000 so it can never spill into the seconds component.
+	 * zero; a caller-composed disambiguator makes records that share a
+	 * second very unlikely to collide on the same rkey and gives them a
+	 * stable sort order (see {@see Base::historical_rkey()}). It is reduced
+	 * into the range [0, 1,000,000) so it can never spill into — or borrow
+	 * from — the seconds component, even for a negative input.
 	 *
 	 * @param int $unix_seconds  Unix timestamp in seconds (GMT).
-	 * @param int $disambiguator Sub-second disambiguator (0–999,999).
+	 * @param int $disambiguator Sub-second disambiguator, reduced into 0–999,999.
 	 * @return string 13-character identifier.
 	 */
 	public static function generate_for_time( int $unix_seconds, int $disambiguator = 0 ): string {
@@ -220,7 +225,16 @@ class TID {
 			return self::generate();
 		}
 
-		$micros = $unix_seconds * 1_000_000 + ( $disambiguator % 1_000_000 );
+		$slot = $disambiguator % 1_000_000;
+		if ( $slot < 0 ) {
+			// PHP's `%` keeps the sign of the dividend, so a negative
+			// disambiguator would push the key *before* the target second
+			// (out of its intended sub-second slot). Wrap it back into
+			// [0, 1,000,000) instead.
+			$slot += 1_000_000;
+		}
+
+		$micros = $unix_seconds * 1_000_000 + $slot;
 
 		return self::encode( ( $micros << 10 ) | self::clock_id() );
 	}

@@ -78,18 +78,21 @@ abstract class Base {
 	 * Mint a historical TID from the post's original publish date.
 	 *
 	 * Fills the sub-second slot with a disambiguator so records sharing a
-	 * publish second still sort deterministically without colliding on the
-	 * same rkey. The post ID and the reply `$sequence` occupy disjoint
-	 * ranges of that slot: the ID picks the high part, the sequence the
-	 * reserved low decimal digit. A teaser thread is capped at 5 records
+	 * publish second sort deterministically and are very unlikely to
+	 * collide on the same rkey. The post ID and the reply `$sequence`
+	 * occupy disjoint ranges of that slot: the ID (reduced modulo 100,000)
+	 * picks the high part, the sequence the reserved low decimal digit. A
+	 * teaser thread is capped at 5 records
 	 * ({@see Post::build_teaser_thread()}), so a single digit is ample
 	 * headroom for the sequence.
 	 *
-	 * Summing the two instead — `ID + $sequence` — would let reply N of
-	 * post P share a slot with the root of post P+N when both are
-	 * published in the same second, minting an identical rkey. Adjacent
-	 * IDs sharing a second are common in bulk/WXR imports (the backfill
-	 * case this feature targets), so the two ranges are kept disjoint.
+	 * Disjoint ranges — rather than summing as `ID + $sequence` — stop
+	 * reply N of post P from sharing a slot with the root of post P+N when
+	 * both are published in the same second (which would mint an identical
+	 * rkey); adjacent IDs sharing a second are common in bulk/WXR imports,
+	 * the backfill case this feature targets. Two roots still coincide only
+	 * if their IDs are congruent modulo 100,000 within the same second —
+	 * negligible in practice, since import IDs run consecutively.
 	 *
 	 * @param int $sequence Offset within the post's records (0 = root/doc).
 	 * @return string
