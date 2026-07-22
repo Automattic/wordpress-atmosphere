@@ -137,4 +137,15 @@ class Test_TID extends WP_UnitTestCase {
 		$this->assertGreaterThanOrEqual( $unix * 1_000_000, $decoded );
 		$this->assertLessThan( ( $unix + 1 ) * 1_000_000, $decoded );
 	}
+
+	/**
+	 * Decoding malformed input returns 0 explicitly instead of decoding
+	 * stray characters into a plausible-but-wrong timestamp.
+	 */
+	public function test_decode_returns_zero_for_invalid_tid() {
+		$this->assertSame( 0, TID::decode( '' ) );
+		$this->assertSame( 0, TID::decode( 'tooshort' ) );
+		// 13 characters, but '0' is not in the base-32 charset.
+		$this->assertSame( 0, TID::decode( '0000000000000' ) );
+	}
 }

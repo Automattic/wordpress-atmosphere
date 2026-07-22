@@ -247,10 +247,21 @@ class TID {
 	 * clock-id bits are dropped). Lets callers verify a record's rkey
 	 * maps to an expected publish time.
 	 *
+	 * A malformed input — wrong length, or a character outside the
+	 * base-32 charset — has no meaningful timestamp, so it returns 0
+	 * rather than decoding stray characters as zero bits and yielding a
+	 * plausible-but-wrong value. Real TIDs never decode to 0: the
+	 * historical path falls back to a live TID for epoch-0 dates, and a
+	 * live TID is minted from the current time.
+	 *
 	 * @param string $tid 13-character TID.
-	 * @return int Microseconds since the Unix epoch.
+	 * @return int Microseconds since the Unix epoch, or 0 when $tid is not a valid TID.
 	 */
 	public static function decode( string $tid ): int {
+		if ( ! self::is_valid( $tid ) ) {
+			return 0;
+		}
+
 		$value = 0;
 		$len   = \strlen( $tid );
 
