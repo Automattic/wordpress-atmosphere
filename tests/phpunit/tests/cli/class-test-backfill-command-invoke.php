@@ -393,4 +393,54 @@ class Test_Backfill_Command_Invoke extends \WP_UnitTestCase {
 			$this->assertSame( 1, $failures );
 		}
 	}
+
+	/**
+	 * Backfill with the Bluesky companion disabled writes documents only and
+	 * marks each post synced so a second run skips it.
+	 */
+	public function test_backfill_document_only_marks_posts_synced() {
+		\add_filter( 'atmosphere_should_publish_bluesky_post', '__return_false' );
+
+		$collections = array();
+		\add_filter(
+			'atmosphere_pre_apply_writes',
+			static function ( $short_circuit, array $writes ) use ( &$collections ) {
+				$results = array();
+
+				foreach ( $writes as $write ) {
+					$collection    = $write['collection'] ?? '';
+					$collections[] = $collection;
+					$rkey          = $write['rkey'] ?? '';
+
+					$results[] = array(
+						'uri' => "at://did:plc:test123/{$collection}/{$rkey}",
+						'cid' => 'bafyreib' . \substr( \md5( (string) $rkey ), 0, 20 ),
+					);
+				}
+
+				return array( 'results' => $results );
+			},
+			10,
+			2
+		);
+
+		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
+
+		$this->run_command( array() );
+
+		$this->assertSame(
+			array( 'site.standard.document' ),
+			\array_unique( $collections ),
+			'Backfill must write only document records.'
+		);
+		$this->assertNotEmpty( \get_post_meta( $post_id, Document::META_URI, true ) );
+
+		// Second run: the post is already synced, so no further writes.
+		$collections = array();
+		$this->run_command( array() );
+		$this->assertSame( array(), $collections, 'Second run should skip the already-synced post.' );
+
+		\remove_all_filters( 'atmosphere_should_publish_bluesky_post' );
+		\remove_all_filters( 'atmosphere_pre_apply_writes' );
+	}
 }
