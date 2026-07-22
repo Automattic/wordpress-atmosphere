@@ -83,9 +83,11 @@ function PrePublishPanel() {
 					setLoading( false );
 				} )
 				.catch( ( err ) => {
-					// Keep the error so the message can distinguish a
-					// permission failure from a transient one, and log it so
-					// a support report has something to go on.
+					// Drop any preview from an earlier keystroke so a failed
+					// refresh never leaves stale text on screen, then keep the
+					// error so the message can distinguish a permission failure
+					// from a transient one, and log it for support reports.
+					setPreview( null );
 					// eslint-disable-next-line no-console -- Aid debugging.
 					console.error(
 						'ATmosphere pre-publish preview failed:',
