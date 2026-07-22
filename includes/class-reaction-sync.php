@@ -526,7 +526,7 @@ class Reaction_Sync {
 			 * sync and the explicit WP-CLI backfill command enabled. Values above
 			 * 20 are clamped to keep one WP-Cron request bounded.
 			 *
-			 * @since unreleased
+			 * @since 2.1.0
 			 *
 			 * @param int $batch_size Posts checked per daily run. Default 5.
 			 */

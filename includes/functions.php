@@ -168,7 +168,7 @@ function appview_base_url( string $base ): string {
  * network-wide index such as `typeahead.waow.tech` — or return an empty string
  * to disable typeahead entirely and fall back to manual handle entry.
  *
- * @since unreleased
+ * @since 2.1.0
  *
  * @return string The typeahead XRPC endpoint, or '' to disable typeahead.
  */
@@ -176,7 +176,7 @@ function handle_typeahead_url(): string {
 	/**
 	 * Filters the handle typeahead endpoint used across the plugin's admin UI.
 	 *
-	 * @since unreleased
+	 * @since 2.1.0
 	 *
 	 * @param string $url Default typeahead XRPC endpoint. Return '' to disable
 	 *                    typeahead and require manual handle entry.
@@ -506,7 +506,7 @@ function is_connected(): bool {
  * has the final say, so host plugins can override the effective behavior
  * without touching the saved option.
  *
- * @since unreleased
+ * @since 2.1.0
  *
  * @return bool
  */
@@ -522,7 +522,7 @@ function is_comment_publishing_enabled(): bool {
 	 * is on effective behavior, not the option, so the stored preference
 	 * survives untouched.
 	 *
-	 * @since unreleased
+	 * @since 2.1.0
 	 *
 	 * @param bool $enabled Whether comment publishing is enabled.
 	 */
@@ -561,7 +561,7 @@ function needs_reauth(): bool {
  * presence outs the marker as stale and callers should fall through to
  * their failure copy, which is the accurate framing.
  *
- * @since unreleased
+ * @since 2.1.0
  *
  * @return bool
  */
@@ -578,7 +578,7 @@ function is_operator_disconnected(): bool {
  * key). An empty string means no specific cause was recorded — legacy
  * rows and plain session expiry.
  *
- * @since unreleased
+ * @since 2.1.0
  *
  * @return string
  */
@@ -595,7 +595,7 @@ function get_reauth_reason(): string {
  * caller appends its own consequence/action tail; copy edits and
  * translations happen once, here.
  *
- * @since unreleased
+ * @since 2.1.0
  *
  * @return string Translated, unescaped sentence.
  */
@@ -616,7 +616,7 @@ function reauth_reason_lead(): string {
  * Single source for the settings-page location so reconnect prompts and
  * editor surfaces don't each hardcode the page slug.
  *
- * @since unreleased
+ * @since 2.1.0
  *
  * @return string Unescaped admin URL; escape at the call site.
  */
@@ -793,7 +793,7 @@ function is_sharing_enabled( \WP_Post $post ): bool {
  * reactions) still can. Settings-page visibility, by contrast, follows
  * connection-only mode directly, with no separate override.
  *
- * @since unreleased
+ * @since 2.1.0
  *
  * @return bool True when ATmosphere is embedded purely as a connection layer.
  */
@@ -811,7 +811,7 @@ function is_connection_only_mode(): bool {
 	 * {@see 'atmosphere_should_publish_comments'}) are evaluated afterwards and
 	 * have the final say, so individual behavioural lanes can still be re-enabled.
 	 *
-	 * @since unreleased
+	 * @since 2.1.0
 	 *
 	 * @param bool $connection_only Whether ATmosphere is embedded as a connection layer only. Default false.
 	 */
@@ -846,7 +846,7 @@ function feature_option_enabled( string $option ): bool {
  * `atmosphere_should_auto_publish` filter, which has the last word so a host in
  * connection-only mode can re-enable cross-posting on its own terms.
  *
- * @since unreleased
+ * @since 2.1.0
  *
  * @return bool
  */
@@ -861,7 +861,7 @@ function is_auto_publish_enabled(): bool {
 	 * connection-only mode but still wants automatic cross-posting can return
 	 * true here.
 	 *
-	 * @since unreleased
+	 * @since 2.1.0
 	 *
 	 * @param bool $enabled Whether auto-publish is effectively enabled.
 	 */
@@ -876,7 +876,7 @@ function is_auto_publish_enabled(): bool {
  * {@see is_connection_only_mode()}, then the `atmosphere_should_sync_reactions`
  * filter as the final say.
  *
- * @since unreleased
+ * @since 2.1.0
  *
  * @return bool
  */
@@ -889,7 +889,7 @@ function is_reaction_sync_enabled(): bool {
 	 * Evaluated after the stored option and {@see is_connection_only_mode()},
 	 * so it has the final say over the effective reaction-import state.
 	 *
-	 * @since unreleased
+	 * @since 2.1.0
 	 *
 	 * @param bool $enabled Whether reaction import is effectively enabled.
 	 */
@@ -904,7 +904,7 @@ function is_reaction_sync_enabled(): bool {
  * {@see is_connection_only_mode()}, then the `atmosphere_should_sync_replies`
  * filter as the final say.
  *
- * @since unreleased
+ * @since 2.1.0
  *
  * @return bool
  */
@@ -917,7 +917,7 @@ function is_reply_sync_enabled(): bool {
 	 * Evaluated after the stored option and {@see is_connection_only_mode()},
 	 * so it has the final say over the effective reply-import state.
 	 *
-	 * @since unreleased
+	 * @since 2.1.0
 	 *
 	 * @param bool $enabled Whether reply import is effectively enabled.
 	 */
@@ -934,7 +934,7 @@ function is_reply_sync_enabled(): bool {
  * on, is forced off in {@see is_connection_only_mode()}, and a dedicated filter
  * has the final say so a host can opt back in.
  *
- * @since unreleased
+ * @since 2.1.0
  *
  * @return bool
  */
@@ -947,7 +947,7 @@ function is_publication_sync_enabled(): bool {
 	 * Runs after {@see is_connection_only_mode()}, so it has the final say: a host
 	 * running ATmosphere as a connection layer can re-enable publication upkeep.
 	 *
-	 * @since unreleased
+	 * @since 2.1.0
 	 *
 	 * @param bool $enabled Whether publication sync is effectively enabled.
 	 */

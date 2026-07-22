@@ -48,7 +48,7 @@ class Publication extends Base {
 	/**
 	 * Option key for a custom publication background color.
 	 *
-	 * @since unreleased
+	 * @since 2.1.0
 	 * @var string
 	 */
 	public const OPTION_THEME_BACKGROUND = 'atmosphere_publication_theme_background';
@@ -56,7 +56,7 @@ class Publication extends Base {
 	/**
 	 * Option key for a custom publication foreground color.
 	 *
-	 * @since unreleased
+	 * @since 2.1.0
 	 * @var string
 	 */
 	public const OPTION_THEME_FOREGROUND = 'atmosphere_publication_theme_foreground';
@@ -64,7 +64,7 @@ class Publication extends Base {
 	/**
 	 * Option key for a custom publication accent color.
 	 *
-	 * @since unreleased
+	 * @since 2.1.0
 	 * @var string
 	 */
 	public const OPTION_THEME_ACCENT = 'atmosphere_publication_theme_accent';
@@ -298,7 +298,7 @@ class Publication extends Base {
 		 * Return a `site.standard.theme.basic`-shaped array to override
 		 * the derived value, or null to omit `basicTheme`.
 		 *
-		 * @since unreleased
+		 * @since 2.1.0
 		 *
 		 * @param array|null          $basic_theme Current basicTheme object or null.
 		 * @param array               $styles      Output of `wp_get_global_styles()`.

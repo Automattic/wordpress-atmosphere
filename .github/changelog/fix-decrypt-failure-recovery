@@ -1,4 +1,0 @@
-Significance: minor
-Type: fixed
-
-When your site's security keys change (after a migration or a salt rotation), ATmosphere now explains what happened and asks you to reconnect your Bluesky account, instead of failing on every post with an unhelpful retry message.

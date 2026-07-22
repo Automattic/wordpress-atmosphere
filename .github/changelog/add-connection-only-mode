@@ -1,4 +1,0 @@
-Significance: minor
-Type: added
-
-Add a connection-only mode so another plugin can reuse just the Bluesky connection: automatic cross-posting, likes and reposts, and reply importing all stay off, and the ATmosphere settings screen is hidden.
