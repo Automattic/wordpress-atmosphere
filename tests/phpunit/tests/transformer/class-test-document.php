@@ -741,4 +741,28 @@ class Test_Document extends \WP_UnitTestCase {
 		$this->assertSame( $expected, TID::decode( $rkey ) );
 		$this->assertSame( $rkey, \get_post_meta( $post_id, Document::META_TID, true ) );
 	}
+
+	/**
+	 * A post that already reserved a (live) document TID from a prior
+	 * attempt keeps it under original-time minting — get_rkey() must not
+	 * re-mint an already-persisted rkey.
+	 */
+	public function test_get_rkey_preserves_existing_reserved_tid_under_original_time() {
+		$post_id = self::factory()->post->create(
+			array(
+				'post_status'   => 'publish',
+				'post_date'     => '2020-03-15 12:00:00',
+				'post_date_gmt' => '2020-03-15 12:00:00',
+			)
+		);
+
+		$reserved = TID::generate();
+		\update_post_meta( $post_id, Document::META_TID, $reserved );
+
+		$transformer = new Document( \get_post( $post_id ) );
+		$transformer->use_original_time();
+
+		$this->assertSame( $reserved, $transformer->get_rkey() );
+		$this->assertSame( $reserved, \get_post_meta( $post_id, Document::META_TID, true ) );
+	}
 }
