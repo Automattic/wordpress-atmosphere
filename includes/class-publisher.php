@@ -105,6 +105,21 @@ class Publisher {
 			return $result;
 		}
 
+		/*
+		 * Document-only mode: the operator has disabled the Bluesky
+		 * companion post site-wide. Write just the site.standard.document
+		 * record and skip the bsky post, strongRef precompute, and thread
+		 * machinery entirely. Still fire the result action so subscribers
+		 * (metrics, notices) behave the same as any other publish.
+		 */
+		if ( ! is_bluesky_post_enabled() ) {
+			$result = self::publish_document_only( $post );
+
+			\do_action( 'atmosphere_publish_post_result', $post, $result );
+
+			return $result;
+		}
+
 		// Heal a drifted publication record before composing the post,
 		// so the embedded publication strongRef points at the current CID.
 		self::maybe_heal_publication();
@@ -268,6 +283,46 @@ class Publisher {
 		}
 
 		return $cleanup;
+	}
+
+	/**
+	 * Publish only the `site.standard.document` record for a post.
+	 *
+	 * Used when {@see \Atmosphere\is_bluesky_post_enabled()} is false — the
+	 * site runs as a standard.site publication with no Bluesky companion post.
+	 * Writes a single `applyWrites#create` for the document and persists only
+	 * the `Document::*` meta; no `Post::*` meta is written, so downstream
+	 * bsky-oriented paths (reaction/reply sync, in-place thread updates) stay
+	 * inert for this post.
+	 *
+	 * @since unreleased
+	 *
+	 * @param \WP_Post $post WordPress post.
+	 * @return array|\WP_Error applyWrites response or error.
+	 */
+	private static function publish_document_only( \WP_Post $post ): array|\WP_Error {
+		self::maybe_heal_publication();
+
+		$doc_transformer = new Document( $post );
+
+		$writes = array(
+			array(
+				'$type'      => 'com.atproto.repo.applyWrites#create',
+				'collection' => 'site.standard.document',
+				'rkey'       => $doc_transformer->get_rkey(),
+				'value'      => $doc_transformer->transform(),
+			),
+		);
+
+		$result = API::apply_writes( $writes );
+
+		if ( \is_wp_error( $result ) ) {
+			return $result;
+		}
+
+		self::store_document_meta( $post->ID, $result, $doc_transformer, 0 );
+
+		return $result;
 	}
 
 	/**

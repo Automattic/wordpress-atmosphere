@@ -64,6 +64,7 @@ class Test_Publisher extends WP_UnitTestCase {
 		\remove_all_filters( 'atmosphere_transform_bsky_post' );
 		\remove_all_filters( 'atmosphere_transform_document' );
 		\remove_all_filters( 'atmosphere_is_short_form_post' );
+		\remove_all_filters( 'atmosphere_should_publish_bluesky_post' );
 
 		parent::tear_down();
 	}
@@ -335,6 +336,66 @@ class Test_Publisher extends WP_UnitTestCase {
 		$this->assertCount( 1, $captured, 'Rejected publish must still fire the result action.' );
 		$this->assertSame( $post->ID, $captured[0]['post']->ID );
 		$this->assertSame( $result, $captured[0]['result'] );
+	}
+
+	/**
+	 * With the companion filter off, publish writes only the document record.
+	 *
+	 * @group atmosphere
+	 * @group publisher
+	 */
+	public function test_publish_document_only_writes_single_document_record() {
+		\add_filter( 'atmosphere_should_publish_bluesky_post', '__return_false' );
+
+		$post = self::factory()->post->create_and_get( array( 'post_status' => 'publish' ) );
+		$this->register_capture( $post->ID );
+
+		$result = Publisher::publish_post( $post );
+
+		$this->assertNotWPError( $result );
+		$this->assertCount( 1, $this->captured_calls, 'Doc-only publish should make one applyWrites call.' );
+
+		$writes = $this->captured_calls[0]['writes'];
+		$this->assertCount( 1, $writes, 'Doc-only publish should write exactly one record.' );
+		$this->assertSame( 'com.atproto.repo.applyWrites#create', $writes[0]['$type'] );
+		$this->assertSame( 'site.standard.document', $writes[0]['collection'] );
+	}
+
+	/**
+	 * Doc-only publish marks the document synced and leaves no Bluesky post meta.
+	 *
+	 * @group atmosphere
+	 * @group publisher
+	 */
+	public function test_publish_document_only_sets_document_meta_not_bsky_meta() {
+		\add_filter( 'atmosphere_should_publish_bluesky_post', '__return_false' );
+
+		$post = self::factory()->post->create_and_get( array( 'post_status' => 'publish' ) );
+		$this->register_capture( $post->ID );
+
+		Publisher::publish_post( $post );
+
+		$this->assertNotEmpty( \get_post_meta( $post->ID, Document::META_URI, true ), 'Document URI should be stored.' );
+		$this->assertEmpty( \get_post_meta( $post->ID, Post::META_URI, true ), 'No Bluesky post URI should be stored.' );
+	}
+
+	/**
+	 * With the filter at its default (on), publish still writes both records.
+	 *
+	 * @group atmosphere
+	 * @group publisher
+	 */
+	public function test_publish_writes_both_records_when_filter_enabled() {
+		$post = self::factory()->post->create_and_get( array( 'post_status' => 'publish' ) );
+		$this->register_capture( $post->ID );
+
+		Publisher::publish_post( $post );
+
+		$writes = $this->captured_calls[0]['writes'];
+		$this->assertCount( 2, $writes, 'Default behavior writes the bsky post and the document.' );
+		$collections = array( $writes[0]['collection'], $writes[1]['collection'] );
+		$this->assertContains( 'app.bsky.feed.post', $collections );
+		$this->assertContains( 'site.standard.document', $collections );
 	}
 
 	/**
