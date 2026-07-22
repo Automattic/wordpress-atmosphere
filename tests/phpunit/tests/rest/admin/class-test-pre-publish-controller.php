@@ -133,15 +133,13 @@ class Test_Pre_Publish_Controller extends WP_UnitTestCase {
 		};
 		\add_filter( 'the_content', $thrower, 9 );
 
-		try {
-			$result = $this->controller->get_preview(
-				$this->make_request( $post->ID, array( 'content' => 'A quick note.' ) )
-			);
-		} finally {
-			// Remove in finally so a failed assertion below can't leak the
-			// throwing filter into later tests.
-			\remove_filter( 'the_content', $thrower, 9 );
-		}
+		// get_preview() catches the throwable and returns a WP_Error, so this
+		// never propagates and the filter is removed before the assertions run.
+		$result = $this->controller->get_preview(
+			$this->make_request( $post->ID, array( 'content' => 'A quick note.' ) )
+		);
+
+		\remove_filter( 'the_content', $thrower, 9 );
 
 		$this->assertInstanceOf( \WP_Error::class, $result );
 		$this->assertSame( 'atmosphere_projection_failed', $result->get_error_code() );
