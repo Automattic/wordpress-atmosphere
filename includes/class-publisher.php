@@ -936,12 +936,23 @@ class Publisher {
 	 * publishable posts (the not-publishable case is handled by
 	 * {@see self::delete_post()} at the top of {@see self::update_post()}).
 	 *
-	 * When the document has never been seeded (no stored URI), falls back to a
-	 * fresh {@see self::publish_document_only()} so the edit seeds it. A stored
-	 * URI with a missing TID is a corrupted half-synced state, not an unseeded
-	 * one: creating fresh would mint a second document record and orphan the
-	 * one the stored URI already points at, so it surfaces an
-	 * `atmosphere_missing_tid` error instead — mirroring {@see self::update_post()}.
+	 * When no document has ever been successfully published for the post (no
+	 * stored URI), this is a no-op that fires `atmosphere_update_skipped_unsynced_post`
+	 * and returns — mirroring the dual-record {@see self::update_post()} guard.
+	 * A routine edit must not retro-sync legacy content: turning edits of old
+	 * posts into fresh records consistently surprises users, and the deliberate
+	 * path for seeding an existing catalogue is the `wp atmosphere backfill`
+	 * command. (Document::META_TID is not a reliable "was published" marker here
+	 * the way Post::META_TID is on the dual path: {@see Atmosphere::output_document_link()}
+	 * speculatively mints it on a front-end pageview, so it cannot distinguish a
+	 * legacy post from a failed create — only a stored URI proves a real publish.
+	 * Genuine new publishes seed through {@see self::publish_post()}, and failed
+	 * creates retry through the publish ladder, so nothing is lost by skipping.)
+	 *
+	 * A stored URI with a missing TID is a corrupted half-synced state, not an
+	 * unseeded one: creating fresh would mint a second document record and orphan
+	 * the one the stored URI already points at, so it surfaces an
+	 * `atmosphere_missing_tid` error instead — again mirroring {@see self::update_post()}.
 	 *
 	 * @since unreleased
 	 *
@@ -953,21 +964,26 @@ class Publisher {
 		$doc_tid = \get_post_meta( $post->ID, Document::META_TID, true );
 
 		if ( ! $doc_uri ) {
-			// Never seeded (or a prior create failed before storing a URI):
-			// create the document fresh, reusing any reserved TID via get_rkey().
-			//
-			// Rare edge: if a prior #create actually committed on the PDS but
-			// its URI was never stored (a malformed applyWrites response), this
-			// re-issues a #create against the same reserved TID, which the PDS
-			// rejects as already-existing — surfacing a WP_Error. That mirrors
-			// the dual-record update_post() tolerance for half-synced state.
-			return self::publish_document_only( $post );
+			/*
+			 * No document has ever been successfully published for this post,
+			 * so treat this edit as the dual-record path treats an edit of a
+			 * never-synced post: skip rather than mint a fresh record. This
+			 * keeps routine edits of legacy content from retro-syncing behind
+			 * the author's back — that is what the backfill command is for.
+			 * Fire the same skip action the dual path fires so subscribers
+			 * (admin notices, metrics) behave identically.
+			 */
+			\do_action( 'atmosphere_update_skipped_unsynced_post', $post );
+
+			return array();
 		}
 
 		if ( ! $doc_tid ) {
-			// A stored URI with no TID is a corrupted record: falling back to a
-			// fresh create would mint a second document and orphan the existing
-			// one. Surface the same error the dual-record update_post() raises.
+			/*
+			 * A stored URI with no TID is a corrupted record: falling back to a
+			 * fresh create would mint a second document and orphan the existing
+			 * one. Surface the same error the dual-record update_post() raises.
+			 */
 			return new \WP_Error(
 				'atmosphere_missing_tid',
 				\__( 'Record URIs exist but TIDs are missing.', 'atmosphere' )

@@ -65,6 +65,7 @@ class Test_Publisher extends WP_UnitTestCase {
 		\remove_all_filters( 'atmosphere_transform_document' );
 		\remove_all_filters( 'atmosphere_is_short_form_post' );
 		\remove_all_filters( 'atmosphere_should_publish_bluesky_post' );
+		\remove_all_filters( 'atmosphere_update_skipped_unsynced_post' );
 
 		parent::tear_down();
 	}
@@ -428,26 +429,35 @@ class Test_Publisher extends WP_UnitTestCase {
 	}
 
 	/**
-	 * Doc-only update of a never-seeded post falls back to a fresh doc create.
+	 * Doc-only update of a never-synced post is a no-op: it must not mint a
+	 * fresh document record on a routine edit (that would retro-sync legacy
+	 * content behind the author's back — the backfill command is the deliberate
+	 * path for that). Mirrors the dual-record update guard, and fires the same
+	 * skip action so subscribers behave identically.
 	 *
 	 * @group atmosphere
 	 * @group publisher
 	 */
-	public function test_update_document_only_seeds_when_never_published() {
+	public function test_update_document_only_skips_never_synced_post() {
 		\add_filter( 'atmosphere_should_publish_bluesky_post', '__return_false' );
+
+		$skipped = array();
+		\add_action(
+			'atmosphere_update_skipped_unsynced_post',
+			static function ( $post ) use ( &$skipped ) {
+				$skipped[] = $post->ID;
+			}
+		);
 
 		$post = self::factory()->post->create_and_get( array( 'post_status' => 'publish' ) );
 		$this->register_capture( $post->ID );
 
 		$result = Publisher::update_post( $post );
 
-		$this->assertNotWPError( $result );
-		$this->assertCount( 1, $this->captured_calls );
-
-		$writes = $this->captured_calls[0]['writes'];
-		$this->assertSame( 'com.atproto.repo.applyWrites#create', $writes[0]['$type'] );
-		$this->assertSame( 'site.standard.document', $writes[0]['collection'] );
-		$this->assertNotEmpty( \get_post_meta( $post->ID, Document::META_URI, true ) );
+		$this->assertSame( array(), $result, 'A never-synced post edit should be a no-op.' );
+		$this->assertCount( 0, $this->captured_calls, 'No applyWrites call should be made.' );
+		$this->assertSame( array( $post->ID ), $skipped, 'The skip action should fire once for the post.' );
+		$this->assertEmpty( \get_post_meta( $post->ID, Document::META_URI, true ), 'No document record should be minted.' );
 	}
 
 	/**
