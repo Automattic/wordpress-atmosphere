@@ -144,7 +144,7 @@ class Client {
 	 * mistyped comparison fails soft (falls through to generic expiry
 	 * copy), so consumers MUST use these constants.
 	 *
-	 * @since unreleased
+	 * @since 2.1.0
 	 *
 	 * @var string
 	 */
@@ -154,7 +154,7 @@ class Client {
 	 * `reauth_reason` marker: tokens unreadable although the key
 	 * fingerprint still matches (corrupted ciphertext).
 	 *
-	 * @since unreleased
+	 * @since 2.1.0
 	 *
 	 * @var string
 	 */
@@ -726,7 +726,7 @@ class Client {
 		 * to a card-driven connect without polling {@see \Atmosphere\is_connected()}
 		 * — e.g. to invalidate its own caches or surface a confirmation.
 		 *
-		 * @since unreleased
+		 * @since 2.1.0
 		 *
 		 * @param string $did    The connected account's DID.
 		 * @param string $handle The connected account's handle.
@@ -1021,7 +1021,7 @@ class Client {
 	 * (see {@see self::flag_decrypt_failure()} for why the failure is
 	 * permanent).
 	 *
-	 * @since unreleased
+	 * @since 2.1.0
 	 *
 	 * @param array  $conn  Connection row the credential was read from.
 	 * @param string $field Connection field to decrypt (`access_token`,
@@ -1062,7 +1062,7 @@ class Client {
 	/**
 	 * Whether a failure code can only be resolved by reconnecting.
 	 *
-	 * @since unreleased
+	 * @since 2.1.0
 	 *
 	 * @param string $code Machine-readable failure code.
 	 * @return bool
@@ -1086,7 +1086,7 @@ class Client {
 	 * admin reconnect notice appears, instead of every save failing
 	 * again with a retry hint that can never succeed.
 	 *
-	 * @since unreleased
+	 * @since 2.1.0
 	 *
 	 * @param array  $conn  Connection row the failed decrypt ran against.
 	 * @param string $field Connection field that failed to decrypt
@@ -1202,7 +1202,7 @@ class Client {
 			 * reconnect prompt without polling {@see \Atmosphere\needs_reauth()}.
 			 * Fires once per transition, not on every repeated mark.
 			 *
-			 * @since unreleased
+			 * @since 2.1.0
 			 *
 			 * @param string $did    The affected account's DID, or '' if unknown.
 			 * @param string $reason Machine-readable reauth reason (e.g. 'refresh_token', 'key_changed'), or '' if unspecified.
@@ -1598,7 +1598,7 @@ class Client {
 		 * queued separately). Counterpart to {@see 'atmosphere_connected'}: lets
 		 * a host plugin drop its own connection-derived state without polling.
 		 *
-		 * @since unreleased
+		 * @since 2.1.0
 		 *
 		 * @param string $did The DID of the account that was disconnected, or '' if unknown.
 		 */

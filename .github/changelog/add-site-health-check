@@ -1,4 +1,0 @@
-Significance: minor
-Type: added
-
-Site Health now shows your Bluesky connection status, explains why a reconnect is needed and how to prevent it, and adds an ATmosphere section to the debug information for easier troubleshooting.

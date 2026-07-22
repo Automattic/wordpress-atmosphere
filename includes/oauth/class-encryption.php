@@ -33,7 +33,7 @@ class Encryption {
 	 *     decrypt.
 	 *  3. `wp_salt( 'auth' )` on sites that don't define those constants.
 	 *
-	 * @since unreleased Recognizes `ATMOSPHERE_ENCRYPTION_KEY`.
+	 * @since 2.1.0 Recognizes `ATMOSPHERE_ENCRYPTION_KEY`.
 	 *
 	 * @return string
 	 */
@@ -77,7 +77,7 @@ class Encryption {
 	 * (e.g. `false` or an array) is treated as unset rather than being
 	 * silently coerced into weak key material.
 	 *
-	 * @since unreleased
+	 * @since 2.1.0
 	 *
 	 * @return bool
 	 */
@@ -96,7 +96,7 @@ class Encryption {
 	 * corrupted ciphertext. Domain-separated from the key derivation so
 	 * the stored value cannot double as key material.
 	 *
-	 * @since unreleased
+	 * @since 2.1.0
 	 *
 	 * @return string 32-character hex string.
 	 */

@@ -35,7 +35,7 @@ use function Atmosphere\settings_url;
 /**
  * Health check class.
  *
- * @since unreleased
+ * @since 2.1.0
  */
 class Health_Check {
 
