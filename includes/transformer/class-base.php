@@ -90,21 +90,33 @@ abstract class Base {
 	 * reply N of post P from sharing a slot with the root of post P+N when
 	 * both are published in the same second (which would mint an identical
 	 * rkey); adjacent IDs sharing a second are common in bulk/WXR imports,
-	 * the backfill case this feature targets. Two roots still coincide only
-	 * if their IDs are congruent modulo 100,000 within the same second —
-	 * negligible in practice, since import IDs run consecutively.
+	 * the backfill case this feature targets.
+	 *
+	 * The sub-second slot alone only distinguishes 100,000 posts, so the
+	 * next slice of the ID rides in the TID's 10 clock-id bits. That widens
+	 * the effective per-second disambiguation to ~102.4 million (100,000 x
+	 * 1,024): two roots collide only if their IDs are congruent modulo
+	 * 102,400,000 within the same second — beyond the ID range of a
+	 * realistic site, so a same-second bulk import no longer drops posts to
+	 * "record already exists".
 	 *
 	 * @param int $sequence Offset within the post's records (0 = root/doc).
 	 * @return string
 	 */
 	protected function historical_rkey( int $sequence = 0 ): string {
 		$unix = (int) \get_post_time( 'U', true, $this->object );
+		$id   = $this->object->ID;
 
 		// Post ID in the high part, reply sequence in the reserved low
 		// digit; `% 100000` keeps the product inside the microsecond slot.
-		$disambiguator = ( $this->object->ID % 100000 ) * 10 + $sequence;
+		$disambiguator = ( $id % 100000 ) * 10 + $sequence;
 
-		return TID::generate_for_time( $unix, $disambiguator );
+		// The next slice of the ID rides in the clock bits so posts whose
+		// sub-second slots collide (IDs congruent modulo 100,000) still get
+		// distinct rkeys.
+		$clock = \intdiv( $id, 100000 ) % 1024;
+
+		return TID::generate_for_time( $unix, $disambiguator, $clock );
 	}
 
 	/**

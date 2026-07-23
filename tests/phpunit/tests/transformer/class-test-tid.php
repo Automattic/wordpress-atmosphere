@@ -139,6 +139,38 @@ class Test_TID extends WP_UnitTestCase {
 	}
 
 	/**
+	 * The clock bits widen disambiguation beyond the sub-second slot: two
+	 * records with the same sub-second disambiguator but different clock
+	 * bits mint distinct rkeys at the same microsecond — where the old
+	 * sub-second-only scheme (shared per-process clock) collided.
+	 */
+	public function test_generate_for_time_clock_widens_disambiguation() {
+		$unix = \strtotime( '2020-01-01 00:00:00' );
+
+		$a = TID::generate_for_time( $unix, 500, 0 );
+		$b = TID::generate_for_time( $unix, 500, 1 );
+
+		$this->assertNotSame( $a, $b );
+		// Same microsecond timestamp — the difference is purely the clock.
+		$this->assertSame( TID::decode( $a ), TID::decode( $b ) );
+		$this->assertLessThan( $b, $a );
+	}
+
+	/**
+	 * A future date is clamped to now so a historical mint can't sort ahead
+	 * of records published later in real time.
+	 */
+	public function test_generate_for_time_clamps_future_dates() {
+		$second = \intdiv(
+			TID::decode( TID::generate_for_time( \strtotime( '2999-01-01 00:00:00' ), 0 ) ),
+			1_000_000
+		);
+
+		$this->assertLessThanOrEqual( \time(), $second );
+		$this->assertGreaterThan( \strtotime( '2020-01-01 00:00:00' ), $second );
+	}
+
+	/**
 	 * Decoding malformed input returns 0 explicitly instead of decoding
 	 * stray characters into a plausible-but-wrong timestamp.
 	 */

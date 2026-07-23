@@ -4841,4 +4841,50 @@ class Test_Post extends WP_UnitTestCase {
 
 		$this->assertNotSame( $next_root_slot, TID::decode( $reply ) );
 	}
+
+	/**
+	 * Two posts published in the same second whose IDs collide in the
+	 * sub-second slot (congruent modulo 100,000) still mint distinct rkeys,
+	 * because the higher ID bits ride in the clock component. The
+	 * sub-second-only scheme minted an identical rkey and dropped the
+	 * second post to "record already exists".
+	 */
+	public function test_original_time_rkeys_distinct_for_slot_colliding_ids() {
+		$date = '2020-03-15 12:00:00';
+
+		$a_id = self::factory()->post->create(
+			array(
+				'import_id'     => 1_000_050,
+				'post_status'   => 'publish',
+				'post_date'     => $date,
+				'post_date_gmt' => $date,
+			)
+		);
+		$b_id = self::factory()->post->create(
+			array(
+				'import_id'     => 1_100_050,
+				'post_status'   => 'publish',
+				'post_date'     => $date,
+				'post_date_gmt' => $date,
+			)
+		);
+
+		// Guard the fixture: the IDs must land as imported and share a
+		// sub-second slot for this test to exercise the clock widening.
+		$this->assertSame( 1_000_050, $a_id );
+		$this->assertSame( 1_100_050, $b_id );
+		$this->assertSame( $a_id % 100000, $b_id % 100000 );
+
+		$a = new Post( \get_post( $a_id ) );
+		$a->use_original_time();
+		$b = new Post( \get_post( $b_id ) );
+		$b->use_original_time();
+
+		$a_rkey = $a->get_rkey();
+		$b_rkey = $b->get_rkey();
+
+		$this->assertNotSame( $a_rkey, $b_rkey );
+		// Same microsecond slot; the disambiguation is entirely in the clock.
+		$this->assertSame( TID::decode( $a_rkey ), TID::decode( $b_rkey ) );
+	}
 }
