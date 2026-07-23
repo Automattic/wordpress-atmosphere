@@ -64,6 +64,8 @@ class Test_Publisher extends WP_UnitTestCase {
 		\remove_all_filters( 'atmosphere_transform_bsky_post' );
 		\remove_all_filters( 'atmosphere_transform_document' );
 		\remove_all_filters( 'atmosphere_is_short_form_post' );
+		\remove_all_filters( 'atmosphere_should_publish_bluesky_post' );
+		\remove_all_filters( 'atmosphere_update_skipped_unsynced_post' );
 
 		parent::tear_down();
 	}
@@ -338,6 +340,196 @@ class Test_Publisher extends WP_UnitTestCase {
 	}
 
 	/**
+	 * With the companion filter off, publish writes only the document record.
+	 *
+	 * @group atmosphere
+	 * @group publisher
+	 */
+	public function test_publish_document_only_writes_single_document_record() {
+		\add_filter( 'atmosphere_should_publish_bluesky_post', '__return_false' );
+
+		$post = self::factory()->post->create_and_get( array( 'post_status' => 'publish' ) );
+		$this->register_capture( $post->ID );
+
+		$result = Publisher::publish_post( $post );
+
+		$this->assertNotWPError( $result );
+		$this->assertCount( 1, $this->captured_calls, 'Doc-only publish should make one applyWrites call.' );
+
+		$writes = $this->captured_calls[0]['writes'];
+		$this->assertCount( 1, $writes, 'Doc-only publish should write exactly one record.' );
+		$this->assertSame( 'com.atproto.repo.applyWrites#create', $writes[0]['$type'] );
+		$this->assertSame( 'site.standard.document', $writes[0]['collection'] );
+	}
+
+	/**
+	 * Doc-only publish marks the document synced and leaves no Bluesky post meta.
+	 *
+	 * @group atmosphere
+	 * @group publisher
+	 */
+	public function test_publish_document_only_sets_document_meta_not_bsky_meta() {
+		\add_filter( 'atmosphere_should_publish_bluesky_post', '__return_false' );
+
+		$post = self::factory()->post->create_and_get( array( 'post_status' => 'publish' ) );
+		$this->register_capture( $post->ID );
+
+		Publisher::publish_post( $post );
+
+		$this->assertNotEmpty( \get_post_meta( $post->ID, Document::META_URI, true ), 'Document URI should be stored.' );
+		$this->assertEmpty( \get_post_meta( $post->ID, Post::META_URI, true ), 'No Bluesky post URI should be stored.' );
+	}
+
+	/**
+	 * With the filter at its default (on), publish still writes both records.
+	 *
+	 * @group atmosphere
+	 * @group publisher
+	 */
+	public function test_publish_writes_both_records_when_filter_enabled() {
+		$post = self::factory()->post->create_and_get( array( 'post_status' => 'publish' ) );
+		$this->register_capture( $post->ID );
+
+		Publisher::publish_post( $post );
+
+		$writes = $this->captured_calls[0]['writes'];
+		$this->assertCount( 2, $writes, 'Default behavior writes the bsky post and the document.' );
+		$collections = array( $writes[0]['collection'], $writes[1]['collection'] );
+		$this->assertContains( 'app.bsky.feed.post', $collections );
+		$this->assertContains( 'site.standard.document', $collections );
+	}
+
+	/**
+	 * Doc-only update issues a single document #update against the stored TID.
+	 *
+	 * @group atmosphere
+	 * @group publisher
+	 */
+	public function test_update_document_only_updates_existing_document() {
+		\add_filter( 'atmosphere_should_publish_bluesky_post', '__return_false' );
+
+		$post = self::factory()->post->create_and_get( array( 'post_status' => 'publish' ) );
+
+		// Simulate a previously-seeded document-only post: only Document meta.
+		\update_post_meta( $post->ID, Document::META_TID, 'doc-tid-abc' );
+		\update_post_meta( $post->ID, Document::META_URI, 'at://did:plc:test123/site.standard.document/doc-tid-abc' );
+
+		$this->register_capture( $post->ID );
+
+		$result = Publisher::update_post( $post );
+
+		$this->assertNotWPError( $result );
+		$this->assertCount( 1, $this->captured_calls );
+
+		$writes = $this->captured_calls[0]['writes'];
+		$this->assertCount( 1, $writes );
+		$this->assertSame( 'com.atproto.repo.applyWrites#update', $writes[0]['$type'] );
+		$this->assertSame( 'site.standard.document', $writes[0]['collection'] );
+		$this->assertSame( 'doc-tid-abc', $writes[0]['rkey'] );
+	}
+
+	/**
+	 * Doc-only update of a never-synced post is a no-op: it must not mint a
+	 * fresh document record on a routine edit (that would retro-sync legacy
+	 * content behind the author's back — the backfill command is the deliberate
+	 * path for that). Mirrors the dual-record update guard, and fires the same
+	 * skip action so subscribers behave identically.
+	 *
+	 * @group atmosphere
+	 * @group publisher
+	 */
+	public function test_update_document_only_skips_never_synced_post() {
+		\add_filter( 'atmosphere_should_publish_bluesky_post', '__return_false' );
+
+		$skipped = array();
+		\add_action(
+			'atmosphere_update_skipped_unsynced_post',
+			static function ( $post ) use ( &$skipped ) {
+				$skipped[] = $post->ID;
+			}
+		);
+
+		$post = self::factory()->post->create_and_get( array( 'post_status' => 'publish' ) );
+		$this->register_capture( $post->ID );
+
+		$result = Publisher::update_post( $post );
+
+		$this->assertSame( array(), $result, 'A never-synced post edit should be a no-op.' );
+		$this->assertCount( 0, $this->captured_calls, 'No applyWrites call should be made.' );
+		$this->assertSame( array( $post->ID ), $skipped, 'The skip action should fire once for the post.' );
+		$this->assertEmpty( \get_post_meta( $post->ID, Document::META_URI, true ), 'No document record should be minted.' );
+	}
+
+	/**
+	 * Doc-only update of a post whose stored URI has no TID is a corrupted
+	 * half-synced state: it must error rather than mint a second document that
+	 * orphans the existing one — mirroring the dual-record update path.
+	 *
+	 * @group atmosphere
+	 * @group publisher
+	 */
+	public function test_update_document_only_errors_when_uri_present_but_tid_missing() {
+		\add_filter( 'atmosphere_should_publish_bluesky_post', '__return_false' );
+
+		$post = self::factory()->post->create_and_get( array( 'post_status' => 'publish' ) );
+
+		// Corrupted state: a document URI exists but its TID was never stored.
+		\update_post_meta( $post->ID, Document::META_URI, 'at://did:plc:test123/site.standard.document/doc-tid-orphan' );
+
+		$this->register_capture( $post->ID );
+
+		$result = Publisher::update_post( $post );
+
+		$this->assertWPError( $result );
+		$this->assertSame( 'atmosphere_missing_tid', $result->get_error_code() );
+		$this->assertCount( 0, $this->captured_calls, 'No applyWrites call should be made for a corrupted doc-only record.' );
+	}
+
+	/**
+	 * Doc-only: a now-unpublishable, previously-seeded document-only post
+	 * deletes just the document record — one delete op on
+	 * site.standard.document and no app.bsky.feed.post delete.
+	 *
+	 * @group atmosphere
+	 * @group publisher
+	 */
+	public function test_update_document_only_deletes_only_document_when_unpublishable() {
+		\add_filter( 'atmosphere_should_publish_bluesky_post', '__return_false' );
+
+		// Password-protected so is_post_publishable() returns false, routing
+		// update_post() straight to delete_post().
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_status'   => 'publish',
+				'post_password' => 'secret',
+			)
+		);
+
+		// Previously-seeded document-only post: only Document meta, no Post
+		// meta. META_DID matches the connected DID so delete_post()'s
+		// DID-mismatch guard lets the document delete through.
+		\update_post_meta( $post->ID, Document::META_TID, 'doc-tid-del' );
+		\update_post_meta( $post->ID, Document::META_URI, 'at://did:plc:test123/site.standard.document/doc-tid-del' );
+		\update_post_meta( $post->ID, Document::META_DID, 'did:plc:test123' );
+
+		$this->register_capture( $post->ID );
+
+		$result = Publisher::update_post( $post );
+
+		$this->assertNotWPError( $result );
+		$this->assertCount( 1, $this->captured_calls, 'Doc-only cleanup should make exactly one applyWrites call.' );
+
+		$writes = $this->captured_calls[0]['writes'];
+		$this->assertCount( 1, $writes, 'Doc-only cleanup should emit exactly one write.' );
+		$this->assertSame( 'com.atproto.repo.applyWrites#delete', $writes[0]['$type'] );
+		$this->assertSame( 'site.standard.document', $writes[0]['collection'] );
+		$this->assertSame( 'doc-tid-del', $writes[0]['rkey'] );
+
+		$collections = \array_column( $writes, 'collection' );
+		$this->assertNotContains( 'app.bsky.feed.post', $collections, 'No Bluesky post delete should be emitted.' );
+	}
+
+	/**
 	 * Direct update calls for now-protected posts clean up existing
 	 * records instead of writing protected content.
 	 */
@@ -450,6 +642,67 @@ class Test_Publisher extends WP_UnitTestCase {
 		$this->assertSame( 'com.atproto.repo.applyWrites#delete', $captured_calls[1][0]['$type'] );
 		$this->assertSame( 'com.atproto.repo.applyWrites#delete', $captured_calls[1][1]['$type'] );
 		$this->assertSame( '', \get_post_meta( $post->ID, Post::META_URI, true ) );
+		$this->assertSame( '', \get_post_meta( $post->ID, Document::META_URI, true ) );
+	}
+
+	/**
+	 * A document-only publish that races a visibility change runs the same
+	 * reconcile race-guard as the dual path: the document record it just wrote
+	 * is deleted when the post becomes non-publishable mid-flight.
+	 *
+	 * @group atmosphere
+	 * @group publisher
+	 */
+	public function test_publish_document_only_reconciles_when_post_protected_mid_publish() {
+		\add_filter( 'atmosphere_should_publish_bluesky_post', '__return_false' );
+
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_status'  => 'publish',
+				'post_title'   => 'Race window',
+				'post_content' => 'This starts public.',
+			)
+		);
+
+		$captured_calls = array();
+		\add_filter(
+			'atmosphere_pre_apply_writes',
+			static function ( $short, $writes ) use ( $post, &$captured_calls ) {
+				$captured_calls[] = $writes;
+
+				if ( 1 === \count( $captured_calls ) ) {
+					\wp_update_post(
+						array(
+							'ID'            => $post->ID,
+							'post_password' => 'secret',
+						)
+					);
+				}
+
+				return array(
+					'results' => \array_map(
+						static fn ( $write ) => array(
+							'uri' => 'at://did:plc:test123/' . $write['collection'] . '/' . $write['rkey'],
+							'cid' => 'bafy' . $write['rkey'],
+						),
+						$writes
+					),
+				);
+			},
+			10,
+			2
+		);
+
+		$result = Publisher::publish_post( $post );
+
+		\wp_clear_scheduled_hook( 'atmosphere_delete_post', array( $post->ID ) );
+
+		$this->assertIsArray( $result );
+		$this->assertCount( 2, $captured_calls, 'Document-only publish must be followed by cleanup.' );
+		$this->assertSame( 'com.atproto.repo.applyWrites#create', $captured_calls[0][0]['$type'] );
+		$this->assertSame( 'site.standard.document', $captured_calls[0][0]['collection'] );
+		$this->assertSame( 'com.atproto.repo.applyWrites#delete', $captured_calls[1][0]['$type'] );
+		$this->assertSame( 'site.standard.document', $captured_calls[1][0]['collection'] );
 		$this->assertSame( '', \get_post_meta( $post->ID, Document::META_URI, true ) );
 	}
 
