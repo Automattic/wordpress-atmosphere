@@ -363,6 +363,40 @@ landing page, so their `source_url` is intentionally empty and
 Integrations can react to each via
 [`atmosphere_reaction_synced`](#public-hooks).
 
+### Document-only publishing
+
+By default every cross-post writes an `app.bsky.feed.post` (Bluesky) record
+alongside the `site.standard.document` record. Returning `false` from
+[`atmosphere_should_publish_bluesky_post`](#public-hooks) drops the Bluesky
+companion and publishes the document alone — useful for running a site as a
+standard.site publication that never appears on Bluesky. It applies uniformly
+across auto-publish, the `wp atmosphere backfill` command, and edit-updates.
+
+The filter shapes *what* a publish writes, not *whether* the site publishes,
+so — unlike the connection-only lane switches — it has no connection-only pass
+and stays a pure filter. A host embedded as a connection layer can still choose
+document-only output when it runs a manual backfill.
+
+**This is a one-way choice, on purpose.** A post first published as a
+document-only record does not retroactively gain a Bluesky companion if you
+later stop returning `false`:
+
+- **Backfill skips it.** A post counts as synced once its document record
+  exists (`Document::META_URI` is set), so `wp atmosphere backfill` never
+  revisits it.
+- **Edits keep it document-only.** An update finds no reserved Bluesky record
+  (`Post::META_TID` is never written on the document-only path), treats the
+  post as unsynced, fires the `atmosphere_update_skipped_unsynced_post` action,
+  and leaves it untouched.
+
+The mirror of this holds in the other direction too: enabling document-only
+leaves Bluesky posts published *before* it in place. The filter governs new
+writes and never rewrites history — document-only is document-only. Adding a
+Bluesky post to an already-published document is a separate job that neither
+backfill nor a routine edit performs; a host that genuinely needs it can
+subscribe to `atmosphere_update_skipped_unsynced_post` and call
+`\Atmosphere\Publisher::publish_post()` itself.
+
 ## Outgoing Comment Controls
 
 ATmosphere publishes eligible WordPress comments as Bluesky replies.
