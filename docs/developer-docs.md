@@ -47,6 +47,7 @@ ATmosphere exposes a small set of filters and actions for plugins to extend beha
 | `atmosphere_syncable_post_types` | filter | Add or remove post types eligible for cross-posting. |
 | `atmosphere_connection_only_mode` | filter | Return `true` to embed ATmosphere purely as a connection layer: auto cross-posting, reaction/reply import, and comment publishing all default off, and the Settings → ATmosphere screen is hidden. |
 | `atmosphere_should_auto_publish` | filter | Effective on/off for automatic post cross-posting; runs after the stored setting and connection-only mode, and has the final say. |
+| `atmosphere_should_publish_bluesky_post` | filter | Return `false` to publish the `site.standard.document` record only, without a companion `app.bsky.feed.post`, across backfill, auto-publish, and edits. Shapes what a publish writes (not whether it runs), so it is a pure filter with no connection-only pass. Forward-only — leaves already-published Bluesky posts in place. |
 | `atmosphere_should_publish_comments` | filter | Effective on/off for publishing local comments as Bluesky replies; runs after the stored setting and connection-only mode, and has the final say. Re-enable this lane while in connection-only mode. Not the per-comment `_comment` filter below. |
 | `atmosphere_should_publish_comment` | filter | Customise which approved comments from users allowed to publish posts are mirrored as Bluesky replies. |
 | `atmosphere_should_sync_reactions` | filter | Effective on/off for importing Bluesky likes and reposts; runs after the stored setting and connection-only mode, and has the final say. |
@@ -361,6 +362,40 @@ landing page, so their `source_url` is intentionally empty and
 `comment_author_url` (the author's profile) is the outbound link.
 Integrations can react to each via
 [`atmosphere_reaction_synced`](#public-hooks).
+
+### Document-only publishing
+
+By default every cross-post writes an `app.bsky.feed.post` (Bluesky) record
+alongside the `site.standard.document` record. Returning `false` from
+[`atmosphere_should_publish_bluesky_post`](#public-hooks) drops the Bluesky
+companion and publishes the document alone — useful for running a site as a
+standard.site publication that never appears on Bluesky. It applies uniformly
+across auto-publish, the `wp atmosphere backfill` command, and edit-updates.
+
+The filter shapes *what* a publish writes, not *whether* the site publishes,
+so — unlike the connection-only lane switches — it has no connection-only pass
+and stays a pure filter. A host embedded as a connection layer can still choose
+document-only output when it runs a manual backfill.
+
+**This is a one-way choice, on purpose.** A post first published as a
+document-only record does not retroactively gain a Bluesky companion if you
+later stop returning `false`:
+
+- **Backfill skips it.** A post counts as synced once its document record
+  exists (`Document::META_URI` is set), so `wp atmosphere backfill` never
+  revisits it.
+- **Edits keep it document-only.** An update finds no reserved Bluesky record
+  (`Post::META_TID` is never written on the document-only path), treats the
+  post as unsynced, fires the `atmosphere_update_skipped_unsynced_post` action,
+  and leaves it untouched.
+
+The mirror of this holds in the other direction too: enabling document-only
+leaves Bluesky posts published *before* it in place. The filter governs new
+writes and never rewrites history — document-only is document-only. Adding a
+Bluesky post to an already-published document is a separate job that neither
+backfill nor a routine edit performs; a host that genuinely needs it can
+subscribe to `atmosphere_update_skipped_unsynced_post` and call
+`\Atmosphere\Publisher::publish_post()` itself.
 
 ## Outgoing Comment Controls
 

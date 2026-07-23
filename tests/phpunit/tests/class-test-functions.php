@@ -24,6 +24,7 @@ use function Atmosphere\is_reply_sync_enabled;
 use function Atmosphere\get_connection;
 use function Atmosphere\debug_log;
 use function Atmosphere\is_comment_publishing_enabled;
+use function Atmosphere\is_bluesky_post_enabled;
 
 /**
  * Function tests.
@@ -1066,5 +1067,25 @@ class Test_Functions extends \WP_UnitTestCase {
 		\add_filter( 'atmosphere_should_publish_comments', '__return_true' );
 
 		$this->assertTrue( is_comment_publishing_enabled() );
+	}
+
+	/**
+	 * The Bluesky-companion lane defaults to enabled.
+	 *
+	 * @group atmosphere
+	 */
+	public function test_is_bluesky_post_enabled_defaults_true() {
+		$this->assertTrue( is_bluesky_post_enabled() );
+	}
+
+	/**
+	 * The filter can disable the Bluesky companion post.
+	 *
+	 * @group atmosphere
+	 */
+	public function test_is_bluesky_post_enabled_filter_can_disable() {
+		\add_filter( 'atmosphere_should_publish_bluesky_post', '__return_false' );
+		$this->assertFalse( is_bluesky_post_enabled() );
+		\remove_filter( 'atmosphere_should_publish_bluesky_post', '__return_false' );
 	}
 }

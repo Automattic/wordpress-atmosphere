@@ -105,6 +105,24 @@ class Publisher {
 			return $result;
 		}
 
+		/*
+		 * Document-only mode: the operator has disabled the Bluesky
+		 * companion post site-wide. Write just the site.standard.document
+		 * record and skip the bsky post, strongRef precompute, and thread
+		 * machinery entirely. Still run the shared post-write tail — the
+		 * reconcile race-guard (so a document that raced a visibility change
+		 * is cleaned up) and the result action (so metrics/notice subscribers
+		 * behave the same as any other publish).
+		 */
+		if ( ! is_bluesky_post_enabled() ) {
+			$result = self::publish_document_only( $post );
+			$result = self::reconcile_post_after_write( $post, $result );
+
+			\do_action( 'atmosphere_publish_post_result', $post, $result );
+
+			return $result;
+		}
+
 		// Heal a drifted publication record before composing the post,
 		// so the embedded publication strongRef points at the current CID.
 		self::maybe_heal_publication();
@@ -364,6 +382,67 @@ class Publisher {
 		}
 
 		return $cleanup;
+	}
+
+	/**
+	 * Publish only the `site.standard.document` record for a post.
+	 *
+	 * Used when {@see \Atmosphere\is_bluesky_post_enabled()} is false — the
+	 * site runs as a standard.site publication with no Bluesky companion post.
+	 * Writes a single `applyWrites#create` for the document and persists only
+	 * the `Document::*` meta; no `Post::*` meta is written, so downstream
+	 * bsky-oriented paths (reaction/reply sync, in-place thread updates) stay
+	 * inert for this post.
+	 *
+	 * @since unreleased
+	 *
+	 * @param \WP_Post $post WordPress post.
+	 * @return array|\WP_Error applyWrites response or error.
+	 */
+	private static function publish_document_only( \WP_Post $post ): array|\WP_Error {
+		return self::write_document_only( $post, 'create', ( new Document( $post ) )->get_rkey() );
+	}
+
+	/**
+	 * Write a single `site.standard.document` record and persist its meta.
+	 *
+	 * Shared writer for {@see self::publish_document_only()} (create) and
+	 * {@see self::update_document_only()} (update): the two differ only in the
+	 * applyWrites op and the rkey source, so the batch shape, error handling,
+	 * and document-meta persistence live here in one place. Persists only the
+	 * `Document::*` meta — no `Post::*` meta — so downstream bsky-oriented paths
+	 * (reaction/reply sync, in-place thread updates) stay inert for this post.
+	 *
+	 * @since unreleased
+	 *
+	 * @param \WP_Post $post WordPress post.
+	 * @param string   $op   applyWrites op — `create` or `update`.
+	 * @param string   $rkey Record key for the write.
+	 * @return array|\WP_Error applyWrites response or error.
+	 */
+	private static function write_document_only( \WP_Post $post, string $op, string $rkey ): array|\WP_Error {
+		self::maybe_heal_publication();
+
+		$doc_transformer = new Document( $post );
+
+		$writes = array(
+			array(
+				'$type'      => "com.atproto.repo.applyWrites#{$op}",
+				'collection' => 'site.standard.document',
+				'rkey'       => $rkey,
+				'value'      => $doc_transformer->transform(),
+			),
+		);
+
+		$result = API::apply_writes( $writes );
+
+		if ( \is_wp_error( $result ) ) {
+			return $result;
+		}
+
+		self::store_document_meta( $post->ID, $result, $doc_transformer, 0 );
+
+		return $result;
 	}
 
 	/**
@@ -792,6 +871,19 @@ class Publisher {
 			return self::delete_post( $post );
 		}
 
+		/*
+		 * Document-only mode: mirror publish_post()'s gate. Route edits to
+		 * a document-only update so a post with no bsky records is not
+		 * mistaken for the "half-synced" skip case below. The not-publishable
+		 * branch above already delegates deletion to delete_post(), which is
+		 * meta-driven and removes only the document when no bsky meta exists.
+		 * Run the same reconcile race-guard the dual update paths end with, so
+		 * a document edit that races a visibility change is still cleaned up.
+		 */
+		if ( ! is_bluesky_post_enabled() ) {
+			return self::reconcile_post_after_write( $post, self::update_document_only( $post ) );
+		}
+
 		$stored = self::stored_thread_records( $post->ID );
 
 		if ( empty( $stored ) ) {
@@ -956,6 +1048,71 @@ class Publisher {
 
 		// Strategy or shape change — delete everything and republish.
 		return self::rewrite_thread( $post, $stored, $doc_tid );
+	}
+
+	/**
+	 * Update only the `site.standard.document` record for a post.
+	 *
+	 * The document-only counterpart to {@see self::update_single()}, used when
+	 * {@see \Atmosphere\is_bluesky_post_enabled()} is false. Reached only for
+	 * publishable posts (the not-publishable case is handled by
+	 * {@see self::delete_post()} at the top of {@see self::update_post()}).
+	 *
+	 * When no document has ever been successfully published for the post (no
+	 * stored URI), this is a no-op that fires `atmosphere_update_skipped_unsynced_post`
+	 * and returns — mirroring the dual-record {@see self::update_post()} guard.
+	 * A routine edit must not retro-sync legacy content: turning edits of old
+	 * posts into fresh records consistently surprises users, and the deliberate
+	 * path for seeding an existing catalogue is the `wp atmosphere backfill`
+	 * command. (Document::META_TID is not a reliable "was published" marker here
+	 * the way Post::META_TID is on the dual path: {@see Atmosphere::output_document_link()}
+	 * speculatively mints it on a front-end pageview, so it cannot distinguish a
+	 * legacy post from a failed create — only a stored URI proves a real publish.
+	 * Genuine new publishes seed through {@see self::publish_post()}, and failed
+	 * creates retry through the publish ladder, so nothing is lost by skipping.)
+	 *
+	 * A stored URI with a missing TID is a corrupted half-synced state, not an
+	 * unseeded one: creating fresh would mint a second document record and orphan
+	 * the one the stored URI already points at, so it surfaces an
+	 * `atmosphere_missing_tid` error instead — again mirroring {@see self::update_post()}.
+	 *
+	 * @since unreleased
+	 *
+	 * @param \WP_Post $post WordPress post.
+	 * @return array|\WP_Error applyWrites response or error.
+	 */
+	private static function update_document_only( \WP_Post $post ): array|\WP_Error {
+		$doc_uri = \get_post_meta( $post->ID, Document::META_URI, true );
+		$doc_tid = \get_post_meta( $post->ID, Document::META_TID, true );
+
+		if ( ! $doc_uri ) {
+			/*
+			 * No document has ever been successfully published for this post,
+			 * so treat this edit as the dual-record path treats an edit of a
+			 * never-synced post: skip rather than mint a fresh record. This
+			 * keeps routine edits of legacy content from retro-syncing behind
+			 * the author's back — that is what the backfill command is for.
+			 * Fire the same skip action the dual path fires so subscribers
+			 * (admin notices, metrics) behave identically.
+			 */
+			\do_action( 'atmosphere_update_skipped_unsynced_post', $post );
+
+			return array();
+		}
+
+		if ( ! $doc_tid ) {
+			/*
+			 * A stored URI with no TID is a corrupted record: falling back to a
+			 * fresh create would mint a second document and orphan the existing
+			 * one. Surface the same error the dual-record update_post() raises.
+			 */
+			return new \WP_Error(
+				'atmosphere_missing_tid',
+				\__( 'Record URIs exist but TIDs are missing.', 'atmosphere' )
+			);
+		}
+
+		return self::write_document_only( $post, 'update', (string) $doc_tid );
 	}
 
 	/**
@@ -1981,8 +2138,9 @@ class Publisher {
 	/**
 	 * Persist the document record's URI/CID from an applyWrites response.
 	 *
-	 * The document is always written at index 1 of the first applyWrites
-	 * batch in every publish flow (root + doc, atomically). Post meta
+	 * The document is written at `$doc_index` (index 1 in dual-record
+	 * batches, 0 in document-only batches) of the first applyWrites
+	 * batch. Post meta
 	 * (`Post::META_URI` / `META_TID` / `META_CID`) is owned by
 	 * `mirror_thread_records_meta()` and intentionally not touched here
 	 * — single mirroring point keeps the two paths from drifting.
@@ -1990,9 +2148,10 @@ class Publisher {
 	 * @param int      $post_id         Post ID.
 	 * @param array    $result          applyWrites response.
 	 * @param Document $doc_transformer Document transformer.
+	 * @param int      $doc_index       Index of the document entry in `results`. Default 1 (dual-record batch); 0 for a document-only batch.
 	 */
-	private static function store_document_meta( int $post_id, array $result, Document $doc_transformer ): void {
-		$doc_entry = $result['results'][1] ?? null;
+	private static function store_document_meta( int $post_id, array $result, Document $doc_transformer, int $doc_index = 1 ): void {
+		$doc_entry = $result['results'][ $doc_index ] ?? null;
 
 		if ( null === $doc_entry ) {
 			return;
