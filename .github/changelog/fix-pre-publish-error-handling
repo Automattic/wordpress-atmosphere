@@ -1,0 +1,4 @@
+Significance: patch
+Type: fixed
+
+The Bluesky pre-publish preview now shows a clear message when it can't be generated — including a distinct one for permission errors — instead of failing without explanation.

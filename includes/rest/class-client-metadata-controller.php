@@ -16,6 +16,7 @@ namespace Atmosphere\Rest;
 use Atmosphere\OAuth\Client;
 use WP_REST_Response;
 use WP_REST_Server;
+use function Atmosphere\debug_log;
 use function Atmosphere\sanitize_text;
 
 /**
@@ -141,6 +142,15 @@ class Client_Metadata_Controller extends \WP_REST_Controller {
 				\esc_html__( 'atmosphere_client_metadata must return an array with a non-empty string client_id and a redirect_uris list of admin URLs; falling back to the unfiltered metadata.', 'atmosphere' ),
 				'1.0.0'
 			);
+
+			/*
+			 * `_doing_it_wrong()` is silent in production. Also route the
+			 * failure through debug_log() so operators can opt into the
+			 * signal via the `atmosphere_debug_log` filter without enabling
+			 * WP_DEBUG site-wide — an OAuth client_id served from a
+			 * misbehaving filter is worth surfacing.
+			 */
+			debug_log( 'atmosphere_client_metadata filter returned an invalid value; using the unfiltered metadata.' );
 		}
 
 		$response = new WP_REST_Response( $metadata, 200 );
