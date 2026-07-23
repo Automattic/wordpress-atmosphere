@@ -22,7 +22,7 @@ import {
 	CUSTOM_TEXT_META_KEY,
 	PREVIEW_PATH,
 } from '../config';
-import { strategyLabel, hasOverLimit } from './utils';
+import { strategyLabel, hasOverLimit, isAuthError } from './utils';
 
 /**
  * The pre-publish panel body.
@@ -115,19 +115,9 @@ function PrePublishPanel() {
 	}
 
 	if ( error ) {
-		const errorCode = error?.code;
-		const errorStatus = error?.data?.status;
-		// An expired/invalid nonce is a 403 too, but it's transient (a
-		// reload fixes it), so it must not read as a permission failure.
-		const isAuth =
-			'rest_cookie_invalid_nonce' !== errorCode &&
-			( 'rest_forbidden' === errorCode ||
-				401 === errorStatus ||
-				403 === errorStatus );
-
 		return (
 			<p>
-				{ isAuth
+				{ isAuthError( error )
 					? __(
 							'You don’t have permission to preview this post.',
 							'atmosphere'
