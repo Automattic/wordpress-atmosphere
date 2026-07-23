@@ -64,8 +64,59 @@ class Test_Publisher extends WP_UnitTestCase {
 		\remove_all_filters( 'atmosphere_transform_bsky_post' );
 		\remove_all_filters( 'atmosphere_transform_document' );
 		\remove_all_filters( 'atmosphere_is_short_form_post' );
+		\remove_all_filters( 'atmosphere_pre_upload_blob' );
+
+		foreach ( $this->temp_files as $path ) {
+			if ( \file_exists( $path ) ) {
+				\unlink( $path ); // phpcs:ignore WordPress.WP.AlternativeFunctions.unlink_unlink
+			}
+		}
+		$this->temp_files = array();
 
 		parent::tear_down();
+	}
+
+	/**
+	 * Temp files created by {@see self::create_post_with_featured_image()},
+	 * removed in {@see self::tear_down()}.
+	 *
+	 * @var string[]
+	 */
+	private array $temp_files = array();
+
+	/**
+	 * Create a published post with a real featured-image file on disk.
+	 *
+	 * The blob-upload path needs a readable file, so this writes one and
+	 * registers it for teardown cleanup.
+	 *
+	 * @param string $suffix Unique filename suffix.
+	 * @return array{0: \WP_Post, 1: int} The post and its featured attachment ID.
+	 */
+	private function create_post_with_featured_image( string $suffix ): array {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_status'  => 'publish',
+				'post_content' => 'Short body.',
+			)
+		);
+
+		$upload_dir         = \wp_upload_dir();
+		$path               = $upload_dir['basedir'] . "/atmosphere-{$suffix}.jpg";
+		$this->temp_files[] = $path;
+		\file_put_contents( $path, 'FEATURED-IMAGE-BYTES' ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents
+
+		$attachment_id = self::factory()->attachment->create_object(
+			$path,
+			$post->ID,
+			array(
+				'post_mime_type' => 'image/jpeg',
+				'post_title'     => 'Featured image',
+			)
+		);
+		\set_post_thumbnail( $post->ID, $attachment_id );
+
+		return array( $post, $attachment_id );
 	}
 
 	/**
@@ -312,26 +363,7 @@ class Test_Publisher extends WP_UnitTestCase {
 	 * intervention.
 	 */
 	public function test_publish_post_self_heals_stale_blob_ref() {
-		$post = self::factory()->post->create_and_get(
-			array(
-				'post_status'  => 'publish',
-				'post_content' => 'Short body.',
-			)
-		);
-
-		$upload_dir = \wp_upload_dir();
-		$path       = $upload_dir['basedir'] . '/atmosphere-self-heal-test.jpg';
-		\file_put_contents( $path, 'FEATURED-IMAGE-BYTES' ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents
-
-		$attachment_id = self::factory()->attachment->create_object(
-			$path,
-			$post->ID,
-			array(
-				'post_mime_type' => 'image/jpeg',
-				'post_title'     => 'Featured image',
-			)
-		);
-		\set_post_thumbnail( $post->ID, $attachment_id );
+		list( $post, $attachment_id ) = $this->create_post_with_featured_image( 'self-heal-test' );
 
 		// Pre-seed a stale blob ref, as a prior publish to another PDS would.
 		$stale_ref = array(
@@ -368,9 +400,6 @@ class Test_Publisher extends WP_UnitTestCase {
 
 		$result = Publisher::publish_post( $post );
 
-		\remove_all_filters( 'atmosphere_pre_upload_blob' );
-		\unlink( $path ); // phpcs:ignore WordPress.WP.AlternativeFunctions.unlink_unlink
-
 		$this->assertIsArray( $result, 'Publish should ultimately succeed after self-heal.' );
 		$this->assertCount( 2, $this->captured_calls, 'Publisher should retry applyWrites once after the blob error.' );
 		$this->assertSame(
@@ -388,26 +417,7 @@ class Test_Publisher extends WP_UnitTestCase {
 	 * than retry forever.
 	 */
 	public function test_publish_post_blob_self_heal_retries_only_once() {
-		$post = self::factory()->post->create_and_get(
-			array(
-				'post_status'  => 'publish',
-				'post_content' => 'Short body.',
-			)
-		);
-
-		$upload_dir = \wp_upload_dir();
-		$path       = $upload_dir['basedir'] . '/atmosphere-self-heal-loop-test.jpg';
-		\file_put_contents( $path, 'FEATURED-IMAGE-BYTES' ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents
-
-		$attachment_id = self::factory()->attachment->create_object(
-			$path,
-			$post->ID,
-			array(
-				'post_mime_type' => 'image/jpeg',
-				'post_title'     => 'Featured image',
-			)
-		);
-		\set_post_thumbnail( $post->ID, $attachment_id );
+		list( $post ) = $this->create_post_with_featured_image( 'self-heal-loop-test' );
 
 		\add_filter(
 			'atmosphere_pre_upload_blob',
@@ -430,9 +440,6 @@ class Test_Publisher extends WP_UnitTestCase {
 
 		$result = Publisher::publish_post( $post );
 
-		\remove_all_filters( 'atmosphere_pre_upload_blob' );
-		\unlink( $path ); // phpcs:ignore WordPress.WP.AlternativeFunctions.unlink_unlink
-
 		$this->assertWPError( $result, 'A persistently missing blob should surface the error.' );
 		$this->assertCount( 2, $this->captured_calls, 'Self-heal must retry exactly once, not loop.' );
 	}
@@ -446,8 +453,9 @@ class Test_Publisher extends WP_UnitTestCase {
 	 * image at all) must still self-heal.
 	 */
 	public function test_publish_post_self_heals_stale_inline_image_blob() {
-		$upload_dir = \wp_upload_dir();
-		$path       = $upload_dir['basedir'] . '/atmosphere-self-heal-inline-test.jpg';
+		$upload_dir         = \wp_upload_dir();
+		$path               = $upload_dir['basedir'] . '/atmosphere-self-heal-inline-test.jpg';
+		$this->temp_files[] = $path;
 		\file_put_contents( $path, 'INLINE-IMAGE-BYTES' ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents
 
 		$attachment_id = self::factory()->attachment->create_object(
@@ -502,9 +510,6 @@ class Test_Publisher extends WP_UnitTestCase {
 		$this->register_capture( $post->ID );
 
 		$result = Publisher::publish_post( $post );
-
-		\remove_all_filters( 'atmosphere_pre_upload_blob' );
-		\unlink( $path ); // phpcs:ignore WordPress.WP.AlternativeFunctions.unlink_unlink
 
 		$this->assertIsArray( $result, 'Publish should self-heal an in-body image blob too.' );
 		$this->assertCount( 2, $this->captured_calls, 'Publisher should retry once after the inline-image blob error.' );

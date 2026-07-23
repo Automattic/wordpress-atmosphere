@@ -2572,55 +2572,40 @@ class Test_Post extends WP_UnitTestCase {
 	}
 
 	/**
-	 * The blob-forget set covers in-body images beyond the Bluesky cap.
+	 * A forced re-upload bypasses the cached blob ref.
 	 *
-	 * A blob-backed document content format uploads a blob for every
-	 * `core/image` block, not just the first four the images embed uses,
-	 * so `forget_post_image_blobs()` must clear the cached refs for all of
-	 * them — otherwise a stale ref on the fifth-or-later image defeats the
-	 * self-heal retry.
+	 * The self-heal retry sets this flag so a stale cached ref — one the
+	 * current PDS no longer has — is not reused: `upload_image_blob()` must
+	 * skip the cache and take the upload path, whichever image or content
+	 * format carried the ref. The upload has no readable file in the test
+	 * environment, so it returns null rather than the stale ref, which is
+	 * enough to prove the cache was bypassed.
 	 *
-	 * @covers ::embedded_image_attachment_ids
-	 * @covers ::forget_post_image_blobs
+	 * @covers ::upload_image_blob
+	 * @covers ::set_force_blob_reupload
 	 */
-	public function test_forget_post_image_blobs_covers_images_beyond_the_embed_cap() {
-		$attachment_ids = array();
-		$blocks         = '';
-		for ( $i = 0; $i < 5; $i++ ) {
-			$attachment_id    = self::factory()->attachment->create_object(
-				array(
-					'file'           => "inline-{$i}.jpg",
-					'post_mime_type' => 'image/jpeg',
-				),
-				0,
-				array( 'post_title' => "Inline {$i}" )
-			);
-			$attachment_ids[] = $attachment_id;
-			$blocks          .= \sprintf( '<!-- wp:image {"id":%1$d} --><figure class="wp-block-image"><img class="wp-image-%1$d"/></figure><!-- /wp:image -->', $attachment_id );
-
-			\update_post_meta( $attachment_id, '_atmosphere_blob_ref', array( 'ref' => array( '$link' => "bafstale{$i}" ) ) );
-		}
-
-		$post = self::factory()->post->create_and_get(
+	public function test_force_blob_reupload_bypasses_the_cache() {
+		$attachment_id = self::factory()->attachment->create_object(
 			array(
-				'post_status'  => 'publish',
-				'post_content' => $blocks,
-			)
+				'file'           => 'cached.jpg',
+				'post_mime_type' => 'image/jpeg',
+			),
+			0,
+			array( 'post_title' => 'Cached' )
 		);
+		$cached_ref    = array( 'ref' => array( '$link' => 'bafstale' ) );
+		\update_post_meta( $attachment_id, '_atmosphere_blob_ref', $cached_ref );
 
-		// The fifth image is past the four-image Bluesky embed cap.
-		$embedded = ( new Post( $post ) )->embedded_image_attachment_ids();
-		$this->assertContains( $attachment_ids[4], $embedded, 'The fifth in-body image must be in the forget set.' );
+		// Normally the cached ref is returned without an upload.
+		$this->assertSame( $cached_ref, Post::upload_image_blob( $attachment_id ) );
 
-		$this->assertTrue( Post::forget_post_image_blobs( $post ) );
+		// Forced: the cache is skipped and the upload path (no file here) runs.
+		Post::set_force_blob_reupload( true );
+		$this->assertNull( Post::upload_image_blob( $attachment_id ) );
+		Post::set_force_blob_reupload( false );
 
-		foreach ( $attachment_ids as $attachment_id ) {
-			$this->assertSame(
-				'',
-				\get_post_meta( $attachment_id, '_atmosphere_blob_ref', true ),
-				"Cached blob ref for attachment {$attachment_id} should be forgotten."
-			);
-		}
+		// Resetting the flag restores the cached fast path.
+		$this->assertSame( $cached_ref, Post::upload_image_blob( $attachment_id ) );
 	}
 
 	/**

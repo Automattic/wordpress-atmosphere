@@ -1380,6 +1380,28 @@ class Post extends Base {
 	}
 
 	/**
+	 * When true, {@see self::upload_image_blob()} ignores the cached blob
+	 * ref and re-uploads. Set by the Publisher's self-heal retry; see
+	 * {@see \Atmosphere\Publisher::publish_post()} for why a cached ref
+	 * goes stale.
+	 *
+	 * @var bool
+	 */
+	private static bool $force_blob_reupload = false;
+
+	/**
+	 * Force, or stop forcing, blob re-upload on subsequent uploads.
+	 *
+	 * @since unreleased
+	 *
+	 * @param bool $force Whether to bypass the blob-ref cache.
+	 * @return void
+	 */
+	public static function set_force_blob_reupload( bool $force ): void {
+		self::$force_blob_reupload = $force;
+	}
+
+	/**
 	 * Upload an image attachment and return the blob reference.
 	 *
 	 * Used for any image that needs to land on the PDS — featured-image
@@ -1399,10 +1421,18 @@ class Post extends Base {
 	 * @return array|null Blob reference or null.
 	 */
 	public static function upload_image_blob( int $attachment_id ): ?array {
-		// Check cache first.
-		$cached = self::cached_image_blob( $attachment_id );
-		if ( null !== $cached ) {
-			return $cached;
+		/*
+		 * Check the cache first, unless a self-heal retry is forcing a
+		 * re-upload. Forcing bypasses the cache for every image a publish
+		 * touches — featured thumbnail, in-body images, publication icon,
+		 * content-parser images alike — so a stale ref is replaced whichever
+		 * image carried it, with no need to enumerate the upload set.
+		 */
+		if ( ! self::$force_blob_reupload ) {
+			$cached = self::cached_image_blob( $attachment_id );
+			if ( null !== $cached ) {
+				return $cached;
+			}
 		}
 
 		$mime = \get_post_mime_type( $attachment_id );
@@ -1449,82 +1479,6 @@ class Post extends Base {
 		}
 
 		return $blob_ref;
-	}
-
-	/**
-	 * Drop the cached blob reference for an attachment.
-	 *
-	 * A blob ref is only durable while a committed record references it on
-	 * the PDS it was uploaded to. When the active account/PDS changes, or
-	 * the reference PDS garbage-collects an orphaned blob, the cached CID
-	 * points at a blob the current PDS no longer has and `applyWrites`
-	 * rejects it with "Could not find blob". Forgetting the cache forces
-	 * the next {@see self::upload_image_blob()} to re-upload against the
-	 * current PDS.
-	 *
-	 * @since unreleased
-	 *
-	 * @param int $attachment_id WordPress attachment ID.
-	 * @return void
-	 */
-	public static function forget_image_blob( int $attachment_id ): void {
-		\delete_post_meta( $attachment_id, '_atmosphere_blob_ref' );
-	}
-
-	/**
-	 * Drop every cached blob reference a publish of this post would embed.
-	 *
-	 * Covers the featured image (document `coverImage` and the long-form
-	 * link-card thumbnail) and any in-body `core/image` attachments the
-	 * short-form `app.bsky.embed.images` path uploads. Used by the
-	 * Publisher to self-heal a "Could not find blob" rejection: forgetting
-	 * the whole set forces the retry to re-upload against the current PDS,
-	 * whichever image carried the stale ref.
-	 *
-	 * @since unreleased
-	 *
-	 * @param \WP_Post $post WordPress post.
-	 * @return bool Whether the post embeds any image whose ref was forgotten.
-	 */
-	public static function forget_post_image_blobs( \WP_Post $post ): bool {
-		$attachment_ids = ( new self( $post ) )->embedded_image_attachment_ids();
-
-		foreach ( $attachment_ids as $attachment_id ) {
-			self::forget_image_blob( $attachment_id );
-		}
-
-		return ! empty( $attachment_ids );
-	}
-
-	/**
-	 * Attachment IDs whose blobs a publish of this post may upload.
-	 *
-	 * The union of every in-body `core/image` attachment and the featured
-	 * image (which the document cover and link-card thumbnail always use),
-	 * deduplicated so an image used both in-body and as the thumbnail is
-	 * listed once.
-	 *
-	 * Intended for cache invalidation, so it deliberately over-approximates
-	 * rather than mirroring any single embed: the Bluesky images embed caps
-	 * at four, but a blob-backed document content format (Leaflet, pckt)
-	 * uploads a blob for every in-body image. Forgetting the cache entry of
-	 * an attachment that wasn't actually uploaded is a harmless no-op, while
-	 * missing one leaves a stale ref that defeats the self-heal. The list is
-	 * still bounded by `collect_image_attachment_ids()`'s 32-image ceiling.
-	 *
-	 * @since unreleased
-	 *
-	 * @return int[]
-	 */
-	public function embedded_image_attachment_ids(): array {
-		$attachment_ids = $this->collect_image_attachment_ids();
-
-		$thumb_id = \get_post_thumbnail_id( $this->object );
-		if ( $thumb_id ) {
-			$attachment_ids[] = (int) $thumb_id;
-		}
-
-		return \array_values( \array_unique( $attachment_ids ) );
 	}
 
 	/**

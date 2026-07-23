@@ -125,24 +125,23 @@ class Publisher {
 		 * recovery.
 		 */
 		if ( self::is_blob_missing_error( $result ) ) {
-			if ( Post::forget_post_image_blobs( $post ) ) {
-				debug_log(
-					\sprintf(
-						'post %d: PDS rejected a cached image blob (%s) — re-uploading the post images and retrying the publish',
-						$post->ID,
-						$result->get_error_message()
-					)
-				);
-				$result = self::attempt_publish_post( $post );
-			} else {
-				debug_log(
-					\sprintf(
-						'post %d: PDS rejected a cached image blob (%s) but the post embeds no images to re-upload — surfacing the error',
-						$post->ID,
-						$result->get_error_message()
-					)
-				);
-			}
+			debug_log(
+				\sprintf(
+					'post %d: PDS rejected a cached image blob (%s) — re-uploading the post images and retrying the publish',
+					$post->ID,
+					$result->get_error_message()
+				)
+			);
+
+			/*
+			 * Retry once with the blob cache bypassed, so every image the
+			 * publish re-uploads against the current PDS. Bounded to a single
+			 * re-attempt: a blob still missing after a fresh upload surfaces
+			 * the error instead of retrying forever.
+			 */
+			Post::set_force_blob_reupload( true );
+			$result = self::attempt_publish_post( $post );
+			Post::set_force_blob_reupload( false );
 		}
 
 		$result = self::reconcile_post_after_write( $post, $result );
@@ -291,7 +290,16 @@ class Publisher {
 			return false;
 		}
 
-		return false !== \stripos( $result->get_error_message(), 'could not find blob' );
+		/*
+		 * Match "blob" plus a not-found signal rather than one exact PDS
+		 * sentence, so "blob not found" is caught as well as "could not
+		 * find blob". Best-effort: the PDS gives no distinct error code.
+		 */
+		$message = $result->get_error_message();
+
+		return false !== \stripos( $message, 'blob' )
+			&& ( false !== \stripos( $message, 'not find' )
+				|| false !== \stripos( $message, 'not found' ) );
 	}
 
 	/**
