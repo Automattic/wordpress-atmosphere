@@ -1,0 +1,93 @@
+/**
+ * AT Protocol handle field with network-wide typeahead.
+ *
+ * Shared by the Settings → ATmosphere connect field and the Settings →
+ * Connectors card. Card-frame-specific rules (the status line and the
+ * `overflow: visible` clip fix) stay in connectors.css.
+ */
+
+.atmosphere-handle-field {
+	position: relative;
+}
+
+.atmosphere-handle-field__label {
+	display: block;
+	margin-bottom: 4px;
+	font-size: 11px;
+	font-weight: 500;
+	text-transform: uppercase;
+}
+
+.atmosphere-handle-field__control {
+	position: relative;
+	display: flex;
+	align-items: center;
+}
+
+.atmosphere-handle-field__control input {
+	width: 100%;
+}
+
+.atmosphere-handle-field__control .spinner {
+	position: absolute;
+	inset-inline-end: 8px;
+	float: none;
+	margin: 0;
+}
+
+.atmosphere-handle-field__list {
+	position: absolute;
+	z-index: 10;
+	inset-inline: 0;
+	top: 100%;
+	margin: 2px 0 0;
+	padding: 0;
+	max-height: 260px;
+	overflow-y: auto;
+	list-style: none;
+	background: #fff;
+	border: 1px solid #ccc;
+	border-radius: 4px;
+	box-shadow: 0 2px 6px rgba( 0, 0, 0, 0.1 );
+}
+
+.atmosphere-handle-field__option {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 6px 10px;
+	cursor: pointer;
+}
+
+.atmosphere-handle-field__option.is-active {
+	/*
+	 * During keyboard navigation DOM focus stays on the input, so this is the
+	 * only visual cue for which suggestion Enter will pick. Admin-blue with
+	 * inverted text clears WCAG 1.4.11's 3:1 non-text-contrast bar, which the
+	 * former near-white `#f0f0f0` did not.
+	 */
+	background: #2271b1;
+	color: #fff;
+}
+
+/* Keep the secondary handle/name text legible on the highlighted row. */
+.atmosphere-handle-field__option.is-active .atmosphere-handle-field__name {
+	color: inherit;
+}
+
+.atmosphere-handle-field__avatar {
+	flex: 0 0 auto;
+	border-radius: 50%;
+	object-fit: cover;
+}
+
+.atmosphere-handle-field__handle {
+	font-weight: 600;
+}
+
+.atmosphere-handle-field__name {
+	color: #757575;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}

@@ -34,6 +34,8 @@ class Test_Client_Authorize extends WP_UnitTestCase {
 		\delete_option( 'atmosphere_connection' );
 		\delete_option( 'atmosphere_identity' );
 		\remove_all_filters( 'pre_http_request' );
+		\remove_all_actions( 'atmosphere_connected' );
+		\remove_all_actions( 'atmosphere_disconnected' );
 
 		parent::tear_down();
 	}
@@ -232,14 +234,15 @@ class Test_Client_Authorize extends WP_UnitTestCase {
 
 		$result = Client::authorize( $handle );
 
-		// If the resolution chain refused the stubbed handle for any reason,
-		// the test environment can't exercise this path — skip rather than
-		// silently miss the storage assertion.
-		if ( \is_wp_error( $result ) ) {
-			$this->markTestSkipped(
-				'Resolver chain rejected the stubbed handle: ' . $result->get_error_code()
-			);
-		}
+		// Hard assertion, not markTestSkipped(): the encrypted-transient storage
+		// this test pins (ATM-002) is security-relevant, so a stubbed-chain
+		// regression should turn the build red rather than silently skip. The
+		// resolver's DNS `_atproto` TXT lookup returns nothing for this fake
+		// domain, so resolution falls through to the stubbed well-known.
+		$this->assertNotWPError(
+			$result,
+			'authorize() must return the auth URL for the fully stubbed resolver chain.'
+		);
 
 		$query = array();
 		\parse_str( (string) \wp_parse_url( $result, \PHP_URL_QUERY ), $query );
@@ -418,6 +421,85 @@ class Test_Client_Authorize extends WP_UnitTestCase {
 
 		$this->assertTrue( $result );
 		$this->assertSame( 0, $captured_args['redirection'] ?? null );
+	}
+
+	/**
+	 * A successful callback fires `atmosphere_connected` with the account's
+	 * DID and handle, so a host plugin can react without polling.
+	 *
+	 * @covers \Atmosphere\OAuth\Client::handle_callback
+	 */
+	public function test_handle_callback_fires_connected_action() {
+		$jwk = DPoP::generate_key();
+
+		\set_transient( 'atmosphere_oauth_state', 'state-abc', HOUR_IN_SECONDS );
+		\set_transient( 'atmosphere_oauth_verifier', 'verifier-xyz', HOUR_IN_SECONDS );
+		\set_transient( 'atmosphere_oauth_dpop_jwk', Encryption::encrypt( (string) \wp_json_encode( $jwk ) ), HOUR_IN_SECONDS );
+		\set_transient(
+			'atmosphere_oauth_resolved',
+			array(
+				'did'          => 'did:plc:test',
+				'pds_endpoint' => 'https://pds.example.com',
+				'auth_server'  => array(
+					'token_endpoint' => 'https://auth.example.com/oauth/token',
+					'issuer_url'     => 'https://auth.example.com',
+				),
+				'handle'       => 'alice.example.com',
+			),
+			HOUR_IN_SECONDS
+		);
+
+		$this->stub_response(
+			'oauth/token',
+			200,
+			array(
+				'access_token'  => 'access-token',
+				'refresh_token' => 'refresh-token',
+				'expires_in'    => 3600,
+			)
+		);
+
+		$fired = array();
+		\add_action(
+			'atmosphere_connected',
+			static function ( $did, $handle ) use ( &$fired ) {
+				$fired = array( $did, $handle );
+			},
+			10,
+			2
+		);
+
+		$this->assertTrue( Client::handle_callback( 'code-123', 'state-abc' ) );
+		$this->assertSame( array( 'did:plc:test', 'alice.example.com' ), $fired );
+	}
+
+	/**
+	 * `disconnect()` fires `atmosphere_disconnected` with the DID of the
+	 * account that was torn down.
+	 *
+	 * @covers \Atmosphere\OAuth\Client::disconnect
+	 */
+	public function test_disconnect_fires_disconnected_action() {
+		\update_option(
+			'atmosphere_connection',
+			array(
+				'did'          => 'did:plc:gone',
+				'handle'       => 'alice.example.com',
+				'access_token' => 'live-token',
+			)
+		);
+
+		$fired = array();
+		\add_action(
+			'atmosphere_disconnected',
+			static function ( $did ) use ( &$fired ) {
+				$fired[] = $did;
+			}
+		);
+
+		Client::disconnect();
+
+		$this->assertSame( array( 'did:plc:gone' ), $fired );
 	}
 
 	/**

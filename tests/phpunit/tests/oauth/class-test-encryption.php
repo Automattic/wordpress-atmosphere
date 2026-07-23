@@ -76,4 +76,34 @@ class Test_Encryption extends WP_UnitTestCase {
 		$this->assertIsString( $key );
 		$this->assertSame( SODIUM_CRYPTO_SECRETBOX_KEYBYTES, \strlen( $key ) );
 	}
+
+	/**
+	 * `key_fingerprint()` is deterministic and hex-shaped, so it can be
+	 * persisted with the connection and compared on a later decrypt
+	 * failure.
+	 */
+	public function test_key_fingerprint_is_stable_hex() {
+		$fingerprint = Encryption::key_fingerprint();
+
+		$this->assertSame( $fingerprint, Encryption::key_fingerprint() );
+		$this->assertMatchesRegularExpression( '/^[0-9a-f]{32}$/', $fingerprint );
+	}
+
+	/**
+	 * The fingerprint must not leak key material: it is domain-separated
+	 * from the key derivation, so it differs from a plain generichash of
+	 * the key at the same output length.
+	 */
+	public function test_key_fingerprint_is_not_a_plain_key_hash() {
+		$reflection = new \ReflectionClass( Encryption::class );
+		$method     = $reflection->getMethod( 'key' );
+		$method->setAccessible( true );
+
+		$key = $method->invoke( null );
+
+		$this->assertNotSame(
+			\sodium_bin2hex( \sodium_crypto_generichash( $key, '', 16 ) ),
+			Encryption::key_fingerprint()
+		);
+	}
 }

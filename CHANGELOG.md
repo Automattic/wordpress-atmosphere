@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.1.0] - 2026-07-22
+### Added
+- Add a connection-only mode so another plugin can reuse just the Bluesky connection: automatic cross-posting, likes and reposts, and reply importing all stay off, and the ATmosphere settings screen is hidden. [#203]
+- Add a setting — and a filter for plugins — to keep WordPress comment changes from being published to Bluesky while leaving incoming reactions enabled. [#199]
+- Add color settings for your publication theme, so you can choose the background, text, and accent colors apps use when they display your site. [#207]
+- ATmosphere now appears on the WordPress Settings → Connectors screen (WordPress 7.0 and later), so you can connect your account from there too. [#203]
+- Settings: suggest AT Protocol handles as you type when connecting your account. [#203]
+- Site Health now shows your Bluesky connection status, explains why a reconnect is needed and how to prevent it, and adds an ATmosphere section to the debug information for easier troubleshooting. [#192]
+- Sites that rotate their WordPress security keys can now define a dedicated encryption key in wp-config.php so the Bluesky connection survives the rotation. [#191]
+
+### Fixed
+- Busy Bluesky threads no longer lose older replies and reactions when more than 250 notifications arrive between syncs, and older missed replies are now recovered automatically or on demand with WP-CLI. [#194]
+- Comments from Subscribers and other comment-only accounts now stay on WordPress instead of being published through the site's Bluesky account. [#198]
+- When your site's security keys change (after a migration or a salt rotation), ATmosphere now explains what happened and asks you to reconnect your Bluesky account, instead of failing on every post with an unhelpful retry message. [#191]
+
 ## [2.0.0] - 2026-07-08
 ### Added
 - Add an ATmosphere Reactions block that shows the Bluesky likes and reposts that your posts have received, as a facepile of avatars with a count. [#148]
@@ -147,6 +162,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Remove a comment reply from Bluesky if the comment was deleted or unapproved while it was being published, instead of leaving an orphan reply behind. [#32]
 - Short posts under the long-form teaser-thread strategy no longer ship a redundant "continue reading" reply when the entire body already fits in a single Bluesky post. The link-back is preserved as a card on the same post. [#51]
 
+[2.1.0]: https://github.com/Automattic/wordpress-atmosphere/compare/2.0.0...2.1.0
 [2.0.0]: https://github.com/Automattic/wordpress-atmosphere/compare/1.2.0...2.0.0
 [1.2.0]: https://github.com/Automattic/wordpress-atmosphere/compare/1.1.1...1.2.0
 [1.1.1]: https://github.com/Automattic/wordpress-atmosphere/compare/1.1.0...1.1.1

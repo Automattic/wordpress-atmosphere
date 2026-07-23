@@ -22,8 +22,12 @@ class Test_Publication extends \WP_UnitTestCase {
 	public function tear_down(): void {
 		\remove_all_filters( 'atmosphere_publication_labels' );
 		\remove_all_filters( 'atmosphere_publication_show_in_discover' );
+		\remove_all_filters( 'atmosphere_publication_basic_theme' );
 		\delete_option( 'site_icon' );
 		\update_option( 'blog_public', 1 );
+		\delete_option( Publication::OPTION_THEME_BACKGROUND );
+		\delete_option( Publication::OPTION_THEME_FOREGROUND );
+		\delete_option( Publication::OPTION_THEME_ACCENT );
 
 		parent::tear_down();
 	}
@@ -630,6 +634,218 @@ class Test_Publication extends \WP_UnitTestCase {
 			$dark['accentForeground'],
 			'Dark accent should yield white foreground.'
 		);
+	}
+
+	/**
+	 * Stored publication-theme options override the derived theme colors.
+	 */
+	public function test_publication_theme_options_override_basic_theme_colors() {
+		\update_option( Publication::OPTION_THEME_BACKGROUND, '#112233' );
+		\update_option( Publication::OPTION_THEME_FOREGROUND, '#fafafa' );
+		\update_option( Publication::OPTION_THEME_ACCENT, '#ff0000' );
+
+		$record = ( new Publication( null ) )->transform();
+
+		$this->assertArrayHasKey( 'basicTheme', $record );
+		$this->assertSame( 17, $record['basicTheme']['background']['r'] );
+		$this->assertSame( 34, $record['basicTheme']['background']['g'] );
+		$this->assertSame( 51, $record['basicTheme']['background']['b'] );
+		$this->assertSame( 250, $record['basicTheme']['foreground']['r'] );
+		$this->assertSame( 250, $record['basicTheme']['foreground']['g'] );
+		$this->assertSame( 250, $record['basicTheme']['foreground']['b'] );
+		$this->assertSame( 255, $record['basicTheme']['accent']['r'] );
+		$this->assertSame( 0, $record['basicTheme']['accent']['g'] );
+		$this->assertSame( 0, $record['basicTheme']['accent']['b'] );
+
+		// Red is dark enough to require a white accent foreground at our threshold.
+		$this->assertSame( 255, $record['basicTheme']['accentForeground']['r'] );
+		$this->assertSame( 255, $record['basicTheme']['accentForeground']['g'] );
+		$this->assertSame( 255, $record['basicTheme']['accentForeground']['b'] );
+	}
+
+	/**
+	 * Global styles for a theme that styles links with `currentColor`,
+	 * leaving the accent to come from the palette.
+	 *
+	 * @return array
+	 */
+	private static function styles_with_current_color_link(): array {
+		return array(
+			'color'    => array(
+				'background' => '#ffffff',
+				'text'       => '#111111',
+			),
+			'elements' => array(
+				'link' => array( 'color' => array( 'text' => 'currentColor' ) ),
+			),
+		);
+	}
+
+	/**
+	 * Themes that style links with `currentColor` and number their accent
+	 * palette slugs — Twenty Twenty-Five, the default theme, does both —
+	 * still yield an accent, and therefore a complete theme object.
+	 */
+	public function test_build_basic_theme_falls_back_to_numbered_palette_accent() {
+		$palette = array(
+			'base'     => '#ffffff',
+			'contrast' => '#111111',
+			'accent-1' => '#ffee58',
+			'accent-2' => '#f6cff4',
+		);
+
+		$theme = Publication::build_basic_theme( self::styles_with_current_color_link(), $palette );
+
+		$this->assertNotNull( $theme, 'A numbered accent slug must satisfy the accent requirement.' );
+		$this->assertSame( 255, $theme['accent']['r'] );
+		$this->assertSame( 238, $theme['accent']['g'] );
+		$this->assertSame( 88, $theme['accent']['b'] );
+	}
+
+	/**
+	 * Palette entries that are not plain colours are skipped when
+	 * picking a numbered accent.
+	 */
+	public function test_build_basic_theme_skips_unresolvable_palette_accents() {
+		$palette = array(
+			'accent-1' => 'color-mix(in srgb, currentColor 20%, transparent)',
+			'accent-2' => '#0693e3',
+		);
+
+		$theme = Publication::build_basic_theme( self::styles_with_current_color_link(), $palette );
+
+		$this->assertNotNull( $theme );
+		$this->assertSame( 6, $theme['accent']['r'] );
+		$this->assertSame( 147, $theme['accent']['g'] );
+		$this->assertSame( 227, $theme['accent']['b'] );
+	}
+
+	/**
+	 * A single stored override replaces only its own colour; the rest
+	 * stay derived from the active theme.
+	 */
+	public function test_publication_theme_option_overrides_single_color() {
+		$styles = array(
+			'color'    => array(
+				'background' => '#ffffff',
+				'text'       => '#111111',
+			),
+			'elements' => array(
+				'link' => array( 'color' => array( 'text' => '#0000ff' ) ),
+			),
+		);
+
+		$derived = Publication::build_basic_theme( $styles, array() );
+		$merged  = Publication::build_basic_theme(
+			$styles,
+			array(),
+			array(
+				'accent' => array(
+					'r' => 255,
+					'g' => 0,
+					'b' => 0,
+				),
+			)
+		);
+
+		// Background and foreground keep the derived values.
+		$this->assertSame( $derived['background'], $merged['background'] );
+		$this->assertSame( $derived['foreground'], $merged['foreground'] );
+
+		// Only the accent changes — and its contrast colour is recomputed.
+		$this->assertSame( 255, $merged['accent']['r'] );
+		$this->assertSame( 0, $merged['accent']['g'] );
+		$this->assertSame( 255, $merged['accentForeground']['r'] );
+	}
+
+	/**
+	 * Overrides still apply when the active theme exposes no usable
+	 * colours, as long as all three are set — otherwise the record has
+	 * no complete theme to publish.
+	 */
+	public function test_publication_theme_options_apply_without_derivable_theme() {
+		$this->assertNull( Publication::build_basic_theme( array(), array() ) );
+
+		$complete = Publication::build_basic_theme(
+			array(),
+			array(),
+			array(
+				'background' => array(
+					'r' => 1,
+					'g' => 2,
+					'b' => 3,
+				),
+				'foreground' => array(
+					'r' => 4,
+					'g' => 5,
+					'b' => 6,
+				),
+				'accent'     => array(
+					'r' => 7,
+					'g' => 8,
+					'b' => 9,
+				),
+			)
+		);
+
+		$this->assertSame( 1, $complete['background']['r'] );
+		$this->assertSame( 'site.standard.theme.basic', $complete['$type'] );
+
+		$partial = Publication::build_basic_theme(
+			array(),
+			array(),
+			array(
+				'accent' => array(
+					'r' => 7,
+					'g' => 8,
+					'b' => 9,
+				),
+			)
+		);
+
+		$this->assertNull( $partial, 'An incomplete theme must be omitted rather than half-published.' );
+	}
+
+	/**
+	 * A malformed stored value is ignored rather than dropping the whole
+	 * theme object from the record.
+	 */
+	public function test_publication_theme_option_ignores_unparseable_value() {
+		$derived = ( new Publication( null ) )->transform()['basicTheme'] ?? null;
+
+		\update_option( Publication::OPTION_THEME_ACCENT, 'not-a-color' );
+
+		$this->assertSame(
+			$derived,
+			( new Publication( null ) )->transform()['basicTheme'] ?? null,
+			'A malformed stored color must fall through to the derived theme.'
+		);
+	}
+
+	/**
+	 * The dedicated basicTheme filter can override the transformed value.
+	 */
+	public function test_publication_basic_theme_filter_overrides_theme() {
+		// The filter's return value is passed through untouched, so the
+		// fixture only has to be distinguishable from a derived theme.
+		$replacement = array( 'background' => array( 'r' => 1 ) );
+
+		\add_filter( 'atmosphere_publication_basic_theme', static fn() => $replacement );
+
+		$record = ( new Publication( null ) )->transform();
+
+		$this->assertSame( $replacement, $record['basicTheme'] );
+	}
+
+	/**
+	 * A null return from the basicTheme filter omits the field.
+	 */
+	public function test_publication_basic_theme_filter_can_omit_basic_theme() {
+		\add_filter( 'atmosphere_publication_basic_theme', '__return_null' );
+
+		$record = ( new Publication( null ) )->transform();
+
+		$this->assertArrayNotHasKey( 'basicTheme', $record );
 	}
 
 	/**

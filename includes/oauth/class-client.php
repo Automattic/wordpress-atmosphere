@@ -136,6 +136,31 @@ class Client {
 	public const DISCONNECTED_OPTION = 'atmosphere_disconnected';
 
 	/**
+	 * `reauth_reason` marker: the encryption key material changed under
+	 * the stored tokens (salt rotation, regenerated wp-config.php).
+	 *
+	 * Written by {@see self::flag_decrypt_failure()}; read by the admin
+	 * reauth notice and Site Health, whose copy explains the cause. A
+	 * mistyped comparison fails soft (falls through to generic expiry
+	 * copy), so consumers MUST use these constants.
+	 *
+	 * @since 2.1.0
+	 *
+	 * @var string
+	 */
+	public const REAUTH_REASON_KEY_CHANGED = 'key_changed';
+
+	/**
+	 * `reauth_reason` marker: tokens unreadable although the key
+	 * fingerprint still matches (corrupted ciphertext).
+	 *
+	 * @since 2.1.0
+	 *
+	 * @var string
+	 */
+	public const REAUTH_REASON_DECRYPT_FAILED = 'decrypt_failed';
+
+	/**
 	 * Get the client_id URL (= client metadata endpoint).
 	 *
 	 * @return string
@@ -215,9 +240,13 @@ class Client {
 	 * request, and returns the authorization URL to redirect to.
 	 *
 	 * @param string $handle AT Protocol handle.
+	 * @param string $origin Which surface started the flow: `settings` (default)
+	 *                       or `connectors`. Persisted with the flow so the
+	 *                       callback returns the browser to the right screen
+	 *                       without a separate, clobberable flag transient.
 	 * @return string|\WP_Error Authorization URL or error.
 	 */
-	public static function authorize( string $handle ): string|\WP_Error {
+	public static function authorize( string $handle, string $origin = 'settings' ): string|\WP_Error {
 		/*
 		 * Rate-limit AFTER a successful `Resolver::resolve()`, not
 		 * before. The earlier ordering charged the per-user bucket on
@@ -282,6 +311,7 @@ class Client {
 				'pds_endpoint' => $resolved['pds_endpoint'],
 				'auth_server'  => $auth_meta,
 				'handle'       => $handle,
+				'origin'       => 'connectors' === $origin ? 'connectors' : 'settings',
 			),
 			HOUR_IN_SECONDS
 		);
@@ -313,6 +343,24 @@ class Client {
 		);
 
 		return $auth_meta['authorization_endpoint'] . '?' . \http_build_query( $params );
+	}
+
+	/**
+	 * The origin surface of the OAuth flow currently awaiting its callback.
+	 *
+	 * Read from the same per-flow `atmosphere_oauth_resolved` record the callback
+	 * validates, so the return destination can never diverge from the flow that
+	 * is actually in progress — there is one flow at a time (the state, verifier,
+	 * and DPoP key are all single site-wide transients).
+	 *
+	 * @return string `connectors` or `settings` (the default when unknown).
+	 */
+	public static function pending_origin(): string {
+		$resolved = \get_transient( 'atmosphere_oauth_resolved' );
+
+		return \is_array( $resolved ) && 'connectors' === ( $resolved['origin'] ?? '' )
+			? 'connectors'
+			: 'settings';
 	}
 
 	/**
@@ -621,6 +669,7 @@ class Client {
 			'access_token'        => Encryption::encrypt( $data['access_token'] ),
 			'refresh_token'       => ! empty( $data['refresh_token'] ) ? Encryption::encrypt( $data['refresh_token'] ) : '',
 			'dpop_jwk'            => Encryption::encrypt( (string) \wp_json_encode( $dpop_jwk ) ),
+			'key_fingerprint'     => Encryption::key_fingerprint(),
 			'expires_at'          => \time() + ( $data['expires_in'] ?? 3600 ),
 			'needs_reauth'        => false,
 		);
@@ -668,6 +717,21 @@ class Client {
 		 * install paths that need this beyond activation.
 		 */
 		Atmosphere::maybe_flush_wellknown_rewrites();
+
+		/**
+		 * Fires after an AT Protocol account is connected.
+		 *
+		 * The OAuth callback has succeeded and the connection is persisted. Lets
+		 * a host plugin embedding ATmosphere purely as a connection layer react
+		 * to a card-driven connect without polling {@see \Atmosphere\is_connected()}
+		 * — e.g. to invalidate its own caches or surface a confirmation.
+		 *
+		 * @since 2.1.0
+		 *
+		 * @param string $did    The connected account's DID.
+		 * @param string $handle The connected account's handle.
+		 */
+		\do_action( 'atmosphere_connected', (string) $resolved['did'], (string) $resolved['handle'] );
 
 		return true;
 	}
@@ -768,14 +832,14 @@ class Client {
 	 * @return true|\WP_Error
 	 */
 	private static function refresh_locked( array $conn ): true|\WP_Error {
-		$refresh_token = Encryption::decrypt( $conn['refresh_token'] );
-		if ( false === $refresh_token ) {
-			return new \WP_Error( 'atmosphere_decrypt', \__( 'Failed to decrypt refresh token.', 'atmosphere' ) );
+		$refresh_token = self::decrypt_field( $conn, 'refresh_token' );
+		if ( \is_wp_error( $refresh_token ) ) {
+			return $refresh_token;
 		}
 
-		$dpop_jwk_json = Encryption::decrypt( $conn['dpop_jwk'] );
-		if ( false === $dpop_jwk_json ) {
-			return new \WP_Error( 'atmosphere_decrypt', \__( 'Failed to decrypt DPoP key.', 'atmosphere' ) );
+		$dpop_jwk_json = self::decrypt_field( $conn, 'dpop_jwk' );
+		if ( \is_wp_error( $dpop_jwk_json ) ) {
+			return $dpop_jwk_json;
 		}
 
 		$dpop_jwk       = \json_decode( $dpop_jwk_json, true );
@@ -886,32 +950,7 @@ class Client {
 			 */
 			$error = $data['error'] ?? '';
 			if ( \in_array( $error, array( 'invalid_grant', 'invalid_client', 'unauthorized_client' ), true ) ) {
-				/*
-				 * Re-read the connection before writing, and only stamp
-				 * `needs_reauth` if the row STILL holds the same
-				 * refresh-token ciphertext we read at lock-acquisition
-				 * time. Two races close here:
-				 *
-				 *   - Admin disconnected mid-flight: the row is gone
-				 *     and the `refresh_token` check below fails.
-				 *   - Admin disconnected + reconnected to a different
-				 *     account mid-flight: the row exists but the
-				 *     `refresh_token` ciphertext is different (libsodium
-				 *     re-encrypts with a fresh nonce). Stamping
-				 *     `needs_reauth` on the NEW account because the
-				 *     OLD account's refresh failed would be wrong.
-				 */
-				$current = \get_option( 'atmosphere_connection', array() );
-				if ( \is_array( $current )
-					&& ! empty( $current['refresh_token'] )
-					&& isset( $conn['refresh_token'] )
-					&& \hash_equals( (string) $conn['refresh_token'], (string) $current['refresh_token'] )
-				) {
-					$current['needs_reauth'] = true;
-					$current['access_token'] = '';
-					unset( $current['expires_at'] );
-					\update_option( 'atmosphere_connection', $current, false );
-				}
+				self::mark_needs_reauth( $conn, 'refresh_token' );
 			}
 
 			return new \WP_Error( 'atmosphere_refresh', $msg, array( 'status' => $status ) );
@@ -954,6 +993,14 @@ class Client {
 		$current['access_token'] = Encryption::encrypt( $data['access_token'] );
 		$current['expires_at']   = \time() + ( $data['expires_in'] ?? 3600 );
 		$current['needs_reauth'] = false;
+		unset( $current['reauth_reason'] );
+
+		/*
+		 * Opportunistic backfill for rows connected before fingerprints
+		 * existed: the refresh token just decrypted with the current key,
+		 * so the current fingerprint is the right one for this row.
+		 */
+		$current['key_fingerprint'] = Encryption::key_fingerprint();
 
 		if ( ! empty( $data['refresh_token'] ) ) {
 			$current['refresh_token'] = Encryption::encrypt( $data['refresh_token'] );
@@ -962,6 +1009,206 @@ class Client {
 		\update_option( 'atmosphere_connection', $current, false );
 
 		return true;
+	}
+
+	/**
+	 * Decrypt a stored connection credential, flagging the row for
+	 * reauth on failure.
+	 *
+	 * The single chokepoint for reading connection ciphertext, so the
+	 * invariant "a failed credential decrypt always flags the row" is
+	 * enforced by the mechanism instead of repeated at every call site
+	 * (see {@see self::flag_decrypt_failure()} for why the failure is
+	 * permanent).
+	 *
+	 * @since 2.1.0
+	 *
+	 * @param array  $conn  Connection row the credential was read from.
+	 * @param string $field Connection field to decrypt (`access_token`,
+	 *                      `refresh_token`, `dpop_jwk`).
+	 * @return string|\WP_Error The plaintext, or the reauth error.
+	 */
+	public static function decrypt_field( array $conn, string $field ): string|\WP_Error {
+		$plaintext = Encryption::decrypt( (string) ( $conn[ $field ] ?? '' ) );
+
+		if ( false === $plaintext ) {
+			return self::flag_decrypt_failure( $conn, $field );
+		}
+
+		return $plaintext;
+	}
+
+	/**
+	 * Failure codes resolvable only by reconnecting the Bluesky account.
+	 *
+	 * Consumed by the `atmosphere_publish_error` REST field as the
+	 * `needs_reconnect` flag so the editor panel never keeps its own
+	 * copy of this judgment. Lives here, next to the code paths that
+	 * mint these codes, so a future reconnect-class error is added in
+	 * one place. A curated subset of the permanent codes in
+	 * {@see \Atmosphere\Atmosphere::is_transient_publish_error()} —
+	 * deliberately without `atmosphere_did_mismatch`, which reconnecting
+	 * to the current account does not fix.
+	 *
+	 * @var string[]
+	 */
+	private const RECONNECT_ERROR_CODES = array(
+		'atmosphere_key_changed',
+		'atmosphere_decrypt',
+		'atmosphere_needs_reauth',
+		'atmosphere_not_connected',
+	);
+
+	/**
+	 * Whether a failure code can only be resolved by reconnecting.
+	 *
+	 * @since 2.1.0
+	 *
+	 * @param string $code Machine-readable failure code.
+	 * @return bool
+	 */
+	public static function is_reconnect_error( string $code ): bool {
+		return \in_array( $code, self::RECONNECT_ERROR_CODES, true );
+	}
+
+	/**
+	 * Build the error for an undecryptable connection credential and
+	 * flag the connection for reauth.
+	 *
+	 * A decrypt failure is never transient: the ciphertext can only be
+	 * read with the exact key material it was written under, so every
+	 * subsequent attempt fails identically until the user reconnects.
+	 * The key fingerprint stored at connect/refresh time classifies the
+	 * failure — a mismatch means the site's security keys changed (salt
+	 * rotation, regenerated `wp-config.php`), while a match (or a
+	 * pre-fingerprint row) points at corrupted data. Either way the row
+	 * is flagged `needs_reauth` so publishing short-circuits and the
+	 * admin reconnect notice appears, instead of every save failing
+	 * again with a retry hint that can never succeed.
+	 *
+	 * @since 2.1.0
+	 *
+	 * @param array  $conn  Connection row the failed decrypt ran against.
+	 * @param string $field Connection field that failed to decrypt
+	 *                      (`access_token`, `refresh_token`, `dpop_jwk`).
+	 *                      The reauth stamp is guarded on this field's
+	 *                      ciphertext so a concurrent worker that already
+	 *                      repaired it (e.g. a refresh rewriting
+	 *                      `access_token`) is left alone.
+	 * @return \WP_Error `atmosphere_key_changed` when the stored
+	 *                   fingerprint mismatches the current key,
+	 *                   `atmosphere_decrypt` otherwise.
+	 */
+	public static function flag_decrypt_failure( array $conn, string $field ): \WP_Error {
+		$stored = (string) ( $conn['key_fingerprint'] ?? '' );
+
+		/*
+		 * Only a well-formed stored fingerprint (32 hex chars, exactly
+		 * what `Encryption::key_fingerprint()` writes) is authoritative
+		 * for the "key changed" diagnosis. A mangled row proves only
+		 * that the row is corrupt, so it falls back to the generic
+		 * classification below — like a pre-fingerprint row.
+		 */
+		$key_changed = \preg_match( '/^[0-9a-f]{32}$/', $stored )
+			&& ! \hash_equals( Encryption::key_fingerprint(), $stored );
+
+		self::mark_needs_reauth(
+			$conn,
+			$field,
+			$key_changed ? self::REAUTH_REASON_KEY_CHANGED : self::REAUTH_REASON_DECRYPT_FAILED
+		);
+
+		if ( $key_changed ) {
+			return new \WP_Error(
+				'atmosphere_key_changed',
+				\__( 'Your site’s security keys have changed, so the saved Bluesky login can no longer be read. Reconnect your Bluesky account to resume sharing.', 'atmosphere' )
+			);
+		}
+
+		return new \WP_Error(
+			'atmosphere_decrypt',
+			\__( 'The saved Bluesky login could not be read. Reconnect your Bluesky account to resume sharing.', 'atmosphere' )
+		);
+	}
+
+	/**
+	 * Stamp `needs_reauth` on the stored connection, guarded against a
+	 * concurrent disconnect or reconnect.
+	 *
+	 * Re-reads the row and only writes when it still holds the same
+	 * token ciphertext the caller read. Two races close here:
+	 *
+	 *   - Admin disconnected mid-flight: the row is gone and the
+	 *     ciphertext check below fails.
+	 *   - Admin disconnected + reconnected to a different account
+	 *     mid-flight: the row exists but the ciphertext is different
+	 *     (libsodium re-encrypts with a fresh nonce). Stamping
+	 *     `needs_reauth` on the NEW account because the OLD account's
+	 *     credentials failed would be wrong.
+	 *
+	 * @param array  $conn   Connection as read by the caller.
+	 * @param string $field  Ciphertext field the guard compares — the one
+	 *                       the caller's failure was observed on, so a
+	 *                       concurrent worker that already rewrote it
+	 *                       doesn't get its repair wiped.
+	 * @param string $reason Optional machine-readable marker stored as
+	 *                       `reauth_reason` so the admin notice can
+	 *                       explain the failure (e.g. `key_changed`).
+	 *                       An empty reason clears any stale marker, so
+	 *                       a later session-expiry stamp is not
+	 *                       explained with an earlier failure's cause.
+	 */
+	private static function mark_needs_reauth( array $conn, string $field, string $reason = '' ): void {
+		if ( empty( $conn[ $field ] ) ) {
+			return;
+		}
+
+		$current = \get_option( 'atmosphere_connection', array() );
+
+		if ( ! \is_array( $current )
+			|| empty( $current[ $field ] )
+			|| ! \hash_equals( (string) $conn[ $field ], (string) $current[ $field ] )
+		) {
+			return;
+		}
+
+		/*
+		 * Fire the lifecycle action only on the first transition into the
+		 * reauth-required state, not on every repeated mark (this method is
+		 * idempotent and can be reached by several failure paths).
+		 */
+		$was_flagged = ! empty( $current['needs_reauth'] );
+
+		$current['needs_reauth'] = true;
+		$current['access_token'] = '';
+		unset( $current['expires_at'] );
+
+		if ( '' !== $reason ) {
+			$current['reauth_reason'] = $reason;
+		} else {
+			unset( $current['reauth_reason'] );
+		}
+
+		\update_option( 'atmosphere_connection', $current, false );
+
+		if ( ! $was_flagged ) {
+			/**
+			 * Fires when the connection first enters a reauth-required state.
+			 *
+			 * A permanent OAuth failure (rejected/expired refresh token, a
+			 * changed encryption key, ...) has left the stored token unusable:
+			 * the account stays on file but publishing and sync short-circuit
+			 * until the user reconnects. Lets a host plugin surface its own
+			 * reconnect prompt without polling {@see \Atmosphere\needs_reauth()}.
+			 * Fires once per transition, not on every repeated mark.
+			 *
+			 * @since 2.1.0
+			 *
+			 * @param string $did    The affected account's DID, or '' if unknown.
+			 * @param string $reason Machine-readable reauth reason (e.g. 'refresh_token', 'key_changed'), or '' if unspecified.
+			 */
+			\do_action( 'atmosphere_reauth_required', (string) ( $current['did'] ?? '' ), $reason );
+		}
 	}
 
 	/**
@@ -1222,12 +1469,7 @@ class Client {
 			$conn = \get_option( 'atmosphere_connection', array() );
 		}
 
-		$token = Encryption::decrypt( $conn['access_token'] );
-		if ( false === $token ) {
-			return new \WP_Error( 'atmosphere_decrypt', \__( 'Failed to decrypt access token.', 'atmosphere' ) );
-		}
-
-		return $token;
+		return self::decrypt_field( $conn, 'access_token' );
 	}
 
 	/**
@@ -1348,6 +1590,19 @@ class Client {
 				$revoke_args
 			);
 		}
+
+		/**
+		 * Fires after the AT Protocol connection is torn down.
+		 *
+		 * The local connection has been wiped (token revocation, if any, is
+		 * queued separately). Counterpart to {@see 'atmosphere_connected'}: lets
+		 * a host plugin drop its own connection-derived state without polling.
+		 *
+		 * @since 2.1.0
+		 *
+		 * @param string $did The DID of the account that was disconnected, or '' if unknown.
+		 */
+		\do_action( 'atmosphere_disconnected', \is_array( $conn ) ? (string) ( $conn['did'] ?? '' ) : '' );
 	}
 
 	/**

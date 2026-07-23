@@ -21,10 +21,12 @@ use Atmosphere\Transformer\Post;
 use Atmosphere\Transformer\Preview;
 use Atmosphere\Transformer\Publication;
 use Atmosphere\Integrations\Load;
+use Atmosphere\Rest\Admin\Connection_Controller;
 use Atmosphere\Rest\Admin\Pre_Publish_Controller;
 use Atmosphere\Rest\Client_Metadata_Controller;
 use Atmosphere\Rest\Reactions_Controller;
 use Atmosphere\WP_Admin\Admin;
+use Atmosphere\WP_Admin\Health_Check;
 use Atmosphere\WP_Admin\Settings_Fields;
 
 /**
@@ -164,11 +166,24 @@ class Atmosphere {
 		\add_action( 'init', array( Settings_Fields::class, 'init' ), 5 );
 
 		/*
+		 * Site Health status test + debug information. Registered
+		 * directly on the pull filters (no context gate, no `init`
+		 * indirection): they only fire on Site Health surfaces — the
+		 * screen, the weekly scheduled check, WP-CLI — so the class is
+		 * autoloaded only there and every other request just stores two
+		 * callables.
+		 */
+		\add_filter( 'site_status_tests', array( Health_Check::class, 'add_tests' ) );
+		\add_filter( 'debug_information', array( Health_Check::class, 'debug_information' ) );
+
+		/*
 		 * Display-side @handle.tld mention auto-linking. Self-registers on
 		 * init so the_content (priority 100) is wired for both front-end
 		 * rendering and the site.standard.document content parsers.
 		 */
 		\add_action( 'init', array( Mention::class, 'init' ), 5 );
+
+		\add_action( 'init', array( Connectors::class, 'init' ), 5 );
 
 		/*
 		 * Seed the long-form composition strategy from the user's
@@ -264,12 +279,23 @@ class Atmosphere {
 		 * theme colours from: classic-theme Customizer saves
 		 * (`customize_save_after`) and block-theme Site Editor saves
 		 * (the `wp_global_styles` post update).
+		 *
+		 * Each option gets both `add_option_*` and `update_option_*`: an
+		 * option with no row yet is written by `add_option()`, where
+		 * `update_option_*` never fires, which is the case a plugin
+		 * option hits the first time it is saved. Registering both for
+		 * every option keeps the list uniform, and the add hook is
+		 * simply never reached for the core options, which always exist.
 		 */
-		\add_action( 'update_option_blogname', array( $this, 'schedule_publication_sync' ) );
-		\add_action( 'update_option_blogdescription', array( $this, 'schedule_publication_sync' ) );
-		\add_action( 'update_option_site_icon', array( $this, 'schedule_publication_sync' ) );
-		\add_action( 'update_option_home', array( $this, 'schedule_publication_sync' ) );
-		\add_action( 'update_option_siteurl', array( $this, 'schedule_publication_sync' ) );
+		foreach (
+			\array_merge(
+				array( 'blogname', 'blogdescription', 'site_icon', 'home', 'siteurl' ),
+				\array_values( Publication::get_theme_color_options() )
+			) as $publication_option
+		) {
+			\add_action( 'add_option_' . $publication_option, array( $this, 'schedule_publication_sync' ) );
+			\add_action( 'update_option_' . $publication_option, array( $this, 'schedule_publication_sync' ) );
+		}
 		\add_action( 'switch_theme', array( $this, 'schedule_publication_sync' ) );
 		\add_action( 'save_post_wp_global_styles', array( $this, 'schedule_publication_sync' ) );
 		\add_action( 'customize_save_after', array( $this, 'schedule_publication_sync' ) );
@@ -312,10 +338,72 @@ class Atmosphere {
 
 		// Reaction sync cron + display hooks.
 		\add_action( 'atmosphere_sync_reactions', array( Reaction_Sync::class, 'sync' ) );
+		\add_action( 'atmosphere_backfill_replies', array( Reaction_Sync::class, 'backfill_scheduled_replies' ) );
 		Reaction_Sync::register();
 
-		if ( ! \wp_next_scheduled( 'atmosphere_sync_reactions' ) && is_connected() ) {
-			\wp_schedule_event( \time(), 'hourly', 'atmosphere_sync_reactions' );
+		/*
+		 * Reconcile the reaction-sync cron events on `init`, not here on
+		 * `plugins_loaded`: a host that re-enables a lane via the
+		 * `atmosphere_should_sync_*` filters from its own plugins_loaded/init
+		 * callback must have that filter attached before the gate is read, or
+		 * the event would never be scheduled even though the lane runs by
+		 * cron-dispatch time. Priority 20 leaves room for host filters on the
+		 * default init priority.
+		 */
+		\add_action( 'init', array( self::class, 'maybe_schedule_reaction_crons' ), 20 );
+	}
+
+	/**
+	 * Schedule (or unschedule) the reaction-sync cron events to match the site's
+	 * effective settings.
+	 *
+	 * Both events are reconciled every request: scheduled when wanted and absent,
+	 * cleared when unwanted but lingering — so a site that enters connection-only
+	 * mode after connecting doesn't keep an hourly no-op cron running forever.
+	 */
+	public static function maybe_schedule_reaction_crons(): void {
+		if ( ! is_connected() ) {
+			return;
+		}
+
+		// Hourly like/repost + reply poll. Wanted unless connection-only mode
+		// has both sync lanes off (a re-enabling filter keeps it on).
+		self::reconcile_cron_event(
+			'atmosphere_sync_reactions',
+			'hourly',
+			\time(),
+			! is_connection_only_mode() || is_reaction_sync_enabled() || is_reply_sync_enabled()
+		);
+
+		/*
+		 * Daily reply-backfill audit — reply-specific, so gate on reply sync.
+		 * The half-hour offset keeps its due timestamps from ever coinciding
+		 * with the hourly sync's; a whole-hour offset would collide every day,
+		 * and both compete for the same reaction-sync lock.
+		 */
+		self::reconcile_cron_event(
+			'atmosphere_backfill_replies',
+			'daily',
+			\time() + \HOUR_IN_SECONDS / 2,
+			! is_connection_only_mode() || is_reply_sync_enabled()
+		);
+	}
+
+	/**
+	 * Bring one recurring cron event in line with whether it's currently wanted.
+	 *
+	 * @param string $hook       Cron hook name.
+	 * @param string $recurrence Schedule recurrence (e.g. `hourly`, `daily`).
+	 * @param int    $first_run  Timestamp of the first run when (re)scheduling.
+	 * @param bool   $wanted     Whether the event should be scheduled right now.
+	 */
+	private static function reconcile_cron_event( string $hook, string $recurrence, int $first_run, bool $wanted ): void {
+		$scheduled = (bool) \wp_next_scheduled( $hook );
+
+		if ( $wanted && ! $scheduled ) {
+			\wp_schedule_event( $first_run, $recurrence, $hook );
+		} elseif ( ! $wanted && $scheduled ) {
+			\wp_clear_scheduled_hook( $hook );
 		}
 	}
 
@@ -684,13 +772,13 @@ class Atmosphere {
 		}
 
 		/*
-		 * Publish only when auto-publish is explicitly on. An unchecked
-		 * checkbox submits no value, so a saved "off" state is stored as
-		 * an empty string rather than '0' — comparing against '1' (with a
-		 * '1' default for never-saved installs) treats every non-'1' value
-		 * as off, the same way the ActivityPub plugin gates its toggles.
+		 * Publish only when auto-publish is effectively on. The gate folds
+		 * together the stored `atmosphere_auto_publish` option (opt-out, off
+		 * for any non-'1' value the same way the ActivityPub plugin gates its
+		 * toggles), connection-only mode, and the `atmosphere_should_auto_publish`
+		 * filter. See {@see \Atmosphere\is_auto_publish_enabled()}.
 		 */
-		if ( '1' !== \get_option( 'atmosphere_auto_publish', '1' ) ) {
+		if ( ! is_auto_publish_enabled() ) {
 			return;
 		}
 
@@ -969,21 +1057,21 @@ class Atmosphere {
 	/**
 	 * Schedule AT Protocol record deletion before a post is permanently deleted.
 	 *
-	 * Captures every Bluesky TID (post root + thread replies + outbound
-	 * comment replies) and the document TID from post meta, then
-	 * schedules a single async batch delete via cron. Thread-strategy
-	 * posts read every TID from `Post::META_THREAD_RECORDS`; outbound
-	 * comment replies come from `Publisher::collect_published_comment_tids()`.
+	 * Captures every Bluesky post TID (root + thread replies) and the
+	 * document TID from post meta, then schedules an async batch delete
+	 * via cron. When comment publishing is enabled, outbound comment
+	 * replies are also collected through
+	 * `Publisher::collect_published_comment_tids()`.
 	 *
-	 * Comment TIDs must be collected here, while WP still has the
+	 * Enabled comment TIDs must be collected here, while WP still has the
 	 * comment rows: `wp_delete_post( $id, true )` fires `before_delete_post`
 	 * first and only then iterates child comments, so this is the last
 	 * opportunity to read them.
 	 *
-	 * The trash path (`Publisher::delete_post()`) already cascades
-	 * comment deletes; this keeps the permanent-delete path symmetric
-	 * so unpublishing or hard-deleting a post does not orphan its
-	 * outbound replies on the PDS.
+	 * While comment publishing is enabled, the trash path
+	 * (`Publisher::delete_post()`) also cascades comment deletes. This
+	 * keeps permanent deletion symmetric. When they are disabled, both
+	 * paths preserve existing outbound replies instead.
 	 *
 	 * @param int $post_id Post ID being deleted.
 	 */
@@ -1026,10 +1114,9 @@ class Atmosphere {
 
 		$doc_tid = (string) \get_post_meta( $post_id, Transformer\Document::META_TID, true );
 
-		$comment_tids = \array_column(
-			Publisher::collect_published_comment_tids( $post_id ),
-			'tid'
-		);
+		$comment_tids = is_comment_publishing_enabled()
+			? \array_column( Publisher::collect_published_comment_tids( $post_id ), 'tid' )
+			: array();
 
 		if ( ! empty( $bsky_tids ) || '' !== $doc_tid || ! empty( $comment_tids ) ) {
 			\wp_schedule_single_event(
@@ -1123,7 +1210,7 @@ class Atmosphere {
 	 * @param int $comment_id Comment ID.
 	 */
 	public function on_comment_before_delete( int $comment_id ): void {
-		if ( ! is_connected() ) {
+		if ( ! is_comment_publishing_enabled() || ! is_connected() ) {
 			return;
 		}
 
@@ -1156,6 +1243,15 @@ class Atmosphere {
 	 * @return bool
 	 */
 	public static function should_publish_comment( \WP_Comment $comment ): bool {
+		/*
+		 * Checked first: a disabled site skips the eligibility work (which
+		 * busts the parent post's cache on every comment event) and the
+		 * per-comment filter entirely.
+		 */
+		if ( ! is_comment_publishing_enabled() ) {
+			return false;
+		}
+
 		$should = self::is_comment_eligible( $comment );
 
 		/**
@@ -1182,7 +1278,16 @@ class Atmosphere {
 			return false;
 		}
 
-		if ( (int) $comment->user_id <= 0 ) {
+		$user_id = (int) $comment->user_id;
+
+		/*
+		 * Registered users may be Subscribers who can comment but are not
+		 * trusted to publish site content. Outbound replies are written by
+		 * the site's connected Bluesky account, so use the comment author's
+		 * stored capabilities rather than the current user: this gate also
+		 * runs asynchronously in WP-Cron, where nobody is logged in.
+		 */
+		if ( $user_id <= 0 || ! \user_can( $user_id, 'publish_posts' ) ) {
 			return false;
 		}
 
@@ -1261,7 +1366,7 @@ class Atmosphere {
 	 * @param \WP_Comment $comment Comment object.
 	 */
 	private function schedule_comment_delete( \WP_Comment $comment ): void {
-		if ( ! is_connected() ) {
+		if ( ! is_comment_publishing_enabled() || ! is_connected() ) {
 			return;
 		}
 
@@ -1356,6 +1461,7 @@ class Atmosphere {
 	 */
 	public function register_rest_controllers(): void {
 		( new Client_Metadata_Controller() )->register_routes();
+		( new Connection_Controller() )->register_routes();
 		( new Pre_Publish_Controller() )->register_routes();
 		( new Reactions_Controller() )->register_routes();
 	}
@@ -1384,7 +1490,7 @@ class Atmosphere {
 			return;
 		}
 
-		if ( ! is_connected() || '1' !== \get_option( 'atmosphere_auto_publish', '1' ) ) {
+		if ( ! is_connected() || ! is_auto_publish_enabled() ) {
 			return;
 		}
 
@@ -1482,11 +1588,29 @@ class Atmosphere {
 							return null;
 						}
 
+						$reconnect_class = Client::is_reconnect_error( (string) $error['code'] );
+						$needs_reconnect = $reconnect_class && ! is_connected();
+
+						/*
+						 * The stored code says whether the failure was
+						 * reconnect-class; the live connection check drops
+						 * the flag once the operator has reconnected, so a
+						 * stale per-post error can't keep claiming the site
+						 * is disconnected. The stored message of a
+						 * reconnect-class failure is that same claim in
+						 * prose ("Reconnect your Bluesky account …"), so it
+						 * is suppressed on the same condition — the panel
+						 * would otherwise say "update the post to try
+						 * again" and "reconnect your account" at once.
+						 */
 						return array(
-							'code'     => (string) $error['code'],
-							'message'  => (string) ( $error['message'] ?? '' ),
-							'retrying' => ! empty( $error['retrying'] ),
-							'time'     => (int) ( $error['time'] ?? 0 ),
+							'code'            => (string) $error['code'],
+							'message'         => $reconnect_class && ! $needs_reconnect
+								? ''
+								: (string) ( $error['message'] ?? '' ),
+							'retrying'        => ! empty( $error['retrying'] ),
+							'needs_reconnect' => $needs_reconnect,
+							'time'            => (int) ( $error['time'] ?? 0 ),
 						);
 					},
 					'update_callback' => null,
@@ -1495,19 +1619,23 @@ class Atmosphere {
 						'description' => \__( 'The most recent Bluesky sharing failure for this post, null when the last attempt succeeded.', 'atmosphere' ),
 						'context'     => array( 'edit' ),
 						'properties'  => array(
-							'code'     => array(
+							'code'            => array(
 								'type'        => 'string',
 								'description' => \__( 'Machine-readable failure code.', 'atmosphere' ),
 							),
-							'message'  => array(
+							'message'         => array(
 								'type'        => 'string',
 								'description' => \__( 'Human-readable failure message.', 'atmosphere' ),
 							),
-							'retrying' => array(
+							'retrying'        => array(
 								'type'        => 'boolean',
 								'description' => \__( 'Whether another automatic attempt is scheduled.', 'atmosphere' ),
 							),
-							'time'     => array(
+							'needs_reconnect' => array(
+								'type'        => 'boolean',
+								'description' => \__( 'Whether reconnecting the Bluesky account is still required before sharing can succeed.', 'atmosphere' ),
+							),
+							'time'            => array(
 								'type'        => 'integer',
 								'description' => \__( 'Unix timestamp of the failed attempt.', 'atmosphere' ),
 							),
@@ -1645,13 +1773,21 @@ class Atmosphere {
 		\add_action(
 			'atmosphere_sync_publication',
 			static function (): void {
-				Publisher::sync_publication();
+				// Respect connection-only mode: no automatic publication write
+				// when a host owns the connection (see is_publication_sync_enabled()).
+				if ( is_publication_sync_enabled() ) {
+					Publisher::sync_publication();
+				}
 			}
 		);
 
 		\add_action(
 			'atmosphere_delete_records',
 			static function ( $bsky_tids, string $doc_tid, $comment_tids = array() ): void {
+				/*
+				 * delete_post_by_tids() drops the comment TIDs itself when
+				 * comment publishing is disabled at execution time.
+				 */
 				$comment_tids = \is_array( $comment_tids ) ? $comment_tids : array();
 				$result       = Publisher::delete_post_by_tids( $bsky_tids, $doc_tid, $comment_tids );
 
@@ -1750,6 +1886,10 @@ class Atmosphere {
 		\add_action(
 			'atmosphere_delete_comment',
 			static function ( int $comment_id ): void {
+				if ( ! is_comment_publishing_enabled() ) {
+					return;
+				}
+
 				$comment = \get_comment( $comment_id );
 				if ( ! $comment instanceof \WP_Comment ) {
 					return;
@@ -1768,7 +1908,7 @@ class Atmosphere {
 		\add_action(
 			'atmosphere_delete_comment_record',
 			static function ( string $tid ): void {
-				if ( '' === $tid ) {
+				if ( ! is_comment_publishing_enabled() || '' === $tid ) {
 					return;
 				}
 
@@ -2104,15 +2244,21 @@ class Atmosphere {
 	 * @return bool True when a retry has a chance of succeeding.
 	 */
 	private static function is_transient_publish_error( \WP_Error $error ): bool {
+		/*
+		 * Reconnect-class failures are permanent by definition; the code
+		 * list lives in {@see Client::is_reconnect_error()}, next to the
+		 * paths that mint those codes, so each code is declared once.
+		 */
+		if ( Client::is_reconnect_error( (string) $error->get_error_code() ) ) {
+			return false;
+		}
+
 		$permanent_codes = array(
 			'atmosphere_post_not_publishable',
-			'atmosphere_not_connected',
-			'atmosphere_needs_reauth',
 			'atmosphere_missing_tid',
 			'atmosphere_invalid_pre_apply_writes_return',
 			'atmosphere_invalid_pre_apply_writes_response',
 			'atmosphere_invalid_pre_upload_blob_return',
-			'atmosphere_decrypt',
 			'atmosphere_did_mismatch',
 
 			/*
@@ -2168,6 +2314,15 @@ class Atmosphere {
 	 * @param int $comment_id Comment ID just published.
 	 */
 	private static function reconcile_comment_after_publish( int $comment_id ): void {
+		/*
+		 * A switch flipped while applyWrites was in flight cannot undo the
+		 * completed request. Keep the returned record metadata intact and do
+		 * not enqueue a compensating delete while outgoing writes are off.
+		 */
+		if ( ! is_comment_publishing_enabled() ) {
+			return;
+		}
+
 		/*
 		 * Drop the in-process `WP_Comment` cache so a concurrent web
 		 * request that just unapproved or deleted this comment is

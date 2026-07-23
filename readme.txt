@@ -1,10 +1,10 @@
 === ATmosphere ===
 Contributors: automattic, pfefferle, kraftbj, jeherve, ryanc413
-Tags: at-protocol, bluesky, fediverse, atproto, crossposting
+Tags: at-protocol, bluesky, connector, atproto, crossposting
 Requires at least: 6.5
 Tested up to: 7.0
 Requires PHP: 8.2
-Stable tag: 2.0.0
+Stable tag: 2.1.0
 License: GPL-2.0-or-later
 License URI: https://spdx.org/licenses/GPL-2.0-or-later.html
 
@@ -14,7 +14,7 @@ Share your WordPress posts on Bluesky and the wider AT Protocol network — and 
 
 **ATmosphere** turns your WordPress site into a first-class citizen of the AT Protocol — the open network behind [Bluesky](https://bsky.social/).
 
-When you publish a post, ATmosphere automatically shares it on Bluesky and stores the full article on your AT Protocol account so any compatible app can read it. When people on Bluesky reply, like, or repost what you shared, those reactions show up as comments on your post. And approved comments your readers leave on WordPress are sent right back to Bluesky as replies under your original post — so the same conversation happens in both places without you having to copy anything by hand.
+When you publish a post, ATmosphere automatically shares it on Bluesky and stores the full article on your AT Protocol account so any compatible app can read it. When people on Bluesky reply, like, or repost what you shared, those reactions show up as comments on your post. And approved comments left by WordPress users who are allowed to publish posts are sent right back to Bluesky as replies under your original post — so the same conversation happens in both places without you having to copy anything by hand.
 
 = What you get =
 
@@ -22,7 +22,7 @@ When you publish a post, ATmosphere automatically shares it on Bluesky and store
 * **Long posts done right.** A long article becomes a short, readable Bluesky thread that links back to the full piece on your site. Edits are kept tidy so existing replies and reposts on Bluesky don't get orphaned.
 * **Use your own domain as your Bluesky handle.** With one click, your handle becomes something like `@yourblog.com` instead of `@you.bsky.social`. ATmosphere does the technical bit; Bluesky verifies it.
 * **Bluesky reactions become WordPress comments.** Replies appear in your comments. Likes and reposts show up alongside them with their own counts so the engagement is visible to your readers.
-* **WordPress comments become Bluesky replies.** When a logged-in reader leaves an approved comment on a cross-posted article, it's sent to Bluesky as a reply under the original post.
+* **Publishing-team comments become Bluesky replies.** When an Author, Editor, Administrator, or custom role allowed to publish posts leaves an approved comment on a cross-posted article, it's sent to Bluesky as a reply under the original post. Subscriber and other comment-only accounts stay local.
 * **Catch up on older posts.** A `wp atmosphere backfill` command can publish posts you wrote before installing the plugin.
 * **Per-post control.** You can opt individual posts out of cross-posting straight from the editor sidebar.
 * **No middleman.** ATmosphere talks directly to your Bluesky account using modern, secure sign-in. Nothing is routed through a third-party service, and your tokens never leave your WordPress site.
@@ -35,7 +35,7 @@ When you publish a post, ATmosphere automatically shares it on Bluesky and store
 3. Fill in a name, description, and icon for your "publication" — this is how your site is represented on the AT Protocol.
 4. Publish a post.
 5. Open Bluesky — your post is there. People can reply, like, repost, and follow as they normally would.
-6. Replies, likes, and reposts will start appearing as comments on your WordPress post. Comments you approve on WordPress will appear as replies on Bluesky.
+6. Replies, likes, and reposts will start appearing as comments on your WordPress post. Approved comments from users who can publish WordPress posts will appear as replies on Bluesky.
 
 **Note:** Cross-posting only kicks in for posts you publish *after* connecting. To bring older posts across, run `wp atmosphere backfill` from WP-CLI.
 
@@ -57,6 +57,10 @@ Yes — or an account on any AT Protocol provider. Most people sign up at [bsky.
 
 Yes. ATmosphere signs in to Bluesky directly from your WordPress site. Nothing is routed through Automattic or any other intermediary, and your sign-in tokens are stored encrypted on your site.
 
+= Why does ATmosphere say it needs to reconnect? =
+
+Your Bluesky sign-in tokens are stored encrypted using your site's WordPress security keys. If those keys change — after a site migration, or when a security plugin rotates them — the saved login can no longer be read, and ATmosphere asks you to reconnect. Reconnecting on the settings page fixes it in one step. If it keeps happening, look for a security plugin that rotates your keys on a schedule.
+
 = Can I use my own domain as my Bluesky handle? =
 
 Yes — that's one of the headline features. Once you've connected, open Bluesky's app settings, choose "Change Handle", pick "I have my own domain", and enter your WordPress site's domain. Bluesky will check that it really is your site (ATmosphere takes care of the verification file) and switch your handle.
@@ -71,11 +75,19 @@ Long posts are turned into a short Bluesky thread of a few connected posts, with
 
 = Are my WordPress comments published to Bluesky? =
 
-Yes — approved comments left by logged-in readers on cross-posted articles are sent to Bluesky as replies under your original post. Anonymous comments, trackbacks, and pingbacks are skipped.
+Yes — approved comments left by WordPress users who are allowed to publish posts are sent to Bluesky as replies under your original post. Comments from Subscribers and other comment-only accounts stay local, as do anonymous comments, trackbacks, and pingbacks.
+
+= Can I stop WordPress comments from being published to Bluesky? =
+
+Yes. Under **Settings → ATmosphere → Reactions**, turn off **Publish eligible WordPress comments as Bluesky replies**. New comment changes will stay on WordPress; replies already published to Bluesky are left unchanged. Incoming Bluesky replies, likes, and reposts continue to follow their own settings.
+
+Plugins can enforce this with the `atmosphere_should_publish_comments` filter, which overrides the saved setting without changing it.
 
 = Are Bluesky replies and reposts pulled back into WordPress? =
 
 Yes. ATmosphere checks Bluesky periodically and turns replies, likes, and reposts into WordPress comments on the matching post. Likes and reposts have their own comment types so they show up as engagement counts, not as duplicate comment text.
+
+ATmosphere also checks a small rolling batch of published posts each day, so older missed replies are recovered automatically without requiring post IDs. To check a specific post immediately, run `wp atmosphere replies backfill <post-id>` from WP-CLI. Both paths scan replies currently visible through Bluesky's public API and import those that are not already present.
 
 = What about posts I already published before installing? =
 
@@ -90,6 +102,21 @@ Yes. If you delete or unpublish a WordPress post, the matching Bluesky post and 
 Not at this time. ATmosphere is designed for a single WordPress site. On a Network-activated install only the current site's data is read and written, and uninstall only cleans the current site — credentials and records on other sites in the network are left intact.
 
 == Changelog ==
+
+### 2.1.0 - 2026-07-22
+#### Added
+- Add a connection-only mode so another plugin can reuse just the Bluesky connection: automatic cross-posting, likes and reposts, and reply importing all stay off, and the ATmosphere settings screen is hidden.
+- Add a setting — and a filter for plugins — to keep WordPress comment changes from being published to Bluesky while leaving incoming reactions enabled.
+- Add color settings for your publication theme, so you can choose the background, text, and accent colors apps use when they display your site.
+- ATmosphere now appears on the WordPress Settings → Connectors screen (WordPress 7.0 and later), so you can connect your account from there too.
+- Settings: suggest AT Protocol handles as you type when connecting your account.
+- Site Health now shows your Bluesky connection status, explains why a reconnect is needed and how to prevent it, and adds an ATmosphere section to the debug information for easier troubleshooting.
+- Sites that rotate their WordPress security keys can now define a dedicated encryption key in wp-config.php so the Bluesky connection survives the rotation.
+
+#### Fixed
+- Busy Bluesky threads no longer lose older replies and reactions when more than 250 notifications arrive between syncs, and older missed replies are now recovered automatically or on demand with WP-CLI.
+- Comments from Subscribers and other comment-only accounts now stay on WordPress instead of being published through the site's Bluesky account.
+- When your site's security keys change (after a migration or a salt rotation), ATmosphere now explains what happened and asks you to reconnect your Bluesky account, instead of failing on every post with an unhelpful retry message.
 
 ### 2.0.0 - 2026-07-08
 #### Added

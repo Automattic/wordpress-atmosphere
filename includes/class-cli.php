@@ -27,6 +27,7 @@ class Cli {
 	 * - wp atmosphere version
 	 * - wp atmosphere backfill [--post-type=<type>] [--ids=<csv>] [--limit=<n>]
 	 *                          [--batch=<n>] [--dry-run] [--force] [--original-time]
+	 * - wp atmosphere replies backfill <post-id>
 	 */
 	public static function register(): void {
 		\WP_CLI::add_command(
@@ -42,6 +43,14 @@ class Cli {
 			'\Atmosphere\Cli\Backfill_Command',
 			array(
 				'shortdesc' => 'Backfill existing posts to AT Protocol.',
+			)
+		);
+
+		\WP_CLI::add_command(
+			'atmosphere replies',
+			'\Atmosphere\Cli\Replies_Command',
+			array(
+				'shortdesc' => 'Recover missing Bluesky replies.',
 			)
 		);
 	}
