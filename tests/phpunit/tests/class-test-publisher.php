@@ -2734,16 +2734,7 @@ class Test_Publisher extends WP_UnitTestCase {
 	public function test_publish_post_original_time_reserves_historical_rkeys() {
 		\add_filter(
 			'atmosphere_pre_apply_writes',
-			static function ( $short_circuit, array $writes ) {
-				$results = array();
-				foreach ( $writes as $write ) {
-					$results[] = array(
-						'uri' => 'at://did:plc:test123/' . ( $write['collection'] ?? 'x' ) . '/' . ( $write['rkey'] ?? '' ),
-						'cid' => 'bafyreib' . \substr( \md5( (string) ( $write['rkey'] ?? '' ) ), 0, 20 ),
-					);
-				}
-				return array( 'results' => $results );
-			},
+			fn( $short_circuit, array $writes ) => $this->mock_response( $writes ),
 			10,
 			2
 		);
@@ -2773,16 +2764,7 @@ class Test_Publisher extends WP_UnitTestCase {
 	public function test_publish_post_defaults_to_live_rkeys() {
 		\add_filter(
 			'atmosphere_pre_apply_writes',
-			static function ( $short_circuit, array $writes ) {
-				$results = array();
-				foreach ( $writes as $write ) {
-					$results[] = array(
-						'uri' => 'at://did:plc:test123/' . ( $write['collection'] ?? 'x' ) . '/' . ( $write['rkey'] ?? '' ),
-						'cid' => 'bafyreib' . \substr( \md5( (string) ( $write['rkey'] ?? '' ) ), 0, 20 ),
-					);
-				}
-				return array( 'results' => $results );
-			},
+			fn( $short_circuit, array $writes ) => $this->mock_response( $writes ),
 			10,
 			2
 		);
