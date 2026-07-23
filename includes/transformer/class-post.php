@@ -1380,6 +1380,28 @@ class Post extends Base {
 	}
 
 	/**
+	 * When true, {@see self::upload_image_blob()} ignores the cached blob
+	 * ref and re-uploads. Set by the Publisher's self-heal retry; see
+	 * {@see \Atmosphere\Publisher::publish_post()} for why a cached ref
+	 * goes stale.
+	 *
+	 * @var bool
+	 */
+	private static bool $force_blob_reupload = false;
+
+	/**
+	 * Force, or stop forcing, blob re-upload on subsequent uploads.
+	 *
+	 * @since unreleased
+	 *
+	 * @param bool $force Whether to bypass the blob-ref cache.
+	 * @return void
+	 */
+	public static function set_force_blob_reupload( bool $force ): void {
+		self::$force_blob_reupload = $force;
+	}
+
+	/**
 	 * Upload an image attachment and return the blob reference.
 	 *
 	 * Used for any image that needs to land on the PDS — featured-image
@@ -1399,10 +1421,18 @@ class Post extends Base {
 	 * @return array|null Blob reference or null.
 	 */
 	public static function upload_image_blob( int $attachment_id ): ?array {
-		// Check cache first.
-		$cached = self::cached_image_blob( $attachment_id );
-		if ( null !== $cached ) {
-			return $cached;
+		/*
+		 * Check the cache first, unless a self-heal retry is forcing a
+		 * re-upload. Forcing bypasses the cache for every image a publish
+		 * touches — featured thumbnail, in-body images, publication icon,
+		 * content-parser images alike — so a stale ref is replaced whichever
+		 * image carried it, with no need to enumerate the upload set.
+		 */
+		if ( ! self::$force_blob_reupload ) {
+			$cached = self::cached_image_blob( $attachment_id );
+			if ( null !== $cached ) {
+				return $cached;
+			}
 		}
 
 		$mime = \get_post_mime_type( $attachment_id );

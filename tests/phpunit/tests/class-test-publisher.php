@@ -64,10 +64,61 @@ class Test_Publisher extends WP_UnitTestCase {
 		\remove_all_filters( 'atmosphere_transform_bsky_post' );
 		\remove_all_filters( 'atmosphere_transform_document' );
 		\remove_all_filters( 'atmosphere_is_short_form_post' );
+		\remove_all_filters( 'atmosphere_pre_upload_blob' );
 		\remove_all_filters( 'atmosphere_should_publish_bluesky_post' );
 		\remove_all_filters( 'atmosphere_update_skipped_unsynced_post' );
 
+		foreach ( $this->temp_files as $path ) {
+			if ( \file_exists( $path ) ) {
+				\unlink( $path ); // phpcs:ignore WordPress.WP.AlternativeFunctions.unlink_unlink
+			}
+		}
+		$this->temp_files = array();
+
 		parent::tear_down();
+	}
+
+	/**
+	 * Temp files created by {@see self::create_post_with_featured_image()},
+	 * removed in {@see self::tear_down()}.
+	 *
+	 * @var string[]
+	 */
+	private array $temp_files = array();
+
+	/**
+	 * Create a published post with a real featured-image file on disk.
+	 *
+	 * The blob-upload path needs a readable file, so this writes one and
+	 * registers it for teardown cleanup.
+	 *
+	 * @param string $suffix Unique filename suffix.
+	 * @return array{0: \WP_Post, 1: int} The post and its featured attachment ID.
+	 */
+	private function create_post_with_featured_image( string $suffix ): array {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_status'  => 'publish',
+				'post_content' => 'Short body.',
+			)
+		);
+
+		$upload_dir         = \wp_upload_dir();
+		$path               = $upload_dir['basedir'] . "/atmosphere-{$suffix}.jpg";
+		$this->temp_files[] = $path;
+		\file_put_contents( $path, 'FEATURED-IMAGE-BYTES' ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents
+
+		$attachment_id = self::factory()->attachment->create_object(
+			$path,
+			$post->ID,
+			array(
+				'post_mime_type' => 'image/jpeg',
+				'post_title'     => 'Featured image',
+			)
+		);
+		\set_post_thumbnail( $post->ID, $attachment_id );
+
+		return array( $post, $attachment_id );
 	}
 
 	/**
@@ -299,6 +350,246 @@ class Test_Publisher extends WP_UnitTestCase {
 		$this->assertSame( 'com.atproto.repo.applyWrites#update', $writes[1]['$type'] );
 		$this->assertSame( 'bsky-tid-123', $writes[0]['rkey'] );
 		$this->assertSame( 'doc-tid-456', $writes[1]['rkey'] );
+	}
+
+	/**
+	 * A cached blob CID that the PDS no longer holds must self-heal.
+	 *
+	 * Featured-image blob refs are cached in `_atmosphere_blob_ref`
+	 * postmeta and reused on subsequent publishes without re-uploading.
+	 * When the active PDS does not have that blob — because it was
+	 * uploaded to a different account/PDS, or the reference PDS garbage
+	 * collected an orphaned blob — `applyWrites` fails with
+	 * "Could not find blob". Publisher must drop the stale ref, re-upload,
+	 * and retry the publish once so the post lands without operator
+	 * intervention.
+	 */
+	public function test_publish_post_self_heals_stale_blob_ref() {
+		list( $post, $attachment_id ) = $this->create_post_with_featured_image( 'self-heal-test' );
+
+		// Pre-seed a stale blob ref, as a prior publish to another PDS would.
+		$stale_ref = array(
+			'$type'    => 'blob',
+			'ref'      => array( '$link' => 'bafkreistalecid' ),
+			'mimeType' => 'image/jpeg',
+			'size'     => 123,
+		);
+		\update_post_meta( $attachment_id, '_atmosphere_blob_ref', $stale_ref );
+
+		// The re-upload after the cache is cleared returns a fresh blob.
+		$fresh_ref = array(
+			'$type'    => 'blob',
+			'ref'      => array( '$link' => 'bafkreifreshcid' ),
+			'mimeType' => 'image/jpeg',
+			'size'     => 456,
+		);
+		\add_filter(
+			'atmosphere_pre_upload_blob',
+			static function () use ( $fresh_ref ) {
+				return array( 'blob' => $fresh_ref );
+			}
+		);
+
+		// First applyWrites is rejected for the missing blob; the retry succeeds.
+		$this->fail_call_indexes = array(
+			1 => new \WP_Error(
+				'atmosphere_pds',
+				'Could not find blob: bafkreistalecid',
+				array( 'status' => 400 )
+			),
+		);
+		$this->register_capture( $post->ID );
+
+		$result = Publisher::publish_post( $post );
+
+		$this->assertIsArray( $result, 'Publish should ultimately succeed after self-heal.' );
+		$this->assertCount( 2, $this->captured_calls, 'Publisher should retry applyWrites once after the blob error.' );
+		$this->assertSame(
+			$fresh_ref,
+			\get_post_meta( $attachment_id, '_atmosphere_blob_ref', true ),
+			'The stale blob ref should be replaced by the freshly uploaded one.'
+		);
+	}
+
+	/**
+	 * The blob-error self-heal retries at most once.
+	 *
+	 * If the re-uploaded blob is also rejected (a misconfigured PDS, a
+	 * persistent upload problem), Publisher must surface the error rather
+	 * than retry forever.
+	 */
+	public function test_publish_post_blob_self_heal_retries_only_once() {
+		list( $post ) = $this->create_post_with_featured_image( 'self-heal-loop-test' );
+
+		\add_filter(
+			'atmosphere_pre_upload_blob',
+			static function () {
+				return array(
+					'blob' => array(
+						'$type' => 'blob',
+						'ref'   => array( '$link' => 'bafkreiwhatever' ),
+					),
+				);
+			}
+		);
+
+		// Both attempts are rejected for the same missing blob.
+		$this->fail_call_indexes = array(
+			1 => new \WP_Error( 'atmosphere_pds', 'Could not find blob: bafkreiwhatever', array( 'status' => 400 ) ),
+			2 => new \WP_Error( 'atmosphere_pds', 'Could not find blob: bafkreiwhatever', array( 'status' => 400 ) ),
+		);
+		$this->register_capture( $post->ID );
+
+		$result = Publisher::publish_post( $post );
+
+		$this->assertWPError( $result, 'A persistently missing blob should surface the error.' );
+		$this->assertCount( 2, $this->captured_calls, 'Self-heal must retry exactly once, not loop.' );
+	}
+
+	/**
+	 * An unrelated `atmosphere_pds` 400 must not trigger the self-heal
+	 * retry — only a blob-missing rejection does.
+	 *
+	 * Without this guard a second `applyWrites` would fire for any 400,
+	 * risking an accidental double-publish on an error that a re-upload
+	 * cannot fix.
+	 */
+	public function test_unrelated_pds_400_does_not_retry() {
+		list( $post ) = $this->create_post_with_featured_image( 'no-retry-test' );
+
+		\add_filter(
+			'atmosphere_pre_upload_blob',
+			static function () {
+				return array(
+					'blob' => array(
+						'$type' => 'blob',
+						'ref'   => array( '$link' => 'bafok' ),
+					),
+				);
+			}
+		);
+
+		$this->fail_call_indexes = array(
+			1 => new \WP_Error( 'atmosphere_pds', 'Invalid record: missing required field.', array( 'status' => 400 ) ),
+		);
+		$this->register_capture( $post->ID );
+
+		$result = Publisher::publish_post( $post );
+
+		$this->assertWPError( $result, 'A non-blob 400 should surface, not self-heal.' );
+		$this->assertCount( 1, $this->captured_calls, 'A non-blob 400 must not trigger a second applyWrites.' );
+	}
+
+	/**
+	 * The "blob not found" wording triggers the self-heal too, not only the
+	 * reference PDS's "could not find blob".
+	 */
+	public function test_self_heals_on_blob_not_found_wording() {
+		list( $post, $attachment_id ) = $this->create_post_with_featured_image( 'not-found-wording-test' );
+
+		$fresh_ref = array(
+			'$type'    => 'blob',
+			'ref'      => array( '$link' => 'bafkreifreshwording' ),
+			'mimeType' => 'image/jpeg',
+			'size'     => 456,
+		);
+		\add_filter(
+			'atmosphere_pre_upload_blob',
+			static function () use ( $fresh_ref ) {
+				return array( 'blob' => $fresh_ref );
+			}
+		);
+
+		$this->fail_call_indexes = array(
+			1 => new \WP_Error( 'atmosphere_pds', 'Blob not found: bafkreistalewording', array( 'status' => 400 ) ),
+		);
+		$this->register_capture( $post->ID );
+
+		$result = Publisher::publish_post( $post );
+
+		$this->assertIsArray( $result, 'The "blob not found" wording should also self-heal.' );
+		$this->assertCount( 2, $this->captured_calls, 'Publisher should retry once on the "blob not found" wording.' );
+		$this->assertSame(
+			$fresh_ref,
+			\get_post_meta( $attachment_id, '_atmosphere_blob_ref', true ),
+			'The stale ref should be replaced after the "blob not found" self-heal.'
+		);
+	}
+
+	/**
+	 * The self-heal also covers in-body images, not just the featured image.
+	 *
+	 * Inline `core/image` blobs are cached under the same
+	 * `_atmosphere_blob_ref` key as the featured image, so a post whose
+	 * stale blob belongs to an in-body image (and which has no featured
+	 * image at all) must still self-heal.
+	 */
+	public function test_publish_post_self_heals_stale_inline_image_blob() {
+		$upload_dir         = \wp_upload_dir();
+		$path               = $upload_dir['basedir'] . '/atmosphere-self-heal-inline-test.jpg';
+		$this->temp_files[] = $path;
+		\file_put_contents( $path, 'INLINE-IMAGE-BYTES' ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents
+
+		$attachment_id = self::factory()->attachment->create_object(
+			$path,
+			0,
+			array(
+				'post_mime_type' => 'image/jpeg',
+				'post_title'     => 'Inline image',
+			)
+		);
+
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_status'  => 'publish',
+				'post_content' => \sprintf(
+					'<!-- wp:image {"id":%1$d} --><figure class="wp-block-image"><img src="%2$s" alt="" class="wp-image-%1$d"/></figure><!-- /wp:image -->',
+					$attachment_id,
+					\wp_get_attachment_url( $attachment_id )
+				),
+			)
+		);
+
+		// Force the short-form path so the in-body image is uploaded as a
+		// native `app.bsky.embed.images` blob (long-form uses a link card).
+		\add_filter( 'atmosphere_is_short_form_post', '__return_true' );
+
+		// No featured image — the stale ref is on the in-body image only.
+		$stale_ref = array(
+			'$type'    => 'blob',
+			'ref'      => array( '$link' => 'bafkreistaleinline' ),
+			'mimeType' => 'image/jpeg',
+			'size'     => 123,
+		);
+		\update_post_meta( $attachment_id, '_atmosphere_blob_ref', $stale_ref );
+
+		$fresh_ref = array(
+			'$type'    => 'blob',
+			'ref'      => array( '$link' => 'bafkreifreshinline' ),
+			'mimeType' => 'image/jpeg',
+			'size'     => 456,
+		);
+		\add_filter(
+			'atmosphere_pre_upload_blob',
+			static function () use ( $fresh_ref ) {
+				return array( 'blob' => $fresh_ref );
+			}
+		);
+
+		$this->fail_call_indexes = array(
+			1 => new \WP_Error( 'atmosphere_pds', 'Could not find blob: bafkreistaleinline', array( 'status' => 400 ) ),
+		);
+		$this->register_capture( $post->ID );
+
+		$result = Publisher::publish_post( $post );
+
+		$this->assertIsArray( $result, 'Publish should self-heal an in-body image blob too.' );
+		$this->assertCount( 2, $this->captured_calls, 'Publisher should retry once after the inline-image blob error.' );
+		$this->assertSame(
+			$fresh_ref,
+			\get_post_meta( $attachment_id, '_atmosphere_blob_ref', true ),
+			'The stale in-body image ref should be replaced by the freshly uploaded one.'
+		);
 	}
 
 	/**

@@ -127,6 +127,78 @@ class Publisher {
 		// so the embedded publication strongRef points at the current CID.
 		self::maybe_heal_publication();
 
+		$result = self::attempt_publish_post( $post );
+
+		/*
+		 * Self-heal a stale image blob ref. Blob CIDs are cached in
+		 * postmeta and reused across publishes, but a blob is only
+		 * retrievable from the PDS it was uploaded to and only while a
+		 * committed record references it. When the active account/PDS
+		 * changes, or the reference PDS garbage-collects an orphaned blob,
+		 * `applyWrites` rejects the cached CID with "Could not find blob".
+		 * Drop the stale refs for every image the post embeds — featured
+		 * image and in-body images alike — so the next transform
+		 * re-uploads against the current PDS, then attempt the publish once
+		 * more. This automates the manual "clear the cache and re-publish"
+		 * recovery.
+		 */
+		if ( self::is_blob_missing_error( $result ) ) {
+			debug_log(
+				\sprintf(
+					'post %d: PDS rejected a cached image blob (%s) — re-uploading the post images and retrying the publish',
+					$post->ID,
+					$result->get_error_message()
+				)
+			);
+
+			/*
+			 * Retry once with the blob cache bypassed, so every image the
+			 * publish re-uploads against the current PDS. Bounded to a single
+			 * re-attempt: a blob still missing after a fresh upload surfaces
+			 * the error instead of retrying forever.
+			 *
+			 * If the re-upload itself fails, the image is dropped and the
+			 * publish still succeeds — the same "un-uploadable image, publish
+			 * without it" policy every other publish follows. Returning a
+			 * WP_Error here would be worse: the records committed by this
+			 * attempt are live, and the publish worker's retry would
+			 * `applyWrites#create` the same rkeys again and collide.
+			 */
+			Post::set_force_blob_reupload( true );
+			$result = self::attempt_publish_post( $post );
+			Post::set_force_blob_reupload( false );
+		}
+
+		$result = self::reconcile_post_after_write( $post, $result );
+
+		/**
+		 * Fires after a post publish attempt completes, with the final result.
+		 *
+		 * Subscribers can use this to react to success or failure — for
+		 * example, to instrument metrics, surface notifications, or schedule
+		 * follow-up jobs. Fires exactly once per `publish_post()` invocation
+		 * regardless of which internal path produced the result.
+		 *
+		 * @param \WP_Post        $post   The post that was published.
+		 * @param array|\WP_Error $result `applyWrites` response on success, `WP_Error` on failure.
+		 */
+		\do_action( 'atmosphere_publish_post_result', $post, $result );
+
+		return $result;
+	}
+
+	/**
+	 * Build the record batch for a post and write it once.
+	 *
+	 * Extracted from {@see self::publish_post()} so the publish can be
+	 * retried after a stale blob ref is dropped. Each call builds fresh
+	 * transformers, so a retry re-runs the blob upload that the first
+	 * attempt short-circuited from the cache.
+	 *
+	 * @param \WP_Post $post WordPress post.
+	 * @return array|\WP_Error `applyWrites` response on success, `WP_Error` on failure.
+	 */
+	private static function attempt_publish_post( \WP_Post $post ): array|\WP_Error {
 		$bsky_transformer = new Post( $post );
 		$doc_transformer  = new Document( $post );
 
@@ -213,22 +285,46 @@ class Publisher {
 			}
 		}
 
-		$result = self::reconcile_post_after_write( $post, $result );
-
-		/**
-		 * Fires after a post publish attempt completes, with the final result.
-		 *
-		 * Subscribers can use this to react to success or failure — for
-		 * example, to instrument metrics, surface notifications, or schedule
-		 * follow-up jobs. Fires exactly once per `publish_post()` invocation
-		 * regardless of which internal path produced the result.
-		 *
-		 * @param \WP_Post        $post   The post that was published.
-		 * @param array|\WP_Error $result `applyWrites` response on success, `WP_Error` on failure.
-		 */
-		\do_action( 'atmosphere_publish_post_result', $post, $result );
-
 		return $result;
+	}
+
+	/**
+	 * Whether an `applyWrites` result failed because a referenced blob is
+	 * absent from the active PDS.
+	 *
+	 * The reference PDS rejects a write that references an unknown blob CID
+	 * with HTTP 400 and a "Could not find blob: <cid>" message — surfaced
+	 * by {@see API::apply_writes()} as an `atmosphere_pds` error. Matching
+	 * the message is the only signal available; the PDS does not use a
+	 * distinct error code for it.
+	 *
+	 * @param array|\WP_Error $result Publisher result.
+	 * @return bool
+	 */
+	private static function is_blob_missing_error( array|\WP_Error $result ): bool {
+		if ( ! \is_wp_error( $result ) ) {
+			return false;
+		}
+
+		if ( 'atmosphere_pds' !== $result->get_error_code() ) {
+			return false;
+		}
+
+		$data = $result->get_error_data();
+		if ( ! \is_array( $data ) || 400 !== ( $data['status'] ?? 0 ) ) {
+			return false;
+		}
+
+		/*
+		 * Match "blob" plus a not-found signal rather than one exact PDS
+		 * sentence, so "blob not found" is caught as well as "could not
+		 * find blob". Best-effort: the PDS gives no distinct error code.
+		 */
+		$message = $result->get_error_message();
+
+		return false !== \stripos( $message, 'blob' )
+			&& ( false !== \stripos( $message, 'not find' )
+				|| false !== \stripos( $message, 'not found' ) );
 	}
 
 	/**

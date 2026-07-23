@@ -2572,6 +2572,43 @@ class Test_Post extends WP_UnitTestCase {
 	}
 
 	/**
+	 * A forced re-upload bypasses the cached blob ref.
+	 *
+	 * The self-heal retry sets this flag so a stale cached ref — one the
+	 * current PDS no longer has — is not reused: `upload_image_blob()` must
+	 * skip the cache and take the upload path, whichever image or content
+	 * format carried the ref. The upload has no readable file in the test
+	 * environment, so it returns null rather than the stale ref, which is
+	 * enough to prove the cache was bypassed.
+	 *
+	 * @covers ::upload_image_blob
+	 * @covers ::set_force_blob_reupload
+	 */
+	public function test_force_blob_reupload_bypasses_the_cache() {
+		$attachment_id = self::factory()->attachment->create_object(
+			array(
+				'file'           => 'cached.jpg',
+				'post_mime_type' => 'image/jpeg',
+			),
+			0,
+			array( 'post_title' => 'Cached' )
+		);
+		$cached_ref    = array( 'ref' => array( '$link' => 'bafstale' ) );
+		\update_post_meta( $attachment_id, '_atmosphere_blob_ref', $cached_ref );
+
+		// Normally the cached ref is returned without an upload.
+		$this->assertSame( $cached_ref, Post::upload_image_blob( $attachment_id ) );
+
+		// Forced: the cache is skipped and the upload path (no file here) runs.
+		Post::set_force_blob_reupload( true );
+		$this->assertNull( Post::upload_image_blob( $attachment_id ) );
+		Post::set_force_blob_reupload( false );
+
+		// Resetting the flag restores the cached fast path.
+		$this->assertSame( $cached_ref, Post::upload_image_blob( $attachment_id ) );
+	}
+
+	/**
 	 * On offloaded-media hosts (WordPress.com / Atomic), intermediate
 	 * image sizes are virtual — their files never land on local disk —
 	 * so the local path is unreadable. `upload_image_blob()` must fall
