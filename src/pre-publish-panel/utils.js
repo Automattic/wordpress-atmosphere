@@ -45,3 +45,25 @@ export function hasOverLimit( records ) {
 		records.some( ( record ) => record && record.over_limit )
 	);
 }
+
+/**
+ * Whether a preview error is a genuine permission failure.
+ *
+ * WordPress returns 403 both for a real capability denial and for an
+ * expired or invalid nonce (`rest_cookie_invalid_nonce`). The nonce case
+ * is transient — a reload fixes it — so it must read as retriable, not as
+ * "you don't have permission".
+ *
+ * @param {Object} error REST error, with `code` and `data.status`.
+ * @return {boolean} True for a permission failure, false when transient.
+ */
+export function isAuthError( error ) {
+	const code = error?.code;
+	const status = error?.data?.status;
+
+	if ( 'rest_cookie_invalid_nonce' === code ) {
+		return false;
+	}
+
+	return 'rest_forbidden' === code || 401 === status || 403 === status;
+}
