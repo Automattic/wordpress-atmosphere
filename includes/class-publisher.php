@@ -138,6 +138,13 @@ class Publisher {
 			 * publish re-uploads against the current PDS. Bounded to a single
 			 * re-attempt: a blob still missing after a fresh upload surfaces
 			 * the error instead of retrying forever.
+			 *
+			 * If the re-upload itself fails, the image is dropped and the
+			 * publish still succeeds — the same "un-uploadable image, publish
+			 * without it" policy every other publish follows. Returning a
+			 * WP_Error here would be worse: the records committed by this
+			 * attempt are live, and the publish worker's retry would
+			 * `applyWrites#create` the same rkeys again and collide.
 			 */
 			Post::set_force_blob_reupload( true );
 			$result = self::attempt_publish_post( $post );

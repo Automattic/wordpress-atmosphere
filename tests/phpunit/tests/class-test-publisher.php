@@ -445,6 +445,76 @@ class Test_Publisher extends WP_UnitTestCase {
 	}
 
 	/**
+	 * An unrelated `atmosphere_pds` 400 must not trigger the self-heal
+	 * retry — only a blob-missing rejection does.
+	 *
+	 * Without this guard a second `applyWrites` would fire for any 400,
+	 * risking an accidental double-publish on an error that a re-upload
+	 * cannot fix.
+	 */
+	public function test_unrelated_pds_400_does_not_retry() {
+		list( $post ) = $this->create_post_with_featured_image( 'no-retry-test' );
+
+		\add_filter(
+			'atmosphere_pre_upload_blob',
+			static function () {
+				return array(
+					'blob' => array(
+						'$type' => 'blob',
+						'ref'   => array( '$link' => 'bafok' ),
+					),
+				);
+			}
+		);
+
+		$this->fail_call_indexes = array(
+			1 => new \WP_Error( 'atmosphere_pds', 'Invalid record: missing required field.', array( 'status' => 400 ) ),
+		);
+		$this->register_capture( $post->ID );
+
+		$result = Publisher::publish_post( $post );
+
+		$this->assertWPError( $result, 'A non-blob 400 should surface, not self-heal.' );
+		$this->assertCount( 1, $this->captured_calls, 'A non-blob 400 must not trigger a second applyWrites.' );
+	}
+
+	/**
+	 * The "blob not found" wording triggers the self-heal too, not only the
+	 * reference PDS's "could not find blob".
+	 */
+	public function test_self_heals_on_blob_not_found_wording() {
+		list( $post, $attachment_id ) = $this->create_post_with_featured_image( 'not-found-wording-test' );
+
+		$fresh_ref = array(
+			'$type'    => 'blob',
+			'ref'      => array( '$link' => 'bafkreifreshwording' ),
+			'mimeType' => 'image/jpeg',
+			'size'     => 456,
+		);
+		\add_filter(
+			'atmosphere_pre_upload_blob',
+			static function () use ( $fresh_ref ) {
+				return array( 'blob' => $fresh_ref );
+			}
+		);
+
+		$this->fail_call_indexes = array(
+			1 => new \WP_Error( 'atmosphere_pds', 'Blob not found: bafkreistalewording', array( 'status' => 400 ) ),
+		);
+		$this->register_capture( $post->ID );
+
+		$result = Publisher::publish_post( $post );
+
+		$this->assertIsArray( $result, 'The "blob not found" wording should also self-heal.' );
+		$this->assertCount( 2, $this->captured_calls, 'Publisher should retry once on the "blob not found" wording.' );
+		$this->assertSame(
+			$fresh_ref,
+			\get_post_meta( $attachment_id, '_atmosphere_blob_ref', true ),
+			'The stale ref should be replaced after the "blob not found" self-heal.'
+		);
+	}
+
+	/**
 	 * The self-heal also covers in-body images, not just the featured image.
 	 *
 	 * Inline `core/image` blobs are cached under the same
