@@ -1468,9 +1468,7 @@ class Publisher {
 		$doc_skip  = self::record_is_foreign( $doc_origin_did );
 
 		if ( ( $bsky_skip && ! empty( $stored ) ) || ( $doc_skip && $doc_tid ) ) {
-			return new \WP_Error(
-				'atmosphere_did_mismatch',
-				\__( 'Cannot delete records that were created under a different connected account.', 'atmosphere' ),
+			return self::did_mismatch_error(
 				array(
 					'post_id'         => $post->ID,
 					'current_did'     => get_did(),
@@ -1545,11 +1543,7 @@ class Publisher {
 		if ( null !== $outcome['comments'] ) {
 			// Clean up comment meta for every reply we just deleted.
 			foreach ( $comment_tids as $comment_tid ) {
-				\delete_comment_meta( $comment_tid['comment_id'], Comment::META_TID );
-				\delete_comment_meta( $comment_tid['comment_id'], Comment::META_URI );
-				\delete_comment_meta( $comment_tid['comment_id'], Comment::META_CID );
-				\delete_comment_meta( $comment_tid['comment_id'], Comment::META_DID );
-				\delete_comment_meta( $comment_tid['comment_id'], Reaction_Sync::META_SOURCE_ID );
+				self::clear_comment_record_meta( $comment_tid['comment_id'] );
 			}
 		}
 
@@ -1678,9 +1672,7 @@ class Publisher {
 		 */
 		if ( ( self::record_is_foreign( $bsky_origin_did ) && ! empty( $bsky_tids ) )
 			|| ( self::record_is_foreign( $doc_origin_did ) && '' !== $doc_tid ) ) {
-			return new \WP_Error(
-				'atmosphere_did_mismatch',
-				\__( 'Cannot delete records that were created under a different connected account.', 'atmosphere' ),
+			return self::did_mismatch_error(
 				array(
 					'current_did'     => get_did(),
 					'bsky_origin_did' => $bsky_origin_did,
@@ -2108,9 +2100,7 @@ class Publisher {
 		 */
 		$origin_did = (string) \get_comment_meta( $comment_id, Comment::META_DID, true );
 		if ( self::record_is_foreign( $origin_did ) ) {
-			return new \WP_Error(
-				'atmosphere_did_mismatch',
-				\__( 'Cannot delete records that were created under a different connected account.', 'atmosphere' ),
+			return self::did_mismatch_error(
 				array(
 					'comment_id'  => $comment_id,
 					'current_did' => get_did(),
@@ -2133,11 +2123,7 @@ class Publisher {
 			return $result;
 		}
 
-		\delete_comment_meta( $comment_id, Comment::META_TID );
-		\delete_comment_meta( $comment_id, Comment::META_URI );
-		\delete_comment_meta( $comment_id, Comment::META_CID );
-		\delete_comment_meta( $comment_id, Comment::META_DID );
-		\delete_comment_meta( $comment_id, Reaction_Sync::META_SOURCE_ID );
+		self::clear_comment_record_meta( $comment_id );
 
 		return $result;
 	}
@@ -2165,9 +2151,7 @@ class Publisher {
 		}
 
 		if ( self::record_is_foreign( $origin_did ) ) {
-			return new \WP_Error(
-				'atmosphere_did_mismatch',
-				\__( 'Cannot delete records that were created under a different connected account.', 'atmosphere' ),
+			return self::did_mismatch_error(
 				array(
 					'tid'         => $tid,
 					'current_did' => get_did(),
@@ -2220,6 +2204,42 @@ class Publisher {
 		$current_did = get_did();
 
 		return '' !== $origin_did && '' !== $current_did && $origin_did !== $current_did;
+	}
+
+	/**
+	 * Build the standard error for a refused wrong-repo delete.
+	 *
+	 * Shared by every delete path that applies {@see self::record_is_foreign()}
+	 * so the error code, translated message, and shape stay identical. The
+	 * `$data` payload varies per call site (post/comment identifiers and the
+	 * relevant origin DIDs) for the operator breadcrumb.
+	 *
+	 * @param array $data Context for the error (identifiers, origin/current DIDs).
+	 * @return \WP_Error
+	 */
+	private static function did_mismatch_error( array $data ): \WP_Error {
+		return new \WP_Error(
+			'atmosphere_did_mismatch',
+			\__( 'Cannot delete records that were created under a different connected account.', 'atmosphere' ),
+			$data
+		);
+	}
+
+	/**
+	 * Delete every AT Protocol record meta key from a comment.
+	 *
+	 * Single definition of the comment record-meta key set so a new key
+	 * (like `Comment::META_DID`) is added in one place instead of the
+	 * several cleanup sites that clear a fully-deleted reply.
+	 *
+	 * @param int $comment_id Comment ID.
+	 */
+	public static function clear_comment_record_meta( int $comment_id ): void {
+		\delete_comment_meta( $comment_id, Comment::META_TID );
+		\delete_comment_meta( $comment_id, Comment::META_URI );
+		\delete_comment_meta( $comment_id, Comment::META_CID );
+		\delete_comment_meta( $comment_id, Comment::META_DID );
+		\delete_comment_meta( $comment_id, Reaction_Sync::META_SOURCE_ID );
 	}
 
 	/**

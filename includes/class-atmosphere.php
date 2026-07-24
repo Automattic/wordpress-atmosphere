@@ -2368,11 +2368,7 @@ class Atmosphere {
 		// cleanup event can guard against a wrong-repo delete.
 		$origin_did = (string) \get_comment_meta( $comment_id, Comment::META_DID, true );
 
-		\delete_comment_meta( $comment_id, Comment::META_TID );
-		\delete_comment_meta( $comment_id, Comment::META_URI );
-		\delete_comment_meta( $comment_id, Comment::META_CID );
-		\delete_comment_meta( $comment_id, Comment::META_DID );
-		\delete_comment_meta( $comment_id, Reaction_Sync::META_SOURCE_ID );
+		Publisher::clear_comment_record_meta( $comment_id );
 
 		if ( '' === $tid ) {
 			return;
