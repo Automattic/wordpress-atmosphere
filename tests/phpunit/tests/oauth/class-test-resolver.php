@@ -756,4 +756,24 @@ class Test_Resolver extends WP_UnitTestCase {
 		$this->assertSame( 'atmosphere_upstream_error', $result->get_error_code() );
 		$this->assertSame( 500, $result->get_error_data()['status'] );
 	}
+
+	/**
+	 * A 5xx on the second fetch — the auth-server metadata document — also
+	 * surfaces as an upstream error, not "Authorization server metadata is
+	 * incomplete". The first fetch succeeds so this exercises that call site.
+	 */
+	public function test_discover_auth_server_surfaces_upstream_error_on_metadata_5xx() {
+		$this->stub_response(
+			'oauth-protected-resource',
+			200,
+			array( 'authorization_servers' => array( 'https://auth.example.com' ) )
+		);
+		$this->stub_response( 'oauth-authorization-server', 503, '<html>Service Unavailable</html>' );
+
+		$result = Resolver::discover_auth_server( 'https://pds.example.com' );
+
+		$this->assertWPError( $result );
+		$this->assertSame( 'atmosphere_upstream_error', $result->get_error_code() );
+		$this->assertSame( 503, $result->get_error_data()['status'] );
+	}
 }
