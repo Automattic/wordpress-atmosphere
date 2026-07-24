@@ -472,7 +472,10 @@ function has_identity(): bool {
  *
  * @since unreleased
  *
- * @param array $identity Identity with `did`, `handle`, and `pds_endpoint`.
+ * @param array $identity Identity to store. Only `did`, `handle`, and
+ *                        `pds_endpoint` are persisted; a missing key is
+ *                        stored as an empty string and any other keys are
+ *                        dropped.
  * @return bool Whether the option was updated (see `update_option()`).
  */
 function set_identity( array $identity ): bool {
