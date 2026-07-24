@@ -1,0 +1,4 @@
+Significance: patch
+Type: fixed
+
+Fixed a case where deleting a post or comment after reconnecting to a different Bluesky account could quietly leave the original records stranded on the old account. Atmosphere now stops and reports the mismatch instead.

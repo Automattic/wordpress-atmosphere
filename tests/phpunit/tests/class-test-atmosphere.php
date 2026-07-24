@@ -883,7 +883,8 @@ class Test_Atmosphere extends WP_UnitTestCase {
 		$this->assertNotFalse( \wp_next_scheduled( 'atmosphere_publish_comment', array( $comment_id ) ) );
 		$this->assertNotFalse( \wp_next_scheduled( 'atmosphere_update_comment', array( $comment_id ) ) );
 		$this->assertNotFalse( \wp_next_scheduled( 'atmosphere_delete_comment', array( $comment_id ) ) );
-		$this->assertNotFalse( \wp_next_scheduled( 'atmosphere_delete_comment_record', array( 'reply-tid' ) ) );
+		// Seeded without META_DID, so the captured origin DID is empty.
+		$this->assertNotFalse( \wp_next_scheduled( 'atmosphere_delete_comment_record', array( 'reply-tid', '' ) ) );
 
 		\update_option( 'atmosphere_publish_comments', '' );
 
@@ -1559,10 +1560,14 @@ class Test_Atmosphere extends WP_UnitTestCase {
 
 		$this->atmosphere->on_before_delete( $post_id );
 
+		// Records were seeded without META_DID, so the captured origin DIDs
+		// are empty and the wrong-repo-delete guard stays disabled.
 		$expected_args = array(
 			array( 'bsky-tid-root' ),
 			'doc-tid-root',
 			array( 'bsky-tid-a', 'bsky-tid-b' ),
+			'',
+			'',
 		);
 
 		$this->assertNotFalse(
@@ -1590,7 +1595,7 @@ class Test_Atmosphere extends WP_UnitTestCase {
 		$this->assertNotFalse(
 			\wp_next_scheduled(
 				'atmosphere_delete_records',
-				array( array( 'bsky-tid-root' ), 'doc-tid-root', array() )
+				array( array( 'bsky-tid-root' ), 'doc-tid-root', array(), '', '' )
 			),
 			'Post cleanup should be queued without the comment-reply TID.'
 		);
@@ -1610,7 +1615,7 @@ class Test_Atmosphere extends WP_UnitTestCase {
 		$this->assertNotFalse(
 			\wp_next_scheduled(
 				'atmosphere_delete_records',
-				array( array( 'bsky-tid-root' ), 'doc-tid-root', array() )
+				array( array( 'bsky-tid-root' ), 'doc-tid-root', array(), '', '' )
 			),
 			'Expected atmosphere_delete_records with empty comment list when the post has no replies.'
 		);
@@ -1664,7 +1669,7 @@ class Test_Atmosphere extends WP_UnitTestCase {
 		$this->assertNotFalse(
 			\wp_next_scheduled(
 				'atmosphere_delete_records',
-				array( array( 'bsky-tid-123' ), 'doc-tid-456', array() )
+				array( array( 'bsky-tid-123' ), 'doc-tid-456', array(), '', '' )
 			),
 			'Permanent delete must schedule remote cleanup even when the post type is no longer in the syncable allowlist.'
 		);
@@ -1898,8 +1903,8 @@ class Test_Atmosphere extends WP_UnitTestCase {
 		);
 
 		$this->assertNotFalse(
-			\wp_next_scheduled( 'atmosphere_delete_comment_record', array( $captured_tid ) ),
-			'Reconcile must schedule delete-by-TID for the orphan record.'
+			\wp_next_scheduled( 'atmosphere_delete_comment_record', array( $captured_tid, 'did:plc:test123' ) ),
+			'Reconcile must schedule delete-by-TID (with origin DID) for the orphan record.'
 		);
 
 		\remove_all_filters( 'atmosphere_pre_apply_writes' );

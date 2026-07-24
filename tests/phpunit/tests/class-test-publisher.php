@@ -1517,6 +1517,64 @@ class Test_Publisher extends WP_UnitTestCase {
 	}
 
 	/**
+	 * Refuses to delete a reply minted under a different connected account,
+	 * issues no write, and preserves the meta so a reconnect to the
+	 * original account can still clean up.
+	 */
+	public function test_delete_comment_bails_on_did_mismatch() {
+		$post_id    = $this->seed_root_post();
+		$user_id    = self::factory()->user->create();
+		$comment_id = self::factory()->comment->create(
+			array(
+				'comment_post_ID'  => $post_id,
+				'comment_approved' => '1',
+				'user_id'          => $user_id,
+			)
+		);
+		\update_comment_meta( $comment_id, Comment::META_TID, 'reply-tid' );
+		\update_comment_meta( $comment_id, Comment::META_URI, 'at://did:plc:old/app.bsky.feed.post/reply-tid' );
+		\update_comment_meta( $comment_id, Comment::META_DID, 'did:plc:old' );
+
+		$get_body = $this->stub_apply_writes( '', '' );
+		$result   = Publisher::delete_comment( \get_comment( $comment_id ) );
+		\remove_all_filters( 'pre_http_request' );
+
+		$this->assertWPError( $result );
+		$this->assertSame( 'atmosphere_did_mismatch', $result->get_error_code() );
+		$this->assertNull( $get_body(), 'No applyWrites should be issued for a foreign-DID reply.' );
+		$this->assertSame( 'reply-tid', \get_comment_meta( $comment_id, Comment::META_TID, true ) );
+	}
+
+	/**
+	 * The TID-only delete path refuses a foreign origin DID and issues no write.
+	 */
+	public function test_delete_comment_by_tid_bails_on_did_mismatch() {
+		$get_body = $this->stub_apply_writes( '', '' );
+		$result   = Publisher::delete_comment_by_tid( 'goner', 'did:plc:old' );
+		\remove_all_filters( 'pre_http_request' );
+
+		$this->assertWPError( $result );
+		$this->assertSame( 'atmosphere_did_mismatch', $result->get_error_code() );
+		$this->assertNull( $get_body(), 'No applyWrites should be issued for a foreign-DID reply.' );
+	}
+
+	/**
+	 * An origin DID matching the connected account does not block the delete.
+	 */
+	public function test_delete_comment_by_tid_proceeds_when_origin_matches() {
+		$get_body = $this->stub_apply_writes( '', '' );
+		$result   = Publisher::delete_comment_by_tid( 'goner', 'did:plc:test123' );
+		\remove_all_filters( 'pre_http_request' );
+
+		if ( \is_wp_error( $result ) ) {
+			$this->markTestSkipped( 'API layer rejected request: ' . $result->get_error_message() );
+		}
+
+		$body = $get_body();
+		$this->assertSame( 'goner', $body['writes'][0]['rkey'] );
+	}
+
+	/**
 	 * Direct Publisher callers cannot bypass the global comment-publishing
 	 * setting for create, update, or delete operations.
 	 */
@@ -2952,6 +3010,64 @@ class Test_Publisher extends WP_UnitTestCase {
 		$this->assertWPError( $result );
 		$this->assertSame( 'atmosphere_pds_500', $result->get_error_code() );
 		$this->assertCount( 1, $this->captured_calls, 'Comment batch must be skipped when the root batch fails.' );
+	}
+
+	/**
+	 * The hard-delete path refuses to delete Bluesky records minted under a
+	 * different account and issues no write, aborting the whole cascade.
+	 */
+	public function test_delete_post_by_tids_bails_on_bsky_did_mismatch() {
+		$this->register_capture( 0 );
+
+		$result = Publisher::delete_post_by_tids(
+			array( 'root-tid' ),
+			'doc-tid',
+			array( 'reply-1' ),
+			'did:plc:old',
+			'did:plc:test123'
+		);
+
+		$this->assertWPError( $result );
+		$this->assertSame( 'atmosphere_did_mismatch', $result->get_error_code() );
+		$this->assertCount( 0, $this->captured_calls, 'A foreign-DID cascade must issue no writes.' );
+	}
+
+	/**
+	 * A foreign document origin DID also aborts the cascade.
+	 */
+	public function test_delete_post_by_tids_bails_on_doc_did_mismatch() {
+		$this->register_capture( 0 );
+
+		$result = Publisher::delete_post_by_tids(
+			array(),
+			'doc-tid',
+			array(),
+			'',
+			'did:plc:old'
+		);
+
+		$this->assertWPError( $result );
+		$this->assertSame( 'atmosphere_did_mismatch', $result->get_error_code() );
+		$this->assertCount( 0, $this->captured_calls, 'A foreign-DID document delete must issue no writes.' );
+	}
+
+	/**
+	 * Origin DIDs matching the connected account (or absent, for records
+	 * predating provenance) do not block the delete.
+	 */
+	public function test_delete_post_by_tids_proceeds_when_origin_matches() {
+		$this->register_capture( 0 );
+
+		$result = Publisher::delete_post_by_tids(
+			array( 'root-tid' ),
+			'doc-tid',
+			array(),
+			'did:plc:test123',
+			'did:plc:test123'
+		);
+
+		$this->assertNotWPError( $result );
+		$this->assertCount( 1, $this->captured_calls, 'A matching-DID cascade must issue its delete batch.' );
 	}
 
 	/**
