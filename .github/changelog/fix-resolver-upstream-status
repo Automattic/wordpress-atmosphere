@@ -1,0 +1,4 @@
+Significance: patch
+Type: fixed
+
+Show a clearer error when Bluesky's directory or a login server is temporarily unavailable, instead of reporting the account as invalid.

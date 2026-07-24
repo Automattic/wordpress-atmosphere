@@ -10,6 +10,8 @@ namespace Atmosphere\Tests;
 use function Atmosphere\parse_at_uri;
 use function Atmosphere\build_at_uri;
 use function Atmosphere\appview_url;
+use function Atmosphere\get_identity;
+use function Atmosphere\set_identity;
 use function Atmosphere\sanitize_text;
 use function Atmosphere\truncate_text;
 use function Atmosphere\truncate_graphemes;
@@ -1087,5 +1089,38 @@ class Test_Functions extends \WP_UnitTestCase {
 		\add_filter( 'atmosphere_should_publish_bluesky_post', '__return_false' );
 		$this->assertFalse( is_bluesky_post_enabled() );
 		\remove_filter( 'atmosphere_should_publish_bluesky_post', '__return_false' );
+	}
+
+	/**
+	 * `set_identity()` persists the canonical shape so `get_identity()`
+	 * reads it back, keeping the option's structure in one place.
+	 *
+	 * @group atmosphere
+	 */
+	public function test_set_identity_round_trips() {
+		\delete_option( 'atmosphere_identity' );
+
+		$this->assertTrue(
+			set_identity(
+				array(
+					'did'          => 'did:plc:abc123',
+					'handle'       => 'me.example.com',
+					'pds_endpoint' => 'https://pds.example.com',
+					'extra'        => 'dropped',
+				)
+			)
+		);
+
+		$this->assertSame(
+			array(
+				'did'          => 'did:plc:abc123',
+				'handle'       => 'me.example.com',
+				'pds_endpoint' => 'https://pds.example.com',
+			),
+			get_identity(),
+			'Only the three canonical fields are stored, and get_identity() reads them back.'
+		);
+
+		\delete_option( 'atmosphere_identity' );
 	}
 }

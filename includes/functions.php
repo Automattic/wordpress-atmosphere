@@ -461,6 +461,33 @@ function has_identity(): bool {
 }
 
 /**
+ * Persist the AT Protocol identity (DID, handle, PDS endpoint).
+ *
+ * The canonical write surface for `atmosphere_identity`, mirroring the
+ * read helpers ({@see get_identity()} and friends). A consumer that writes
+ * identity from outside the OAuth token exchange — a recovery or
+ * escape-hatch flow — should call this rather than `update_option()`
+ * directly, so the option's shape and its autoload flag (which
+ * {@see get_identity()}'s lazy migration also relies on) live in one place.
+ *
+ * @since unreleased
+ *
+ * @param array $identity Identity with `did`, `handle`, and `pds_endpoint`.
+ * @return bool Whether the option was updated (see `update_option()`).
+ */
+function set_identity( array $identity ): bool {
+	return \update_option(
+		'atmosphere_identity',
+		array(
+			'did'          => (string) ( $identity['did'] ?? '' ),
+			'handle'       => (string) ( $identity['handle'] ?? '' ),
+			'pds_endpoint' => (string) ( $identity['pds_endpoint'] ?? '' ),
+		),
+		true
+	);
+}
+
+/**
  * Whether the ActivityPub plugin is active.
  *
  * Bluesky reactions are stored as the same comment types the ActivityPub

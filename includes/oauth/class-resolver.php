@@ -98,6 +98,11 @@ class Resolver {
 			return $response;
 		}
 
+		$upstream_error = self::upstream_error( $response, \__( 'DID document', 'atmosphere' ) );
+		if ( $upstream_error ) {
+			return $upstream_error;
+		}
+
 		$body = \json_decode( \wp_remote_retrieve_body( $response ), true );
 
 		if ( ! \is_array( $body ) || empty( $body['id'] ) ) {
@@ -108,6 +113,63 @@ class Resolver {
 		}
 
 		return $body;
+	}
+
+	/**
+	 * Reject a non-2xx HTTP response before its body is parsed.
+	 *
+	 * A fetch to plc.directory, a did:web host, or an auth server can answer
+	 * with a 500 / 503 / 429 whose body still decodes — an HTML error page,
+	 * or rate-limit JSON with no `id` — which would otherwise fall through
+	 * to the generic "invalid document" branch and hide a transient upstream
+	 * failure behind a malformed-document message. Callers can read
+	 * `get_error_data()['status']` to tell a transient 5xx / 429 from a
+	 * structural 4xx. Returns null for a 2xx response so the caller parses.
+	 *
+	 * @since unreleased
+	 *
+	 * @param array  $response `wp_remote_*` response array.
+	 * @param string $label    Human label for the fetched resource.
+	 * @return \WP_Error|null Error for a non-2xx status, null otherwise.
+	 */
+	private static function upstream_error( array $response, string $label ): ?\WP_Error {
+		$status = (int) \wp_remote_retrieve_response_code( $response );
+
+		if ( $status >= 200 && $status < 300 ) {
+			return null;
+		}
+
+		if ( 429 === $status ) {
+			$retry_after = \wp_remote_retrieve_header( $response, 'retry-after' );
+
+			return new \WP_Error(
+				'atmosphere_upstream_rate_limited',
+				$retry_after
+					? \sprintf(
+						/* translators: 1: resource label, 2: Retry-After header value. */
+						\__( 'Rate limited while fetching the %1$s. Retry after %2$s.', 'atmosphere' ),
+						$label,
+						$retry_after
+					)
+					: \sprintf(
+						/* translators: %s: resource label. */
+						\__( 'Rate limited while fetching the %s.', 'atmosphere' ),
+						$label
+					),
+				array( 'status' => $status )
+			);
+		}
+
+		return new \WP_Error(
+			'atmosphere_upstream_error',
+			\sprintf(
+				/* translators: 1: resource label, 2: HTTP status code. */
+				\__( 'The %1$s could not be fetched (HTTP %2$d).', 'atmosphere' ),
+				$label,
+				$status
+			),
+			array( 'status' => $status )
+		);
 	}
 
 	/**
@@ -189,6 +251,11 @@ class Resolver {
 			return $response;
 		}
 
+		$upstream_error = self::upstream_error( $response, \__( 'authorization server discovery document', 'atmosphere' ) );
+		if ( $upstream_error ) {
+			return $upstream_error;
+		}
+
 		$resource = \json_decode( \wp_remote_retrieve_body( $response ), true );
 
 		/*
@@ -229,6 +296,11 @@ class Resolver {
 
 		if ( \is_wp_error( $response ) ) {
 			return $response;
+		}
+
+		$upstream_error = self::upstream_error( $response, \__( 'authorization server metadata', 'atmosphere' ) );
+		if ( $upstream_error ) {
+			return $upstream_error;
 		}
 
 		$meta = \json_decode( \wp_remote_retrieve_body( $response ), true );

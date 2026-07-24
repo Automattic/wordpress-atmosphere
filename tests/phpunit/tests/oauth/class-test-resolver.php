@@ -697,4 +697,63 @@ class Test_Resolver extends WP_UnitTestCase {
 		$this->assertWPError( $result );
 		$this->assertSame( 'atmosphere_no_pds', $result->get_error_code() );
 	}
+
+	/**
+	 * A 5xx from plc.directory surfaces as a distinct upstream error, not
+	 * as `atmosphere_invalid_did_doc`, so a transient outage is not mistaken
+	 * for a malformed document. The status rides along in the error data.
+	 */
+	public function test_resolve_did_surfaces_upstream_error_on_5xx() {
+		$this->stub_response( 'plc.directory', 503, '<html>Service Unavailable</html>' );
+
+		$result = Resolver::resolve_did( 'did:plc:test123' );
+
+		$this->assertWPError( $result );
+		$this->assertSame( 'atmosphere_upstream_error', $result->get_error_code() );
+		$this->assertSame( 503, $result->get_error_data()['status'] );
+	}
+
+	/**
+	 * A 429 surfaces as a rate-limit error, and the `Retry-After` header is
+	 * carried into the message.
+	 */
+	public function test_resolve_did_surfaces_rate_limit_with_retry_after() {
+		\add_filter(
+			'pre_http_request',
+			static function ( $response, $args, $url ) {
+				if ( false !== \strpos( $url, 'plc.directory' ) ) {
+					return array(
+						'response' => array( 'code' => 429 ),
+						'headers'  => new \WpOrg\Requests\Utility\CaseInsensitiveDictionary( array( 'retry-after' => '30' ) ),
+						'body'     => '{"error":"RateLimitExceeded"}',
+					);
+				}
+
+				return $response;
+			},
+			10,
+			3
+		);
+
+		$result = Resolver::resolve_did( 'did:plc:test123' );
+
+		$this->assertWPError( $result );
+		$this->assertSame( 'atmosphere_upstream_rate_limited', $result->get_error_code() );
+		$this->assertSame( 429, $result->get_error_data()['status'] );
+		$this->assertStringContainsString( '30', $result->get_error_message() );
+	}
+
+	/**
+	 * A 5xx on the `oauth-protected-resource` fetch surfaces as an upstream
+	 * error rather than "PDS did not advertise an authorization server".
+	 */
+	public function test_discover_auth_server_surfaces_upstream_error_on_5xx() {
+		$this->stub_response( 'oauth-protected-resource', 500, '<html>Internal Server Error</html>' );
+
+		$result = Resolver::discover_auth_server( 'https://pds.example.com' );
+
+		$this->assertWPError( $result );
+		$this->assertSame( 'atmosphere_upstream_error', $result->get_error_code() );
+		$this->assertSame( 500, $result->get_error_data()['status'] );
+	}
 }
