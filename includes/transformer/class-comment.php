@@ -27,6 +27,33 @@ use function Atmosphere\truncate_text;
 class Comment extends Base {
 
 	/**
+	 * Salt prefix passed to {@see TID::generate_for_time()} for comments.
+	 *
+	 * Combined with the comment ID it produces the deterministic
+	 * clock-id input for the historical TID path.
+	 *
+	 * @since unreleased
+	 *
+	 * @var string
+	 */
+	public const TID_SALT_PREFIX = 'comment:';
+
+	/**
+	 * Kind label passed to {@see TID::microseconds_from_post_date()}.
+	 *
+	 * Comments share the `app.bsky.feed.post` collection with posts, so
+	 * a post-id-vs-comment-id collision inside a single GMT second would
+	 * otherwise mint identical rkeys. The kind label folds an extra
+	 * deterministic offset into the microsecond portion so posts and
+	 * comments occupy different sub-second windows.
+	 *
+	 * @since unreleased
+	 *
+	 * @var string
+	 */
+	public const TID_KIND = 'comment';
+
+	/**
 	 * Comment meta key for the bsky post TID (rkey).
 	 *
 	 * @var string
@@ -158,7 +185,14 @@ class Comment extends Base {
 		$rkey = \get_comment_meta( (int) $this->object->comment_ID, self::META_TID, true );
 
 		if ( empty( $rkey ) ) {
-			$rkey = TID::generate();
+			$rkey = $this->mint_historical_rkey(
+				$this->get_collection(),
+				(string) $this->object->comment_date_gmt,
+				(int) $this->object->comment_ID,
+				self::TID_SALT_PREFIX,
+				$this->object,
+				self::TID_KIND
+			);
 			\update_comment_meta( (int) $this->object->comment_ID, self::META_TID, $rkey );
 		}
 

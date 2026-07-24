@@ -167,22 +167,167 @@ class TID {
 			\wp_cache_delete( self::OPTION_LAST_TS, 'options' );
 		}
 
-		if ( null === self::$clock_id ) {
-			/*
-			 * `random_int` throws on systems without a usable CSPRNG
-			 * (essentially never on a working PHP install, but a worth
-			 * a fallback so a missing entropy source can't bring down
-			 * publishing). `wp_rand` is non-cryptographic but the
-			 * collision space is still 1024.
-			 */
-			try {
-				self::$clock_id = \random_int( 0, 1023 );
-			} catch ( \Throwable $e ) {
-				self::$clock_id = \wp_rand( 0, 1023 );
-			}
+		return self::encode( ( $ts << 10 ) | self::ensure_clock_id() );
+	}
+
+	/**
+	 * Generate a TID that encodes a specific historical microsecond.
+	 *
+	 * Unlike {@see self::generate()}, this path is intentionally
+	 * floor-free: backfilled records carry timestamps far older than
+	 * any current-time floor would allow, so consulting or updating
+	 * `OPTION_LAST_TS` (or `self::$last_ts`) would either snap the
+	 * value forward to "now" — defeating the entire point — or
+	 * regress the floor used by live publishing. Callers are
+	 * responsible for supplying a microsecond value that is
+	 * collision-resistant within their batch; see
+	 * {@see self::microseconds_from_post_date()} for the standard
+	 * deterministic helper.
+	 *
+	 * The 10-bit clock identifier is derived deterministically from
+	 * `$salt` rather than the per-process random value used by
+	 * `generate()`. Without that, retrying a backfill in a different
+	 * PHP worker before the record's TID meta is persisted would mint
+	 * a different rkey for the same post — the AT Protocol create
+	 * would then succeed twice and orphan the first record. Callers
+	 * should pass a salt that is unique to the record being minted;
+	 * the conventional shape used in the bundled transformers is
+	 * `"{kind}:{object_id}"` (e.g. `"post:42"`, `"comment:128"`),
+	 * which together with the modulo-disambiguated microsecond
+	 * portion makes both 10-bit fields depend on the full object
+	 * identity — closing the "IDs differ by a multiple of 1,000,000
+	 * inside the same GMT second" modulo collision.
+	 *
+	 * Non-positive `$microseconds` (zero or negative) and values
+	 * above `PHP_INT_MAX >> 10` fall through to {@see self::generate()}
+	 * rather than encoding garbage. The standard caller path through
+	 * {@see self::microseconds_from_post_date()} already returns 0
+	 * for unparseable input, but this guard protects direct callers
+	 * who hand the helper their own integer (a stray `* 1_000_000`
+	 * applied twice, a negative pre-epoch timestamp) from silently
+	 * minting an unsortable / negative-encoded TID. The upper bound
+	 * corresponds to roughly the year 2255.
+	 *
+	 * @since unreleased
+	 *
+	 * @param int    $microseconds Microseconds since the Unix epoch. Must
+	 *                             be in `(0, PHP_INT_MAX >> 10]` to mint
+	 *                             a historical TID; out-of-range values
+	 *                             fall back to {@see self::generate()}.
+	 * @param string $salt         Deterministic disambiguation salt,
+	 *                             conventionally `"{kind}:{object_id}"`.
+	 *                             Defaults to the microseconds string so
+	 *                             ad-hoc callers still get a stable rkey.
+	 * @return string 13-character identifier.
+	 */
+	public static function generate_for_time( int $microseconds, string $salt = '' ): string {
+		if ( $microseconds <= 0 || $microseconds > ( \PHP_INT_MAX >> 10 ) ) {
+			return self::generate();
 		}
 
-		return self::encode( ( $ts << 10 ) | self::$clock_id );
+		$clock_source = '' === $salt ? (string) $microseconds : $salt;
+		$clock_id     = \crc32( $clock_source ) & 0x3FF;
+
+		return self::encode( ( $microseconds << 10 ) | $clock_id );
+	}
+
+	/**
+	 * Convert a GMT datetime + object ID into a deterministic microsecond value.
+	 *
+	 * `post_date_gmt` and `comment_date_gmt` are MySQL second
+	 * resolution, so two records published in the same second would
+	 * otherwise hash to identical microseconds and collide on the
+	 * 10-bit clock identifier within a single backfill run. Mixing
+	 * the object ID (modulo one second of microseconds) into the
+	 * microsecond portion disambiguates those collisions
+	 * deterministically — re-running the backfill mints the same TID
+	 * for the same record, which keeps the operation idempotent
+	 * against `applyWrites`.
+	 *
+	 * Cross-kind rkey collisions in the same collection (e.g. a Post
+	 * and a Comment both landing in `app.bsky.feed.post`) are
+	 * impossible by construction: posts/documents occupy microseconds
+	 * 0..499,999 within each second, comments occupy 500,000..999,999.
+	 * Even if the salt-derived 10-bit `clock_id` collides across kinds
+	 * (1/1024 chance through CRC32), the microsecond field differs and
+	 * the rkeys differ. Within a single kind, two records published in
+	 * the exact same second still need a matching `object_id % 500_000`
+	 * AND a `clock_id` collision — astronomically unlikely in practice.
+	 *
+	 * An earlier shape folded `crc32($kind)` into the same 0..999_999
+	 * window via modulo addition. That preserved idempotency per kind
+	 * but did not guarantee disjoint ranges, so specific cross-kind ID
+	 * pairs (e.g. post id 1288 vs comment id 350044 at the same GMT
+	 * second) could still collapse onto identical microseconds — and,
+	 * when the salt-derived clock_id also collided, identical rkeys.
+	 * Codex surfaced that pattern by construction during PR review;
+	 * range segregation removes the failure mode at its root rather
+	 * than relying on the hash space staying lucky.
+	 *
+	 * Bundled `$kind` values used by the plugin's transformers:
+	 *
+	 *   - `''` (default) — `Post` and `Document`. Their AT collections
+	 *     (`app.bsky.feed.post` and `site.standard.document`) don't
+	 *     overlap so no kind segregation is needed and they share the
+	 *     0..499,999 range.
+	 *   - `'comment'` — `Comment`. Shares `app.bsky.feed.post` with
+	 *     `Post`, so it occupies the 500,000..999,999 range. See
+	 *     `Comment::TID_KIND`.
+	 *
+	 * Returns `0` for any unparseable input — empty / whitespace-only
+	 * strings, the MySQL `0000-00-00 00:00:00` sentinel, pre-epoch
+	 * datetimes, or garbage `strtotime()` rejects. Callers must check
+	 * for the zero return and fall back to {@see self::generate()}
+	 * rather than passing the zero through to
+	 * {@see self::generate_for_time()} (which would itself fall back,
+	 * but the explicit check at the call site keeps the intent
+	 * obvious).
+	 *
+	 * @since unreleased
+	 *
+	 * @param string $gmt_datetime GMT datetime string (e.g. `post_date_gmt`).
+	 * @param int    $object_id    Post or comment identifier for disambiguation.
+	 * @param string $kind         Optional kind label to separate records
+	 *                             sharing a collection. See list above for
+	 *                             the values used by bundled transformers.
+	 * @return int Microseconds since the Unix epoch, or 0 on parse failure
+	 *             / pre-epoch / sentinel input.
+	 */
+	public static function microseconds_from_post_date( string $gmt_datetime, int $object_id, string $kind = '' ): int {
+		$trimmed = \trim( $gmt_datetime );
+
+		// MySQL zero-date sentinel and empty strings: bail before
+		// `strtotime` (which interprets `0000-00-00 00:00:00` as year
+		// zero on some PHP builds, yielding a far-past-or-future
+		// timestamp that would mint a meaningless TID).
+		if ( '' === $trimmed || '0000-00-00 00:00:00' === $trimmed ) {
+			return 0;
+		}
+
+		$seconds = \strtotime( $trimmed . ' UTC' );
+
+		if ( false === $seconds || $seconds <= 0 ) {
+			return 0;
+		}
+
+		/*
+		 * Reserve disjoint microsecond ranges per kind so cross-kind
+		 * rkeys can never share the microsecond field — eliminating
+		 * the failure mode regardless of whether the salt-derived
+		 * `clock_id` ever collides:
+		 *
+		 *   - `''` (post / document) → 0..499,999 within the second.
+		 *   - `'comment'`            → 500,000..999,999 within the second.
+		 *
+		 * Within a single kind the `(object_id % 500_000)` term still
+		 * disambiguates same-second records, paired with the
+		 * salt-derived `clock_id` for the final 10 bits.
+		 */
+		$kind_offset          = ( 'comment' === $kind ) ? 500_000 : 0;
+		$within_kind          = $object_id % 500_000;
+		$micros_within_second = $kind_offset + $within_kind;
+
+		return ( $seconds * 1_000_000 ) + $micros_within_second;
 	}
 
 	/**
@@ -203,6 +348,29 @@ class TID {
 		}
 
 		return true;
+	}
+
+	/**
+	 * Lazily seed and return the per-process clock identifier.
+	 *
+	 * Shared by {@see self::generate()} and {@see self::generate_for_time()}.
+	 * `random_int` throws on systems without a usable CSPRNG (essentially
+	 * never on a working PHP install, but worth a fallback so a missing
+	 * entropy source can't bring down publishing). `wp_rand` is
+	 * non-cryptographic but the collision space is still 1024.
+	 *
+	 * @return int 10-bit clock identifier.
+	 */
+	private static function ensure_clock_id(): int {
+		if ( null === self::$clock_id ) {
+			try {
+				self::$clock_id = \random_int( 0, 1023 );
+			} catch ( \Throwable $e ) {
+				self::$clock_id = \wp_rand( 0, 1023 );
+			}
+		}
+
+		return self::$clock_id;
 	}
 
 	/**
