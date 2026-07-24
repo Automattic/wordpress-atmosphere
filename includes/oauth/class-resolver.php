@@ -12,6 +12,8 @@ namespace Atmosphere\OAuth;
 
 \defined( 'ABSPATH' ) || exit;
 
+use function Atmosphere\is_success_status;
+
 /**
  * Resolver for AT Protocol identities and services.
  */
@@ -135,29 +137,27 @@ class Resolver {
 	private static function upstream_error( array $response, string $label ): ?\WP_Error {
 		$status = (int) \wp_remote_retrieve_response_code( $response );
 
-		if ( $status >= 200 && $status < 300 ) {
+		if ( is_success_status( $status ) ) {
 			return null;
 		}
 
 		if ( 429 === $status ) {
 			$retry_after = \wp_remote_retrieve_header( $response, 'retry-after' );
 
-			return new \WP_Error(
-				'atmosphere_upstream_rate_limited',
-				$retry_after
-					? \sprintf(
-						/* translators: 1: resource label, 2: Retry-After header value. */
-						\__( 'Rate limited while fetching the %1$s. Retry after %2$s.', 'atmosphere' ),
-						$label,
-						$retry_after
-					)
-					: \sprintf(
-						/* translators: %s: resource label. */
-						\__( 'Rate limited while fetching the %s.', 'atmosphere' ),
-						$label
-					),
-				array( 'status' => $status )
-			);
+			$message = $retry_after
+				? \sprintf(
+					/* translators: 1: resource label, 2: Retry-After header value. */
+					\__( 'Rate limited while fetching the %1$s. Retry after %2$s.', 'atmosphere' ),
+					$label,
+					$retry_after
+				)
+				: \sprintf(
+					/* translators: %s: resource label. */
+					\__( 'Rate limited while fetching the %s.', 'atmosphere' ),
+					$label
+				);
+
+			return new \WP_Error( 'atmosphere_upstream_rate_limited', $message, array( 'status' => $status ) );
 		}
 
 		return new \WP_Error(

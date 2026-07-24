@@ -443,7 +443,7 @@ function get_identity(): array {
 		'pds_endpoint' => (string) ( $conn['pds_endpoint'] ?? '' ),
 	);
 
-	\update_option( 'atmosphere_identity', $identity, true );
+	set_identity( $identity );
 
 	return $identity;
 }

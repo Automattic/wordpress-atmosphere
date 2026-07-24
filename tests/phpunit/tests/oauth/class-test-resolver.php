@@ -36,15 +36,16 @@ class Test_Resolver extends WP_UnitTestCase {
 	 * @param string $url_match Substring to match against the request URL.
 	 * @param int    $status    HTTP status code.
 	 * @param mixed  $body      Response body (array → JSON encoded).
+	 * @param array  $headers   Response headers (e.g. `retry-after`).
 	 */
-	private function stub_response( string $url_match, int $status, $body ): void {
+	private function stub_response( string $url_match, int $status, $body, array $headers = array() ): void {
 		\add_filter(
 			'pre_http_request',
-			static function ( $response, $args, $url ) use ( $url_match, $status, $body ) {
+			static function ( $response, $args, $url ) use ( $url_match, $status, $body, $headers ) {
 				if ( false !== \strpos( $url, $url_match ) ) {
 					return array(
 						'response' => array( 'code' => $status ),
-						'headers'  => new \WpOrg\Requests\Utility\CaseInsensitiveDictionary( array() ),
+						'headers'  => new \WpOrg\Requests\Utility\CaseInsensitiveDictionary( $headers ),
 						'body'     => \is_array( $body ) ? (string) \wp_json_encode( $body ) : (string) $body,
 					);
 				}
@@ -718,22 +719,7 @@ class Test_Resolver extends WP_UnitTestCase {
 	 * carried into the message.
 	 */
 	public function test_resolve_did_surfaces_rate_limit_with_retry_after() {
-		\add_filter(
-			'pre_http_request',
-			static function ( $response, $args, $url ) {
-				if ( false !== \strpos( $url, 'plc.directory' ) ) {
-					return array(
-						'response' => array( 'code' => 429 ),
-						'headers'  => new \WpOrg\Requests\Utility\CaseInsensitiveDictionary( array( 'retry-after' => '30' ) ),
-						'body'     => '{"error":"RateLimitExceeded"}',
-					);
-				}
-
-				return $response;
-			},
-			10,
-			3
-		);
+		$this->stub_response( 'plc.directory', 429, '{"error":"RateLimitExceeded"}', array( 'retry-after' => '30' ) );
 
 		$result = Resolver::resolve_did( 'did:plc:test123' );
 
