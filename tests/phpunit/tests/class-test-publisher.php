@@ -65,8 +65,61 @@ class Test_Publisher extends WP_UnitTestCase {
 		\remove_all_filters( 'atmosphere_transform_bsky_post' );
 		\remove_all_filters( 'atmosphere_transform_document' );
 		\remove_all_filters( 'atmosphere_is_short_form_post' );
+		\remove_all_filters( 'atmosphere_pre_upload_blob' );
+		\remove_all_filters( 'atmosphere_should_publish_bluesky_post' );
+		\remove_all_filters( 'atmosphere_update_skipped_unsynced_post' );
+
+		foreach ( $this->temp_files as $path ) {
+			if ( \file_exists( $path ) ) {
+				\unlink( $path ); // phpcs:ignore WordPress.WP.AlternativeFunctions.unlink_unlink
+			}
+		}
+		$this->temp_files = array();
 
 		parent::tear_down();
+	}
+
+	/**
+	 * Temp files created by {@see self::create_post_with_featured_image()},
+	 * removed in {@see self::tear_down()}.
+	 *
+	 * @var string[]
+	 */
+	private array $temp_files = array();
+
+	/**
+	 * Create a published post with a real featured-image file on disk.
+	 *
+	 * The blob-upload path needs a readable file, so this writes one and
+	 * registers it for teardown cleanup.
+	 *
+	 * @param string $suffix Unique filename suffix.
+	 * @return array{0: \WP_Post, 1: int} The post and its featured attachment ID.
+	 */
+	private function create_post_with_featured_image( string $suffix ): array {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_status'  => 'publish',
+				'post_content' => 'Short body.',
+			)
+		);
+
+		$upload_dir         = \wp_upload_dir();
+		$path               = $upload_dir['basedir'] . "/atmosphere-{$suffix}.jpg";
+		$this->temp_files[] = $path;
+		\file_put_contents( $path, 'FEATURED-IMAGE-BYTES' ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents
+
+		$attachment_id = self::factory()->attachment->create_object(
+			$path,
+			$post->ID,
+			array(
+				'post_mime_type' => 'image/jpeg',
+				'post_title'     => 'Featured image',
+			)
+		);
+		\set_post_thumbnail( $post->ID, $attachment_id );
+
+		return array( $post, $attachment_id );
 	}
 
 	/**
@@ -301,6 +354,246 @@ class Test_Publisher extends WP_UnitTestCase {
 	}
 
 	/**
+	 * A cached blob CID that the PDS no longer holds must self-heal.
+	 *
+	 * Featured-image blob refs are cached in `_atmosphere_blob_ref`
+	 * postmeta and reused on subsequent publishes without re-uploading.
+	 * When the active PDS does not have that blob — because it was
+	 * uploaded to a different account/PDS, or the reference PDS garbage
+	 * collected an orphaned blob — `applyWrites` fails with
+	 * "Could not find blob". Publisher must drop the stale ref, re-upload,
+	 * and retry the publish once so the post lands without operator
+	 * intervention.
+	 */
+	public function test_publish_post_self_heals_stale_blob_ref() {
+		list( $post, $attachment_id ) = $this->create_post_with_featured_image( 'self-heal-test' );
+
+		// Pre-seed a stale blob ref, as a prior publish to another PDS would.
+		$stale_ref = array(
+			'$type'    => 'blob',
+			'ref'      => array( '$link' => 'bafkreistalecid' ),
+			'mimeType' => 'image/jpeg',
+			'size'     => 123,
+		);
+		\update_post_meta( $attachment_id, '_atmosphere_blob_ref', $stale_ref );
+
+		// The re-upload after the cache is cleared returns a fresh blob.
+		$fresh_ref = array(
+			'$type'    => 'blob',
+			'ref'      => array( '$link' => 'bafkreifreshcid' ),
+			'mimeType' => 'image/jpeg',
+			'size'     => 456,
+		);
+		\add_filter(
+			'atmosphere_pre_upload_blob',
+			static function () use ( $fresh_ref ) {
+				return array( 'blob' => $fresh_ref );
+			}
+		);
+
+		// First applyWrites is rejected for the missing blob; the retry succeeds.
+		$this->fail_call_indexes = array(
+			1 => new \WP_Error(
+				'atmosphere_pds',
+				'Could not find blob: bafkreistalecid',
+				array( 'status' => 400 )
+			),
+		);
+		$this->register_capture( $post->ID );
+
+		$result = Publisher::publish_post( $post );
+
+		$this->assertIsArray( $result, 'Publish should ultimately succeed after self-heal.' );
+		$this->assertCount( 2, $this->captured_calls, 'Publisher should retry applyWrites once after the blob error.' );
+		$this->assertSame(
+			$fresh_ref,
+			\get_post_meta( $attachment_id, '_atmosphere_blob_ref', true ),
+			'The stale blob ref should be replaced by the freshly uploaded one.'
+		);
+	}
+
+	/**
+	 * The blob-error self-heal retries at most once.
+	 *
+	 * If the re-uploaded blob is also rejected (a misconfigured PDS, a
+	 * persistent upload problem), Publisher must surface the error rather
+	 * than retry forever.
+	 */
+	public function test_publish_post_blob_self_heal_retries_only_once() {
+		list( $post ) = $this->create_post_with_featured_image( 'self-heal-loop-test' );
+
+		\add_filter(
+			'atmosphere_pre_upload_blob',
+			static function () {
+				return array(
+					'blob' => array(
+						'$type' => 'blob',
+						'ref'   => array( '$link' => 'bafkreiwhatever' ),
+					),
+				);
+			}
+		);
+
+		// Both attempts are rejected for the same missing blob.
+		$this->fail_call_indexes = array(
+			1 => new \WP_Error( 'atmosphere_pds', 'Could not find blob: bafkreiwhatever', array( 'status' => 400 ) ),
+			2 => new \WP_Error( 'atmosphere_pds', 'Could not find blob: bafkreiwhatever', array( 'status' => 400 ) ),
+		);
+		$this->register_capture( $post->ID );
+
+		$result = Publisher::publish_post( $post );
+
+		$this->assertWPError( $result, 'A persistently missing blob should surface the error.' );
+		$this->assertCount( 2, $this->captured_calls, 'Self-heal must retry exactly once, not loop.' );
+	}
+
+	/**
+	 * An unrelated `atmosphere_pds` 400 must not trigger the self-heal
+	 * retry — only a blob-missing rejection does.
+	 *
+	 * Without this guard a second `applyWrites` would fire for any 400,
+	 * risking an accidental double-publish on an error that a re-upload
+	 * cannot fix.
+	 */
+	public function test_unrelated_pds_400_does_not_retry() {
+		list( $post ) = $this->create_post_with_featured_image( 'no-retry-test' );
+
+		\add_filter(
+			'atmosphere_pre_upload_blob',
+			static function () {
+				return array(
+					'blob' => array(
+						'$type' => 'blob',
+						'ref'   => array( '$link' => 'bafok' ),
+					),
+				);
+			}
+		);
+
+		$this->fail_call_indexes = array(
+			1 => new \WP_Error( 'atmosphere_pds', 'Invalid record: missing required field.', array( 'status' => 400 ) ),
+		);
+		$this->register_capture( $post->ID );
+
+		$result = Publisher::publish_post( $post );
+
+		$this->assertWPError( $result, 'A non-blob 400 should surface, not self-heal.' );
+		$this->assertCount( 1, $this->captured_calls, 'A non-blob 400 must not trigger a second applyWrites.' );
+	}
+
+	/**
+	 * The "blob not found" wording triggers the self-heal too, not only the
+	 * reference PDS's "could not find blob".
+	 */
+	public function test_self_heals_on_blob_not_found_wording() {
+		list( $post, $attachment_id ) = $this->create_post_with_featured_image( 'not-found-wording-test' );
+
+		$fresh_ref = array(
+			'$type'    => 'blob',
+			'ref'      => array( '$link' => 'bafkreifreshwording' ),
+			'mimeType' => 'image/jpeg',
+			'size'     => 456,
+		);
+		\add_filter(
+			'atmosphere_pre_upload_blob',
+			static function () use ( $fresh_ref ) {
+				return array( 'blob' => $fresh_ref );
+			}
+		);
+
+		$this->fail_call_indexes = array(
+			1 => new \WP_Error( 'atmosphere_pds', 'Blob not found: bafkreistalewording', array( 'status' => 400 ) ),
+		);
+		$this->register_capture( $post->ID );
+
+		$result = Publisher::publish_post( $post );
+
+		$this->assertIsArray( $result, 'The "blob not found" wording should also self-heal.' );
+		$this->assertCount( 2, $this->captured_calls, 'Publisher should retry once on the "blob not found" wording.' );
+		$this->assertSame(
+			$fresh_ref,
+			\get_post_meta( $attachment_id, '_atmosphere_blob_ref', true ),
+			'The stale ref should be replaced after the "blob not found" self-heal.'
+		);
+	}
+
+	/**
+	 * The self-heal also covers in-body images, not just the featured image.
+	 *
+	 * Inline `core/image` blobs are cached under the same
+	 * `_atmosphere_blob_ref` key as the featured image, so a post whose
+	 * stale blob belongs to an in-body image (and which has no featured
+	 * image at all) must still self-heal.
+	 */
+	public function test_publish_post_self_heals_stale_inline_image_blob() {
+		$upload_dir         = \wp_upload_dir();
+		$path               = $upload_dir['basedir'] . '/atmosphere-self-heal-inline-test.jpg';
+		$this->temp_files[] = $path;
+		\file_put_contents( $path, 'INLINE-IMAGE-BYTES' ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents
+
+		$attachment_id = self::factory()->attachment->create_object(
+			$path,
+			0,
+			array(
+				'post_mime_type' => 'image/jpeg',
+				'post_title'     => 'Inline image',
+			)
+		);
+
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_status'  => 'publish',
+				'post_content' => \sprintf(
+					'<!-- wp:image {"id":%1$d} --><figure class="wp-block-image"><img src="%2$s" alt="" class="wp-image-%1$d"/></figure><!-- /wp:image -->',
+					$attachment_id,
+					\wp_get_attachment_url( $attachment_id )
+				),
+			)
+		);
+
+		// Force the short-form path so the in-body image is uploaded as a
+		// native `app.bsky.embed.images` blob (long-form uses a link card).
+		\add_filter( 'atmosphere_is_short_form_post', '__return_true' );
+
+		// No featured image — the stale ref is on the in-body image only.
+		$stale_ref = array(
+			'$type'    => 'blob',
+			'ref'      => array( '$link' => 'bafkreistaleinline' ),
+			'mimeType' => 'image/jpeg',
+			'size'     => 123,
+		);
+		\update_post_meta( $attachment_id, '_atmosphere_blob_ref', $stale_ref );
+
+		$fresh_ref = array(
+			'$type'    => 'blob',
+			'ref'      => array( '$link' => 'bafkreifreshinline' ),
+			'mimeType' => 'image/jpeg',
+			'size'     => 456,
+		);
+		\add_filter(
+			'atmosphere_pre_upload_blob',
+			static function () use ( $fresh_ref ) {
+				return array( 'blob' => $fresh_ref );
+			}
+		);
+
+		$this->fail_call_indexes = array(
+			1 => new \WP_Error( 'atmosphere_pds', 'Could not find blob: bafkreistaleinline', array( 'status' => 400 ) ),
+		);
+		$this->register_capture( $post->ID );
+
+		$result = Publisher::publish_post( $post );
+
+		$this->assertIsArray( $result, 'Publish should self-heal an in-body image blob too.' );
+		$this->assertCount( 2, $this->captured_calls, 'Publisher should retry once after the inline-image blob error.' );
+		$this->assertSame(
+			$fresh_ref,
+			\get_post_meta( $attachment_id, '_atmosphere_blob_ref', true ),
+			'The stale in-body image ref should be replaced by the freshly uploaded one.'
+		);
+	}
+
+	/**
 	 * Direct publish calls defensively reject password-protected posts.
 	 */
 	public function test_publish_rejects_password_protected_post() {
@@ -336,6 +629,196 @@ class Test_Publisher extends WP_UnitTestCase {
 		$this->assertCount( 1, $captured, 'Rejected publish must still fire the result action.' );
 		$this->assertSame( $post->ID, $captured[0]['post']->ID );
 		$this->assertSame( $result, $captured[0]['result'] );
+	}
+
+	/**
+	 * With the companion filter off, publish writes only the document record.
+	 *
+	 * @group atmosphere
+	 * @group publisher
+	 */
+	public function test_publish_document_only_writes_single_document_record() {
+		\add_filter( 'atmosphere_should_publish_bluesky_post', '__return_false' );
+
+		$post = self::factory()->post->create_and_get( array( 'post_status' => 'publish' ) );
+		$this->register_capture( $post->ID );
+
+		$result = Publisher::publish_post( $post );
+
+		$this->assertNotWPError( $result );
+		$this->assertCount( 1, $this->captured_calls, 'Doc-only publish should make one applyWrites call.' );
+
+		$writes = $this->captured_calls[0]['writes'];
+		$this->assertCount( 1, $writes, 'Doc-only publish should write exactly one record.' );
+		$this->assertSame( 'com.atproto.repo.applyWrites#create', $writes[0]['$type'] );
+		$this->assertSame( 'site.standard.document', $writes[0]['collection'] );
+	}
+
+	/**
+	 * Doc-only publish marks the document synced and leaves no Bluesky post meta.
+	 *
+	 * @group atmosphere
+	 * @group publisher
+	 */
+	public function test_publish_document_only_sets_document_meta_not_bsky_meta() {
+		\add_filter( 'atmosphere_should_publish_bluesky_post', '__return_false' );
+
+		$post = self::factory()->post->create_and_get( array( 'post_status' => 'publish' ) );
+		$this->register_capture( $post->ID );
+
+		Publisher::publish_post( $post );
+
+		$this->assertNotEmpty( \get_post_meta( $post->ID, Document::META_URI, true ), 'Document URI should be stored.' );
+		$this->assertEmpty( \get_post_meta( $post->ID, Post::META_URI, true ), 'No Bluesky post URI should be stored.' );
+	}
+
+	/**
+	 * With the filter at its default (on), publish still writes both records.
+	 *
+	 * @group atmosphere
+	 * @group publisher
+	 */
+	public function test_publish_writes_both_records_when_filter_enabled() {
+		$post = self::factory()->post->create_and_get( array( 'post_status' => 'publish' ) );
+		$this->register_capture( $post->ID );
+
+		Publisher::publish_post( $post );
+
+		$writes = $this->captured_calls[0]['writes'];
+		$this->assertCount( 2, $writes, 'Default behavior writes the bsky post and the document.' );
+		$collections = array( $writes[0]['collection'], $writes[1]['collection'] );
+		$this->assertContains( 'app.bsky.feed.post', $collections );
+		$this->assertContains( 'site.standard.document', $collections );
+	}
+
+	/**
+	 * Doc-only update issues a single document #update against the stored TID.
+	 *
+	 * @group atmosphere
+	 * @group publisher
+	 */
+	public function test_update_document_only_updates_existing_document() {
+		\add_filter( 'atmosphere_should_publish_bluesky_post', '__return_false' );
+
+		$post = self::factory()->post->create_and_get( array( 'post_status' => 'publish' ) );
+
+		// Simulate a previously-seeded document-only post: only Document meta.
+		\update_post_meta( $post->ID, Document::META_TID, 'doc-tid-abc' );
+		\update_post_meta( $post->ID, Document::META_URI, 'at://did:plc:test123/site.standard.document/doc-tid-abc' );
+
+		$this->register_capture( $post->ID );
+
+		$result = Publisher::update_post( $post );
+
+		$this->assertNotWPError( $result );
+		$this->assertCount( 1, $this->captured_calls );
+
+		$writes = $this->captured_calls[0]['writes'];
+		$this->assertCount( 1, $writes );
+		$this->assertSame( 'com.atproto.repo.applyWrites#update', $writes[0]['$type'] );
+		$this->assertSame( 'site.standard.document', $writes[0]['collection'] );
+		$this->assertSame( 'doc-tid-abc', $writes[0]['rkey'] );
+	}
+
+	/**
+	 * Doc-only update of a never-synced post is a no-op: it must not mint a
+	 * fresh document record on a routine edit (that would retro-sync legacy
+	 * content behind the author's back — the backfill command is the deliberate
+	 * path for that). Mirrors the dual-record update guard, and fires the same
+	 * skip action so subscribers behave identically.
+	 *
+	 * @group atmosphere
+	 * @group publisher
+	 */
+	public function test_update_document_only_skips_never_synced_post() {
+		\add_filter( 'atmosphere_should_publish_bluesky_post', '__return_false' );
+
+		$skipped = array();
+		\add_action(
+			'atmosphere_update_skipped_unsynced_post',
+			static function ( $post ) use ( &$skipped ) {
+				$skipped[] = $post->ID;
+			}
+		);
+
+		$post = self::factory()->post->create_and_get( array( 'post_status' => 'publish' ) );
+		$this->register_capture( $post->ID );
+
+		$result = Publisher::update_post( $post );
+
+		$this->assertSame( array(), $result, 'A never-synced post edit should be a no-op.' );
+		$this->assertCount( 0, $this->captured_calls, 'No applyWrites call should be made.' );
+		$this->assertSame( array( $post->ID ), $skipped, 'The skip action should fire once for the post.' );
+		$this->assertEmpty( \get_post_meta( $post->ID, Document::META_URI, true ), 'No document record should be minted.' );
+	}
+
+	/**
+	 * Doc-only update of a post whose stored URI has no TID is a corrupted
+	 * half-synced state: it must error rather than mint a second document that
+	 * orphans the existing one — mirroring the dual-record update path.
+	 *
+	 * @group atmosphere
+	 * @group publisher
+	 */
+	public function test_update_document_only_errors_when_uri_present_but_tid_missing() {
+		\add_filter( 'atmosphere_should_publish_bluesky_post', '__return_false' );
+
+		$post = self::factory()->post->create_and_get( array( 'post_status' => 'publish' ) );
+
+		// Corrupted state: a document URI exists but its TID was never stored.
+		\update_post_meta( $post->ID, Document::META_URI, 'at://did:plc:test123/site.standard.document/doc-tid-orphan' );
+
+		$this->register_capture( $post->ID );
+
+		$result = Publisher::update_post( $post );
+
+		$this->assertWPError( $result );
+		$this->assertSame( 'atmosphere_missing_tid', $result->get_error_code() );
+		$this->assertCount( 0, $this->captured_calls, 'No applyWrites call should be made for a corrupted doc-only record.' );
+	}
+
+	/**
+	 * Doc-only: a now-unpublishable, previously-seeded document-only post
+	 * deletes just the document record — one delete op on
+	 * site.standard.document and no app.bsky.feed.post delete.
+	 *
+	 * @group atmosphere
+	 * @group publisher
+	 */
+	public function test_update_document_only_deletes_only_document_when_unpublishable() {
+		\add_filter( 'atmosphere_should_publish_bluesky_post', '__return_false' );
+
+		// Password-protected so is_post_publishable() returns false, routing
+		// update_post() straight to delete_post().
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_status'   => 'publish',
+				'post_password' => 'secret',
+			)
+		);
+
+		// Previously-seeded document-only post: only Document meta, no Post
+		// meta. META_DID matches the connected DID so delete_post()'s
+		// DID-mismatch guard lets the document delete through.
+		\update_post_meta( $post->ID, Document::META_TID, 'doc-tid-del' );
+		\update_post_meta( $post->ID, Document::META_URI, 'at://did:plc:test123/site.standard.document/doc-tid-del' );
+		\update_post_meta( $post->ID, Document::META_DID, 'did:plc:test123' );
+
+		$this->register_capture( $post->ID );
+
+		$result = Publisher::update_post( $post );
+
+		$this->assertNotWPError( $result );
+		$this->assertCount( 1, $this->captured_calls, 'Doc-only cleanup should make exactly one applyWrites call.' );
+
+		$writes = $this->captured_calls[0]['writes'];
+		$this->assertCount( 1, $writes, 'Doc-only cleanup should emit exactly one write.' );
+		$this->assertSame( 'com.atproto.repo.applyWrites#delete', $writes[0]['$type'] );
+		$this->assertSame( 'site.standard.document', $writes[0]['collection'] );
+		$this->assertSame( 'doc-tid-del', $writes[0]['rkey'] );
+
+		$collections = \array_column( $writes, 'collection' );
+		$this->assertNotContains( 'app.bsky.feed.post', $collections, 'No Bluesky post delete should be emitted.' );
 	}
 
 	/**
@@ -451,6 +934,67 @@ class Test_Publisher extends WP_UnitTestCase {
 		$this->assertSame( 'com.atproto.repo.applyWrites#delete', $captured_calls[1][0]['$type'] );
 		$this->assertSame( 'com.atproto.repo.applyWrites#delete', $captured_calls[1][1]['$type'] );
 		$this->assertSame( '', \get_post_meta( $post->ID, Post::META_URI, true ) );
+		$this->assertSame( '', \get_post_meta( $post->ID, Document::META_URI, true ) );
+	}
+
+	/**
+	 * A document-only publish that races a visibility change runs the same
+	 * reconcile race-guard as the dual path: the document record it just wrote
+	 * is deleted when the post becomes non-publishable mid-flight.
+	 *
+	 * @group atmosphere
+	 * @group publisher
+	 */
+	public function test_publish_document_only_reconciles_when_post_protected_mid_publish() {
+		\add_filter( 'atmosphere_should_publish_bluesky_post', '__return_false' );
+
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_status'  => 'publish',
+				'post_title'   => 'Race window',
+				'post_content' => 'This starts public.',
+			)
+		);
+
+		$captured_calls = array();
+		\add_filter(
+			'atmosphere_pre_apply_writes',
+			static function ( $short, $writes ) use ( $post, &$captured_calls ) {
+				$captured_calls[] = $writes;
+
+				if ( 1 === \count( $captured_calls ) ) {
+					\wp_update_post(
+						array(
+							'ID'            => $post->ID,
+							'post_password' => 'secret',
+						)
+					);
+				}
+
+				return array(
+					'results' => \array_map(
+						static fn ( $write ) => array(
+							'uri' => 'at://did:plc:test123/' . $write['collection'] . '/' . $write['rkey'],
+							'cid' => 'bafy' . $write['rkey'],
+						),
+						$writes
+					),
+				);
+			},
+			10,
+			2
+		);
+
+		$result = Publisher::publish_post( $post );
+
+		\wp_clear_scheduled_hook( 'atmosphere_delete_post', array( $post->ID ) );
+
+		$this->assertIsArray( $result );
+		$this->assertCount( 2, $captured_calls, 'Document-only publish must be followed by cleanup.' );
+		$this->assertSame( 'com.atproto.repo.applyWrites#create', $captured_calls[0][0]['$type'] );
+		$this->assertSame( 'site.standard.document', $captured_calls[0][0]['collection'] );
+		$this->assertSame( 'com.atproto.repo.applyWrites#delete', $captured_calls[1][0]['$type'] );
+		$this->assertSame( 'site.standard.document', $captured_calls[1][0]['collection'] );
 		$this->assertSame( '', \get_post_meta( $post->ID, Document::META_URI, true ) );
 	}
 

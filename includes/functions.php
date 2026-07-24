@@ -955,6 +955,47 @@ function is_publication_sync_enabled(): bool {
 }
 
 /**
+ * Whether a companion Bluesky feed post is published alongside the document.
+ *
+ * When this returns false, ATmosphere publishes only the
+ * `site.standard.document` record for a post — no `app.bsky.feed.post`
+ * companion — across backfill, auto-publish, and edit-updates. Use it to run a
+ * site as a standard.site publication that never cross-posts to Bluesky.
+ *
+ * Forward-only: it governs new writes and does not remove Bluesky posts
+ * published before it was enabled.
+ *
+ * Unlike the other lane helpers (see {@see is_publication_sync_enabled()}), this
+ * one has no connection-only pass. Connection-only mode only forces *automatic*
+ * publishing off ({@see is_auto_publish_enabled()}); manual paths such as the
+ * Backfill CLI still call {@see \Atmosphere\Publisher} directly, so this helper
+ * can — and should — still run in that mode. That is deliberate: it shapes
+ * *what* a publish writes, not *whether* the site publishes, so a host embedded
+ * as a connection layer that runs a manual backfill can still choose
+ * document-only output. Forcing it off in connection-only mode would take that
+ * choice away. It is therefore a pure filter, not the
+ * "option → force off in connection-only → filter last" contract.
+ *
+ * @since unreleased
+ *
+ * @return bool True when the Bluesky companion post should be published. Default true.
+ */
+function is_bluesky_post_enabled(): bool {
+	/**
+	 * Filters whether a companion Bluesky feed post is published alongside the
+	 * site.standard.document record.
+	 *
+	 * Return false to publish documents only. Forward-only: it does not remove
+	 * Bluesky posts published before it was enabled.
+	 *
+	 * @since unreleased
+	 *
+	 * @param bool $enabled Whether to publish the Bluesky companion post. Default true.
+	 */
+	return (bool) \apply_filters( 'atmosphere_should_publish_bluesky_post', true );
+}
+
+/**
  * Write a debug message to the PHP error log, gated behind WP_DEBUG.
  *
  * `error_log()` honours the server's `log_errors` / `error_log` directives

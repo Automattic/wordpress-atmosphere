@@ -22,7 +22,7 @@ import {
 	CUSTOM_TEXT_META_KEY,
 	PREVIEW_PATH,
 } from '../config';
-import { strategyLabel, hasOverLimit } from './utils';
+import { strategyLabel, hasOverLimit, isAuthError } from './utils';
 
 /**
  * The pre-publish panel body.
@@ -50,7 +50,7 @@ function PrePublishPanel() {
 
 	const [ preview, setPreview ] = useState( null );
 	const [ loading, setLoading ] = useState( true );
-	const [ error, setError ] = useState( false );
+	const [ error, setError ] = useState( null );
 	const debounce = useRef( null );
 
 	useEffect( () => {
@@ -59,7 +59,7 @@ function PrePublishPanel() {
 		}
 
 		setLoading( true );
-		setError( false );
+		setError( null );
 
 		// Debounce so each keystroke doesn't fire a projector request.
 		clearTimeout( debounce.current );
@@ -82,8 +82,18 @@ function PrePublishPanel() {
 					setPreview( result );
 					setLoading( false );
 				} )
-				.catch( () => {
-					setError( true );
+				.catch( ( err ) => {
+					// Drop any preview from an earlier keystroke so a failed
+					// refresh never leaves stale text on screen, then keep the
+					// error so the message can distinguish a permission failure
+					// from a transient one, and log it for support reports.
+					setPreview( null );
+					// eslint-disable-next-line no-console -- Aid debugging.
+					console.error(
+						'ATmosphere pre-publish preview failed:',
+						err
+					);
+					setError( err );
 					setLoading( false );
 				} );
 		}, 400 );
@@ -104,7 +114,23 @@ function PrePublishPanel() {
 		return <Spinner />;
 	}
 
-	if ( error || ! preview ) {
+	if ( error ) {
+		return (
+			<p>
+				{ isAuthError( error )
+					? __(
+							'You don’t have permission to preview this post.',
+							'atmosphere'
+					  )
+					: __(
+							'Could not load the Bluesky preview. Please try again.',
+							'atmosphere'
+					  ) }
+			</p>
+		);
+	}
+
+	if ( ! preview ) {
 		return (
 			<p>{ __( 'Could not load the Bluesky preview.', 'atmosphere' ) }</p>
 		);
