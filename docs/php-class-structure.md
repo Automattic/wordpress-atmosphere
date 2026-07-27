@@ -83,8 +83,25 @@ The main file registers the autoloader, defines `ATMOSPHERE_VERSION` and path co
 Plugin orchestration class:
 
 - Registers rewrite rules + `template_redirect` handlers for `/.well-known/atproto-did` and `/.well-known/site.standard.publication`. All share the `atmosphere_wellknown` query var.
+- Emits the front-end record mapping on `wp_head` (see below).
 - Registers async cron hooks (`register_async_hooks()`) that delegate to the Publisher / Reaction_Sync.
 - Listens on `transition_post_status` and comment-status transitions to schedule cross-post / update / delete jobs.
+
+#### Front-end record mapping
+
+Three `wp_head` emitters advertise which AT Protocol records a page maps to. All resolve their AT-URIs through the same three private helpers (`current_document_uri()`, `publication_uri()`, `current_bsky_post_uri()`), so the gating — `has_identity()` rather than `is_connected()`, a required `Document::META_URI`, and the lazy TID mint routed through `Document::get_rkey()` — lives in one place.
+
+| Emitter | Output |
+|---------|--------|
+| `output_document_link()` | `<link rel="site.standard.document">` on a singular publishable post with a document record. |
+| `output_publication_link()` | `<link rel="site.standard.publication">` on the front page and on singular publishable posts. |
+| `output_at_tags()` | [AT Tags](https://tangled.org/chrisshank.com/at-tags/) `<meta>` tags, as emitted by Bluesky and Leaflet. |
+
+The AT Tags mapping: `at:canonical` for records the page is a rendering of, `at:alternate` for records it merely references. A singular post marks its document canonical, with the parent publication and the companion `app.bsky.feed.post` as alternates; the front page marks the publication canonical. Repeated names are arrays, so a static front page that is also a publishable post emits two `at:canonical` lines.
+
+`at:author` and `at:me` are not emitted — a site has one connected account, so `at:author` would attribute every post on a multi-author site to whoever connected it. Add them (or a namespaced `at:{namespace}:{property}`) through the `atmosphere_at_tags` filter, which receives the assembled `name => [uris]` array.
+
+The `<link rel>` tags and the meta tags ship together; the meta tags are additive.
 
 ### API (`includes/class-api.php`)
 

@@ -58,6 +58,7 @@ ATmosphere exposes a small set of filters and actions for plugins to extend beha
 | `atmosphere_transform_document` | filter | Mutate the document record before write. |
 | `atmosphere_transform_publication` | filter | Mutate the publication record before write. |
 | `atmosphere_atproto_preview_transformers` | filter | Add a transformer to the `?atproto={$type}` preview for posts and the front page. |
+| `atmosphere_at_tags` | filter | Add, change, or remove the AT Tags `<meta>` tags mapping a page to its AT Protocol records. |
 | `atmosphere_appview_host` | filter | Point Bluesky web links at an alternative AT Protocol appview (host or subpath). |
 | `atmosphere_appview_url` | filter | Rewrite the whole assembled appview link, including its route. |
 | `atmosphere_publish_post_result` | action | React to a post-publish outcome (success or `WP_Error`). |
@@ -68,6 +69,34 @@ ATmosphere exposes a small set of filters and actions for plugins to extend beha
 | `atmosphere_reauth_required` | action | React when the connection first enters a reauth-required state after a permanent OAuth failure. Fires once per transition. |
 
 When adding a new public hook, mark its `@since` tag as `unreleased` — the release script rewrites it (see [Release Process → Marking Unreleased Code](release-process.md#marking-unreleased-code)).
+
+### Mapping pages back to AT Protocol records
+
+Every page that represents a record advertises it twice: through the `<link rel="site.standard.document">` / `<link rel="site.standard.publication">` tags standard.site expects, and through the [AT Tags](https://tangled.org/chrisshank.com/at-tags/) `<meta>` tags Bluesky and Leaflet emit. A dual-published post carries all five:
+
+```html
+<link rel="site.standard.document" href="at://did:plc:xxx/site.standard.document/3l…" />
+<link rel="site.standard.publication" href="at://did:plc:xxx/site.standard.publication/3l…" />
+<meta name="at:canonical" content="at://did:plc:xxx/site.standard.document/3l…" />
+<meta name="at:alternate" content="at://did:plc:xxx/site.standard.publication/3l…" />
+<meta name="at:alternate" content="at://did:plc:xxx/app.bsky.feed.post/3l…" />
+```
+
+`at:canonical` marks the records the page is a rendering of; `at:alternate` marks records it references. On the front page the publication is canonical instead, since that is the URL the publication record's `url` field points at.
+
+Two tags from the proposal are not emitted: `at:author`, because a site has exactly one connected account and it would attribute every post on a multi-author site to whoever connected it, and `at:me`, which has no clear use under the same constraint. Add either — or a namespaced `at:{namespace}:{property}` — with `atmosphere_at_tags`, which receives the assembled tags keyed by name, each holding a list of AT-URIs:
+
+```php
+add_filter(
+	'atmosphere_at_tags',
+	function ( $tags ) {
+		$tags['at:me'] = array( 'at://' . \Atmosphere\get_did() );
+		return $tags;
+	}
+);
+```
+
+Returning an empty array suppresses the meta tags entirely; the `<link rel>` tags are unaffected by this filter.
 
 ### Pointing Bluesky links at another appview
 

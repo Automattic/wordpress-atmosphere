@@ -1,0 +1,4 @@
+Significance: minor
+Type: added
+
+Add AT Tags meta tags to your posts and home page, so apps like Bluesky and Leaflet can tell which AT Protocol records a page came from.
