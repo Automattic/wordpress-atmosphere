@@ -91,6 +91,8 @@ Plugin orchestration class:
 
 Three `wp_head` emitters advertise which AT Protocol records a page maps to. All resolve their AT-URIs through the same private helpers (`current_document_uri()`, `publication_uri()`, `current_bsky_post_uri()`), so the gating — `has_identity()` rather than `is_connected()`, and a required stored record URI — lives in one place.
 
+Those helpers memoize through `head_memo()`, keyed by resolver, queried object, and connected DID. The emitters overlap heavily, and the shared `is_post_publishable()` check walks every registered post type and fires `atmosphere_syncable_post_types` on each call, so an unmemoized head render resolves it four times. `wp_head` fires once per request, which is what makes a plain memo safe. A test process is not a request, so tests call `Atmosphere::flush_head_record_cache()` between renders.
+
 | Emitter | Output |
 |---------|--------|
 | `output_document_link()` | `<link rel="site.standard.document">` on a singular publishable post with a document record. |

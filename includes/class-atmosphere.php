@@ -125,6 +125,23 @@ class Atmosphere {
 	private static array $publishing_post_ids = array();
 
 	/**
+	 * Per-request cache of what the `wp_head` emitters resolve, keyed by
+	 * resolver, queried object ID, and connected DID.
+	 *
+	 * The three emitters ask overlapping questions — which post may name
+	 * records, which document URI, which publication URI — so without
+	 * this the same work runs up to three times per pageview. The part
+	 * that costs is `is_post_publishable()`, which walks every
+	 * registered post type and fires the `atmosphere_syncable_post_types`
+	 * filter on each call, so a site hooking that filter pays for it
+	 * repeatedly. `wp_head` fires once per request, which is what makes
+	 * a plain memo sufficient here.
+	 *
+	 * @var array<string,mixed>
+	 */
+	private static array $head_record_cache = array();
+
+	/**
 	 * Maximum re-schedule hops for a child comment waiting on a
 	 * not-yet-published parent. After this many deferrals the child
 	 * is skipped if the parent still lacks a threadable strongRef so a
@@ -475,19 +492,24 @@ class Atmosphere {
 	 *                belonging to the connected account.
 	 */
 	private static function current_document_uri(): string {
-		$post = self::current_publishable_post();
+		return self::head_memo(
+			'document',
+			static function () {
+				$post = self::current_publishable_post();
 
-		if ( null === $post ) {
-			return '';
-		}
+				if ( null === $post ) {
+					return '';
+				}
 
-		$uri = \get_post_meta( $post->ID, Document::META_URI, true );
+				$uri = \get_post_meta( $post->ID, Document::META_URI, true );
 
-		if ( ! \is_string( $uri ) || '' === $uri ) {
-			return '';
-		}
+				if ( ! \is_string( $uri ) || '' === $uri ) {
+					return '';
+				}
 
-		return self::verified_record_uri( $uri, ( new Document( $post ) )->get_collection() );
+				return self::verified_record_uri( $uri, 'site.standard.document' );
+			}
+		);
 	}
 
 	/**
@@ -548,19 +570,24 @@ class Atmosphere {
 	 *                belonging to the connected account.
 	 */
 	private static function current_bsky_post_uri(): string {
-		$post = self::current_publishable_post();
+		return self::head_memo(
+			'bsky',
+			static function () {
+				$post = self::current_publishable_post();
 
-		if ( null === $post ) {
-			return '';
-		}
+				if ( null === $post ) {
+					return '';
+				}
 
-		$uri = \get_post_meta( $post->ID, Post::META_URI, true );
+				$uri = \get_post_meta( $post->ID, Post::META_URI, true );
 
-		if ( ! \is_string( $uri ) || '' === $uri ) {
-			return '';
-		}
+				if ( ! \is_string( $uri ) || '' === $uri ) {
+					return '';
+				}
 
-		return self::verified_record_uri( $uri, ( new Post( $post ) )->get_collection() );
+				return self::verified_record_uri( $uri, 'app.bsky.feed.post' );
+			}
+		);
 	}
 
 	/**
@@ -576,17 +603,58 @@ class Atmosphere {
 	 * @return \WP_Post|null
 	 */
 	private static function current_publishable_post(): ?\WP_Post {
-		if ( ! has_identity() || ! \is_singular() ) {
-			return null;
+		return self::head_memo(
+			'post',
+			static function () {
+				if ( ! has_identity() || ! \is_singular() ) {
+					return null;
+				}
+
+				$post = \get_queried_object();
+
+				if ( ! $post instanceof \WP_Post || ! is_post_publishable( $post ) ) {
+					return null;
+				}
+
+				return $post;
+			}
+		);
+	}
+
+	/**
+	 * Resolve a head-emitter value once per request.
+	 *
+	 * The queried object and the connected DID are folded into the key
+	 * so a cached answer can never outlive the request state it was
+	 * computed from.
+	 *
+	 * @param string   $key     Resolver identifier.
+	 * @param callable $resolve Produces the value on a miss.
+	 * @return mixed The resolved value.
+	 */
+	private static function head_memo( string $key, callable $resolve ): mixed {
+		$key .= '|' . \get_queried_object_id() . '|' . get_did();
+
+		if ( ! \array_key_exists( $key, self::$head_record_cache ) ) {
+			self::$head_record_cache[ $key ] = $resolve();
 		}
 
-		$post = \get_queried_object();
+		return self::$head_record_cache[ $key ];
+	}
 
-		if ( ! $post instanceof \WP_Post || ! is_post_publishable( $post ) ) {
-			return null;
-		}
-
-		return $post;
+	/**
+	 * Clear the per-request head record cache.
+	 *
+	 * The cache assumes a page's records are stable for the life of a
+	 * request, which holds for a real pageview but not across tests that
+	 * render the same URL under different options. Tests should call
+	 * this between renders.
+	 *
+	 * @internal
+	 * @return void
+	 */
+	public static function flush_head_record_cache(): void {
+		self::$head_record_cache = array();
 	}
 
 	/**
@@ -637,23 +705,28 @@ class Atmosphere {
 	 * @return string AT-URI, or '' when there is no publication record.
 	 */
 	private static function publication_uri(): string {
-		if ( ! has_identity() ) {
-			return '';
-		}
+		return self::head_memo(
+			'publication',
+			static function () {
+				if ( ! has_identity() ) {
+					return '';
+				}
 
-		$pub_tid = \get_option( Publication::OPTION_TID );
+				$pub_tid = \get_option( Publication::OPTION_TID );
 
-		/*
-		 * Type-check rather than cast: a corrupted option holding an
-		 * array would raise an "Array to string conversion" notice on
-		 * the front end, and `build_at_uri()` would splice the word
-		 * "Array" into a published AT-URI.
-		 */
-		if ( ! \is_string( $pub_tid ) || '' === $pub_tid ) {
-			return '';
-		}
+				/*
+				 * Type-check rather than cast: a corrupted option holding
+				 * an array would raise an "Array to string conversion"
+				 * notice on the front end, and `build_at_uri()` would
+				 * splice the word "Array" into a published AT-URI.
+				 */
+				if ( ! \is_string( $pub_tid ) || '' === $pub_tid ) {
+					return '';
+				}
 
-		return build_at_uri( get_did(), 'site.standard.publication', $pub_tid );
+				return build_at_uri( get_did(), 'site.standard.publication', $pub_tid );
+			}
+		);
 	}
 
 	/**
@@ -807,19 +880,19 @@ class Atmosphere {
 	 *   tag emitting in that configuration).
 	 * - A publishable singular post qualifies because its document
 	 *   record carries a reference back to the publication.
+	 *
+	 * The singular arm defers to {@see Atmosphere::current_publishable_post()}
+	 * so the publishability check is resolved once per request rather
+	 * than repeated here. That helper additionally requires an identity,
+	 * which changes nothing: the only caller pairs this with
+	 * {@see Atmosphere::publication_uri()}, which returns '' without one.
 	 */
 	private static function is_publication_url(): bool {
 		if ( \is_front_page() ) {
 			return true;
 		}
 
-		if ( ! \is_singular() ) {
-			return false;
-		}
-
-		$post = \get_queried_object();
-
-		return $post instanceof \WP_Post && is_post_publishable( $post );
+		return null !== self::current_publishable_post();
 	}
 
 	/**

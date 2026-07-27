@@ -39,6 +39,14 @@ class Test_Atmosphere extends WP_UnitTestCase {
 
 		$this->atmosphere = new Atmosphere();
 
+		/*
+		 * The head emitters memoize per request. A test process is not a
+		 * request: without this, two tests rendering the same URL under
+		 * different options — the front page with and without a
+		 * publication TID, say — would collide on the same cache key.
+		 */
+		Atmosphere::flush_head_record_cache();
+
 		\update_option(
 			'atmosphere_connection',
 			array(
@@ -2624,6 +2632,57 @@ class Test_Atmosphere extends WP_UnitTestCase {
 			\get_post_meta( $post_id, Document::META_DID, true ),
 			'A front-end render must not rewrite the recorded origin DID.'
 		);
+	}
+
+	/**
+	 * A full head render resolves publishability once, not once per
+	 * emitter.
+	 *
+	 * `is_post_publishable()` walks every registered post type and fires
+	 * `atmosphere_syncable_post_types` on each call, so a site hooking
+	 * that filter pays for every repeat. Counting filter invocations
+	 * across all three emitters pins the memo: without it this is 4 —
+	 * one per emitter plus `is_publication_url()`'s own check.
+	 */
+	public function test_head_emitters_resolve_publishability_once_per_request() {
+		$this->set_identity();
+		\update_option( 'atmosphere_publication_tid', '3kpubtid000000' );
+
+		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		\update_post_meta( $post_id, Document::META_URI, 'at://did:plc:test123/site.standard.document/3kdocrecord000' );
+		\update_post_meta( $post_id, Post::META_URI, 'at://did:plc:test123/app.bsky.feed.post/3kbskypost0000' );
+
+		$this->go_to_post( $post_id );
+		Atmosphere::flush_head_record_cache();
+
+		$calls = 0;
+		\add_filter(
+			'atmosphere_syncable_post_types',
+			static function ( $types ) use ( &$calls ) {
+				++$calls;
+				return $types;
+			}
+		);
+
+		\ob_start();
+		$this->atmosphere->output_document_link();
+		$this->atmosphere->output_publication_link();
+		$this->atmosphere->output_at_tags();
+		$output = (string) \ob_get_clean();
+
+		\remove_all_filters( 'atmosphere_syncable_post_types' );
+
+		$this->assertSame(
+			1,
+			$calls,
+			'Publishability must be resolved once for the whole head, not once per emitter.'
+		);
+
+		// The memo must not have cost us any output.
+		$this->assertStringContainsString( '<link rel="site.standard.document"', $output );
+		$this->assertStringContainsString( '<link rel="site.standard.publication"', $output );
+		$this->assertStringContainsString( '<meta name="at:canonical"', $output );
+		$this->assertSame( 2, \substr_count( $output, 'at:alternate' ) );
 	}
 
 	/**
