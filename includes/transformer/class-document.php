@@ -334,7 +334,7 @@ class Document extends Base {
 		$rkey = \get_post_meta( $this->object->ID, self::META_TID, true );
 
 		if ( empty( $rkey ) ) {
-			$rkey = TID::generate();
+			$rkey = $this->original_time ? $this->historical_rkey() : TID::generate();
 			\update_post_meta( $this->object->ID, self::META_TID, $rkey );
 		}
 
