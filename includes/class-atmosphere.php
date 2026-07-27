@@ -457,7 +457,7 @@ class Atmosphere {
 	 * @return string AT-URI, or '' when the page has no document record.
 	 */
 	private static function current_document_uri(): string {
-		$post = self::advertisable_post();
+		$post = self::current_publishable_post();
 
 		if ( null === $post ) {
 			return '';
@@ -506,10 +506,14 @@ class Atmosphere {
 	 * issue a delete against and has only the rkey meta to go on, while
 	 * here the full AT-URI is in hand.
 	 *
+	 * Having it in hand, the check uses all of it — collection and rkey
+	 * as well as DID — so a corrupted value can't be advertised as a
+	 * Bluesky post just because it happens to be one of our AT-URIs.
+	 *
 	 * @return string AT-URI, or '' when the page has no Bluesky record.
 	 */
 	private static function current_bsky_post_uri(): string {
-		$post = self::advertisable_post();
+		$post = self::current_publishable_post();
 
 		if ( null === $post ) {
 			return '';
@@ -523,7 +527,24 @@ class Atmosphere {
 
 		$parsed = parse_at_uri( $uri );
 
-		if ( false === $parsed || get_did() !== $parsed['did'] ) {
+		if ( false === $parsed ) {
+			return '';
+		}
+
+		/*
+		 * Check all three components, not just the DID. `parse_at_uri()`
+		 * only asserts the `at://` prefix and a three-segment shape, so
+		 * a corrupted `META_URI` holding some other record of ours — a
+		 * `site.standard.document` URI, say — would otherwise pass the
+		 * DID comparison and be advertised as this page's Bluesky post.
+		 * The collection comes from the transformer rather than a
+		 * literal so the two can't drift apart.
+		 */
+		if (
+			get_did() !== $parsed['did']
+			|| ( new Post( $post ) )->get_collection() !== $parsed['collection']
+			|| '' === $parsed['rkey']
+		) {
 			return '';
 		}
 
@@ -531,12 +552,18 @@ class Atmosphere {
 	}
 
 	/**
-	 * The post whose records the current request may advertise, or null
-	 * when the request is not a singular view of a publishable post.
+	 * The queried post when the current request is a singular view of a
+	 * post whose records may be named in the page head, or null when it
+	 * is not.
+	 *
+	 * Wraps {@see \Atmosphere\is_post_publishable()} with the two
+	 * request-shape conditions the head emitters share: a persisted
+	 * identity to name records under, and a singular view to name them
+	 * on.
 	 *
 	 * @return \WP_Post|null
 	 */
-	private static function advertisable_post(): ?\WP_Post {
+	private static function current_publishable_post(): ?\WP_Post {
 		if ( ! has_identity() || ! \is_singular() ) {
 			return null;
 		}

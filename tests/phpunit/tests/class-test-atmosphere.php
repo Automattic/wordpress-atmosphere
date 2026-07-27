@@ -2471,23 +2471,70 @@ class Test_Atmosphere extends WP_UnitTestCase {
 	}
 
 	/**
-	 * A malformed stored URI is not advertised — `parse_at_uri()`
-	 * returning false must fail closed rather than emit the raw value.
+	 * A stored value that isn't a well-formed `app.bsky.feed.post`
+	 * AT-URI under the current DID is not advertised.
+	 *
+	 * `parse_at_uri()` only asserts the `at://` prefix and a three-
+	 * segment shape, so checking the DID alone would let any other
+	 * record of ours through — a `site.standard.document` URI would be
+	 * published as this page's Bluesky post. Each case here fails a
+	 * different component while the document tag keeps emitting, which
+	 * is what proves the rejection is the Bluesky check and not a
+	 * wholesale bail.
+	 *
+	 * @dataProvider data_non_advertisable_bsky_uris
+	 *
+	 * @param string $uri     Value stored in `Post::META_URI`.
+	 * @param string $message Assertion message.
 	 */
-	public function test_output_at_tags_skips_unparseable_bluesky_uri() {
+	public function test_output_at_tags_skips_bluesky_uri_that_is_not_a_feed_post( string $uri, string $message ) {
 		$this->set_identity();
 		\update_option( 'atmosphere_publication_tid', '3kpubtid000000' );
 
 		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
-		\update_post_meta( $post_id, Post::META_URI, 'https://bsky.app/not-an-at-uri' );
+		\update_post_meta( $post_id, Post::META_URI, $uri );
 		\update_post_meta( $post_id, Document::META_URI, 'at://did:plc:test123/site.standard.document/3kdocrecord000' );
 		\update_post_meta( $post_id, Document::META_TID, '3kdocrecord000' );
 
 		$this->go_to_post( $post_id );
 		$output = $this->capture_at_tags();
 
-		$this->assertStringNotContainsString( 'bsky.app', $output );
-		$this->assertStringContainsString( 'at:canonical', $output );
+		$this->assertStringNotContainsString(
+			'<meta name="at:alternate" content="' . $uri . '" />',
+			$output,
+			$message
+		);
+		$this->assertStringContainsString(
+			'<meta name="at:canonical" content="at://did:plc:test123/site.standard.document/3kdocrecord000" />',
+			$output,
+			'Rejecting the Bluesky URI must not suppress the document tag.'
+		);
+	}
+
+	/**
+	 * Stored values that must never be advertised as a Bluesky post.
+	 *
+	 * @return array<string, array{0: string, 1: string}>
+	 */
+	public function data_non_advertisable_bsky_uris(): array {
+		return array(
+			'not an AT-URI at all'           => array(
+				'https://bsky.app/not-an-at-uri',
+				'A value that does not parse must fail closed.',
+			),
+			'our own document record'        => array(
+				'at://did:plc:test123/site.standard.document/3kdocrecord000',
+				'Another of our records under the same DID is still not a Bluesky post.',
+			),
+			'right collection, empty rkey'   => array(
+				'at://did:plc:test123/app.bsky.feed.post/',
+				'An AT-URI with no rkey points at no record.',
+			),
+			'unrelated collection, same DID' => array(
+				'at://did:plc:test123/app.bsky.actor.profile/self',
+				'Only feed posts belong in the Bluesky alternate.',
+			),
+		);
 	}
 
 	/**
