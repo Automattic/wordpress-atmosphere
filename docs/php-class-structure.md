@@ -89,15 +89,19 @@ Plugin orchestration class:
 
 #### Front-end record mapping
 
-Three `wp_head` emitters advertise which AT Protocol records a page maps to. All resolve their AT-URIs through the same three private helpers (`current_document_uri()`, `publication_uri()`, `current_bsky_post_uri()`), so the gating — `has_identity()` rather than `is_connected()`, a required `Document::META_URI`, and the lazy TID mint routed through `Document::get_rkey()` — lives in one place.
+Three `wp_head` emitters advertise which AT Protocol records a page maps to. All resolve their AT-URIs through the same private helpers (`current_document_uri()`, `publication_uri()`, `current_bsky_post_uri()`), so the gating — `has_identity()` rather than `is_connected()`, and a required stored record URI — lives in one place.
 
 | Emitter | Output |
 |---------|--------|
 | `output_document_link()` | `<link rel="site.standard.document">` on a singular publishable post with a document record. |
 | `output_publication_link()` | `<link rel="site.standard.publication">` on the front page and on singular publishable posts. |
-| `output_at_tags()` | [AT Tags](https://tangled.org/chrisshank.com/at-tags/) `<meta>` tags, as emitted by Bluesky and Leaflet. |
+| `output_at_tags()` | [AT Tags](https://tangled.org/chrisshank.com/at-tags/) `<meta>` tags, as emitted by Leaflet and others. |
 
-The AT Tags mapping: `at:canonical` for records the page is a rendering of, `at:alternate` for records it merely references. A singular post marks its document canonical, with the parent publication and the companion `app.bsky.feed.post` as alternates; the front page marks the publication canonical. Repeated names are arrays, so a static front page that is also a publishable post emits two `at:canonical` lines.
+**Record URIs are read, never rebuilt.** Both per-post helpers return the URI the Publisher stored, validated through `verified_record_uri()` against the current DID, the expected collection, and a non-empty rkey. Reassembling a URI from `get_did()` plus the post's TID looks equivalent but retargets the record at whichever account is connected now: after a reconnect to a different account the TID still belongs to the old repo, so the page would advertise a record that exists nowhere. The publication URI is the exception — it is built from `get_did()` plus the site-level TID, both of which belong to the current connection by construction.
+
+This is also why the front end no longer calls `Document::get_rkey()`. That call refreshes `Document::META_DID` to the current DID, and the head emitters were its only render-time callers, so a pageview can no longer move a post's recorded origin out from under the cleanup guards.
+
+The AT Tags mapping: `at:canonical` for records the page is a rendering of, `at:alternate` for records it merely references. A singular post marks its document canonical, with the parent publication and the companion `app.bsky.feed.post` as alternates; the front page marks the publication canonical. Repeated names are arrays, so a static front page that is also a publishable post emits two `at:canonical` lines. Both alternates depend on the document being present — a page with no canonical record has nothing for an alternate to reference.
 
 `at:author` and `at:me` are not emitted — a site has one connected account, so `at:author` would attribute every post on a multi-author site to whoever connected it. Add them (or a namespaced `at:{namespace}:{property}`) through the `atmosphere_at_tags` filter, which receives the assembled `name => [uris]` array.
 

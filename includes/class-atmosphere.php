@@ -415,9 +415,9 @@ class Atmosphere {
 	 * its AT Protocol document record, as required by standard.site.
 	 *
 	 * Gated on `has_identity()` rather than `is_connected()` so the
-	 * verification link survives a temporary OAuth refresh failure —
-	 * the document AT-URI is computed from the DID, which is stable
-	 * across session expiry and `needs_reauth` states.
+	 * verification link survives a temporary OAuth refresh failure: the
+	 * DID it is checked against is stable across session expiry and
+	 * `needs_reauth` states.
 	 *
 	 * Also gated on the document record's own `Document::META_URI` so the
 	 * link is emitted only for posts the Publisher actually wrote a
@@ -454,7 +454,25 @@ class Atmosphere {
 	 * place. See {@see Atmosphere::output_document_link()} for why the
 	 * gates are what they are.
 	 *
-	 * @return string AT-URI, or '' when the page has no document record.
+	 * The stored URI is returned as-is rather than rebuilt from
+	 * `get_did()` plus the post's TID. Rebuilding looks equivalent and
+	 * is not: after a disconnect and reconnect to a different account,
+	 * `get_did()` is the new DID while the TID still belongs to the old
+	 * one, so every already-published post would advertise
+	 * `at://NEW_DID/site.standard.document/OLD_TID` — a record that
+	 * exists nowhere. The same mismatch would arise from a row whose
+	 * `META_TID` was lost while `META_URI` survived, where the lazy mint
+	 * would issue a fresh TID unrelated to the published record.
+	 *
+	 * Not calling `Document::get_rkey()` here also takes the front end
+	 * out of the write path entirely. That call refreshes
+	 * `Document::META_DID` to the current DID, and this was its only
+	 * render-time caller — every other one is in the Publisher at
+	 * publish time — so a pageview can no longer move a post's recorded
+	 * origin DID out from under the cleanup guards (see #217).
+	 *
+	 * @return string AT-URI, or '' when the page has no document record
+	 *                belonging to the connected account.
 	 */
 	private static function current_document_uri(): string {
 		$post = self::current_publishable_post();
@@ -463,38 +481,58 @@ class Atmosphere {
 			return '';
 		}
 
-		$doc_uri = \get_post_meta( $post->ID, Document::META_URI, true );
-		if ( empty( $doc_uri ) ) {
+		$uri = \get_post_meta( $post->ID, Document::META_URI, true );
+
+		if ( ! \is_string( $uri ) || '' === $uri ) {
 			return '';
 		}
 
-		/*
-		 * Route the TID lookup through `Document::get_rkey()` so the
-		 * lazy mint here writes `META_DID` alongside `META_TID`. The
-		 * inlined fallback that used to live here would have left the
-		 * row in a "TID set, no DID" state, which the mismatch guard
-		 * in `Publisher::delete_post()` treats as "DID unknown, fall
-		 * through to `get_did()`" — re-opening the wrong-repo-delete
-		 * bypass after a reconnect-to-different-account.
-		 */
-		$doc_tid = ( new Document( $post ) )->get_rkey();
+		return self::verified_record_uri( $uri, ( new Document( $post ) )->get_collection() );
+	}
 
-		return build_at_uri( get_did(), 'site.standard.document', $doc_tid );
+	/**
+	 * A stored AT-URI, or an empty string when it is not a well-formed
+	 * URI for `$collection` in the connected account's repo.
+	 *
+	 * Records are advertised from the URI the Publisher stored, which is
+	 * the only record of the repo a write actually landed in. Every
+	 * component is checked rather than just the DID: `parse_at_uri()`
+	 * asserts only the `at://` prefix and a three-segment shape, so a
+	 * corrupted value holding another of our records would otherwise be
+	 * advertised as the wrong kind of record.
+	 *
+	 * @param string $uri        Stored AT-URI.
+	 * @param string $collection Collection NSID the URI must name.
+	 * @return string The URI when it checks out, '' otherwise.
+	 */
+	private static function verified_record_uri( string $uri, string $collection ): string {
+		$parsed = parse_at_uri( $uri );
+
+		if ( false === $parsed ) {
+			return '';
+		}
+
+		if (
+			get_did() !== $parsed['did']
+			|| $collection !== $parsed['collection']
+			|| '' === $parsed['rkey']
+		) {
+			return '';
+		}
+
+		return $uri;
 	}
 
 	/**
 	 * The companion `app.bsky.feed.post` AT-URI for the page being
 	 * rendered, or an empty string when there is none to advertise.
 	 *
-	 * Unlike the document URI this is read back verbatim from the meta
-	 * the Publisher wrote rather than rebuilt from the current DID —
-	 * the stored URI is the only record of which repo the post actually
-	 * landed in. After a disconnect and reconnect to a different
-	 * account, it points at the previous account's repo, and
-	 * advertising it would claim someone else's record as this page's.
+	 * Read back verbatim from the meta the Publisher wrote and validated
+	 * through {@see Atmosphere::verified_record_uri()}, on the same
+	 * terms as the document URI.
 	 *
-	 * The origin DID therefore comes out of the URI itself rather than
-	 * `Post::META_DID`. That meta is not a safe source here:
+	 * The origin DID deliberately comes out of the URI rather than
+	 * `Post::META_DID`. That meta is not a safe source:
 	 * {@see \Atmosphere\Transformer\Post::get_rkey()} refreshes it to
 	 * the current DID on every call, before any write to the PDS has
 	 * succeeded, so a failed republish after reconnecting leaves the row
@@ -506,11 +544,8 @@ class Atmosphere {
 	 * issue a delete against and has only the rkey meta to go on, while
 	 * here the full AT-URI is in hand.
 	 *
-	 * Having it in hand, the check uses all of it — collection and rkey
-	 * as well as DID — so a corrupted value can't be advertised as a
-	 * Bluesky post just because it happens to be one of our AT-URIs.
-	 *
-	 * @return string AT-URI, or '' when the page has no Bluesky record.
+	 * @return string AT-URI, or '' when the page has no Bluesky record
+	 *                belonging to the connected account.
 	 */
 	private static function current_bsky_post_uri(): string {
 		$post = self::current_publishable_post();
@@ -525,30 +560,7 @@ class Atmosphere {
 			return '';
 		}
 
-		$parsed = parse_at_uri( $uri );
-
-		if ( false === $parsed ) {
-			return '';
-		}
-
-		/*
-		 * Check all three components, not just the DID. `parse_at_uri()`
-		 * only asserts the `at://` prefix and a three-segment shape, so
-		 * a corrupted `META_URI` holding some other record of ours — a
-		 * `site.standard.document` URI, say — would otherwise pass the
-		 * DID comparison and be advertised as this page's Bluesky post.
-		 * The collection comes from the transformer rather than a
-		 * literal so the two can't drift apart.
-		 */
-		if (
-			get_did() !== $parsed['did']
-			|| ( new Post( $post ) )->get_collection() !== $parsed['collection']
-			|| '' === $parsed['rkey']
-		) {
-			return '';
-		}
-
-		return $uri;
+		return self::verified_record_uri( $uri, ( new Post( $post ) )->get_collection() );
 	}
 
 	/**
@@ -676,6 +688,15 @@ class Atmosphere {
 	 * exists to find, and the reason `has_post_records()` ORs the two
 	 * meta keys — stays silent here rather than advertising a lone
 	 * reference.
+	 *
+	 * The front-page test below is deliberately not routed through
+	 * `is_publication_url()`. The two answer different questions:
+	 * `is_publication_url()` asks whether the publication should be
+	 * named on this URL at all (front page *or* publishable singular),
+	 * while this asks where it is *canonical* (front page only), the
+	 * singular case being covered by the alternate branch. Collapsing
+	 * them would make every publishable post claim to be a rendering of
+	 * the publication record.
 	 *
 	 * These are additive. The `<link rel>` tags still ship, so consumers
 	 * that only read those keep working.

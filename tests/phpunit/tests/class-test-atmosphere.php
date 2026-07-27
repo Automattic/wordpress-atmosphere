@@ -2538,6 +2538,95 @@ class Test_Atmosphere extends WP_UnitTestCase {
 	}
 
 	/**
+	 * After reconnecting to a different account, a post published under
+	 * the previous one advertises nothing.
+	 *
+	 * The URI used to be rebuilt as `get_did()` + the stored TID, which
+	 * silently retargets the record at the new account: the TID belongs
+	 * to the old repo, so `at://NEW_DID/site.standard.document/OLD_TID`
+	 * names a record that exists in neither. Both the meta tag and the
+	 * link tag are asserted here, since both read the same resolver.
+	 */
+	public function test_document_tags_silent_after_reconnect_to_another_account() {
+		$this->set_identity( 'did:plc:current' );
+		\update_option( 'atmosphere_publication_tid', '3kpubtid000000' );
+
+		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		\update_post_meta( $post_id, Document::META_URI, 'at://did:plc:previous/site.standard.document/3kdocrecord000' );
+		\update_post_meta( $post_id, Document::META_TID, '3kdocrecord000' );
+
+		$this->go_to_post( $post_id );
+
+		$at_tags = $this->capture_at_tags();
+
+		$this->assertStringNotContainsString(
+			'at://did:plc:current/site.standard.document/3kdocrecord000',
+			$at_tags,
+			'A record minted under the previous account must not be re-pointed at the current one.'
+		);
+		$this->assertStringNotContainsString( 'at:canonical', $at_tags );
+		$this->assertSame(
+			'',
+			$this->capture_document_link(),
+			'The link tag reads the same resolver and must fall silent too.'
+		);
+	}
+
+	/**
+	 * The advertised document URI is the one the Publisher stored, not
+	 * one reassembled from the post's TID meta.
+	 *
+	 * Pinned with a deliberately divergent `META_TID`: if the URI were
+	 * rebuilt, the tag would carry the meta's TID instead of the
+	 * published record's.
+	 */
+	public function test_document_tags_use_stored_uri_not_rebuilt_tid() {
+		$this->set_identity();
+		\update_option( 'atmosphere_publication_tid', '3kpubtid000000' );
+
+		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		\update_post_meta( $post_id, Document::META_URI, 'at://did:plc:test123/site.standard.document/3kpublished000' );
+		\update_post_meta( $post_id, Document::META_TID, '3kdivergent000' );
+
+		$this->go_to_post( $post_id );
+		$output = $this->capture_at_tags();
+
+		$this->assertStringContainsString(
+			'<meta name="at:canonical" content="at://did:plc:test123/site.standard.document/3kpublished000" />',
+			$output
+		);
+		$this->assertStringNotContainsString( '3kdivergent000', $output );
+	}
+
+	/**
+	 * Rendering a page never touches `Document::META_DID`.
+	 *
+	 * The head emitters were the only render-time callers of
+	 * `Document::get_rkey()`, which refreshes that meta to the current
+	 * DID. Leaving it alone keeps a pageview from moving a post's
+	 * recorded origin out from under the cleanup guards (#217).
+	 */
+	public function test_rendering_does_not_refresh_document_did_meta() {
+		$this->set_identity( 'did:plc:current' );
+		\update_option( 'atmosphere_publication_tid', '3kpubtid000000' );
+
+		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		\update_post_meta( $post_id, Document::META_URI, 'at://did:plc:previous/site.standard.document/3kdocrecord000' );
+		\update_post_meta( $post_id, Document::META_TID, '3kdocrecord000' );
+		\update_post_meta( $post_id, Document::META_DID, 'did:plc:previous' );
+
+		$this->go_to_post( $post_id );
+		$this->capture_document_link();
+		$this->capture_at_tags();
+
+		$this->assertSame(
+			'did:plc:previous',
+			\get_post_meta( $post_id, Document::META_DID, true ),
+			'A front-end render must not rewrite the recorded origin DID.'
+		);
+	}
+
+	/**
 	 * A post carrying a Bluesky record but no document — the state
 	 * `Backfill` exists to find — advertises nothing. Both alternates
 	 * hang off the document's presence, because an alternate with no
