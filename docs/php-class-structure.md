@@ -91,7 +91,9 @@ Plugin orchestration class:
 
 Three `wp_head` emitters advertise which AT Protocol records a page maps to. All resolve their AT-URIs through the same private helpers (`current_document_uri()`, `publication_uri()`, `current_bsky_post_uri()`), so the gating — `has_identity()` rather than `is_connected()`, and a required stored record URI — lives in one place.
 
-Those helpers memoize through `head_memo()`, keyed by resolver, queried object, and connected DID. The emitters overlap heavily, and the shared `is_post_publishable()` check walks every registered post type and fires `atmosphere_syncable_post_types` on each call, so an unmemoized head render resolves it four times. `wp_head` fires once per request, which is what makes a plain memo safe. A test process is not a request, so tests call `Atmosphere::flush_head_record_cache()` between renders.
+Those helpers memoize through `head_memo()`, keyed by resolver, queried object, and connected DID. The emitters overlap heavily, and the shared `is_post_publishable()` check walks every registered post type and fires `atmosphere_syncable_post_types` on each call, so an unmemoized head render resolves it four times.
+
+The memo is scoped to the head render, not to the process: `flush_head_record_cache()` is hooked on `wp_head` at priority 0, ahead of the emitters at the default 10. A process static would live as long as the process, which is one request under mod_php or FPM but many under a persistent runtime (FrankenPHP worker mode, Swoole, RoadRunner) — there, a post whose document was re-minted to a new rkey would keep being advertised under the old AT-URI until the worker recycled. Tests call the same method directly, since a test process is not a request either.
 
 | Emitter | Output |
 |---------|--------|

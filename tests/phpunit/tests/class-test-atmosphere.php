@@ -2686,6 +2686,76 @@ class Test_Atmosphere extends WP_UnitTestCase {
 	}
 
 	/**
+	 * The head render opens by dropping the memo, so a worker that
+	 * serves many requests cannot keep advertising a stale AT-URI.
+	 *
+	 * Priority 0 matters: the flush has to land before the emitters,
+	 * which sit at the default 10.
+	 */
+	public function test_init_flushes_head_record_cache_before_emitting() {
+		$this->atmosphere->init();
+
+		try {
+			$this->assertSame(
+				0,
+				\has_action( 'wp_head', array( Atmosphere::class, 'flush_head_record_cache' ) ),
+				'The flush must run before the emitters that populate the memo.'
+			);
+		} finally {
+			\remove_action( 'wp_head', array( Atmosphere::class, 'flush_head_record_cache' ), 0 );
+			foreach ( array( 'output_at_tags', 'output_document_link', 'output_publication_link' ) as $emitter ) {
+				\remove_action( 'wp_head', array( $this->atmosphere, $emitter ) );
+			}
+			\wp_clear_scheduled_hook( 'atmosphere_sync_publication' );
+			\wp_clear_scheduled_hook( 'atmosphere_refresh_token' );
+			\wp_clear_scheduled_hook( 'atmosphere_sync_reactions' );
+			\wp_clear_scheduled_hook( 'atmosphere_backfill_replies' );
+		}
+	}
+
+	/**
+	 * Re-minting a post's document record changes what the next head
+	 * render advertises.
+	 *
+	 * This is the persistent-runtime case in miniature: render, re-mint
+	 * the record as a delete-and-republish or a backfill would, then
+	 * render again in what a worker would treat as a fresh request. The
+	 * memo is keyed by post and DID rather than by the stored URI, so
+	 * without the flush the second render would still serve the first
+	 * URI.
+	 */
+	public function test_flush_head_record_cache_picks_up_a_reminted_record() {
+		$this->set_identity();
+		\update_option( 'atmosphere_publication_tid', '3kpubtid000000' );
+
+		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		\update_post_meta( $post_id, Document::META_URI, 'at://did:plc:test123/site.standard.document/3koriginal0000' );
+
+		$this->go_to_post( $post_id );
+		Atmosphere::flush_head_record_cache();
+
+		$this->assertStringContainsString( '3koriginal0000', $this->capture_at_tags() );
+
+		// Delete + republish, or a backfill: same post, new record.
+		\update_post_meta( $post_id, Document::META_URI, 'at://did:plc:test123/site.standard.document/3kreminted0000' );
+
+		// What `wp_head` at priority 0 does at the top of the next render.
+		Atmosphere::flush_head_record_cache();
+
+		$output = $this->capture_at_tags();
+
+		$this->assertStringContainsString(
+			'<meta name="at:canonical" content="at://did:plc:test123/site.standard.document/3kreminted0000" />',
+			$output
+		);
+		$this->assertStringNotContainsString(
+			'3koriginal0000',
+			$output,
+			'A recycled worker must not keep serving the pre-remint AT-URI.'
+		);
+	}
+
+	/**
 	 * A post carrying a Bluesky record but no document — the state
 	 * `Backfill` exists to find — advertises nothing. Both alternates
 	 * hang off the document's presence, because an alternate with no

@@ -241,7 +241,13 @@ class Atmosphere {
 		// Read-only REST field exposing the published post's Bluesky URL.
 		\add_action( 'rest_api_init', array( $this, 'register_share_status_field' ) );
 
-		// Frontend verification headers.
+		/*
+		 * Frontend verification headers. The emitters memoize what they
+		 * resolve, so the head render opens by dropping anything left
+		 * over — see `flush_head_record_cache()` for why that matters
+		 * outside a request-per-process runtime.
+		 */
+		\add_action( 'wp_head', array( self::class, 'flush_head_record_cache' ), 0 );
 		\add_action( 'wp_head', array( $this, 'output_document_link' ) );
 		\add_action( 'wp_head', array( $this, 'output_publication_link' ) );
 		\add_action( 'wp_head', array( $this, 'output_at_tags' ) );
@@ -643,14 +649,23 @@ class Atmosphere {
 	}
 
 	/**
-	 * Clear the per-request head record cache.
+	 * Clear the head record cache.
 	 *
-	 * The cache assumes a page's records are stable for the life of a
-	 * request, which holds for a real pageview but not across tests that
-	 * render the same URL under different options. Tests should call
-	 * this between renders.
+	 * Hooked on `wp_head` at priority 0, so each head render starts from
+	 * nothing. A process static would otherwise be exactly as long-lived
+	 * as the process: under mod_php or FPM that is one request and the
+	 * distinction never shows, but under a persistent runtime — FrankenPHP
+	 * worker mode, Swoole, RoadRunner — a worker serves many requests, and
+	 * a post whose document was re-minted to a new rkey (delete then
+	 * republish, or a backfill) would keep being advertised under the old
+	 * AT-URI until that worker recycled. The memo only needs to survive
+	 * the head render, so scoping it there costs nothing and removes the
+	 * question.
 	 *
-	 * @internal
+	 * Tests call this directly too: a test process is not a request, so
+	 * two tests rendering the same URL under different options would
+	 * otherwise collide on one cache key.
+	 *
 	 * @return void
 	 */
 	public static function flush_head_record_cache(): void {
