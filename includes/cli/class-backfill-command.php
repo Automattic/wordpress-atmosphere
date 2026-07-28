@@ -79,9 +79,11 @@ class Backfill_Command extends \WP_CLI_Command {
 	 * flag, already-synced posts are skipped.
 	 *
 	 * [--original-time]
-	 * : Use the original publish date when generating record identifiers.
-	 * Currently equivalent to the default; this flag is reserved for an
-	 * upcoming change that adds historical timestamp support.
+	 * : Mint each record's identifier from the post's original publish date,
+	 * so backfilled posts sort by that date in Bluesky and standard.site
+	 * readers instead of appearing brand-new. Applies only at first publish;
+	 * a post that already reserved an identifier from a prior attempt keeps
+	 * it, and already-synced posts are unaffected.
 	 *
 	 * ## EXAMPLES
 	 *
@@ -158,19 +160,6 @@ class Backfill_Command extends \WP_CLI_Command {
 		$dry_run       = ! empty( $assoc_args['dry-run'] );
 		$force         = ! empty( $assoc_args['force'] );
 		$original_time = ! empty( $assoc_args['original-time'] );
-
-		/*
-		 * `--original-time` is parsed but not yet wired to a code path; a
-		 * follow-up will branch on it for historical-TID support. Until
-		 * then, warn rather than silently ignoring it, so an operator who
-		 * passes it is not misled into thinking original timestamps were
-		 * preserved.
-		 */
-		if ( $original_time ) {
-			\WP_CLI::warning(
-				\__( '--original-time is not yet implemented and has no effect; records use the default timestamp behavior. Support is planned for a future release.', 'atmosphere' )
-			);
-		}
 
 		$post_types = $supported;
 
@@ -295,6 +284,12 @@ class Backfill_Command extends \WP_CLI_Command {
 		$ticks     = 0;
 		$batch_ids = array();
 
+		if ( $original_time && ! $dry_run ) {
+			\WP_CLI::log(
+				\__( 'Note: original time only affects posts published for the first time; already-synced posts keep their existing record identifiers.', 'atmosphere' )
+			);
+		}
+
 		foreach ( $post_ids as $post_id ) {
 			$post = \get_post( $post_id );
 
@@ -352,7 +347,7 @@ class Backfill_Command extends \WP_CLI_Command {
 					 */
 					$result = $already_synced
 						? Publisher::update_post( $post )
-						: Publisher::publish_post( $post );
+						: Publisher::publish_post( $post, $original_time );
 
 					if ( \is_wp_error( $result ) ) {
 						\WP_CLI::warning(
