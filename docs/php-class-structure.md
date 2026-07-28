@@ -83,8 +83,33 @@ The main file registers the autoloader, defines `ATMOSPHERE_VERSION` and path co
 Plugin orchestration class:
 
 - Registers rewrite rules + `template_redirect` handlers for `/.well-known/atproto-did` and `/.well-known/site.standard.publication`. All share the `atmosphere_wellknown` query var.
+- Emits the front-end record mapping on `wp_head` (see below).
 - Registers async cron hooks (`register_async_hooks()`) that delegate to the Publisher / Reaction_Sync.
 - Listens on `transition_post_status` and comment-status transitions to schedule cross-post / update / delete jobs.
+
+#### Front-end record mapping
+
+Three `wp_head` emitters advertise which AT Protocol records a page maps to. All resolve their AT-URIs through the same private helpers (`current_document_uri()`, `publication_uri()`, `current_bsky_post_uri()`), so the gating — `has_identity()` rather than `is_connected()`, and a required stored record URI — lives in one place.
+
+Those helpers memoize through `head_memo()`, keyed by resolver, queried object, and connected DID. The emitters overlap heavily, and the shared `is_post_publishable()` check walks every registered post type and fires `atmosphere_syncable_post_types` on each call, so an unmemoized head render resolves it four times.
+
+The memo is scoped to the head render, not to the process: `flush_head_record_cache()` is hooked on `wp_head` at priority 0, ahead of the emitters at the default 10. A process static would live as long as the process, which is one request under mod_php or FPM but many under a persistent runtime (FrankenPHP worker mode, Swoole, RoadRunner) — there, a post whose document was re-minted to a new rkey would keep being advertised under the old AT-URI until the worker recycled. Tests call the same method directly, since a test process is not a request either.
+
+| Emitter | Output |
+|---------|--------|
+| `output_document_link()` | `<link rel="site.standard.document">` on a singular publishable post with a document record. |
+| `output_publication_link()` | `<link rel="site.standard.publication">` on the front page and on singular publishable posts. |
+| `output_at_tags()` | [AT Tags](https://tangled.org/chrisshank.com/at-tags/) `<meta>` tags, as emitted by Leaflet and others. |
+
+**Record URIs are read, never rebuilt.** Both per-post helpers return the URI the Publisher stored, validated through `verified_record_uri()` against the current DID, the expected collection, and a non-empty rkey. Reassembling a URI from `get_did()` plus the post's TID looks equivalent but retargets the record at whichever account is connected now: after a reconnect to a different account the TID still belongs to the old repo, so the page would advertise a record that exists nowhere. The publication URI is the exception — it is built from `get_did()` plus the site-level TID, both of which belong to the current connection by construction.
+
+This is also why the front end no longer calls `Document::get_rkey()`. That call refreshes `Document::META_DID` to the current DID, and the head emitters were its only render-time callers, so a pageview can no longer move a post's recorded origin out from under the cleanup guards.
+
+The AT Tags mapping: `at:canonical` for records the page is a rendering of, `at:alternate` for records it merely references. A singular post marks its document canonical, with the parent publication and the companion `app.bsky.feed.post` as alternates; the front page marks the publication canonical. Repeated names are arrays, so a static front page that is also a publishable post emits two `at:canonical` lines. Both alternates depend on the document being present — a page with no canonical record has nothing for an alternate to reference.
+
+`at:author` and `at:me` are not emitted — a site has one connected account, so `at:author` would attribute every post on a multi-author site to whoever connected it. Add them (or a namespaced `at:{namespace}:{property}`) through the `atmosphere_at_tags` filter, which receives the assembled `name => [uris]` array.
+
+The `<link rel>` tags and the meta tags ship together; the meta tags are additive.
 
 ### API (`includes/class-api.php`)
 

@@ -125,6 +125,23 @@ class Atmosphere {
 	private static array $publishing_post_ids = array();
 
 	/**
+	 * Per-request cache of what the `wp_head` emitters resolve, keyed by
+	 * resolver, queried object ID, and connected DID.
+	 *
+	 * The three emitters ask overlapping questions — which post may name
+	 * records, which document URI, which publication URI — so without
+	 * this the same work runs up to three times per pageview. The part
+	 * that costs is `is_post_publishable()`, which walks every
+	 * registered post type and fires the `atmosphere_syncable_post_types`
+	 * filter on each call, so a site hooking that filter pays for it
+	 * repeatedly. `wp_head` fires once per request, which is what makes
+	 * a plain memo sufficient here.
+	 *
+	 * @var array<string,mixed>
+	 */
+	private static array $head_record_cache = array();
+
+	/**
 	 * Maximum re-schedule hops for a child comment waiting on a
 	 * not-yet-published parent. After this many deferrals the child
 	 * is skipped if the parent still lacks a threadable strongRef so a
@@ -224,9 +241,16 @@ class Atmosphere {
 		// Read-only REST field exposing the published post's Bluesky URL.
 		\add_action( 'rest_api_init', array( $this, 'register_share_status_field' ) );
 
-		// Frontend verification headers.
+		/*
+		 * Frontend verification headers. The emitters memoize what they
+		 * resolve, so the head render opens by dropping anything left
+		 * over — see `flush_head_record_cache()` for why that matters
+		 * outside a request-per-process runtime.
+		 */
+		\add_action( 'wp_head', array( self::class, 'flush_head_record_cache' ), 0 );
 		\add_action( 'wp_head', array( $this, 'output_document_link' ) );
 		\add_action( 'wp_head', array( $this, 'output_publication_link' ) );
+		\add_action( 'wp_head', array( $this, 'output_at_tags' ) );
 
 		// Well-known endpoints and front-end query vars.
 		\add_action( 'init', array( $this, 'register_wellknown_rewrite' ) );
@@ -414,9 +438,9 @@ class Atmosphere {
 	 * its AT Protocol document record, as required by standard.site.
 	 *
 	 * Gated on `has_identity()` rather than `is_connected()` so the
-	 * verification link survives a temporary OAuth refresh failure —
-	 * the document AT-URI is computed from the DID, which is stable
-	 * across session expiry and `needs_reauth` states.
+	 * verification link survives a temporary OAuth refresh failure: the
+	 * DID it is checked against is stable across session expiry and
+	 * `needs_reauth` states.
 	 *
 	 * Also gated on the document record's own `Document::META_URI` so the
 	 * link is emitted only for posts the Publisher actually wrote a
@@ -432,42 +456,220 @@ class Atmosphere {
 	 * stay silent until reconnect + publish lands a real record.
 	 */
 	public function output_document_link(): void {
-		if ( ! has_identity() || ! \is_singular() ) {
+		$uri = self::current_document_uri();
+
+		if ( '' === $uri ) {
 			return;
 		}
-
-		$post = \get_queried_object();
-
-		if ( ! $post instanceof \WP_Post ) {
-			return;
-		}
-
-		if ( ! is_post_publishable( $post ) ) {
-			return;
-		}
-
-		$doc_uri = \get_post_meta( $post->ID, Document::META_URI, true );
-		if ( empty( $doc_uri ) ) {
-			return;
-		}
-
-		/*
-		 * Route the TID lookup through `Document::get_rkey()` so the
-		 * lazy mint here writes `META_DID` alongside `META_TID`. The
-		 * inlined fallback that used to live here would have left the
-		 * row in a "TID set, no DID" state, which the mismatch guard
-		 * in `Publisher::delete_post()` treats as "DID unknown, fall
-		 * through to `get_did()`" — re-opening the wrong-repo-delete
-		 * bypass after a reconnect-to-different-account.
-		 */
-		$doc_tid = ( new Document( $post ) )->get_rkey();
-
-		$uri = build_at_uri( get_did(), 'site.standard.document', $doc_tid );
 
 		\printf(
 			'<link rel="site.standard.document" href="%s" />' . "\n",
 			\esc_attr( $uri )
 		);
+	}
+
+	/**
+	 * The `site.standard.document` AT-URI advertised by the page being
+	 * rendered, or an empty string when the page advertises none.
+	 *
+	 * Shared by the `<link rel="site.standard.document">` tag and the
+	 * `at:canonical` meta tag so the gating below lives in exactly one
+	 * place. See {@see Atmosphere::output_document_link()} for why the
+	 * gates are what they are.
+	 *
+	 * The stored URI is returned as-is rather than rebuilt from
+	 * `get_did()` plus the post's TID. Rebuilding looks equivalent and
+	 * is not: after a disconnect and reconnect to a different account,
+	 * `get_did()` is the new DID while the TID still belongs to the old
+	 * one, so every already-published post would advertise
+	 * `at://NEW_DID/site.standard.document/OLD_TID` — a record that
+	 * exists nowhere. The same mismatch would arise from a row whose
+	 * `META_TID` was lost while `META_URI` survived, where the lazy mint
+	 * would issue a fresh TID unrelated to the published record.
+	 *
+	 * Not calling `Document::get_rkey()` here also takes the front end
+	 * out of the write path entirely. That call refreshes
+	 * `Document::META_DID` to the current DID, and this was its only
+	 * render-time caller — every other one is in the Publisher at
+	 * publish time — so a pageview can no longer move a post's recorded
+	 * origin DID out from under the cleanup guards (see #217).
+	 *
+	 * @return string AT-URI, or '' when the page has no document record
+	 *                belonging to the connected account.
+	 */
+	private static function current_document_uri(): string {
+		return self::head_memo(
+			'document',
+			static function () {
+				$post = self::current_publishable_post();
+
+				if ( null === $post ) {
+					return '';
+				}
+
+				$uri = \get_post_meta( $post->ID, Document::META_URI, true );
+
+				if ( ! \is_string( $uri ) || '' === $uri ) {
+					return '';
+				}
+
+				return self::verified_record_uri( $uri, 'site.standard.document' );
+			}
+		);
+	}
+
+	/**
+	 * A stored AT-URI, or an empty string when it is not a well-formed
+	 * URI for `$collection` in the connected account's repo.
+	 *
+	 * Records are advertised from the URI the Publisher stored, which is
+	 * the only record of the repo a write actually landed in. Every
+	 * component is checked rather than just the DID: `parse_at_uri()`
+	 * asserts only the `at://` prefix and a three-segment shape, so a
+	 * corrupted value holding another of our records would otherwise be
+	 * advertised as the wrong kind of record.
+	 *
+	 * @param string $uri        Stored AT-URI.
+	 * @param string $collection Collection NSID the URI must name.
+	 * @return string The URI when it checks out, '' otherwise.
+	 */
+	private static function verified_record_uri( string $uri, string $collection ): string {
+		$parsed = parse_at_uri( $uri );
+
+		if ( false === $parsed ) {
+			return '';
+		}
+
+		if (
+			get_did() !== $parsed['did']
+			|| $collection !== $parsed['collection']
+			|| '' === $parsed['rkey']
+		) {
+			return '';
+		}
+
+		return $uri;
+	}
+
+	/**
+	 * The companion `app.bsky.feed.post` AT-URI for the page being
+	 * rendered, or an empty string when there is none to advertise.
+	 *
+	 * Read back verbatim from the meta the Publisher wrote and validated
+	 * through {@see Atmosphere::verified_record_uri()}, on the same
+	 * terms as the document URI.
+	 *
+	 * The origin DID deliberately comes out of the URI rather than
+	 * `Post::META_DID`. That meta is not a safe source:
+	 * {@see \Atmosphere\Transformer\Post::get_rkey()} refreshes it to
+	 * the current DID on every call, before any write to the PDS has
+	 * succeeded, so a failed republish after reconnecting leaves the row
+	 * claiming the current account while `META_URI` still points at the
+	 * old one. Parsing the URI also covers pre-`META_DID` rows, which a
+	 * meta comparison has to wave through for lack of anything to
+	 * compare. This is why the check does not mirror the mismatch guard
+	 * in `Publisher::delete_post()`: that one decides which repo to
+	 * issue a delete against and has only the rkey meta to go on, while
+	 * here the full AT-URI is in hand.
+	 *
+	 * @return string AT-URI, or '' when the page has no Bluesky record
+	 *                belonging to the connected account.
+	 */
+	private static function current_bsky_post_uri(): string {
+		return self::head_memo(
+			'bsky',
+			static function () {
+				$post = self::current_publishable_post();
+
+				if ( null === $post ) {
+					return '';
+				}
+
+				$uri = \get_post_meta( $post->ID, Post::META_URI, true );
+
+				if ( ! \is_string( $uri ) || '' === $uri ) {
+					return '';
+				}
+
+				return self::verified_record_uri( $uri, 'app.bsky.feed.post' );
+			}
+		);
+	}
+
+	/**
+	 * The queried post when the current request is a singular view of a
+	 * post whose records may be named in the page head, or null when it
+	 * is not.
+	 *
+	 * Wraps {@see \Atmosphere\is_post_publishable()} with the two
+	 * request-shape conditions the head emitters share: a persisted
+	 * identity to name records under, and a singular view to name them
+	 * on.
+	 *
+	 * @return \WP_Post|null
+	 */
+	private static function current_publishable_post(): ?\WP_Post {
+		return self::head_memo(
+			'post',
+			static function () {
+				if ( ! has_identity() || ! \is_singular() ) {
+					return null;
+				}
+
+				$post = \get_queried_object();
+
+				if ( ! $post instanceof \WP_Post || ! is_post_publishable( $post ) ) {
+					return null;
+				}
+
+				return $post;
+			}
+		);
+	}
+
+	/**
+	 * Resolve a head-emitter value once per request.
+	 *
+	 * The queried object and the connected DID are folded into the key
+	 * so a cached answer can never outlive the request state it was
+	 * computed from.
+	 *
+	 * @param string   $key     Resolver identifier.
+	 * @param callable $resolve Produces the value on a miss.
+	 * @return mixed The resolved value.
+	 */
+	private static function head_memo( string $key, callable $resolve ): mixed {
+		$key .= '|' . \get_queried_object_id() . '|' . get_did();
+
+		if ( ! \array_key_exists( $key, self::$head_record_cache ) ) {
+			self::$head_record_cache[ $key ] = $resolve();
+		}
+
+		return self::$head_record_cache[ $key ];
+	}
+
+	/**
+	 * Clear the head record cache.
+	 *
+	 * Hooked on `wp_head` at priority 0, so each head render starts from
+	 * nothing. A process static would otherwise be exactly as long-lived
+	 * as the process: under mod_php or FPM that is one request and the
+	 * distinction never shows, but under a persistent runtime — FrankenPHP
+	 * worker mode, Swoole, RoadRunner — a worker serves many requests, and
+	 * a post whose document was re-minted to a new rkey (delete then
+	 * republish, or a backfill) would keep being advertised under the old
+	 * AT-URI until that worker recycled. The memo only needs to survive
+	 * the head render, so scoping it there costs nothing and removes the
+	 * question.
+	 *
+	 * Tests call this directly too: a test process is not a request, so
+	 * two tests rendering the same URL under different options would
+	 * otherwise collide on one cache key.
+	 *
+	 * @return void
+	 */
+	public static function flush_head_record_cache(): void {
+		self::$head_record_cache = array();
 	}
 
 	/**
@@ -489,26 +691,196 @@ class Atmosphere {
 	 * lockstep with {@see Atmosphere::output_document_link()}.
 	 */
 	public function output_publication_link(): void {
-		if ( ! has_identity() ) {
-			return;
-		}
-
-		$pub_tid = \get_option( Publication::OPTION_TID );
-
-		if ( ! $pub_tid ) {
-			return;
-		}
-
 		if ( ! self::is_publication_url() ) {
 			return;
 		}
 
-		$uri = build_at_uri( get_did(), 'site.standard.publication', $pub_tid );
+		$uri = self::publication_uri();
+
+		if ( '' === $uri ) {
+			return;
+		}
 
 		\printf(
 			'<link rel="site.standard.publication" href="%s" />' . "\n",
 			\esc_attr( $uri )
 		);
+	}
+
+	/**
+	 * The site's `site.standard.publication` AT-URI, or an empty string
+	 * when the site has no identity or has not minted a publication TID
+	 * yet (fresh install, pre-sync).
+	 *
+	 * Says nothing about whether the current URL is one the publication
+	 * should be advertised on — that's {@see Atmosphere::is_publication_url()}
+	 * for the link tag, and the front-page test in
+	 * {@see Atmosphere::output_at_tags()} for the meta tags.
+	 *
+	 * @return string AT-URI, or '' when there is no publication record.
+	 */
+	private static function publication_uri(): string {
+		return self::head_memo(
+			'publication',
+			static function () {
+				if ( ! has_identity() ) {
+					return '';
+				}
+
+				$pub_tid = \get_option( Publication::OPTION_TID );
+
+				/*
+				 * Type-check rather than cast: a corrupted option holding
+				 * an array would raise an "Array to string conversion"
+				 * notice on the front end, and `build_at_uri()` would
+				 * splice the word "Array" into a published AT-URI.
+				 */
+				if ( ! \is_string( $pub_tid ) || '' === $pub_tid ) {
+					return '';
+				}
+
+				return build_at_uri( get_did(), 'site.standard.publication', $pub_tid );
+			}
+		);
+	}
+
+	/**
+	 * Output the AT Tags `<meta>` mapping from this page to the AT
+	 * Protocol records behind it.
+	 *
+	 * Implements the community AT Tags proposal
+	 * (https://tangled.org/chrisshank.com/at-tags/), which Bluesky and
+	 * Leaflet both emit. `at:canonical` marks the records the page is a
+	 * rendering of — delete them and the page has nothing left to
+	 * represent — while `at:alternate` marks records the page merely
+	 * references. Repeated names are read as arrays, which is how a post
+	 * advertises both its publication and its Bluesky post as alternates.
+	 *
+	 * The mapping:
+	 *
+	 * - Singular publishable post with a document record: the document
+	 *   is canonical; the parent publication and the companion Bluesky
+	 *   post (which backs the reactions and synced comments displayed on
+	 *   the page) are alternates.
+	 * - Front page: the publication is canonical, since the front page
+	 *   is the local page the publication record's `url` points at.
+	 * - A static front page that is also a publishable post with a
+	 *   document record emits both as canonical, per the array
+	 *   semantics — the URL genuinely maps to both records.
+	 *
+	 * Both alternates are tied to the document's presence, rather than
+	 * the publication following `is_publication_url()` and the Bluesky
+	 * post standing on its own: a page with no canonical record has
+	 * nothing for an alternate to be an alternate *to*. So a post that
+	 * carries a Bluesky record but no document — the state `Backfill`
+	 * exists to find, and the reason `has_post_records()` ORs the two
+	 * meta keys — stays silent here rather than advertising a lone
+	 * reference.
+	 *
+	 * The front-page test below is deliberately not routed through
+	 * `is_publication_url()`. The two answer different questions:
+	 * `is_publication_url()` asks whether the publication should be
+	 * named on this URL at all (front page *or* publishable singular),
+	 * while this asks where it is *canonical* (front page only), the
+	 * singular case being covered by the alternate branch. Collapsing
+	 * them would make every publishable post claim to be a rendering of
+	 * the publication record.
+	 *
+	 * These are additive. The `<link rel>` tags still ship, so consumers
+	 * that only read those keep working.
+	 */
+	public function output_at_tags(): void {
+		$doc_uri = self::current_document_uri();
+		$pub_uri = self::publication_uri();
+
+		$tags = array(
+			'at:canonical' => array(),
+			'at:alternate' => array(),
+		);
+
+		if ( '' !== $doc_uri ) {
+			$tags['at:canonical'][] = $doc_uri;
+		}
+
+		if ( '' !== $pub_uri ) {
+			if ( \is_front_page() ) {
+				$tags['at:canonical'][] = $pub_uri;
+			} elseif ( '' !== $doc_uri ) {
+				$tags['at:alternate'][] = $pub_uri;
+			}
+		}
+
+		if ( '' !== $doc_uri ) {
+			$bsky_uri = self::current_bsky_post_uri();
+
+			if ( '' !== $bsky_uri ) {
+				$tags['at:alternate'][] = $bsky_uri;
+			}
+		}
+
+		/**
+		 * Filters the AT Tags emitted in the page head.
+		 *
+		 * Keyed by tag name, each holding a list of AT-URIs; a name with
+		 * an empty list prints nothing. This is the supported way to add
+		 * the tags the plugin does not emit itself — `at:me`, `at:author`,
+		 * or a namespaced `at:{namespace}:{property}` property. Neither
+		 * identity tag ships by default: a site has exactly one connected
+		 * account, so `at:author` would attribute every post on a
+		 * multi-author site to whoever connected it.
+		 *
+		 * @since unreleased
+		 *
+		 * @param array<string, string[]> $tags Tag name => list of AT-URIs.
+		 */
+		$tags = \apply_filters( 'atmosphere_at_tags', $tags );
+
+		if ( ! \is_array( $tags ) ) {
+			\_doing_it_wrong(
+				__METHOD__,
+				\esc_html__( 'The atmosphere_at_tags filter must return an array keyed by tag name.', 'atmosphere' ),
+				'unreleased'
+			);
+			return;
+		}
+
+		$skipped = false;
+
+		foreach ( $tags as $name => $uris ) {
+			// A filter returning a plain list would otherwise print `name="0"`.
+			if ( ! \is_string( $name ) || '' === $name ) {
+				$skipped = true;
+				continue;
+			}
+
+			foreach ( (array) $uris as $uri ) {
+				if ( ! \is_string( $uri ) || '' === $uri ) {
+					$skipped = true;
+					continue;
+				}
+
+				\printf(
+					'<meta name="%s" content="%s" />' . "\n",
+					\esc_attr( $name ),
+					\esc_attr( $uri )
+				);
+			}
+		}
+
+		/*
+		 * Dropping malformed entries is the right behaviour — one bad
+		 * tag should not take the rest of the head with it — but doing
+		 * it silently leaves the filtering plugin with no way to see
+		 * why its tag never appeared. Reported once per request rather
+		 * than per entry so a badly-shaped array can't flood the log.
+		 */
+		if ( $skipped ) {
+			\_doing_it_wrong(
+				__METHOD__,
+				\esc_html__( 'The atmosphere_at_tags filter produced entries that were not non-empty strings; those were skipped.', 'atmosphere' ),
+				'unreleased'
+			);
+		}
 	}
 
 	/**
@@ -523,19 +895,19 @@ class Atmosphere {
 	 *   tag emitting in that configuration).
 	 * - A publishable singular post qualifies because its document
 	 *   record carries a reference back to the publication.
+	 *
+	 * The singular arm defers to {@see Atmosphere::current_publishable_post()}
+	 * so the publishability check is resolved once per request rather
+	 * than repeated here. That helper additionally requires an identity,
+	 * which changes nothing: the only caller pairs this with
+	 * {@see Atmosphere::publication_uri()}, which returns '' without one.
 	 */
 	private static function is_publication_url(): bool {
 		if ( \is_front_page() ) {
 			return true;
 		}
 
-		if ( ! \is_singular() ) {
-			return false;
-		}
-
-		$post = \get_queried_object();
-
-		return $post instanceof \WP_Post && is_post_publishable( $post );
+		return null !== self::current_publishable_post();
 	}
 
 	/**
