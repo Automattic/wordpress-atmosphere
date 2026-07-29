@@ -19,6 +19,7 @@ use Atmosphere\Content_Parser\Registry;
 use Atmosphere\Tests\Content_Parser\Fake_Parser;
 use Atmosphere\Transformer\Document;
 use Atmosphere\Transformer\Post;
+use Atmosphere\Transformer\TID;
 
 /**
  * Document transformer tests.
@@ -716,5 +717,52 @@ class Test_Document extends \WP_UnitTestCase {
 
 		$this->assertFalse( $attempted, 'A cached blob ref must not trigger an upload.' );
 		$this->assertSame( $cached_ref, $records[0]['coverImage'] );
+	}
+
+	/**
+	 * With original-time minting on, the document get_rkey() reserves a
+	 * TID that decodes to the post's original publish date.
+	 */
+	public function test_get_rkey_uses_original_time_when_enabled() {
+		$post_id = self::factory()->post->create(
+			array(
+				'post_status'   => 'publish',
+				'post_date'     => '2020-03-15 12:00:00',
+				'post_date_gmt' => '2020-03-15 12:00:00',
+			)
+		);
+
+		$transformer = new Document( \get_post( $post_id ) );
+		$transformer->use_original_time();
+
+		$rkey     = $transformer->get_rkey();
+		$expected = \strtotime( '2020-03-15 12:00:00' ) * 1_000_000 + ( $post_id % 100000 ) * 10;
+
+		$this->assertSame( $expected, TID::decode( $rkey ) );
+		$this->assertSame( $rkey, \get_post_meta( $post_id, Document::META_TID, true ) );
+	}
+
+	/**
+	 * A post that already reserved a (live) document TID from a prior
+	 * attempt keeps it under original-time minting — get_rkey() must not
+	 * re-mint an already-persisted rkey.
+	 */
+	public function test_get_rkey_preserves_existing_reserved_tid_under_original_time() {
+		$post_id = self::factory()->post->create(
+			array(
+				'post_status'   => 'publish',
+				'post_date'     => '2020-03-15 12:00:00',
+				'post_date_gmt' => '2020-03-15 12:00:00',
+			)
+		);
+
+		$reserved = TID::generate();
+		\update_post_meta( $post_id, Document::META_TID, $reserved );
+
+		$transformer = new Document( \get_post( $post_id ) );
+		$transformer->use_original_time();
+
+		$this->assertSame( $reserved, $transformer->get_rkey() );
+		$this->assertSame( $reserved, \get_post_meta( $post_id, Document::META_TID, true ) );
 	}
 }

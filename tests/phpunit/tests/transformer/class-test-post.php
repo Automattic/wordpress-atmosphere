@@ -15,6 +15,7 @@ use Atmosphere\Transformer\Document;
 use Atmosphere\Transformer\Facet;
 use Atmosphere\Transformer\Post;
 use Atmosphere\Transformer\Publication;
+use Atmosphere\Transformer\TID;
 
 /**
  * Post transformer tests.
@@ -4754,5 +4755,173 @@ class Test_Post extends WP_UnitTestCase {
 			static fn( $facet ) => 'app.bsky.richtext.facet#mention' === ( $facet['features'][0]['$type'] ?? '' )
 		);
 		$this->assertCount( 1, $mention_facets, 'Bare-permalink post must still emit a #mention facet.' );
+	}
+
+	/**
+	 * With original-time minting on, get_rkey() reserves a TID that
+	 * decodes to the post's original publish date, and is idempotent.
+	 */
+	public function test_get_rkey_uses_original_time_when_enabled() {
+		$post_id = self::factory()->post->create(
+			array(
+				'post_status'   => 'publish',
+				'post_date'     => '2020-03-15 12:00:00',
+				'post_date_gmt' => '2020-03-15 12:00:00',
+			)
+		);
+
+		$transformer = new Post( \get_post( $post_id ) );
+		$transformer->use_original_time();
+
+		$rkey     = $transformer->get_rkey();
+		$expected = \strtotime( '2020-03-15 12:00:00' ) * 1_000_000 + ( $post_id % 100000 ) * 10;
+
+		$this->assertSame( $expected, TID::decode( $rkey ) );
+		$this->assertSame( $rkey, $transformer->get_rkey() );
+		$this->assertSame( $rkey, \get_post_meta( $post_id, Post::META_TID, true ) );
+	}
+
+	/**
+	 * Without the flag, get_rkey() mints a live (near-now) TID, not a
+	 * historical one.
+	 */
+	public function test_get_rkey_defaults_to_live_tid() {
+		$post_id = self::factory()->post->create(
+			array(
+				'post_status'   => 'publish',
+				'post_date'     => '2020-03-15 12:00:00',
+				'post_date_gmt' => '2020-03-15 12:00:00',
+			)
+		);
+
+		$rkey     = ( new Post( \get_post( $post_id ) ) )->get_rkey();
+		$historic = \strtotime( '2020-03-15 12:00:00' ) * 1_000_000;
+
+		$this->assertGreaterThan( $historic, TID::decode( $rkey ) );
+	}
+
+	/**
+	 * A post that already reserved a (live) TID from a prior attempt keeps
+	 * it under original-time minting — get_rkey() must not re-mint an
+	 * already-persisted rkey. Protects the reserved-TID reuse the update
+	 * path depends on.
+	 */
+	public function test_get_rkey_preserves_existing_reserved_tid_under_original_time() {
+		$post_id = self::factory()->post->create(
+			array(
+				'post_status'   => 'publish',
+				'post_date'     => '2020-03-15 12:00:00',
+				'post_date_gmt' => '2020-03-15 12:00:00',
+			)
+		);
+
+		$reserved = TID::generate();
+		\update_post_meta( $post_id, Post::META_TID, $reserved );
+
+		$transformer = new Post( \get_post( $post_id ) );
+		$transformer->use_original_time();
+
+		$this->assertSame( $reserved, $transformer->get_rkey() );
+		$this->assertSame( $reserved, \get_post_meta( $post_id, Post::META_TID, true ) );
+	}
+
+	/**
+	 * A thread reply key is historical and sorts just after the root.
+	 */
+	public function test_mint_reply_rkey_is_historical_and_after_root() {
+		$post_id = self::factory()->post->create(
+			array(
+				'post_status'   => 'publish',
+				'post_date'     => '2020-03-15 12:00:00',
+				'post_date_gmt' => '2020-03-15 12:00:00',
+			)
+		);
+
+		$transformer = new Post( \get_post( $post_id ) );
+		$transformer->use_original_time();
+
+		$root  = $transformer->get_rkey();
+		$reply = $transformer->mint_reply_rkey( 1 );
+
+		$this->assertGreaterThan( $root, $reply );
+		$this->assertSame(
+			\strtotime( '2020-03-15 12:00:00' ) * 1_000_000 + ( $post_id % 100000 ) * 10 + 1,
+			TID::decode( $reply )
+		);
+	}
+
+	/**
+	 * A thread reply key must not collide with the root key of the post
+	 * published one ID later in the same second. The reply sequence lives
+	 * in a reserved sub-range of the disambiguator, so `mint_reply_rkey(N)`
+	 * can never land on the slot post `ID + N` would use for its root.
+	 * Regression test: summing the ID and sequence made these identical.
+	 */
+	public function test_reply_rkey_does_not_collide_with_next_post_root() {
+		$date    = '2020-03-15 12:00:00';
+		$post_id = self::factory()->post->create(
+			array(
+				'post_status'   => 'publish',
+				'post_date'     => $date,
+				'post_date_gmt' => $date,
+			)
+		);
+
+		$transformer = new Post( \get_post( $post_id ) );
+		$transformer->use_original_time();
+
+		$reply = $transformer->mint_reply_rkey( 1 );
+
+		// The slot the root of post ( $post_id + 1 ), published in the same
+		// second, would occupy under original-time minting.
+		$next_root_slot = \strtotime( $date ) * 1_000_000 + ( ( $post_id + 1 ) % 100000 ) * 10;
+
+		$this->assertNotSame( $next_root_slot, TID::decode( $reply ) );
+	}
+
+	/**
+	 * Two posts published in the same second whose IDs collide in the
+	 * sub-second slot (congruent modulo 100,000) still mint distinct rkeys,
+	 * because the higher ID bits ride in the clock component. The
+	 * sub-second-only scheme minted an identical rkey and dropped the
+	 * second post to "record already exists".
+	 */
+	public function test_original_time_rkeys_distinct_for_slot_colliding_ids() {
+		$date = '2020-03-15 12:00:00';
+
+		$a_id = self::factory()->post->create(
+			array(
+				'import_id'     => 1_000_050,
+				'post_status'   => 'publish',
+				'post_date'     => $date,
+				'post_date_gmt' => $date,
+			)
+		);
+		$b_id = self::factory()->post->create(
+			array(
+				'import_id'     => 1_100_050,
+				'post_status'   => 'publish',
+				'post_date'     => $date,
+				'post_date_gmt' => $date,
+			)
+		);
+
+		// Guard the fixture: the IDs must land as imported and share a
+		// sub-second slot for this test to exercise the clock widening.
+		$this->assertSame( 1_000_050, $a_id );
+		$this->assertSame( 1_100_050, $b_id );
+		$this->assertSame( $a_id % 100000, $b_id % 100000 );
+
+		$a = new Post( \get_post( $a_id ) );
+		$a->use_original_time();
+		$b = new Post( \get_post( $b_id ) );
+		$b->use_original_time();
+
+		$a_rkey = $a->get_rkey();
+		$b_rkey = $b->get_rkey();
+
+		$this->assertNotSame( $a_rkey, $b_rkey );
+		// Same microsecond slot; the disambiguation is entirely in the clock.
+		$this->assertSame( TID::decode( $a_rkey ), TID::decode( $b_rkey ) );
 	}
 }
