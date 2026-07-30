@@ -30,6 +30,6 @@
 		"@wordpress/i18n": "^6.21.0",
 		"@wordpress/interactivity": "^6.48.0",
 		"@wordpress/plugins": "^7.48.0",
-		"@wordpress/scripts": "^33.0.0"
+		"@wordpress/scripts": "^34.0.0"
 	}
 }
