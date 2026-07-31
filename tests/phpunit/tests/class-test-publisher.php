@@ -645,6 +645,138 @@ class Test_Publisher extends WP_UnitTestCase {
 	}
 
 	/**
+	 * Seed a published single-record post ready for an update_post() call.
+	 *
+	 * @param array $restriction Reply-restriction tokens to store.
+	 * @param bool  $gate_written Whether a threadgate is already live on the PDS.
+	 * @return \WP_Post
+	 */
+	private function published_post_for_update( array $restriction = array(), bool $gate_written = false ): \WP_Post {
+		$post = self::factory()->post->create_and_get( array( 'post_status' => 'publish' ) );
+		\update_post_meta( $post->ID, Post::META_TID, 'bsky-tid-123' );
+		\update_post_meta( $post->ID, Document::META_TID, 'doc-tid-456' );
+		\update_post_meta( $post->ID, Post::META_URI, 'at://did:plc:test/app.bsky.feed.post/bsky-tid-123' );
+		\update_post_meta( $post->ID, Document::META_URI, 'at://did:plc:test/site.standard.document/doc-tid-456' );
+		if ( ! empty( $restriction ) ) {
+			\update_post_meta( $post->ID, Threadgate::META_RESTRICTION, $restriction );
+		}
+		if ( $gate_written ) {
+			\update_post_meta( $post->ID, Threadgate::META_WRITTEN, '1' );
+		}
+
+		return $post;
+	}
+
+	/**
+	 * Adding a restriction to a live post creates its threadgate on update.
+	 */
+	public function test_update_creates_threadgate_when_newly_restricted() {
+		$post = $this->published_post_for_update( array( Threadgate::AUDIENCE_FOLLOWING ) );
+		$this->register_capture( $post->ID );
+
+		$result = Publisher::update_post( $post );
+
+		$this->assertIsArray( $result );
+		$writes = $this->captured_calls[0]['writes'];
+		$this->assertCount( 3, $writes );
+		$this->assertSame( 'com.atproto.repo.applyWrites#create', $writes[2]['$type'] );
+		$this->assertSame( 'app.bsky.feed.threadgate', $writes[2]['collection'] );
+		$this->assertSame( 'bsky-tid-123', $writes[2]['rkey'] );
+		$this->assertSame( '1', \get_post_meta( $post->ID, Threadgate::META_WRITTEN, true ) );
+	}
+
+	/**
+	 * Changing the restriction on an already-gated post updates the gate.
+	 */
+	public function test_update_updates_existing_threadgate() {
+		$post = $this->published_post_for_update( array( Threadgate::AUDIENCE_FOLLOWING ), true );
+		$this->register_capture( $post->ID );
+
+		Publisher::update_post( $post );
+
+		$writes = $this->captured_calls[0]['writes'];
+		$this->assertSame( 'com.atproto.repo.applyWrites#update', $writes[2]['$type'] );
+		$this->assertSame( 'app.bsky.feed.threadgate', $writes[2]['collection'] );
+		$this->assertSame( '1', \get_post_meta( $post->ID, Threadgate::META_WRITTEN, true ) );
+	}
+
+	/**
+	 * Clearing the restriction deletes the gate and forgets the marker.
+	 */
+	public function test_update_deletes_threadgate_when_unrestricted() {
+		$post = $this->published_post_for_update( array(), true );
+		$this->register_capture( $post->ID );
+
+		Publisher::update_post( $post );
+
+		$writes = $this->captured_calls[0]['writes'];
+		$this->assertSame( 'com.atproto.repo.applyWrites#delete', $writes[2]['$type'] );
+		$this->assertSame( 'app.bsky.feed.threadgate', $writes[2]['collection'] );
+		$this->assertSame( 'bsky-tid-123', $writes[2]['rkey'] );
+		$this->assertSame( '', \get_post_meta( $post->ID, Threadgate::META_WRITTEN, true ) );
+	}
+
+	/**
+	 * An unrestricted, never-gated post touches no threadgate on update.
+	 */
+	public function test_update_leaves_threadgate_alone_when_never_gated() {
+		$post = $this->published_post_for_update();
+		$this->register_capture( $post->ID );
+
+		Publisher::update_post( $post );
+
+		$writes = $this->captured_calls[0]['writes'];
+		$this->assertCount( 2, $writes, 'No threadgate write for an ungated post.' );
+	}
+
+	/**
+	 * Deleting a post removes its written threadgate at the root rkey.
+	 */
+	public function test_delete_post_deletes_threadgate() {
+		$post = self::factory()->post->create_and_get( array( 'post_status' => 'trash' ) );
+		\update_post_meta( $post->ID, Post::META_TID, 'root-tid' );
+		\update_post_meta( $post->ID, Document::META_TID, 'doc-tid' );
+		\update_post_meta( $post->ID, Threadgate::META_WRITTEN, '1' );
+
+		$this->register_capture( $post->ID );
+		Publisher::delete_post( $post );
+
+		$gate = $this->threadgate_writes_in( $this->captured_calls[0]['writes'] );
+		$this->assertCount( 1, $gate );
+		$this->assertSame( 'com.atproto.repo.applyWrites#delete', $gate[0]['$type'] );
+		$this->assertSame( 'root-tid', $gate[0]['rkey'] );
+	}
+
+	/**
+	 * The hard-delete path deletes the threadgate at the carried root rkey.
+	 */
+	public function test_delete_post_by_tids_deletes_threadgate() {
+		$this->register_capture( 0 );
+
+		Publisher::delete_post_by_tids( array( 'root-tid' ), 'doc-tid', array(), 'root-tid' );
+
+		$gate = $this->threadgate_writes_in( $this->captured_calls[0]['writes'] );
+		$this->assertCount( 1, $gate );
+		$this->assertSame( 'com.atproto.repo.applyWrites#delete', $gate[0]['$type'] );
+		$this->assertSame( 'root-tid', $gate[0]['rkey'] );
+	}
+
+	/**
+	 * Filter the threadgate entries out of an applyWrites batch.
+	 *
+	 * @param array $writes applyWrites entries.
+	 * @return array Threadgate entries only.
+	 */
+	private function threadgate_writes_in( array $writes ): array {
+		return \array_values(
+			\array_filter(
+				$writes,
+				static fn( $w ) => 'app.bsky.feed.threadgate' === $w['collection']
+			)
+		);
+	}
+
+	/**
 	 * Direct publish calls defensively reject password-protected posts.
 	 */
 	public function test_publish_rejects_password_protected_post() {

@@ -257,6 +257,19 @@ const EditorPlugin = () => {
 					/>
 				) ) }
 
+			{ /* Empty "Specific people" serializes to an open post, so say so
+			     rather than let the dropdown imply a restriction is in place. */ }
+			{ enabled &&
+				'custom' === replyMode &&
+				0 === replyAudiences.length && (
+					<Notice status="warning" isDismissible={ false }>
+						{ __(
+							'No one selected yet, so everyone can reply. Pick at least one group to limit replies.',
+							'atmosphere'
+						) }
+					</Notice>
+				) }
+
 			{ sharedUrl && enabled && (
 				<p>
 					<ExternalLink href={ sharedUrl }>

@@ -18,6 +18,7 @@ use Atmosphere\Reaction_Sync;
 use Atmosphere\Transformer\Comment;
 use Atmosphere\Transformer\Document;
 use Atmosphere\Transformer\Post;
+use Atmosphere\Transformer\Threadgate;
 
 /**
  * Atmosphere tests.
@@ -301,6 +302,25 @@ class Test_Atmosphere extends WP_UnitTestCase {
 		$this->assertNotFalse(
 			\wp_next_scheduled( 'atmosphere_update_post', array( $post->ID ) ),
 			'Changing the custom Bluesky text must schedule a reconcile.'
+		);
+	}
+
+	/**
+	 * Changing the reply restriction schedules a reconcile so the gate is
+	 * synced even on a meta-only save.
+	 */
+	public function test_reply_restriction_change_schedules_reconcile() {
+		$post = self::factory()->post->create_and_get( array( 'post_status' => 'publish' ) );
+		\wp_clear_scheduled_hook( 'atmosphere_update_post', array( $post->ID ) );
+
+		\update_post_meta( $post->ID, Post::META_TID, 'bsky-tid-123' );
+		\update_post_meta( $post->ID, Threadgate::META_RESTRICTION, array( Threadgate::AUDIENCE_FOLLOWING ) );
+
+		$this->atmosphere->on_share_meta_changed( 0, $post->ID, Threadgate::META_RESTRICTION );
+
+		$this->assertNotFalse(
+			\wp_next_scheduled( 'atmosphere_update_post', array( $post->ID ) ),
+			'Changing the reply restriction must schedule a reconcile.'
 		);
 	}
 
@@ -1572,6 +1592,7 @@ class Test_Atmosphere extends WP_UnitTestCase {
 			array( 'bsky-tid-root' ),
 			'doc-tid-root',
 			array( 'bsky-tid-a', 'bsky-tid-b' ),
+			'',
 		);
 
 		$this->assertNotFalse(
@@ -1599,7 +1620,7 @@ class Test_Atmosphere extends WP_UnitTestCase {
 		$this->assertNotFalse(
 			\wp_next_scheduled(
 				'atmosphere_delete_records',
-				array( array( 'bsky-tid-root' ), 'doc-tid-root', array() )
+				array( array( 'bsky-tid-root' ), 'doc-tid-root', array(), '' )
 			),
 			'Post cleanup should be queued without the comment-reply TID.'
 		);
@@ -1619,9 +1640,30 @@ class Test_Atmosphere extends WP_UnitTestCase {
 		$this->assertNotFalse(
 			\wp_next_scheduled(
 				'atmosphere_delete_records',
-				array( array( 'bsky-tid-root' ), 'doc-tid-root', array() )
+				array( array( 'bsky-tid-root' ), 'doc-tid-root', array(), '' )
 			),
 			'Expected atmosphere_delete_records with empty comment list when the post has no replies.'
+		);
+	}
+
+	/**
+	 * A gated post carries its threadgate's root rkey into the async delete
+	 * so the gate is removed after the post row is gone.
+	 */
+	public function test_on_before_delete_threads_threadgate_tid() {
+		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		\update_post_meta( $post_id, Post::META_TID, 'bsky-tid-root' );
+		\update_post_meta( $post_id, Document::META_TID, 'doc-tid-root' );
+		\update_post_meta( $post_id, Threadgate::META_WRITTEN, '1' );
+
+		$this->atmosphere->on_before_delete( $post_id );
+
+		$this->assertNotFalse(
+			\wp_next_scheduled(
+				'atmosphere_delete_records',
+				array( array( 'bsky-tid-root' ), 'doc-tid-root', array(), 'bsky-tid-root' )
+			),
+			'Expected the threadgate root rkey threaded into the delete event.'
 		);
 	}
 
@@ -1673,7 +1715,7 @@ class Test_Atmosphere extends WP_UnitTestCase {
 		$this->assertNotFalse(
 			\wp_next_scheduled(
 				'atmosphere_delete_records',
-				array( array( 'bsky-tid-123' ), 'doc-tid-456', array() )
+				array( array( 'bsky-tid-123' ), 'doc-tid-456', array(), '' )
 			),
 			'Permanent delete must schedule remote cleanup even when the post type is no longer in the syncable allowlist.'
 		);

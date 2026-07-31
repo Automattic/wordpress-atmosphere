@@ -1494,11 +1494,18 @@ class Atmosphere {
 			? \array_column( Publisher::collect_published_comment_tids( $post_id ), 'tid' )
 			: array();
 
+		// A written threadgate shares the root post's rkey. Capture it now
+		// while the meta still exists so the async delete can remove it after
+		// the post row is gone.
+		$threadgate_tid = ( ! empty( $bsky_tids ) && '' !== (string) \get_post_meta( $post_id, Threadgate::META_WRITTEN, true ) )
+			? $bsky_tids[0]
+			: '';
+
 		if ( ! empty( $bsky_tids ) || '' !== $doc_tid || ! empty( $comment_tids ) ) {
 			\wp_schedule_single_event(
 				\time(),
 				'atmosphere_delete_records',
-				array( $bsky_tids, $doc_tid, $comment_tids )
+				array( $bsky_tids, $doc_tid, $comment_tids, $threadgate_tid )
 			);
 		}
 	}
@@ -1862,7 +1869,7 @@ class Atmosphere {
 	 * @param string    $meta_key Meta key that changed.
 	 */
 	public function on_share_meta_changed( $meta_id, $post_id, $meta_key ): void {
-		if ( ! \in_array( $meta_key, array( ATMOSPHERE_META_DISABLED, ATMOSPHERE_META_CUSTOM_TEXT ), true ) ) {
+		if ( ! \in_array( $meta_key, array( ATMOSPHERE_META_DISABLED, ATMOSPHERE_META_CUSTOM_TEXT, Threadgate::META_RESTRICTION ), true ) ) {
 			return;
 		}
 
@@ -2183,13 +2190,15 @@ class Atmosphere {
 
 		\add_action(
 			'atmosphere_delete_records',
-			static function ( $bsky_tids, string $doc_tid, $comment_tids = array() ): void {
+			static function ( $bsky_tids, string $doc_tid, $comment_tids = array(), string $threadgate_tid = '' ): void {
 				/*
 				 * delete_post_by_tids() drops the comment TIDs itself when
-				 * comment publishing is disabled at execution time.
+				 * comment publishing is disabled at execution time. The
+				 * threadgate arg defaults so events queued before the arg
+				 * existed still run.
 				 */
 				$comment_tids = \is_array( $comment_tids ) ? $comment_tids : array();
-				$result       = Publisher::delete_post_by_tids( $bsky_tids, $doc_tid, $comment_tids );
+				$result       = Publisher::delete_post_by_tids( $bsky_tids, $doc_tid, $comment_tids, $threadgate_tid );
 
 				if ( \is_wp_error( $result ) ) {
 					/*
@@ -2211,7 +2220,7 @@ class Atmosphere {
 				}
 			},
 			10,
-			3
+			4
 		);
 
 		/*

@@ -38,6 +38,18 @@ class Threadgate extends Base {
 	public const META_RESTRICTION = 'atmosphere_reply_restriction';
 
 	/**
+	 * Post meta marking that a threadgate record currently exists on the PDS.
+	 *
+	 * Tracks remote gate existence so the publish/update/delete lifecycle can
+	 * pick the right applyWrites op (create vs update vs delete) rather than
+	 * re-deriving it from the mutable restriction setting. Present ('1') while
+	 * a gate is live; absent otherwise. Internal state, never user-editable.
+	 *
+	 * @var string
+	 */
+	public const META_WRITTEN = '_atmosphere_threadgate';
+
+	/**
 	 * Audience token: nobody may reply.
 	 *
 	 * Distinct from the everybody default (an empty setting): a post gated

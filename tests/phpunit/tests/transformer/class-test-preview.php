@@ -17,6 +17,7 @@ namespace Atmosphere\Tests\Transformer;
 use WP_UnitTestCase;
 use Atmosphere\Transformer\Base;
 use Atmosphere\Transformer\Preview;
+use Atmosphere\Transformer\Post;
 use Atmosphere\Transformer\Threadgate;
 
 /**
@@ -305,6 +306,8 @@ class Test_Preview extends WP_UnitTestCase {
 			Threadgate::META_RESTRICTION,
 			array( Threadgate::AUDIENCE_FOLLOWING )
 		);
+		// The gate needs the post's reserved rkey to build a valid `post` ref.
+		\update_post_meta( $post->ID, Post::META_TID, 'root-tid-123' );
 
 		$all = Preview::for_post( $post, 'all' );
 		$this->assertIsArray( $all );
@@ -333,6 +336,25 @@ class Test_Preview extends WP_UnitTestCase {
 		$record = Preview::for_post( $post, 'app.bsky.feed.threadgate' );
 		$this->assertTrue( \is_wp_error( $record ) );
 		$this->assertSame( 'atmosphere_atproto_preview_type', $record->get_error_code() );
+	}
+
+	/**
+	 * A gated post that has never been published has no reserved rkey, so
+	 * the preview omits the threadgate rather than emit a malformed
+	 * `post` reference with an empty rkey.
+	 */
+	public function test_omits_threadgate_without_reserved_rkey() {
+		$post = $this->make_post();
+		\update_post_meta(
+			$post->ID,
+			Threadgate::META_RESTRICTION,
+			array( Threadgate::AUDIENCE_FOLLOWING )
+		);
+		// No Post::META_TID — never published by Atmosphere.
+
+		$all = Preview::for_post( $post, 'all' );
+		$this->assertIsArray( $all );
+		$this->assertArrayNotHasKey( 'app.bsky.feed.threadgate', $all );
 	}
 
 	/**
