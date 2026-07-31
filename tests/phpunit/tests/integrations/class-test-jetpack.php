@@ -16,6 +16,7 @@ use Atmosphere\Atmosphere;
 use Atmosphere\Content_Parser\Parser_Base;
 use Atmosphere\Content_Parser\Registry;
 use Atmosphere\Integrations\Jetpack;
+use Atmosphere\Integrations\Load;
 use Atmosphere\Transformer\Document;
 use Atmosphere\Transformer\Post;
 
@@ -312,6 +313,28 @@ class Test_Jetpack extends \WP_UnitTestCase {
 			. '<!-- wp:premium-content/subscriber-view --><!-- wp:paragraph --><p>Bare secret.</p><!-- /wp:paragraph --><!-- /wp:premium-content/subscriber-view -->';
 
 		$this->assert_stripped( $content, array( 'Bare secret.' ), array( 'Public paragraph.' ) );
+	}
+
+	/**
+	 * The integration registers its filter when Jetpack is active.
+	 *
+	 * Regression guard: Jetpack loads `Jetpack_Memberships` lazily, so keying
+	 * registration off that class left the filter unregistered on real sites.
+	 * `Load::register()` must hook the filter whenever Jetpack is active
+	 * (`JETPACK__VERSION` is defined at plugin load, well before this runs).
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_integration_registers_when_jetpack_active() {
+		if ( ! \defined( 'JETPACK__VERSION' ) ) {
+			\define( 'JETPACK__VERSION', '13.0-test' );
+		}
+		\remove_all_filters( 'atmosphere_publishable_content' );
+
+		Load::register();
+
+		$this->assertNotFalse( \has_filter( 'atmosphere_publishable_content' ) );
 	}
 
 	/**

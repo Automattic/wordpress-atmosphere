@@ -33,8 +33,12 @@ class Load {
 	 */
 	public static function register(): void {
 		// Jetpack paid-content gating: keep subscriber-only bodies out of
-		// public AT Protocol records.
-		if ( \class_exists( 'Jetpack_Memberships' ) ) {
+		// public AT Protocol records. Guard on Jetpack being active rather than
+		// on Jetpack_Memberships: Jetpack loads that class lazily, so it is
+		// often not present yet at this hook. JETPACK__VERSION is defined as
+		// soon as the plugin file loads, and the integration resolves the
+		// access level at publish time, when the class is available.
+		if ( \defined( 'JETPACK__VERSION' ) || \class_exists( 'Jetpack_Memberships' ) ) {
 			Jetpack::init();
 		}
 	}
