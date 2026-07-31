@@ -484,7 +484,7 @@ class Publisher {
 	 */
 	private static function threadgate_sync_writes( \WP_Post $post, string $rkey ): array {
 		$desired = Threadgate::is_restricted( $post );
-		$written = '' !== (string) \get_post_meta( $post->ID, Threadgate::META_WRITTEN, true );
+		$written = Threadgate::is_written( $post->ID );
 
 		if ( $desired ) {
 			return array(
@@ -514,6 +514,27 @@ class Publisher {
 			'collection' => 'app.bsky.feed.threadgate',
 			'rkey'       => $rkey,
 		);
+	}
+
+	/**
+	 * Delete-side counterpart to {@see self::threadgate_sync_writes()}.
+	 *
+	 * A live gate shares the root rkey (`$stored[0]`), so it is removed with
+	 * the records it gated. Returns nothing when no gate is live or the root
+	 * rkey is unknown.
+	 *
+	 * @since unreleased
+	 *
+	 * @param \WP_Post $post   WordPress post.
+	 * @param array[]  $stored Stored bsky records (root first).
+	 * @return array applyWrites#delete entries (zero or one).
+	 */
+	private static function threadgate_delete_writes( \WP_Post $post, array $stored ): array {
+		if ( ! Threadgate::is_written( $post->ID ) || empty( $stored[0]['tid'] ) ) {
+			return array();
+		}
+
+		return array( self::threadgate_delete_write( $stored[0]['tid'] ) );
 	}
 
 	/**
@@ -1476,10 +1497,7 @@ class Publisher {
 
 		// A gate written at the old root rkey must go with the records it
 		// gated; the republish below mints a fresh gate at the new rkey.
-		$gate_written = '' !== (string) \get_post_meta( $post->ID, Threadgate::META_WRITTEN, true );
-		if ( $gate_written && ! empty( $stored[0]['tid'] ) ) {
-			$delete_writes[] = self::threadgate_delete_write( $stored[0]['tid'] );
-		}
+		$delete_writes = \array_merge( $delete_writes, self::threadgate_delete_writes( $post, $stored ) );
 
 		if ( ! empty( $delete_writes ) ) {
 			$delete_result = API::apply_writes( $delete_writes );
@@ -1647,10 +1665,7 @@ class Publisher {
 		// The threadgate shares the root post's rkey and repo, so it is
 		// removed with the records it gated (the DID guard above has already
 		// cleared this repo for the bsky deletes).
-		$gate_written = '' !== (string) \get_post_meta( $post->ID, Threadgate::META_WRITTEN, true );
-		if ( $gate_written && ! empty( $stored[0]['tid'] ) ) {
-			$root_writes[] = self::threadgate_delete_write( $stored[0]['tid'] );
-		}
+		$root_writes = \array_merge( $root_writes, self::threadgate_delete_writes( $post, $stored ) );
 
 		$comment_writes = array();
 		foreach ( $comment_tids as $comment_tid ) {

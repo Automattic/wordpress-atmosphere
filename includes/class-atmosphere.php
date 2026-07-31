@@ -1497,7 +1497,7 @@ class Atmosphere {
 		// A written threadgate shares the root post's rkey. Capture it now
 		// while the meta still exists so the async delete can remove it after
 		// the post row is gone.
-		$threadgate_tid = ( ! empty( $bsky_tids ) && '' !== (string) \get_post_meta( $post_id, Threadgate::META_WRITTEN, true ) )
+		$threadgate_tid = ( ! empty( $bsky_tids ) && Threadgate::is_written( $post_id ) )
 			? $bsky_tids[0]
 			: '';
 

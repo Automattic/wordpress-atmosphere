@@ -140,6 +140,20 @@ class Threadgate extends Base {
 	}
 
 	/**
+	 * Whether a threadgate record is currently live on the PDS for a post.
+	 *
+	 * Reads the {@see self::META_WRITTEN} marker the publisher sets after a
+	 * successful gate write, so the lifecycle can tell create from update
+	 * from delete without re-deriving it from the mutable restriction.
+	 *
+	 * @param int $post_id WordPress post ID.
+	 * @return bool
+	 */
+	public static function is_written( int $post_id ): bool {
+		return '' !== (string) \get_post_meta( $post_id, self::META_WRITTEN, true );
+	}
+
+	/**
 	 * The sanitized reply-restriction tokens stored for a post.
 	 *
 	 * @param \WP_Post $post WordPress post.
