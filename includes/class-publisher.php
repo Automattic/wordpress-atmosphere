@@ -815,6 +815,20 @@ class Publisher {
 			'rkey'       => $doc_rkey,
 		);
 
+		/*
+		 * A gated post's threadgate rides in the root batch and shares the
+		 * root rkey (thread_records[0] is always the root), so the same
+		 * rollback that removes the root post must remove the threadgate —
+		 * otherwise it dangles on the PDS pointing at a deleted post.
+		 */
+		if ( ! empty( $thread_records ) && Threadgate::is_restricted( $post ) ) {
+			$rollback_writes[] = array(
+				'$type'      => 'com.atproto.repo.applyWrites#delete',
+				'collection' => 'app.bsky.feed.threadgate',
+				'rkey'       => $thread_records[0]['tid'],
+			);
+		}
+
 		$rollback_result = API::apply_writes( $rollback_writes );
 
 		self::clear_all_record_meta( $post->ID );

@@ -100,18 +100,21 @@ class Threadgate extends Base {
 			return array();
 		}
 
-		$allowed = \array_values(
-			\array_intersect(
-				\array_keys( self::audience_rules() ),
-				$value
-			)
-		);
+		// Keep only string tokens so a malformed value written straight to
+		// meta (bypassing the REST schema) can't reach array_intersect's
+		// string cast and raise a warning.
+		$tokens = \array_filter( $value, '\is_string' );
 
-		if ( \in_array( self::AUDIENCE_NOBODY, $value, true ) ) {
+		if ( \in_array( self::AUDIENCE_NOBODY, $tokens, true ) ) {
 			return array( self::AUDIENCE_NOBODY );
 		}
 
-		return $allowed;
+		return \array_values(
+			\array_intersect(
+				\array_keys( self::audience_rules() ),
+				$tokens
+			)
+		);
 	}
 
 	/**

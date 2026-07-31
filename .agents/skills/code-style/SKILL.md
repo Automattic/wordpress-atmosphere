@@ -56,7 +56,7 @@ Always reserve the rkey via meta in `get_rkey()` — that meta key is the marker
 
 ## Hook Quick-Reference
 
-**Transform filters:** `atmosphere_transform_bsky_post`, `atmosphere_transform_comment`, `atmosphere_transform_document`, `atmosphere_transform_publication`.
+**Transform filters:** `atmosphere_transform_bsky_post`, `atmosphere_transform_comment`, `atmosphere_transform_document`, `atmosphere_transform_publication`, `atmosphere_transform_threadgate`.
 
 **Content / composition:** `atmosphere_content_parser` (deprecated; use `Content_Parser\Registry::register()`), `atmosphere_document_content`, `atmosphere_long_form_composition`, `atmosphere_teaser_thread_posts`.
 

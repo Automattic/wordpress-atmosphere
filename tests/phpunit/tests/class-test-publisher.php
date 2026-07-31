@@ -2106,6 +2106,58 @@ class Test_Publisher extends WP_UnitTestCase {
 	}
 
 	/**
+	 * A gated thread that fails mid-publish must delete its threadgate too.
+	 *
+	 * The threadgate rides in the root batch and shares the root rkey, so a
+	 * rollback that removes the root but leaves the threadgate would strand a
+	 * live record on the PDS pointing at a deleted post.
+	 */
+	public function test_publish_teaser_thread_rollback_deletes_threadgate() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'A Long-Form Post',
+				'post_content' => 'Hi.',
+				'post_excerpt' => 'A curated standalone excerpt for the test fixture.',
+			)
+		);
+		\update_post_meta(
+			$post->ID,
+			Threadgate::META_RESTRICTION,
+			array( Threadgate::AUDIENCE_FOLLOWING )
+		);
+
+		\add_filter( 'atmosphere_long_form_composition', fn() => 'teaser-thread' );
+
+		// Fail the reply create; rollback succeeds.
+		$this->fail_call_indexes = array(
+			2 => new \WP_Error( 'atmosphere_reply_failed', 'Reply write failed.' ),
+		);
+		$this->register_capture( $post->ID );
+
+		$result = Publisher::publish( $post );
+		$this->assertWPError( $result );
+
+		// The root batch carried post + doc + threadgate.
+		$root_writes = $this->captured_calls[0]['writes'];
+		$this->assertCount( 3, $root_writes );
+		$this->assertSame( 'app.bsky.feed.threadgate', $root_writes[2]['collection'] );
+		$root_rkey = $root_writes[0]['rkey'];
+
+		// Rollback deletes the reply, root, doc, AND the threadgate — at the
+		// shared root rkey.
+		$rollback_writes    = $this->captured_calls[2]['writes'];
+		$threadgate_deletes = \array_values(
+			\array_filter(
+				$rollback_writes,
+				static fn( $w ) => 'app.bsky.feed.threadgate' === $w['collection']
+			)
+		);
+		$this->assertCount( 1, $threadgate_deletes, 'Rollback must delete the threadgate.' );
+		$this->assertSame( 'com.atproto.repo.applyWrites#delete', $threadgate_deletes[0]['$type'] );
+		$this->assertSame( $root_rkey, $threadgate_deletes[0]['rkey'] );
+	}
+
+	/**
 	 * When both the reply write AND the rollback fail, the returned
 	 * WP_Error wraps both errors and carries `partial_records` data for
 	 * manual cleanup.
