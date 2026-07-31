@@ -398,9 +398,11 @@ class Test_Functions extends \WP_UnitTestCase {
 			10
 		);
 
-		$this->assertSame( 'Public.', get_publishable_content( $post ) );
-
-		\remove_all_filters( 'atmosphere_publishable_content' );
+		try {
+			$this->assertSame( 'Public.', get_publishable_content( $post ) );
+		} finally {
+			\remove_all_filters( 'atmosphere_publishable_content' );
+		}
 	}
 
 	/**

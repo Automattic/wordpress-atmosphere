@@ -77,9 +77,20 @@ class Jetpack {
 	 * @return string Publicly readable content ('' when fully gated).
 	 */
 	public static function filter_publishable_content( string $content, \WP_Post $post ): string {
+		if ( '' === $content ) {
+			return $content;
+		}
+
+		// Parse the block tree once and reuse it for every check below;
+		// detection, splitting, and stripping all read from the same tree
+		// rather than re-parsing the content each time.
+		$blocks = \parse_blocks( $content );
+
 		// Name-based detection is robust to block attributes and whitespace that
-		// a serialized-string match would miss.
-		$has_split = \has_block( self::PAYWALL_BLOCK, $content );
+		// a serialized-string match would miss. Detection is depth-aware so a
+		// nested marker is never mistaken for its absence.
+		$has_split      = self::blocks_contain( $blocks, self::PAYWALL_BLOCK );
+		$has_subscriber = self::blocks_contain( $blocks, self::SUBSCRIBER_VIEW_BLOCK );
 
 		// Whole-post gate: a non-public access level with no split point means
 		// the entire body is subscriber-only.
@@ -87,35 +98,66 @@ class Jetpack {
 			return '';
 		}
 
+		// Nothing to strip: publish the stored content verbatim, exactly as
+		// before, without a serialize round-trip.
+		if ( ! $has_split && ! $has_subscriber ) {
+			return $content;
+		}
+
 		// Split-point: keep only the content above the paywall block. Jetpack
 		// treats content above the block as public regardless of the post's
 		// access level. Fail closed if the block is present but not at the top
 		// level (an unsupported nesting we cannot safely split).
 		if ( $has_split ) {
-			$above = self::content_above_paywall( $content );
+			$above = self::blocks_above_paywall( $blocks );
 			if ( null === $above ) {
 				return '';
 			}
-			$content = $above;
+			$blocks = $above;
 		}
 
 		// Inline: drop any subscriber-only regions from what remains.
-		return self::strip_subscriber_view_blocks( $content );
+		$blocks = self::remove_blocks_by_name( $blocks, self::SUBSCRIBER_VIEW_BLOCK );
+
+		return \serialize_blocks( $blocks );
 	}
 
 	/**
-	 * Content above the first top-level `jetpack/paywall` block.
+	 * Whether a parsed block tree contains a block with the given name at any
+	 * depth.
 	 *
-	 * @param string $content Serialized block content.
-	 * @return string|null Content above the split, or null when no top-level
-	 *                     paywall block is found (caller fails closed).
+	 * @param array  $blocks Parsed blocks.
+	 * @param string $name   Block name to look for.
+	 * @return bool
 	 */
-	private static function content_above_paywall( string $content ): ?string {
+	private static function blocks_contain( array $blocks, string $name ): bool {
+		foreach ( $blocks as $block ) {
+			$block_name = $block['blockName'] ?? '';
+			if ( $name === $block_name ) {
+				return true;
+			}
+
+			if ( ! empty( $block['innerBlocks'] ) && self::blocks_contain( $block['innerBlocks'], $name ) ) {
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	/**
+	 * Blocks above the first top-level `jetpack/paywall` block.
+	 *
+	 * @param array $blocks Parsed blocks.
+	 * @return array|null Blocks above the split, or null when no top-level
+	 *                    paywall block is found (caller fails closed).
+	 */
+	private static function blocks_above_paywall( array $blocks ): ?array {
 		$above = array();
 
-		foreach ( \parse_blocks( $content ) as $block ) {
+		foreach ( $blocks as $block ) {
 			if ( self::PAYWALL_BLOCK === ( $block['blockName'] ?? '' ) ) {
-				return \serialize_blocks( $above );
+				return $above;
 			}
 
 			$above[] = $block;
@@ -146,26 +188,6 @@ class Jetpack {
 		}
 
 		return '' === $level || self::ACCESS_EVERYBODY === $level;
-	}
-
-	/**
-	 * Remove `premium-content/subscriber-view` blocks from serialized content.
-	 *
-	 * Walks the parsed block tree and drops every subscriber-view subtree, then
-	 * re-serializes. The public `logged-out-view` teaser and any surrounding
-	 * blocks are preserved.
-	 *
-	 * @param string $content Serialized block content.
-	 * @return string Content with subscriber-only regions removed.
-	 */
-	private static function strip_subscriber_view_blocks( string $content ): string {
-		if ( '' === $content || ! \has_block( self::SUBSCRIBER_VIEW_BLOCK, $content ) ) {
-			return $content;
-		}
-
-		$blocks = self::remove_blocks_by_name( \parse_blocks( $content ), self::SUBSCRIBER_VIEW_BLOCK );
-
-		return \serialize_blocks( $blocks );
 	}
 
 	/**
