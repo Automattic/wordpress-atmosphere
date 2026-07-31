@@ -20,7 +20,7 @@
 		"@wordpress/api-fetch": "^7.48.0",
 		"@wordpress/block-editor": "^16.0.0",
 		"@wordpress/blocks": "^15.21.0",
-		"@wordpress/components": "^37.0.0",
+		"@wordpress/components": "^38.0.0",
 		"@wordpress/core-data": "^7.48.0",
 		"@wordpress/data": "^10.48.0",
 		"@wordpress/edit-post": "^8.48.0",
@@ -30,6 +30,6 @@
 		"@wordpress/i18n": "^6.21.0",
 		"@wordpress/interactivity": "^6.48.0",
 		"@wordpress/plugins": "^7.48.0",
-		"@wordpress/scripts": "^33.0.0"
+		"@wordpress/scripts": "^34.0.0"
 	}
 }
