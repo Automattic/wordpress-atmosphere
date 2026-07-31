@@ -469,35 +469,160 @@ class Publisher {
 	/**
 	 * Reconcile the PDS threadgate with the post's current reply restriction.
 	 *
-	 * Returns the applyWrites entry that transitions the remote gate to match
-	 * {@see Threadgate::is_restricted()}, choosing the op from the tracked
-	 * remote state ({@see Threadgate::META_WRITTEN}): create a new gate,
-	 * update an existing one, or delete a gate the post no longer wants.
-	 * Returns nothing when the desired and stored states already agree. The
-	 * threadgate shares the post's root rkey, so it rides in the same batch.
+	 * The threadgate is a shared record: Bluesky writes native moderation
+	 * state (`hiddenReplies`) into the same record this setting manages. So
+	 * the reconcile reads the live record first and preserves every field it
+	 * does not own, touching only `allow`:
+	 *
+	 *  - gated + record absent    → create;
+	 *  - gated + record present   → update, merging `allow` into the existing
+	 *                               record (keeps hiddenReplies + unknown fields);
+	 *  - everybody + hiddenReplies → update, dropping only `allow`;
+	 *  - everybody + nothing else  → delete;
+	 *  - everybody + never gated   → nothing (an externally-created gate we
+	 *                               never touched is left alone).
+	 *
+	 * A read failure is non-fatal: the gate is left untouched and the marker
+	 * unmoved (`written => null`), so a transient error can neither clobber
+	 * moderation state nor desync the marker.
 	 *
 	 * @since unreleased
 	 *
 	 * @param \WP_Post $post WordPress post.
 	 * @param string   $rkey The post's root rkey, shared by the threadgate.
-	 * @return array applyWrites entries (zero or one).
+	 * @return array{writes: array, written: bool|null} The applyWrites entries
+	 *               (zero or one) and the marker state to persist, or null to
+	 *               leave the marker unchanged.
 	 */
 	private static function threadgate_sync_writes( \WP_Post $post, string $rkey ): array {
 		$desired = Threadgate::is_restricted( $post );
 		$written = Threadgate::is_written( $post->ID );
 
-		if ( $desired ) {
+		// Nothing wanted and nothing of ours live: no read, no write, and a
+		// gate created directly on Bluesky stays untouched.
+		if ( ! $desired && ! $written ) {
 			return array(
-				array(
-					'$type'      => 'com.atproto.repo.applyWrites#' . ( $written ? 'update' : 'create' ),
-					'collection' => 'app.bsky.feed.threadgate',
-					'rkey'       => $rkey,
-					'value'      => ( new Threadgate( $post ) )->transform(),
-				),
+				'writes'  => array(),
+				'written' => false,
 			);
 		}
 
-		return $written ? array( self::threadgate_delete_write( $rkey ) ) : array();
+		$current = self::read_threadgate( $rkey );
+
+		if ( false === $current ) {
+			return array(
+				'writes'  => array(),
+				'written' => null,
+			);
+		}
+
+		$exists = \is_array( $current );
+
+		if ( $desired ) {
+			return array(
+				'writes'  => array(
+					self::threadgate_write_entry(
+						$exists ? 'update' : 'create',
+						$rkey,
+						self::merge_threadgate_value( $exists ? $current : null, $post )
+					),
+				),
+				'written' => true,
+			);
+		}
+
+		// Everybody: drop our restriction. Keep a record that still carries
+		// external moderation state; delete only one that would be left empty.
+		if ( ! $exists ) {
+			return array(
+				'writes'  => array(),
+				'written' => false,
+			);
+		}
+
+		if ( ! empty( $current['hiddenReplies'] ) ) {
+			unset( $current['allow'] );
+			return array(
+				'writes'  => array( self::threadgate_write_entry( 'update', $rkey, $current ) ),
+				'written' => false,
+			);
+		}
+
+		return array(
+			'writes'  => array( self::threadgate_delete_write( $rkey ) ),
+			'written' => false,
+		);
+	}
+
+	/**
+	 * Read the live threadgate record for merging.
+	 *
+	 * @since unreleased
+	 *
+	 * @param string $rkey Root rkey shared by the threadgate.
+	 * @return array|null|false The record `value` when present, null when the
+	 *               record is genuinely absent (`RecordNotFound`), or false when
+	 *               the remote state is unknown (transport/auth error).
+	 */
+	private static function read_threadgate( string $rkey ) {
+		$result = API::get_record( 'app.bsky.feed.threadgate', $rkey );
+
+		if ( \is_array( $result ) ) {
+			return \is_array( $result['value'] ?? null ) ? $result['value'] : array();
+		}
+
+		$data = $result->get_error_data();
+		if ( \is_array( $data ) && 'RecordNotFound' === ( $data['error'] ?? '' ) ) {
+			return null;
+		}
+
+		return false;
+	}
+
+	/**
+	 * Merge this setting's `allow` into an existing threadgate record.
+	 *
+	 * Overwrites only the fields the reply-restriction setting owns and keeps
+	 * everything the record already carries (`hiddenReplies`, and any field a
+	 * newer lexicon adds), so external moderation state survives an update.
+	 *
+	 * @since unreleased
+	 *
+	 * @param array|null $current The live record value, or null to build fresh.
+	 * @param \WP_Post   $post    WordPress post.
+	 * @return array The record value to write.
+	 */
+	private static function merge_threadgate_value( ?array $current, \WP_Post $post ): array {
+		$ours  = ( new Threadgate( $post ) )->transform();
+		$value = null === $current ? array() : $current;
+
+		$value['$type'] = $ours['$type'];
+		$value['post']  = $ours['post'];
+		$value['allow'] = $ours['allow'];
+		if ( empty( $value['createdAt'] ) ) {
+			$value['createdAt'] = $ours['createdAt'];
+		}
+
+		return $value;
+	}
+
+	/**
+	 * Build an `applyWrites` create/update entry for a threadgate.
+	 *
+	 * @since unreleased
+	 *
+	 * @param string $op    applyWrites op — `create` or `update`.
+	 * @param string $rkey  Root rkey shared by the threadgate.
+	 * @param array  $value Record value.
+	 * @return array applyWrites entry.
+	 */
+	private static function threadgate_write_entry( string $op, string $rkey, array $value ): array {
+		return array(
+			'$type'      => "com.atproto.repo.applyWrites#{$op}",
+			'collection' => 'app.bsky.feed.threadgate',
+			'rkey'       => $rkey,
+			'value'      => $value,
+		);
 	}
 
 	/**
@@ -624,11 +749,8 @@ class Publisher {
 			),
 		);
 
-		$threadgate_desired = Threadgate::is_restricted( $post );
-		$writes             = \array_merge(
-			$writes,
-			self::threadgate_sync_writes( $post, $bsky_transformer->get_rkey() )
-		);
+		$gate   = self::threadgate_sync_writes( $post, $bsky_transformer->get_rkey() );
+		$writes = \array_merge( $writes, $gate['writes'] );
 
 		$result = API::apply_writes( $writes );
 
@@ -650,7 +772,9 @@ class Publisher {
 		);
 
 		\delete_post_meta( $post->ID, Post::META_DOC_REF_PENDING );
-		self::persist_threadgate_state( $post->ID, $threadgate_desired );
+		if ( null !== $gate['written'] ) {
+			self::persist_threadgate_state( $post->ID, $gate['written'] );
+		}
 
 		return $result;
 	}
@@ -713,13 +837,15 @@ class Publisher {
 			),
 		);
 
-		$threadgate_writes = self::threadgate_sync_writes( $post, $root_rkey );
-		$root_writes       = \array_merge( $root_writes, $threadgate_writes );
+		$gate        = self::threadgate_sync_writes( $post, $root_rkey );
+		$root_writes = \array_merge( $root_writes, $gate['writes'] );
 
-		// Whether a gate rode in this root batch, captured now so rollback
-		// deletes exactly what was written rather than re-reading the
-		// (possibly since-changed) restriction meta.
-		$threadgate_written = ! empty( $threadgate_writes );
+		// Only a gate we CREATED in this batch should be undone on rollback;
+		// a merge-update of a pre-existing (externally-created) gate must not
+		// be deleted. Captured now so a concurrent restriction change can't
+		// flip the decision.
+		$threadgate_created = ! empty( $gate['writes'] )
+			&& 'com.atproto.repo.applyWrites#create' === ( $gate['writes'][0]['$type'] ?? '' );
 
 		$root_result = API::apply_writes( $root_writes );
 
@@ -746,7 +872,7 @@ class Publisher {
 					'atmosphere_missing_cid',
 					\__( 'Root post created but PDS response lacked a CID; rolling back thread.', 'atmosphere' )
 				),
-				$threadgate_written
+				$threadgate_created
 			);
 		}
 
@@ -759,7 +885,9 @@ class Publisher {
 		// The gate rode in the root batch that just succeeded, so record its
 		// state now — not after the reply loop — so a worker interruption
 		// mid-thread can't leave a live gate without its marker.
-		self::persist_threadgate_state( $post->ID, $threadgate_written );
+		if ( null !== $gate['written'] ) {
+			self::persist_threadgate_state( $post->ID, $gate['written'] );
+		}
 
 		\delete_post_meta( $post->ID, Post::META_DOC_REF_PENDING );
 
@@ -817,7 +945,7 @@ class Publisher {
 					\array_merge( $thread_records, array( $ambiguous_triple ) ),
 					$doc_transformer,
 					$reply_result,
-					$threadgate_written
+					$threadgate_created
 				);
 			}
 
@@ -837,7 +965,7 @@ class Publisher {
 						'atmosphere_missing_cid',
 						\__( 'Reply created but PDS response lacked a CID; rolling back thread.', 'atmosphere' )
 					),
-					$threadgate_written
+					$threadgate_created
 				);
 			}
 
@@ -869,7 +997,7 @@ class Publisher {
 	 * @param array[]   $thread_records     Already-written thread records (uri/cid/tid each).
 	 * @param Document  $doc_transformer    Document transformer instance.
 	 * @param \WP_Error $original_error     The failure that triggered rollback.
-	 * @param bool      $threadgate_written Whether a threadgate rode in the root batch.
+	 * @param bool      $threadgate_created Whether this batch created a new threadgate to undo.
 	 * @return \WP_Error
 	 */
 	private static function rollback_thread(
@@ -877,7 +1005,7 @@ class Publisher {
 		array $thread_records,
 		Document $doc_transformer,
 		\WP_Error $original_error,
-		bool $threadgate_written = false
+		bool $threadgate_created = false
 	): \WP_Error {
 		$doc_rkey = $doc_transformer->get_rkey();
 
@@ -904,7 +1032,7 @@ class Publisher {
 		 * flag is captured at batch-build time so a concurrent restriction
 		 * change can't make this skip a gate that was actually written.
 		 */
-		if ( $threadgate_written && ! empty( $thread_records ) ) {
+		if ( $threadgate_created && ! empty( $thread_records ) ) {
 			$rollback_writes[] = self::threadgate_delete_write( $thread_records[0]['tid'] );
 		}
 
@@ -1315,13 +1443,10 @@ class Publisher {
 			),
 		);
 
-		// Reconcile the gate: create it if the post became gated, update it if
-		// the restriction changed, delete it if it went back to everybody.
-		$threadgate_desired = Threadgate::is_restricted( $post );
-		$writes             = \array_merge(
-			$writes,
-			self::threadgate_sync_writes( $post, $stored_root['tid'] )
-		);
+		// Reconcile the gate: create it if the post became gated, merge-update
+		// it if the restriction changed, strip/delete it for everybody.
+		$gate   = self::threadgate_sync_writes( $post, $stored_root['tid'] );
+		$writes = \array_merge( $writes, $gate['writes'] );
 
 		$result = API::apply_writes( $writes );
 
@@ -1343,7 +1468,9 @@ class Publisher {
 		);
 
 		\delete_post_meta( $post->ID, Post::META_DOC_REF_PENDING );
-		self::persist_threadgate_state( $post->ID, $threadgate_desired );
+		if ( null !== $gate['written'] ) {
+			self::persist_threadgate_state( $post->ID, $gate['written'] );
+		}
 
 		return self::reconcile_post_after_write( $post, $result );
 	}
@@ -1425,11 +1552,8 @@ class Publisher {
 		);
 
 		// Reconcile the gate against the thread root's rkey.
-		$threadgate_desired = Threadgate::is_restricted( $post );
-		$writes             = \array_merge(
-			$writes,
-			self::threadgate_sync_writes( $post, $root['tid'] )
-		);
+		$gate   = self::threadgate_sync_writes( $post, $root['tid'] );
+		$writes = \array_merge( $writes, $gate['writes'] );
 
 		$result = API::apply_writes( $writes );
 
@@ -1459,7 +1583,9 @@ class Publisher {
 		}
 
 		\delete_post_meta( $post->ID, Post::META_DOC_REF_PENDING );
-		self::persist_threadgate_state( $post->ID, $threadgate_desired );
+		if ( null !== $gate['written'] ) {
+			self::persist_threadgate_state( $post->ID, $gate['written'] );
+		}
 
 		return self::reconcile_post_after_write( $post, $result );
 	}

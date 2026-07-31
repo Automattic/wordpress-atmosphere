@@ -61,6 +61,7 @@ class Test_Publisher extends WP_UnitTestCase {
 		\delete_option( 'atmosphere_publish_comments' );
 
 		\remove_all_filters( 'atmosphere_pre_apply_writes' );
+		\remove_all_filters( 'atmosphere_pre_get_record' );
 		\remove_all_filters( 'atmosphere_long_form_composition' );
 		\remove_all_filters( 'atmosphere_teaser_thread_posts' );
 		\remove_all_filters( 'atmosphere_transform_bsky_post' );
@@ -607,6 +608,7 @@ class Test_Publisher extends WP_UnitTestCase {
 			Threadgate::META_RESTRICTION,
 			array( Threadgate::AUDIENCE_FOLLOWING )
 		);
+		$this->stub_threadgate_read( $this->threadgate_absent() );
 
 		\add_filter( 'atmosphere_is_short_form_post', '__return_true' );
 		$this->register_capture( $post->ID );
@@ -645,6 +647,58 @@ class Test_Publisher extends WP_UnitTestCase {
 	}
 
 	/**
+	 * Stub the threadgate getRecord read with a canned response.
+	 *
+	 * @param array|\WP_Error $response getRecord response (array with `value`),
+	 *                                 or a WP_Error (absent / transport failure).
+	 */
+	private function stub_threadgate_read( $response ): void {
+		\add_filter(
+			'atmosphere_pre_get_record',
+			static function ( $short, $collection ) use ( $response ) {
+				return 'app.bsky.feed.threadgate' === $collection ? $response : $short;
+			},
+			10,
+			2
+		);
+	}
+
+	/**
+	 * A getRecord error standing in for a genuinely-absent record.
+	 *
+	 * @return \WP_Error
+	 */
+	private function threadgate_absent(): \WP_Error {
+		return new \WP_Error(
+			'atmosphere_pds',
+			'Could not locate record.',
+			array(
+				'status' => 400,
+				'error'  => 'RecordNotFound',
+			)
+		);
+	}
+
+	/**
+	 * A getRecord success wrapping a threadgate record value.
+	 *
+	 * @param array $value Record value.
+	 * @return array
+	 */
+	private function threadgate_found( array $value ): array {
+		return array( 'value' => $value );
+	}
+
+	/**
+	 * A getRecord transport failure (unknown remote state).
+	 *
+	 * @return \WP_Error
+	 */
+	private function threadgate_read_error(): \WP_Error {
+		return new \WP_Error( 'http_request_failed', 'Connection reset.' );
+	}
+
+	/**
 	 * Seed a published single-record post ready for an update_post() call.
 	 *
 	 * @param array $restriction Reply-restriction tokens to store.
@@ -672,6 +726,7 @@ class Test_Publisher extends WP_UnitTestCase {
 	 */
 	public function test_update_creates_threadgate_when_newly_restricted() {
 		$post = $this->published_post_for_update( array( Threadgate::AUDIENCE_FOLLOWING ) );
+		$this->stub_threadgate_read( $this->threadgate_absent() );
 		$this->register_capture( $post->ID );
 
 		$result = Publisher::update_post( $post );
@@ -690,6 +745,16 @@ class Test_Publisher extends WP_UnitTestCase {
 	 */
 	public function test_update_updates_existing_threadgate() {
 		$post = $this->published_post_for_update( array( Threadgate::AUDIENCE_FOLLOWING ), true );
+		$this->stub_threadgate_read(
+			$this->threadgate_found(
+				array(
+					'$type'     => 'app.bsky.feed.threadgate',
+					'post'      => 'at://did:plc:test/app.bsky.feed.post/bsky-tid-123',
+					'allow'     => array( array( '$type' => 'app.bsky.feed.threadgate#mentionRule' ) ),
+					'createdAt' => '2026-01-01T00:00:00.000Z',
+				)
+			)
+		);
 		$this->register_capture( $post->ID );
 
 		Publisher::update_post( $post );
@@ -705,6 +770,16 @@ class Test_Publisher extends WP_UnitTestCase {
 	 */
 	public function test_update_deletes_threadgate_when_unrestricted() {
 		$post = $this->published_post_for_update( array(), true );
+		$this->stub_threadgate_read(
+			$this->threadgate_found(
+				array(
+					'$type'     => 'app.bsky.feed.threadgate',
+					'post'      => 'at://did:plc:test/app.bsky.feed.post/bsky-tid-123',
+					'allow'     => array( array( '$type' => 'app.bsky.feed.threadgate#followingRule' ) ),
+					'createdAt' => '2026-01-01T00:00:00.000Z',
+				)
+			)
+		);
 		$this->register_capture( $post->ID );
 
 		Publisher::update_post( $post );
@@ -714,6 +789,106 @@ class Test_Publisher extends WP_UnitTestCase {
 		$this->assertSame( 'app.bsky.feed.threadgate', $writes[2]['collection'] );
 		$this->assertSame( 'bsky-tid-123', $writes[2]['rkey'] );
 		$this->assertSame( '', \get_post_meta( $post->ID, Threadgate::META_WRITTEN, true ) );
+	}
+
+	/**
+	 * Updating a gate preserves Bluesky-native fields it does not own.
+	 */
+	public function test_update_preserves_externally_managed_fields() {
+		$post = $this->published_post_for_update( array( Threadgate::AUDIENCE_FOLLOWING ), true );
+		$this->stub_threadgate_read(
+			$this->threadgate_found(
+				array(
+					'$type'         => 'app.bsky.feed.threadgate',
+					'post'          => 'at://did:plc:test/app.bsky.feed.post/bsky-tid-123',
+					'allow'         => array( array( '$type' => 'app.bsky.feed.threadgate#mentionRule' ) ),
+					'createdAt'     => '2026-01-01T00:00:00.000Z',
+					'hiddenReplies' => array( 'at://did:plc:other/app.bsky.feed.post/xyz' ),
+				)
+			)
+		);
+		$this->register_capture( $post->ID );
+
+		Publisher::update_post( $post );
+
+		$value = $this->captured_calls[0]['writes'][2]['value'];
+		$this->assertSame(
+			array( array( '$type' => 'app.bsky.feed.threadgate#followingRule' ) ),
+			$value['allow'],
+			'Our allow should replace the old one.'
+		);
+		$this->assertSame(
+			array( 'at://did:plc:other/app.bsky.feed.post/xyz' ),
+			$value['hiddenReplies'],
+			'Externally-set hiddenReplies must survive the update.'
+		);
+		$this->assertSame( '2026-01-01T00:00:00.000Z', $value['createdAt'], 'The original createdAt is kept.' );
+	}
+
+	/**
+	 * Selecting Everybody keeps a gate that still carries moderation state,
+	 * dropping only our allow.
+	 */
+	public function test_update_strips_allow_but_keeps_hidden_replies() {
+		$post = $this->published_post_for_update( array(), true );
+		$this->stub_threadgate_read(
+			$this->threadgate_found(
+				array(
+					'$type'         => 'app.bsky.feed.threadgate',
+					'post'          => 'at://did:plc:test/app.bsky.feed.post/bsky-tid-123',
+					'allow'         => array( array( '$type' => 'app.bsky.feed.threadgate#followingRule' ) ),
+					'createdAt'     => '2026-01-01T00:00:00.000Z',
+					'hiddenReplies' => array( 'at://did:plc:other/app.bsky.feed.post/xyz' ),
+				)
+			)
+		);
+		$this->register_capture( $post->ID );
+
+		Publisher::update_post( $post );
+
+		$write = $this->captured_calls[0]['writes'][2];
+		$this->assertSame( 'com.atproto.repo.applyWrites#update', $write['$type'], 'Keep the record, do not delete it.' );
+		$this->assertArrayNotHasKey( 'allow', $write['value'], 'Our allow is removed.' );
+		$this->assertSame( array( 'at://did:plc:other/app.bsky.feed.post/xyz' ), $write['value']['hiddenReplies'] );
+		$this->assertSame( '', \get_post_meta( $post->ID, Threadgate::META_WRITTEN, true ) );
+	}
+
+	/**
+	 * A gate created directly on Bluesky is merged into, not collided with.
+	 */
+	public function test_update_merges_into_externally_created_gate() {
+		$post = $this->published_post_for_update( array( Threadgate::AUDIENCE_FOLLOWING ) );
+		$this->stub_threadgate_read(
+			$this->threadgate_found(
+				array(
+					'$type'         => 'app.bsky.feed.threadgate',
+					'post'          => 'at://did:plc:test/app.bsky.feed.post/bsky-tid-123',
+					'createdAt'     => '2026-01-01T00:00:00.000Z',
+					'hiddenReplies' => array( 'at://did:plc:other/app.bsky.feed.post/xyz' ),
+				)
+			)
+		);
+		$this->register_capture( $post->ID );
+
+		Publisher::update_post( $post );
+
+		$write = $this->captured_calls[0]['writes'][2];
+		$this->assertSame( 'com.atproto.repo.applyWrites#update', $write['$type'], 'Merge into the existing record, not create.' );
+		$this->assertSame( array( 'at://did:plc:other/app.bsky.feed.post/xyz' ), $write['value']['hiddenReplies'] );
+	}
+
+	/**
+	 * A failed read leaves the gate and the marker untouched.
+	 */
+	public function test_update_skips_gate_on_read_error() {
+		$post = $this->published_post_for_update( array( Threadgate::AUDIENCE_FOLLOWING ) );
+		$this->stub_threadgate_read( $this->threadgate_read_error() );
+		$this->register_capture( $post->ID );
+
+		Publisher::update_post( $post );
+
+		$this->assertCount( 2, $this->captured_calls[0]['writes'], 'No gate write when the read fails.' );
+		$this->assertSame( '', \get_post_meta( $post->ID, Threadgate::META_WRITTEN, true ), 'Marker left unchanged.' );
 	}
 
 	/**
@@ -2257,6 +2432,7 @@ class Test_Publisher extends WP_UnitTestCase {
 			Threadgate::META_RESTRICTION,
 			array( Threadgate::AUDIENCE_FOLLOWING )
 		);
+		$this->stub_threadgate_read( $this->threadgate_absent() );
 
 		\add_filter( 'atmosphere_long_form_composition', fn() => 'teaser-thread' );
 
