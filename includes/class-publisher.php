@@ -538,20 +538,23 @@ class Publisher {
 	}
 
 	/**
-	 * Persist the remote threadgate state after a successful write.
+	 * Record the remote threadgate state that a batch just submitted.
 	 *
-	 * Mirrors {@see Threadgate::is_restricted()} at write time so the next
-	 * lifecycle event knows whether a gate is live on the PDS.
+	 * Takes the outcome captured at batch-build time rather than re-reading
+	 * the restriction meta, so a restriction change racing in behind an
+	 * in-flight write cannot desync the marker from what was actually sent
+	 * (see the in-flight-state rule in the code-style docs).
 	 *
 	 * @since unreleased
 	 *
-	 * @param \WP_Post $post WordPress post.
+	 * @param int  $post_id WordPress post ID.
+	 * @param bool $written Whether the submitted batch leaves a gate live.
 	 */
-	private static function persist_threadgate_state( \WP_Post $post ): void {
-		if ( Threadgate::is_restricted( $post ) ) {
-			\update_post_meta( $post->ID, Threadgate::META_WRITTEN, '1' );
+	private static function persist_threadgate_state( int $post_id, bool $written ): void {
+		if ( $written ) {
+			\update_post_meta( $post_id, Threadgate::META_WRITTEN, '1' );
 		} else {
-			\delete_post_meta( $post->ID, Threadgate::META_WRITTEN );
+			\delete_post_meta( $post_id, Threadgate::META_WRITTEN );
 		}
 	}
 
@@ -621,7 +624,8 @@ class Publisher {
 			),
 		);
 
-		$writes = \array_merge(
+		$threadgate_desired = Threadgate::is_restricted( $post );
+		$writes             = \array_merge(
 			$writes,
 			self::threadgate_sync_writes( $post, $bsky_transformer->get_rkey() )
 		);
@@ -646,7 +650,7 @@ class Publisher {
 		);
 
 		\delete_post_meta( $post->ID, Post::META_DOC_REF_PENDING );
-		self::persist_threadgate_state( $post );
+		self::persist_threadgate_state( $post->ID, $threadgate_desired );
 
 		return $result;
 	}
@@ -752,6 +756,11 @@ class Publisher {
 		self::store_document_meta( $post->ID, $root_result, $doc_transformer );
 		self::mirror_thread_records_meta( $post->ID, $thread_records );
 
+		// The gate rode in the root batch that just succeeded, so record its
+		// state now — not after the reply loop — so a worker interruption
+		// mid-thread can't leave a live gate without its marker.
+		self::persist_threadgate_state( $post->ID, $threadgate_written );
+
 		\delete_post_meta( $post->ID, Post::META_DOC_REF_PENDING );
 
 		$aggregated_results = $root_result['results'] ?? array();
@@ -837,8 +846,6 @@ class Publisher {
 
 			$aggregated_results = \array_merge( $aggregated_results, $reply_result['results'] ?? array() );
 		}
-
-		self::persist_threadgate_state( $post );
 
 		return array( 'results' => $aggregated_results );
 	}
@@ -1310,7 +1317,8 @@ class Publisher {
 
 		// Reconcile the gate: create it if the post became gated, update it if
 		// the restriction changed, delete it if it went back to everybody.
-		$writes = \array_merge(
+		$threadgate_desired = Threadgate::is_restricted( $post );
+		$writes             = \array_merge(
 			$writes,
 			self::threadgate_sync_writes( $post, $stored_root['tid'] )
 		);
@@ -1335,7 +1343,7 @@ class Publisher {
 		);
 
 		\delete_post_meta( $post->ID, Post::META_DOC_REF_PENDING );
-		self::persist_threadgate_state( $post );
+		self::persist_threadgate_state( $post->ID, $threadgate_desired );
 
 		return self::reconcile_post_after_write( $post, $result );
 	}
@@ -1417,7 +1425,8 @@ class Publisher {
 		);
 
 		// Reconcile the gate against the thread root's rkey.
-		$writes = \array_merge(
+		$threadgate_desired = Threadgate::is_restricted( $post );
+		$writes             = \array_merge(
 			$writes,
 			self::threadgate_sync_writes( $post, $root['tid'] )
 		);
@@ -1450,7 +1459,7 @@ class Publisher {
 		}
 
 		\delete_post_meta( $post->ID, Post::META_DOC_REF_PENDING );
-		self::persist_threadgate_state( $post );
+		self::persist_threadgate_state( $post->ID, $threadgate_desired );
 
 		return self::reconcile_post_after_write( $post, $result );
 	}
