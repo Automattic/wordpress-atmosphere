@@ -53,6 +53,73 @@ abstract class Base {
 	}
 
 	/**
+	 * Whether rkeys are minted from the object's original publish time
+	 * instead of the current time.
+	 *
+	 * @var bool
+	 */
+	protected bool $original_time = false;
+
+	/**
+	 * Mint record keys from the object's original publish date.
+	 *
+	 * Used by `--original-time` backfills so historical records sort by
+	 * their original date in feeds/readers instead of by backfill-run
+	 * time. Only affects the *first* `get_rkey()` reservation — an
+	 * already-persisted TID is reused unchanged.
+	 *
+	 * @param bool $on Whether to enable original-time minting.
+	 */
+	public function use_original_time( bool $on = true ): void {
+		$this->original_time = $on;
+	}
+
+	/**
+	 * Mint a historical TID from the post's original publish date.
+	 *
+	 * Fills the sub-second slot with a disambiguator so records sharing a
+	 * publish second sort deterministically and are very unlikely to
+	 * collide on the same rkey. The post ID and the reply `$sequence`
+	 * occupy disjoint ranges of that slot: the ID (reduced modulo 100,000)
+	 * picks the high part, the sequence the reserved low decimal digit. A
+	 * teaser thread is capped at 5 records
+	 * ({@see Post::build_teaser_thread()}), so a single digit is ample
+	 * headroom for the sequence.
+	 *
+	 * Disjoint ranges — rather than summing as `ID + $sequence` — stop
+	 * reply N of post P from sharing a slot with the root of post P+N when
+	 * both are published in the same second (which would mint an identical
+	 * rkey); adjacent IDs sharing a second are common in bulk/WXR imports,
+	 * the backfill case this feature targets.
+	 *
+	 * The sub-second slot alone only distinguishes 100,000 posts, so the
+	 * next slice of the ID rides in the TID's 10 clock-id bits. That widens
+	 * the effective per-second disambiguation to ~102.4 million (100,000 x
+	 * 1,024): two roots collide only if their IDs are congruent modulo
+	 * 102,400,000 within the same second — beyond the ID range of a
+	 * realistic site, so a same-second bulk import no longer drops posts to
+	 * "record already exists".
+	 *
+	 * @param int $sequence Offset within the post's records (0 = root/doc).
+	 * @return string
+	 */
+	protected function historical_rkey( int $sequence = 0 ): string {
+		$unix = (int) \get_post_time( 'U', true, $this->object );
+		$id   = $this->object->ID;
+
+		// Post ID in the high part, reply sequence in the reserved low
+		// digit; `% 100000` keeps the product inside the microsecond slot.
+		$disambiguator = ( $id % 100000 ) * 10 + $sequence;
+
+		// The next slice of the ID rides in the clock bits so posts whose
+		// sub-second slots collide (IDs congruent modulo 100,000) still get
+		// distinct rkeys.
+		$clock = \intdiv( $id, 100000 ) % 1024;
+
+		return TID::generate_for_time( $unix, $disambiguator, $clock );
+	}
+
+	/**
 	 * Produce the AT Protocol record array.
 	 *
 	 * @return array
@@ -139,7 +206,7 @@ abstract class Base {
 
 		$rkey = (string) $read( static::META_TID );
 		if ( '' === $rkey ) {
-			$rkey = TID::generate();
+			$rkey = $this->original_time ? $this->historical_rkey() : TID::generate();
 			$write( static::META_TID, $rkey );
 		}
 

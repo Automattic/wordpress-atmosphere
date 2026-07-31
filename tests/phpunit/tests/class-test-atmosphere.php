@@ -39,6 +39,14 @@ class Test_Atmosphere extends WP_UnitTestCase {
 
 		$this->atmosphere = new Atmosphere();
 
+		/*
+		 * The head emitters memoize per request. A test process is not a
+		 * request: without this, two tests rendering the same URL under
+		 * different options — the front page with and without a
+		 * publication TID, say — would collide on the same cache key.
+		 */
+		Atmosphere::flush_head_record_cache();
+
 		\update_option(
 			'atmosphere_connection',
 			array(
@@ -76,6 +84,7 @@ class Test_Atmosphere extends WP_UnitTestCase {
 
 		\remove_all_filters( 'atmosphere_should_publish_comment' );
 		\remove_all_filters( 'atmosphere_pre_apply_writes' );
+		\remove_all_filters( 'atmosphere_at_tags' );
 		\delete_option( 'atmosphere_visibility_cleanup_migrated' );
 
 		parent::tear_down();
@@ -2028,6 +2037,34 @@ class Test_Atmosphere extends WP_UnitTestCase {
 	}
 
 	/**
+	 * Capture what `output_at_tags()` prints to stdout.
+	 *
+	 * @return string Output (empty when the method emits no tags).
+	 */
+	private function capture_at_tags(): string {
+		\ob_start();
+		$this->atmosphere->output_at_tags();
+		return (string) \ob_get_clean();
+	}
+
+	/**
+	 * Set the persisted identity used by the tag-emission tests.
+	 *
+	 * @param string $did DID to store.
+	 */
+	private function set_identity( string $did = 'did:plc:test123' ): void {
+		\update_option(
+			'atmosphere_identity',
+			array(
+				'did'          => $did,
+				'handle'       => 'example.com',
+				'pds_endpoint' => 'https://pds.example.com',
+			),
+			true
+		);
+	}
+
+	/**
 	 * Front-end endpoint query vars are registered through WordPress.
 	 */
 	public function test_register_query_vars_adds_atproto_preview_var() {
@@ -2296,6 +2333,714 @@ class Test_Atmosphere extends WP_UnitTestCase {
 		$output = $this->capture_publication_link();
 
 		$this->assertSame( '', $output );
+	}
+
+	/**
+	 * A dual-published post advertises all three of its records: the
+	 * document as the page's canonical AT record, and the publication
+	 * plus the companion Bluesky post as auxiliary references. Repeated
+	 * `at:alternate` names are the proposal's array form.
+	 */
+	public function test_output_at_tags_emits_full_set_on_dual_published_post() {
+		$this->set_identity();
+		\update_option( 'atmosphere_publication_tid', '3kpubtid000000' );
+
+		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		\update_post_meta( $post_id, Post::META_URI, 'at://did:plc:test123/app.bsky.feed.post/3kbskypost0000' );
+		\update_post_meta( $post_id, Document::META_URI, 'at://did:plc:test123/site.standard.document/3kdocrecord000' );
+		\update_post_meta( $post_id, Document::META_TID, '3kdocrecord000' );
+
+		$this->go_to_post( $post_id );
+		$output = $this->capture_at_tags();
+
+		$this->assertStringContainsString(
+			'<meta name="at:canonical" content="at://did:plc:test123/site.standard.document/3kdocrecord000" />',
+			$output,
+			'The document record is what the page is a rendering of, so it is canonical.'
+		);
+		$this->assertStringContainsString(
+			'<meta name="at:alternate" content="at://did:plc:test123/site.standard.publication/3kpubtid000000" />',
+			$output,
+			'The parent publication is referenced by the page, not depended on by it.'
+		);
+		$this->assertStringContainsString(
+			'<meta name="at:alternate" content="at://did:plc:test123/app.bsky.feed.post/3kbskypost0000" />',
+			$output,
+			'The companion Bluesky post backs the reactions/comments shown on the page.'
+		);
+	}
+
+	/**
+	 * A document-only post — no companion `app.bsky.feed.post` — emits
+	 * the document and publication tags and nothing else. Guards against
+	 * an empty `at:alternate` being printed for the missing Bluesky post.
+	 */
+	public function test_output_at_tags_omits_bluesky_alternate_for_document_only_post() {
+		$this->set_identity();
+		\update_option( 'atmosphere_publication_tid', '3kpubtid000000' );
+
+		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		\update_post_meta( $post_id, Document::META_URI, 'at://did:plc:test123/site.standard.document/3kdoconly00000' );
+		\update_post_meta( $post_id, Document::META_TID, '3kdoconly00000' );
+
+		$this->go_to_post( $post_id );
+		$output = $this->capture_at_tags();
+
+		$this->assertStringContainsString(
+			'<meta name="at:canonical" content="at://did:plc:test123/site.standard.document/3kdoconly00000" />',
+			$output
+		);
+		$this->assertStringContainsString(
+			'<meta name="at:alternate" content="at://did:plc:test123/site.standard.publication/3kpubtid000000" />',
+			$output
+		);
+		$this->assertStringNotContainsString(
+			'app.bsky.feed.post',
+			$output,
+			'A document-only post has no Bluesky record to advertise.'
+		);
+	}
+
+	/**
+	 * The Bluesky post URI is stored verbatim rather than rebuilt from
+	 * the current DID, so a post minted under a previous account would
+	 * otherwise advertise the old repo after a reconnect.
+	 */
+	public function test_output_at_tags_skips_bluesky_alternate_minted_under_another_did() {
+		$this->set_identity( 'did:plc:current' );
+		\update_option( 'atmosphere_publication_tid', '3kpubtid000000' );
+
+		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		\update_post_meta( $post_id, Post::META_URI, 'at://did:plc:previous/app.bsky.feed.post/3kbskypost0000' );
+		\update_post_meta( $post_id, Post::META_DID, 'did:plc:previous' );
+		\update_post_meta( $post_id, Document::META_URI, 'at://did:plc:current/site.standard.document/3kdocrecord000' );
+		\update_post_meta( $post_id, Document::META_TID, '3kdocrecord000' );
+
+		$this->go_to_post( $post_id );
+		$output = $this->capture_at_tags();
+
+		$this->assertStringNotContainsString(
+			'app.bsky.feed.post',
+			$output,
+			'Records minted under a previous account must not be advertised as this page\'s.'
+		);
+		$this->assertStringContainsString(
+			'<meta name="at:canonical" content="at://did:plc:current/site.standard.document/3kdocrecord000" />',
+			$output,
+			'The document URI is rebuilt from the current DID, so it stays advertisable.'
+		);
+	}
+
+	/**
+	 * The origin DID comes out of the stored URI, not `Post::META_DID`.
+	 *
+	 * `Post::get_rkey()` refreshes `META_DID` to the current DID on
+	 * every call — before any PDS write has succeeded — so a failed
+	 * republish after reconnecting to a different account leaves the row
+	 * claiming the current DID while `META_URI` still points at the old
+	 * one. A meta-based guard passes there and advertises the previous
+	 * account's record; parsing the URI does not. Pre-`META_DID` rows
+	 * (no meta at all) are the same hole seen from the other side.
+	 *
+	 * @dataProvider data_stale_bsky_did_meta
+	 *
+	 * @param string $meta_did Value to store in `Post::META_DID`.
+	 * @param string $message  Assertion message.
+	 */
+	public function test_output_at_tags_skips_bluesky_alternate_when_uri_did_is_foreign( string $meta_did, string $message ) {
+		$this->set_identity( 'did:plc:current' );
+		\update_option( 'atmosphere_publication_tid', '3kpubtid000000' );
+
+		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		\update_post_meta( $post_id, Post::META_URI, 'at://did:plc:previous/app.bsky.feed.post/3kbskypost0000' );
+		if ( '' !== $meta_did ) {
+			\update_post_meta( $post_id, Post::META_DID, $meta_did );
+		}
+		\update_post_meta( $post_id, Document::META_URI, 'at://did:plc:current/site.standard.document/3kdocrecord000' );
+		\update_post_meta( $post_id, Document::META_TID, '3kdocrecord000' );
+
+		$this->go_to_post( $post_id );
+		$output = $this->capture_at_tags();
+
+		$this->assertStringNotContainsString( 'app.bsky.feed.post', $output, $message );
+	}
+
+	/**
+	 * Rows where `Post::META_DID` does not reflect the URI's real origin.
+	 *
+	 * @return array<string, array{0: string, 1: string}>
+	 */
+	public function data_stale_bsky_did_meta(): array {
+		return array(
+			'META_DID refreshed to the current account by a failed republish' => array(
+				'did:plc:current',
+				'A META_DID refreshed ahead of a successful write must not vouch for a URI pointing elsewhere.',
+			),
+			'legacy row predating META_DID' => array(
+				'',
+				'A row with no META_DID must be judged on its URI, not waved through.',
+			),
+		);
+	}
+
+	/**
+	 * A stored value that isn't a well-formed `app.bsky.feed.post`
+	 * AT-URI under the current DID is not advertised.
+	 *
+	 * `parse_at_uri()` only asserts the `at://` prefix and a three-
+	 * segment shape, so checking the DID alone would let any other
+	 * record of ours through — a `site.standard.document` URI would be
+	 * published as this page's Bluesky post. Each case here fails a
+	 * different component while the document tag keeps emitting, which
+	 * is what proves the rejection is the Bluesky check and not a
+	 * wholesale bail.
+	 *
+	 * @dataProvider data_non_advertisable_bsky_uris
+	 *
+	 * @param string $uri     Value stored in `Post::META_URI`.
+	 * @param string $message Assertion message.
+	 */
+	public function test_output_at_tags_skips_bluesky_uri_that_is_not_a_feed_post( string $uri, string $message ) {
+		$this->set_identity();
+		\update_option( 'atmosphere_publication_tid', '3kpubtid000000' );
+
+		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		\update_post_meta( $post_id, Post::META_URI, $uri );
+		\update_post_meta( $post_id, Document::META_URI, 'at://did:plc:test123/site.standard.document/3kdocrecord000' );
+		\update_post_meta( $post_id, Document::META_TID, '3kdocrecord000' );
+
+		$this->go_to_post( $post_id );
+		$output = $this->capture_at_tags();
+
+		$this->assertStringNotContainsString(
+			'<meta name="at:alternate" content="' . $uri . '" />',
+			$output,
+			$message
+		);
+		$this->assertStringContainsString(
+			'<meta name="at:canonical" content="at://did:plc:test123/site.standard.document/3kdocrecord000" />',
+			$output,
+			'Rejecting the Bluesky URI must not suppress the document tag.'
+		);
+	}
+
+	/**
+	 * Stored values that must never be advertised as a Bluesky post.
+	 *
+	 * @return array<string, array{0: string, 1: string}>
+	 */
+	public function data_non_advertisable_bsky_uris(): array {
+		return array(
+			'not an AT-URI at all'           => array(
+				'https://bsky.app/not-an-at-uri',
+				'A value that does not parse must fail closed.',
+			),
+			'our own document record'        => array(
+				'at://did:plc:test123/site.standard.document/3kdocrecord000',
+				'Another of our records under the same DID is still not a Bluesky post.',
+			),
+			'right collection, empty rkey'   => array(
+				'at://did:plc:test123/app.bsky.feed.post/',
+				'An AT-URI with no rkey points at no record.',
+			),
+			'unrelated collection, same DID' => array(
+				'at://did:plc:test123/app.bsky.actor.profile/self',
+				'Only feed posts belong in the Bluesky alternate.',
+			),
+		);
+	}
+
+	/**
+	 * After reconnecting to a different account, a post published under
+	 * the previous one advertises nothing.
+	 *
+	 * The URI used to be rebuilt as `get_did()` + the stored TID, which
+	 * silently retargets the record at the new account: the TID belongs
+	 * to the old repo, so `at://NEW_DID/site.standard.document/OLD_TID`
+	 * names a record that exists in neither. Both the meta tag and the
+	 * link tag are asserted here, since both read the same resolver.
+	 */
+	public function test_document_tags_silent_after_reconnect_to_another_account() {
+		$this->set_identity( 'did:plc:current' );
+		\update_option( 'atmosphere_publication_tid', '3kpubtid000000' );
+
+		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		\update_post_meta( $post_id, Document::META_URI, 'at://did:plc:previous/site.standard.document/3kdocrecord000' );
+		\update_post_meta( $post_id, Document::META_TID, '3kdocrecord000' );
+
+		$this->go_to_post( $post_id );
+
+		$at_tags = $this->capture_at_tags();
+
+		$this->assertStringNotContainsString(
+			'at://did:plc:current/site.standard.document/3kdocrecord000',
+			$at_tags,
+			'A record minted under the previous account must not be re-pointed at the current one.'
+		);
+		$this->assertStringNotContainsString( 'at:canonical', $at_tags );
+		$this->assertSame(
+			'',
+			$this->capture_document_link(),
+			'The link tag reads the same resolver and must fall silent too.'
+		);
+	}
+
+	/**
+	 * The advertised document URI is the one the Publisher stored, not
+	 * one reassembled from the post's TID meta.
+	 *
+	 * Pinned with a deliberately divergent `META_TID`: if the URI were
+	 * rebuilt, the tag would carry the meta's TID instead of the
+	 * published record's.
+	 */
+	public function test_document_tags_use_stored_uri_not_rebuilt_tid() {
+		$this->set_identity();
+		\update_option( 'atmosphere_publication_tid', '3kpubtid000000' );
+
+		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		\update_post_meta( $post_id, Document::META_URI, 'at://did:plc:test123/site.standard.document/3kpublished000' );
+		\update_post_meta( $post_id, Document::META_TID, '3kdivergent000' );
+
+		$this->go_to_post( $post_id );
+		$output = $this->capture_at_tags();
+
+		$this->assertStringContainsString(
+			'<meta name="at:canonical" content="at://did:plc:test123/site.standard.document/3kpublished000" />',
+			$output
+		);
+		$this->assertStringNotContainsString( '3kdivergent000', $output );
+	}
+
+	/**
+	 * Rendering a page never touches `Document::META_DID`.
+	 *
+	 * The head emitters were the only render-time callers of
+	 * `Document::get_rkey()`, which refreshes that meta to the current
+	 * DID. Leaving it alone keeps a pageview from moving a post's
+	 * recorded origin out from under the cleanup guards (#217).
+	 */
+	public function test_rendering_does_not_refresh_document_did_meta() {
+		$this->set_identity( 'did:plc:current' );
+		\update_option( 'atmosphere_publication_tid', '3kpubtid000000' );
+
+		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		\update_post_meta( $post_id, Document::META_URI, 'at://did:plc:previous/site.standard.document/3kdocrecord000' );
+		\update_post_meta( $post_id, Document::META_TID, '3kdocrecord000' );
+		\update_post_meta( $post_id, Document::META_DID, 'did:plc:previous' );
+
+		$this->go_to_post( $post_id );
+		$this->capture_document_link();
+		$this->capture_at_tags();
+
+		$this->assertSame(
+			'did:plc:previous',
+			\get_post_meta( $post_id, Document::META_DID, true ),
+			'A front-end render must not rewrite the recorded origin DID.'
+		);
+	}
+
+	/**
+	 * A full head render resolves publishability once, not once per
+	 * emitter.
+	 *
+	 * `is_post_publishable()` walks every registered post type and fires
+	 * `atmosphere_syncable_post_types` on each call, so a site hooking
+	 * that filter pays for every repeat. Counting filter invocations
+	 * across all three emitters pins the memo: without it this is 4 —
+	 * one per emitter plus `is_publication_url()`'s own check.
+	 */
+	public function test_head_emitters_resolve_publishability_once_per_request() {
+		$this->set_identity();
+		\update_option( 'atmosphere_publication_tid', '3kpubtid000000' );
+
+		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		\update_post_meta( $post_id, Document::META_URI, 'at://did:plc:test123/site.standard.document/3kdocrecord000' );
+		\update_post_meta( $post_id, Post::META_URI, 'at://did:plc:test123/app.bsky.feed.post/3kbskypost0000' );
+
+		$this->go_to_post( $post_id );
+		Atmosphere::flush_head_record_cache();
+
+		$calls = 0;
+		\add_filter(
+			'atmosphere_syncable_post_types',
+			static function ( $types ) use ( &$calls ) {
+				++$calls;
+				return $types;
+			}
+		);
+
+		\ob_start();
+		$this->atmosphere->output_document_link();
+		$this->atmosphere->output_publication_link();
+		$this->atmosphere->output_at_tags();
+		$output = (string) \ob_get_clean();
+
+		\remove_all_filters( 'atmosphere_syncable_post_types' );
+
+		$this->assertSame(
+			1,
+			$calls,
+			'Publishability must be resolved once for the whole head, not once per emitter.'
+		);
+
+		// The memo must not have cost us any output.
+		$this->assertStringContainsString( '<link rel="site.standard.document"', $output );
+		$this->assertStringContainsString( '<link rel="site.standard.publication"', $output );
+		$this->assertStringContainsString( '<meta name="at:canonical"', $output );
+		$this->assertSame( 2, \substr_count( $output, 'at:alternate' ) );
+	}
+
+	/**
+	 * The head render opens by dropping the memo, so a worker that
+	 * serves many requests cannot keep advertising a stale AT-URI.
+	 *
+	 * Priority 0 matters: the flush has to land before the emitters,
+	 * which sit at the default 10.
+	 */
+	public function test_init_flushes_head_record_cache_before_emitting() {
+		$this->atmosphere->init();
+
+		try {
+			$this->assertSame(
+				0,
+				\has_action( 'wp_head', array( Atmosphere::class, 'flush_head_record_cache' ) ),
+				'The flush must run before the emitters that populate the memo.'
+			);
+		} finally {
+			\remove_action( 'wp_head', array( Atmosphere::class, 'flush_head_record_cache' ), 0 );
+			foreach ( array( 'output_at_tags', 'output_document_link', 'output_publication_link' ) as $emitter ) {
+				\remove_action( 'wp_head', array( $this->atmosphere, $emitter ) );
+			}
+			\wp_clear_scheduled_hook( 'atmosphere_sync_publication' );
+			\wp_clear_scheduled_hook( 'atmosphere_refresh_token' );
+			\wp_clear_scheduled_hook( 'atmosphere_sync_reactions' );
+			\wp_clear_scheduled_hook( 'atmosphere_backfill_replies' );
+		}
+	}
+
+	/**
+	 * Re-minting a post's document record changes what the next head
+	 * render advertises.
+	 *
+	 * This is the persistent-runtime case in miniature: render, re-mint
+	 * the record as a delete-and-republish or a backfill would, then
+	 * render again in what a worker would treat as a fresh request. The
+	 * memo is keyed by post and DID rather than by the stored URI, so
+	 * without the flush the second render would still serve the first
+	 * URI.
+	 */
+	public function test_flush_head_record_cache_picks_up_a_reminted_record() {
+		$this->set_identity();
+		\update_option( 'atmosphere_publication_tid', '3kpubtid000000' );
+
+		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		\update_post_meta( $post_id, Document::META_URI, 'at://did:plc:test123/site.standard.document/3koriginal0000' );
+
+		$this->go_to_post( $post_id );
+		Atmosphere::flush_head_record_cache();
+
+		$this->assertStringContainsString( '3koriginal0000', $this->capture_at_tags() );
+
+		// Delete + republish, or a backfill: same post, new record.
+		\update_post_meta( $post_id, Document::META_URI, 'at://did:plc:test123/site.standard.document/3kreminted0000' );
+
+		// What `wp_head` at priority 0 does at the top of the next render.
+		Atmosphere::flush_head_record_cache();
+
+		$output = $this->capture_at_tags();
+
+		$this->assertStringContainsString(
+			'<meta name="at:canonical" content="at://did:plc:test123/site.standard.document/3kreminted0000" />',
+			$output
+		);
+		$this->assertStringNotContainsString(
+			'3koriginal0000',
+			$output,
+			'A recycled worker must not keep serving the pre-remint AT-URI.'
+		);
+	}
+
+	/**
+	 * A post carrying a Bluesky record but no document — the state
+	 * `Backfill` exists to find — advertises nothing. Both alternates
+	 * hang off the document's presence, because an alternate with no
+	 * canonical record alongside it references nothing.
+	 */
+	public function test_output_at_tags_silent_for_bluesky_only_post() {
+		$this->set_identity();
+		\update_option( 'atmosphere_publication_tid', '3kpubtid000000' );
+
+		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		\update_post_meta( $post_id, Post::META_URI, 'at://did:plc:test123/app.bsky.feed.post/3kbskypost0000' );
+
+		$this->go_to_post( $post_id );
+
+		$this->assertSame( '', $this->capture_at_tags() );
+	}
+
+	/**
+	 * A static front page that is also a publishable post with a
+	 * document record maps to both records, so both are canonical —
+	 * the array semantics the proposal defines, and the one branch
+	 * where the meta mapping diverges from the link tags.
+	 */
+	public function test_output_at_tags_emits_both_canonicals_on_publishable_static_front_page() {
+		$this->set_identity();
+		\update_option( 'atmosphere_publication_tid', '3kpubtid000000' );
+
+		// `page` is not syncable by default; opt it in so the static
+		// front page clears `is_post_publishable()`.
+		\add_filter(
+			'atmosphere_syncable_post_types',
+			static function ( $types ) {
+				$types[] = 'page';
+				return $types;
+			}
+		);
+
+		$page_id = self::factory()->post->create(
+			array(
+				'post_type'   => 'page',
+				'post_status' => 'publish',
+				'post_title'  => 'Home',
+			)
+		);
+		\update_post_meta( $page_id, Document::META_URI, 'at://did:plc:test123/site.standard.document/3kfrontdoc0000' );
+		\update_post_meta( $page_id, Document::META_TID, '3kfrontdoc0000' );
+
+		\update_option( 'show_on_front', 'page' );
+		\update_option( 'page_on_front', $page_id );
+
+		$this->go_to( '?page_id=' . $page_id );
+
+		$this->assertTrue( \is_front_page(), 'Sanity check: static page must be the front page.' );
+		$this->assertTrue( \is_singular(), 'Sanity check: the static front page is also singular.' );
+
+		$output = $this->capture_at_tags();
+
+		\delete_option( 'show_on_front' );
+		\delete_option( 'page_on_front' );
+		\remove_all_filters( 'atmosphere_syncable_post_types' );
+
+		$this->assertStringContainsString(
+			'<meta name="at:canonical" content="at://did:plc:test123/site.standard.document/3kfrontdoc0000" />',
+			$output
+		);
+		$this->assertStringContainsString(
+			'<meta name="at:canonical" content="at://did:plc:test123/site.standard.publication/3kpubtid000000" />',
+			$output
+		);
+		$this->assertStringNotContainsString(
+			'at:alternate',
+			$output,
+			'The publication is canonical here, so it must not also appear as an alternate.'
+		);
+	}
+
+	/**
+	 * A filter returning something other than an array is a contract
+	 * violation: drop the output, but say so rather than leaving the
+	 * filtering plugin to guess why its tags vanished.
+	 */
+	public function test_output_at_tags_flags_filter_returning_non_array() {
+		$this->setExpectedIncorrectUsage( 'Atmosphere\Atmosphere::output_at_tags' );
+
+		$this->set_identity();
+		\update_option( 'atmosphere_publication_tid', '3kpubtid000000' );
+
+		\add_filter( 'atmosphere_at_tags', '__return_true' );
+
+		$this->go_to_front_page();
+		$output = $this->capture_at_tags();
+
+		\remove_all_filters( 'atmosphere_at_tags' );
+
+		$this->assertSame( '', $output );
+	}
+
+	/**
+	 * Malformed entries are skipped rather than printed, and the skip
+	 * is reported. The valid entries around them still emit — one bad
+	 * tag must not take the rest of the head with it.
+	 */
+	public function test_output_at_tags_flags_and_skips_malformed_entries() {
+		$this->setExpectedIncorrectUsage( 'Atmosphere\Atmosphere::output_at_tags' );
+
+		$this->set_identity();
+		\update_option( 'atmosphere_publication_tid', '3kpubtid000000' );
+
+		\add_filter(
+			'atmosphere_at_tags',
+			static function ( $tags ) {
+				$tags[]          = array( 'at://did:plc:test123' );      // Numeric key.
+				$tags['at:me']   = array( 'at://did:plc:test123', 42 );  // One good, one not.
+				$tags['at:junk'] = array( '' );                          // Empty string.
+				return $tags;
+			}
+		);
+
+		$this->go_to_front_page();
+		$output = $this->capture_at_tags();
+
+		\remove_all_filters( 'atmosphere_at_tags' );
+
+		$this->assertStringContainsString(
+			'<meta name="at:me" content="at://did:plc:test123" />',
+			$output,
+			'Valid entries must survive alongside malformed ones.'
+		);
+		$this->assertStringNotContainsString( 'name="0"', $output );
+		$this->assertStringNotContainsString( 'content="42"', $output );
+		$this->assertStringNotContainsString( 'at:junk', $output );
+		$this->assertStringContainsString(
+			'<meta name="at:canonical" content="at://did:plc:test123/site.standard.publication/3kpubtid000000" />',
+			$output,
+			'The plugin\'s own tags must be unaffected by a third party\'s bad entries.'
+		);
+	}
+
+	/**
+	 * On the front page the publication is the record the page renders,
+	 * so it is canonical there rather than alternate — the one place the
+	 * two mappings diverge.
+	 */
+	public function test_output_at_tags_marks_publication_canonical_on_front_page() {
+		$this->set_identity();
+		\update_option( 'atmosphere_publication_tid', '3kpubtid000000' );
+
+		$this->go_to_front_page();
+		$output = $this->capture_at_tags();
+
+		$this->assertStringContainsString(
+			'<meta name="at:canonical" content="at://did:plc:test123/site.standard.publication/3kpubtid000000" />',
+			$output
+		);
+		$this->assertStringNotContainsString( 'at:alternate', $output );
+	}
+
+	/**
+	 * No document record means no tags at all, and — as with the link
+	 * tag — no lazy `META_TID` mint from a front-end render.
+	 */
+	public function test_output_at_tags_silent_for_post_without_document_record() {
+		$this->set_identity();
+		\update_option( 'atmosphere_publication_tid', '3kpubtid000000' );
+
+		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
+
+		$this->go_to_post( $post_id );
+		$output = $this->capture_at_tags();
+
+		$this->assertSame( '', $output );
+		$this->assertSame(
+			'',
+			\get_post_meta( $post_id, Document::META_TID, true ),
+			'Frontend render must not lazy-mint META_TID for an unpublished post.'
+		);
+	}
+
+	/**
+	 * Archives, search results and 404s map to no record.
+	 */
+	public function test_output_at_tags_silent_on_non_singular_non_front_page() {
+		$this->set_identity();
+		\update_option( 'atmosphere_publication_tid', '3kpubtid000000' );
+
+		$this->go_to( \home_url( '/?s=anything' ) );
+
+		$this->assertSame( '', $this->capture_at_tags() );
+	}
+
+	/**
+	 * A disconnected site with no persisted identity advertises nothing,
+	 * in lockstep with the two link tags.
+	 */
+	public function test_output_at_tags_silent_without_identity() {
+		\delete_option( 'atmosphere_connection' );
+		\delete_option( 'atmosphere_identity' );
+		\update_option( 'atmosphere_publication_tid', '3kpubtid000000' );
+
+		$this->go_to_front_page();
+
+		$this->assertSame( '', $this->capture_at_tags() );
+	}
+
+	/**
+	 * The filter is the supported way to add the tags the plugin does
+	 * not emit on its own — `at:me`, `at:author`, or a namespaced
+	 * community property — without patching the emitter.
+	 */
+	public function test_output_at_tags_filter_can_add_tags() {
+		$this->set_identity();
+		\update_option( 'atmosphere_publication_tid', '3kpubtid000000' );
+
+		\add_filter(
+			'atmosphere_at_tags',
+			static function ( $tags ) {
+				$tags['at:me'] = array( 'at://did:plc:test123' );
+				return $tags;
+			}
+		);
+
+		$this->go_to_front_page();
+		$output = $this->capture_at_tags();
+
+		\remove_all_filters( 'atmosphere_at_tags' );
+
+		$this->assertStringContainsString(
+			'<meta name="at:me" content="at://did:plc:test123" />',
+			$output
+		);
+	}
+
+	/**
+	 * A filter that empties the tag list silences the output entirely,
+	 * rather than printing bare `<meta>` elements with empty content.
+	 */
+	public function test_output_at_tags_filter_can_suppress_all_tags() {
+		$this->set_identity();
+		\update_option( 'atmosphere_publication_tid', '3kpubtid000000' );
+
+		\add_filter( 'atmosphere_at_tags', '__return_empty_array' );
+
+		$this->go_to_front_page();
+		$output = $this->capture_at_tags();
+
+		\remove_all_filters( 'atmosphere_at_tags' );
+
+		$this->assertSame( '', $output );
+	}
+
+	/**
+	 * Both emitters are wired to `wp_head` so the meta tags ship
+	 * alongside the link tags they complement.
+	 */
+	public function test_init_wires_at_tags_to_wp_head() {
+		$emitters = array( 'output_at_tags', 'output_document_link', 'output_publication_link' );
+
+		$this->atmosphere->init();
+
+		try {
+			foreach ( $emitters as $emitter ) {
+				$this->assertNotFalse(
+					\has_action( 'wp_head', array( $this->atmosphere, $emitter ) ),
+					"{$emitter} must be wired to wp_head."
+				);
+			}
+		} finally {
+			/*
+			 * `init()` mutates global hook + cron state the WP test
+			 * framework does not roll back; undo what this test caused,
+			 * mirroring `test_init_wires_publication_sync_triggers()`.
+			 */
+			foreach ( $emitters as $emitter ) {
+				\remove_action( 'wp_head', array( $this->atmosphere, $emitter ) );
+			}
+			\wp_clear_scheduled_hook( 'atmosphere_sync_publication' );
+			\wp_clear_scheduled_hook( 'atmosphere_refresh_token' );
+			\wp_clear_scheduled_hook( 'atmosphere_sync_reactions' );
+			\wp_clear_scheduled_hook( 'atmosphere_backfill_replies' );
+		}
 	}
 
 	/**

@@ -742,6 +742,22 @@ class Post extends Base {
 	}
 
 	/**
+	 * Mint the rkey for a thread reply at the given index.
+	 *
+	 * Publisher calls this for each non-root entry in a teaser thread so
+	 * reply keys honor `--original-time`: when original-time minting is
+	 * on the reply is dated just after the root within the same second;
+	 * otherwise a fresh live TID is used. Not persisted here — replies
+	 * are tracked in `META_THREAD_RECORDS` by Publisher.
+	 *
+	 * @param int $index Reply index within the thread (>= 1).
+	 * @return string
+	 */
+	public function mint_reply_rkey( int $index ): string {
+		return $this->original_time ? $this->historical_rkey( $index ) : TID::generate();
+	}
+
+	/**
 	 * Compose the post text: title + excerpt + permalink within 300 characters.
 	 *
 	 * @return string
