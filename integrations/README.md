@@ -1,8 +1,12 @@
 # Integrations
 
-Plugin-specific integrations that teach ATmosphere how to format the `content` field of `site.standard.document` records for content produced by third-party plugins.
+Plugin-specific integrations that teach ATmosphere about third-party plugins. Most format the `content` field of `site.standard.document` records (see below); others hook ATmosphere's filters to change what gets published at all.
 
-## How it works
+Each integration is a class with a static `init()` that registers hooks, loaded from `class-load.php` behind a check that its target plugin is active.
+
+**Gating example — `class-jetpack.php`.** Keeps Jetpack subscriber-only and paywalled content out of public AT Protocol records by hooking `atmosphere_publishable_content` (see `Atmosphere\get_publishable_content()`). It reads a post's stored access-level meta and block markup in a visitor-independent way and returns only the publicly readable portion: nothing for a fully gated post, the content above a `jetpack/paywall` block for a split post, or the content minus `premium-content/subscriber-view` regions for an inline gate. Other membership plugins can close the same leak by hooking that filter.
+
+## Content formatting: how it works
 
 `site.standard.document` records have an [open content union](../docs/content-formats.md) — any object with a valid `$type` is accepted, but the field is **singular**: exactly one parser produces the `content` object per document.
 

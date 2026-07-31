@@ -32,6 +32,10 @@ class Load {
 	 * Register integrations whose target plugin is active.
 	 */
 	public static function register(): void {
-		// Integrations are registered here as they are added.
+		// Jetpack paid-content gating: keep subscriber-only bodies out of
+		// public AT Protocol records.
+		if ( \class_exists( 'Jetpack_Memberships' ) ) {
+			Jetpack::init();
+		}
 	}
 }

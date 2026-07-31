@@ -16,6 +16,7 @@ use function Atmosphere\truncate_graphemes;
 use function Atmosphere\grapheme_length;
 use function Atmosphere\to_iso8601;
 use function Atmosphere\is_post_publishable;
+use function Atmosphere\get_publishable_content;
 use function Atmosphere\is_sharing_enabled;
 use function Atmosphere\is_connection_only_mode;
 use function Atmosphere\is_auto_publish_enabled;
@@ -370,6 +371,36 @@ class Test_Functions extends \WP_UnitTestCase {
 
 		$this->assertFalse( is_sharing_enabled( $post ) );
 		$this->assertFalse( is_post_publishable( $post ) );
+	}
+
+	/**
+	 * With no membership integration, publishable content is the raw body.
+	 */
+	public function test_get_publishable_content_defaults_to_raw_body() {
+		$post = self::factory()->post->create_and_get(
+			array( 'post_content' => 'The whole body.' )
+		);
+
+		$this->assertSame( 'The whole body.', get_publishable_content( $post ) );
+	}
+
+	/**
+	 * An integration can narrow publishable content through the filter.
+	 */
+	public function test_get_publishable_content_honours_filter() {
+		$post = self::factory()->post->create_and_get(
+			array( 'post_content' => 'Public. Secret.' )
+		);
+
+		\add_filter(
+			'atmosphere_publishable_content',
+			static fn() => 'Public.',
+			10
+		);
+
+		$this->assertSame( 'Public.', get_publishable_content( $post ) );
+
+		\remove_all_filters( 'atmosphere_publishable_content' );
 	}
 
 	/**

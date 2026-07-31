@@ -772,6 +772,57 @@ function is_sharing_enabled( \WP_Post $post ): bool {
 }
 
 /**
+ * The portion of a post's body that is safe to publish to AT Protocol.
+ *
+ * Federation output is remote, site-wide state, so the answer must be
+ * visitor-independent — it may not depend on the current user, cookies, or an
+ * unlock session (the same reasoning that governs {@see is_post_publishable()}).
+ * `the_content` is deliberately *not* used for gating here: membership plugins
+ * hang their paywalls on that filter but resolve them against the current
+ * visitor, so during an author save or WP-Cron run they return the full body.
+ *
+ * By default this returns the post content unchanged — a site with no
+ * membership plugin publishes everything, exactly as before. A membership
+ * integration narrows it through the `atmosphere_publishable_content` filter,
+ * returning only the publicly readable portion:
+ *
+ *  - A fully gated post returns `''` (no body federates; the post transformer
+ *    still shares a title-and-link teaser).
+ *  - A split-point post (e.g. a paywall marker) returns the content above the
+ *    split.
+ *  - A post with an inline gated region returns the content with that region
+ *    removed.
+ *
+ * Every body-derived record field (document `textContent`/`content`/
+ * `description`/images, the Bluesky post text and link-card excerpt) reads
+ * through this helper, so a single integration closes all of them at once.
+ * Integrations MUST fail closed: any ambiguity — gating state unreadable, an
+ * unrecognised access level — must return less content, never more.
+ *
+ * @since unreleased
+ *
+ * @param \WP_Post $post Post object.
+ * @return string Publicly publishable post content.
+ */
+function get_publishable_content( \WP_Post $post ): string {
+	/**
+	 * Filters the portion of a post's content that is safe to federate.
+	 *
+	 * Membership/paywall integrations hook this to strip gated content in a
+	 * visitor-independent way. Return only the publicly readable portion of
+	 * `$content`; return `''` when the whole post is gated. Callbacks must not
+	 * depend on the current user, cookies, or session state, and must fail
+	 * closed (return less on any ambiguity).
+	 *
+	 * @since unreleased
+	 *
+	 * @param string   $content The post's stored content (`post_content`).
+	 * @param \WP_Post $post    The post being published.
+	 */
+	return (string) \apply_filters( 'atmosphere_publishable_content', $post->post_content, $post );
+}
+
+/**
  * Whether the plugin is running purely as a connection layer for another plugin.
  *
  * A host plugin that embeds ATmosphere only to reuse its AT Protocol

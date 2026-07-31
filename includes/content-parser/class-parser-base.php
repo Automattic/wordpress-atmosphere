@@ -14,6 +14,7 @@
 namespace Atmosphere\Content_Parser;
 
 use Atmosphere\Transformer\Post;
+use function Atmosphere\get_publishable_content;
 use function Atmosphere\sanitize_text;
 use function Atmosphere\to_iso8601;
 use function Atmosphere\truncate_graphemes;
@@ -79,7 +80,7 @@ abstract class Parser_Base implements Content_Parser {
 	 */
 	final protected function get_blocks( \WP_Post $post ): array {
 		if ( ! isset( self::$block_cache[ $post->ID ] ) ) {
-			self::$block_cache[ $post->ID ] = \parse_blocks( $post->post_content );
+			self::$block_cache[ $post->ID ] = \parse_blocks( get_publishable_content( $post ) );
 		}
 
 		return self::$block_cache[ $post->ID ];
@@ -140,7 +141,7 @@ abstract class Parser_Base implements Content_Parser {
 
 		try {
 			// phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Core WordPress filter.
-			$html = \apply_filters( 'the_content', $post->post_content );
+			$html = \apply_filters( 'the_content', get_publishable_content( $post ) );
 		} finally {
 			if ( $has_query ) {
 				if ( $previous_query_post instanceof \WP_Post ) {
@@ -398,7 +399,7 @@ abstract class Parser_Base implements Content_Parser {
 		$rendered_text = self::normalize_visibility_text( \wp_strip_all_tags( $rendered_html ) );
 
 		if ( ! $this->has_blocks( $post ) ) {
-			$saved_text = self::normalize_visibility_text( \wp_strip_all_tags( $post->post_content ) );
+			$saved_text = self::normalize_visibility_text( \wp_strip_all_tags( get_publishable_content( $post ) ) );
 
 			return '' === $saved_text || \str_contains( $rendered_text, $saved_text );
 		}

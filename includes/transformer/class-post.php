@@ -19,6 +19,7 @@ use Atmosphere\Mention;
 use function Atmosphere\build_at_uri;
 use function Atmosphere\debug_log;
 use function Atmosphere\get_did;
+use function Atmosphere\get_publishable_content;
 use function Atmosphere\grapheme_length;
 use function Atmosphere\sanitize_text;
 use function Atmosphere\truncate_graphemes;
@@ -1249,7 +1250,7 @@ class Post extends Base {
 	 * @return int[]
 	 */
 	private function collect_image_attachment_ids(): array {
-		$content = (string) $this->object->post_content;
+		$content = get_publishable_content( $this->object );
 
 		if ( '' === $content || ! \has_blocks( $content ) ) {
 			return array();
@@ -2053,7 +2054,7 @@ class Post extends Base {
 		}
 
 		$html = Mention::without_links(
-			fn() => \apply_filters( 'the_content', $this->object->post_content ) // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Core WordPress filter.
+			fn() => \apply_filters( 'the_content', get_publishable_content( $this->object ) ) // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Core WordPress filter.
 		);
 
 		/*

@@ -15,6 +15,7 @@ namespace Atmosphere\Transformer;
 use Atmosphere\Mention;
 use function Atmosphere\build_at_uri;
 use function Atmosphere\get_did;
+use function Atmosphere\get_publishable_content;
 use function Atmosphere\sanitize_text;
 use function Atmosphere\to_iso8601;
 
@@ -230,7 +231,7 @@ abstract class Base {
 			return sanitize_text( $post->post_excerpt );
 		}
 
-		return \wp_trim_words( sanitize_text( $post->post_content ), $word_limit, '...' );
+		return \wp_trim_words( sanitize_text( get_publishable_content( $post ) ), $word_limit, '...' );
 	}
 
 	/**
@@ -298,7 +299,7 @@ abstract class Base {
 		}
 
 		$html = Mention::without_links(
-			static fn() => \apply_filters( 'the_content', $post->post_content ) // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Core WordPress filter.
+			static fn() => \apply_filters( 'the_content', get_publishable_content( $post ) ) // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Core WordPress filter.
 		);
 
 		$this->html_content_cache[ $post->ID ] = $html;
