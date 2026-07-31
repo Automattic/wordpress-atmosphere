@@ -139,8 +139,19 @@ class Preview {
 	 * @return array|\WP_Error Preview payload, or error for unsupported types.
 	 */
 	public static function for_post( \WP_Post $post, string $type = '' ): array|\WP_Error {
+		$defaults = array( new Document( $post ), new Post( $post ) );
+
+		// The threadgate only exists for a gated post, so it joins the
+		// preview set only then — otherwise `?atproto=all` would show an
+		// ungated post a threadgate with an empty `allow` (read as "nobody
+		// can reply"), the opposite of what publishing actually does (no
+		// record = everybody).
+		if ( Threadgate::is_restricted( $post ) ) {
+			$defaults[] = new Threadgate( $post );
+		}
+
 		return self::resolve(
-			array( new Document( $post ), new Post( $post ) ),
+			$defaults,
 			$post,
 			'site.standard.document',
 			$type
