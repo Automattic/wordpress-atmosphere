@@ -20,6 +20,7 @@ use Atmosphere\Transformer\Document;
 use Atmosphere\Transformer\Post;
 use Atmosphere\Transformer\Preview;
 use Atmosphere\Transformer\Publication;
+use Atmosphere\Transformer\Threadgate;
 use Atmosphere\Integrations\Load;
 use Atmosphere\Rest\Admin\Connection_Controller;
 use Atmosphere\Rest\Admin\Pre_Publish_Controller;
@@ -1915,6 +1916,32 @@ class Atmosphere {
 					'default'           => '',
 					'show_in_rest'      => true,
 					'sanitize_callback' => 'sanitize_textarea_field',
+					'auth_callback'     => $auth_callback,
+				)
+			);
+
+			\register_post_meta(
+				$post_type,
+				Threadgate::META_RESTRICTION,
+				array(
+					'type'              => 'array',
+					'single'            => true,
+					'default'           => array(),
+					'show_in_rest'      => array(
+						'schema' => array(
+							'type'  => 'array',
+							'items' => array(
+								'type' => 'string',
+								'enum' => array(
+									Threadgate::AUDIENCE_NOBODY,
+									Threadgate::AUDIENCE_MENTIONED,
+									Threadgate::AUDIENCE_FOLLOWING,
+									Threadgate::AUDIENCE_FOLLOWER,
+								),
+							),
+						),
+					),
+					'sanitize_callback' => array( Threadgate::class, 'sanitize_restriction' ),
 					'auth_callback'     => $auth_callback,
 				)
 			);

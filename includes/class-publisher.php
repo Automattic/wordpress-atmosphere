@@ -34,6 +34,7 @@ use Atmosphere\Transformer\Comment;
 use Atmosphere\Transformer\Document;
 use Atmosphere\Transformer\Post;
 use Atmosphere\Transformer\Publication;
+use Atmosphere\Transformer\Threadgate;
 
 /**
  * Publisher class.
@@ -466,6 +467,32 @@ class Publisher {
 	}
 
 	/**
+	 * Build the threadgate `applyWrites#create` for a gated post, or null.
+	 *
+	 * A threadgate reply-restricts a post and shares its rkey, so it rides
+	 * in the same atomic batch as the post it gates. Returns null for an
+	 * ungated post (everybody can reply) so no record is written.
+	 *
+	 * @since unreleased
+	 *
+	 * @param \WP_Post $post WordPress post.
+	 * @param string   $rkey The post's reserved rkey, shared by the threadgate.
+	 * @return array|null applyWrites#create entry, or null when the post is ungated.
+	 */
+	private static function threadgate_write( \WP_Post $post, string $rkey ): ?array {
+		if ( ! Threadgate::is_restricted( $post ) ) {
+			return null;
+		}
+
+		return array(
+			'$type'      => 'com.atproto.repo.applyWrites#create',
+			'collection' => 'app.bsky.feed.threadgate',
+			'rkey'       => $rkey,
+			'value'      => ( new Threadgate( $post ) )->transform(),
+		);
+	}
+
+	/**
 	 * Write a single bsky post + document atomically.
 	 *
 	 * Used for short-form (via `transform()`'s output) and for the
@@ -530,6 +557,11 @@ class Publisher {
 				'value'      => $doc_record,
 			),
 		);
+
+		$threadgate = self::threadgate_write( $post, $bsky_transformer->get_rkey() );
+		if ( null !== $threadgate ) {
+			$writes[] = $threadgate;
+		}
 
 		$result = API::apply_writes( $writes );
 
@@ -598,22 +630,27 @@ class Publisher {
 			$doc_record = $doc_transformer->transform();
 		}
 
-		$root_result = API::apply_writes(
+		$root_writes = array(
 			array(
-				array(
-					'$type'      => 'com.atproto.repo.applyWrites#create',
-					'collection' => 'app.bsky.feed.post',
-					'rkey'       => $root_rkey,
-					'value'      => $root_record,
-				),
-				array(
-					'$type'      => 'com.atproto.repo.applyWrites#create',
-					'collection' => 'site.standard.document',
-					'rkey'       => $doc_transformer->get_rkey(),
-					'value'      => $doc_record,
-				),
-			)
+				'$type'      => 'com.atproto.repo.applyWrites#create',
+				'collection' => 'app.bsky.feed.post',
+				'rkey'       => $root_rkey,
+				'value'      => $root_record,
+			),
+			array(
+				'$type'      => 'com.atproto.repo.applyWrites#create',
+				'collection' => 'site.standard.document',
+				'rkey'       => $doc_transformer->get_rkey(),
+				'value'      => $doc_record,
+			),
 		);
+
+		$threadgate = self::threadgate_write( $post, $root_rkey );
+		if ( null !== $threadgate ) {
+			$root_writes[] = $threadgate;
+		}
+
+		$root_result = API::apply_writes( $root_writes );
 
 		if ( \is_wp_error( $root_result ) ) {
 			return $root_result;

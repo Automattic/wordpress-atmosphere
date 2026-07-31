@@ -22,6 +22,7 @@ use Atmosphere\Transformer\Comment;
 use Atmosphere\Transformer\Document;
 use Atmosphere\Transformer\Post;
 use Atmosphere\Transformer\Publication;
+use Atmosphere\Transformer\Threadgate;
 use Atmosphere\Transformer\TID;
 
 /**
@@ -591,6 +592,56 @@ class Test_Publisher extends WP_UnitTestCase {
 			\get_post_meta( $attachment_id, '_atmosphere_blob_ref', true ),
 			'The stale in-body image ref should be replaced by the freshly uploaded one.'
 		);
+	}
+
+	/**
+	 * A reply-restricted post writes a threadgate in the same batch,
+	 * sharing the post's rkey.
+	 */
+	public function test_publish_post_includes_threadgate_when_restricted() {
+		$post = self::factory()->post->create_and_get(
+			array( 'post_status' => 'publish' )
+		);
+		\update_post_meta(
+			$post->ID,
+			Threadgate::META_RESTRICTION,
+			array( Threadgate::AUDIENCE_FOLLOWING )
+		);
+
+		\add_filter( 'atmosphere_is_short_form_post', '__return_true' );
+		$this->register_capture( $post->ID );
+
+		$result = Publisher::publish_post( $post );
+
+		$this->assertIsArray( $result );
+		$this->assertCount( 1, $this->captured_calls );
+
+		$writes = $this->captured_calls[0]['writes'];
+		$this->assertCount( 3, $writes, 'The batch should carry the post, document, and threadgate.' );
+		$this->assertSame( 'app.bsky.feed.threadgate', $writes[2]['collection'] );
+		$this->assertSame( $writes[0]['rkey'], $writes[2]['rkey'], 'The threadgate must share the post rkey.' );
+		$this->assertSame(
+			array( array( '$type' => 'app.bsky.feed.threadgate#followingRule' ) ),
+			$writes[2]['value']['allow']
+		);
+	}
+
+	/**
+	 * An unrestricted post writes no threadgate record.
+	 */
+	public function test_publish_post_omits_threadgate_when_everybody() {
+		$post = self::factory()->post->create_and_get(
+			array( 'post_status' => 'publish' )
+		);
+
+		\add_filter( 'atmosphere_is_short_form_post', '__return_true' );
+		$this->register_capture( $post->ID );
+
+		$result = Publisher::publish_post( $post );
+
+		$this->assertIsArray( $result );
+		$writes = $this->captured_calls[0]['writes'];
+		$this->assertCount( 2, $writes, 'No threadgate should be written for an unrestricted post.' );
 	}
 
 	/**

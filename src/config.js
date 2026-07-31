@@ -27,6 +27,14 @@ export const CUSTOM_TEXT_META_KEY =
 	options.customTextMetaKey || 'atmosphere_custom_text';
 
 /**
+ * Post meta key for the per-post Bluesky reply restriction.
+ *
+ * @type {string}
+ */
+export const REPLY_RESTRICTION_META_KEY =
+	options.replyRestrictionMetaKey || 'atmosphere_reply_restriction';
+
+/**
  * REST path for the pre-publish preview endpoint.
  *
  * @type {string}

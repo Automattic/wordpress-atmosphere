@@ -16,21 +16,33 @@ import { registerPlugin } from '@wordpress/plugins';
 import {
 	ToggleControl,
 	TextareaControl,
+	SelectControl,
+	CheckboxControl,
 	ExternalLink,
 	Notice,
 	SVG,
 	Path,
 } from '@wordpress/components';
 import { useSelect } from '@wordpress/data';
+import { useState, useEffect } from '@wordpress/element';
 import { useEntityProp } from '@wordpress/core-data';
 import { __ } from '@wordpress/i18n';
 import {
 	DISABLED_META_KEY,
 	CUSTOM_TEXT_META_KEY,
+	REPLY_RESTRICTION_META_KEY,
 	SETTINGS_URL,
 	CAN_MANAGE,
 } from '../config';
-import { isSharingEnabled } from './utils';
+import {
+	isSharingEnabled,
+	readReplyRestriction,
+	getReplyMode,
+	getReplyAudiences,
+	buildRestrictionForMode,
+	toggleReplyAudience,
+	REPLY_AUDIENCE,
+} from './utils';
 
 /**
  * The ATmosphere symbol (the plugin logo), shown after the panel title like
@@ -77,6 +89,28 @@ const EditorPlugin = () => {
 
 	const [ meta, setMeta ] = useEntityProp( 'postType', postType, 'meta' );
 
+	/* The reply mode lives in local state, not derived straight from meta,
+	   because "Specific people" with nothing ticked yet stores an empty
+	   restriction — which is indistinguishable from "Everybody" on the
+	   meta side. Deriving would snap the dropdown back to Everybody before
+	   the author can tick a box. */
+	const storedMode = getReplyMode( readReplyRestriction( meta ) );
+	const [ replyMode, setReplyMode ] = useState( storedMode );
+
+	/* Re-sync when the stored value implies a different mode — loading a
+	   post, or an external change — but never clobber a freshly chosen
+	   "Specific people" (stored empty until a box is ticked) by snapping it
+	   back to Everybody. */
+	useEffect( () => {
+		if (
+			storedMode !== replyMode &&
+			! ( 'custom' === replyMode && 'everybody' === storedMode )
+		) {
+			setReplyMode( storedMode );
+		}
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [ storedMode ] );
+
 	// Don't show when editing reusable/synced blocks.
 	if ( 'wp_block' === postType ) {
 		return null;
@@ -84,6 +118,17 @@ const EditorPlugin = () => {
 
 	const enabled = isSharingEnabled( meta );
 	const customText = ( meta && meta[ CUSTOM_TEXT_META_KEY ] ) || '';
+
+	const restriction = readReplyRestriction( meta );
+	const replyAudiences = getReplyAudiences( restriction );
+
+	const setRestriction = ( value ) =>
+		setMeta( { ...meta, [ REPLY_RESTRICTION_META_KEY ]: value } );
+
+	const onReplyModeChange = ( mode ) => {
+		setReplyMode( mode );
+		setRestriction( buildRestrictionForMode( mode, replyAudiences ) );
+	};
 
 	/* Precomputed so the notice below avoids a nested ternary. The
 	   server classifies which failures only a reconnect can fix — the
@@ -162,6 +207,82 @@ const EditorPlugin = () => {
 						'atmosphere'
 					) }
 				/>
+			) }
+
+			{ enabled && (
+				<SelectControl
+					label={ __( 'Who can reply on Bluesky', 'atmosphere' ) }
+					value={ replyMode }
+					options={ [
+						{
+							label: __( 'Everybody', 'atmosphere' ),
+							value: 'everybody',
+						},
+						{
+							label: __( 'Nobody', 'atmosphere' ),
+							value: 'nobody',
+						},
+						{
+							label: __( 'Specific people', 'atmosphere' ),
+							value: 'custom',
+						},
+					] }
+					onChange={ onReplyModeChange }
+					help={ __(
+						'Choose who is allowed to reply to this post on Bluesky.',
+						'atmosphere'
+					) }
+				/>
+			) }
+
+			{ enabled && 'custom' === replyMode && (
+				<>
+					<CheckboxControl
+						label={ __( 'People you mention', 'atmosphere' ) }
+						checked={ replyAudiences.includes(
+							REPLY_AUDIENCE.MENTIONED
+						) }
+						onChange={ ( on ) =>
+							setRestriction(
+								toggleReplyAudience(
+									restriction,
+									REPLY_AUDIENCE.MENTIONED,
+									on
+								)
+							)
+						}
+					/>
+					<CheckboxControl
+						label={ __( 'People you follow', 'atmosphere' ) }
+						checked={ replyAudiences.includes(
+							REPLY_AUDIENCE.FOLLOWING
+						) }
+						onChange={ ( on ) =>
+							setRestriction(
+								toggleReplyAudience(
+									restriction,
+									REPLY_AUDIENCE.FOLLOWING,
+									on
+								)
+							)
+						}
+					/>
+					<CheckboxControl
+						label={ __( 'Your followers', 'atmosphere' ) }
+						checked={ replyAudiences.includes(
+							REPLY_AUDIENCE.FOLLOWER
+						) }
+						onChange={ ( on ) =>
+							setRestriction(
+								toggleReplyAudience(
+									restriction,
+									REPLY_AUDIENCE.FOLLOWER,
+									on
+								)
+							)
+						}
+					/>
+				</>
 			) }
 
 			{ sharedUrl && enabled && (

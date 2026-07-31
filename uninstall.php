@@ -92,6 +92,7 @@ $atmosphere_meta_keys = array(
 	'_atmosphere_last_publish_error',
 	'_atmosphere_reply_backfill_checked_at',
 	'_atmosphere_blob_ref',
+	'atmosphere_reply_restriction',
 	'atmosphere_custom_text',
 );
 
