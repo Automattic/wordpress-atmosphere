@@ -34,7 +34,6 @@ use Atmosphere\Transformer\Comment;
 use Atmosphere\Transformer\Document;
 use Atmosphere\Transformer\Post;
 use Atmosphere\Transformer\Publication;
-use Atmosphere\Transformer\TID;
 
 /**
  * Publisher class.
@@ -90,10 +89,11 @@ class Publisher {
 	 * regardless of which internal path (short-form, long-form single,
 	 * long-form thread) produced it.
 	 *
-	 * @param \WP_Post $post WordPress post.
+	 * @param \WP_Post $post          WordPress post.
+	 * @param bool     $original_time Reserve rkeys from the post's original publish date rather than "now". Default false.
 	 * @return array|\WP_Error applyWrites response(s) or error.
 	 */
-	public static function publish_post( \WP_Post $post ): array|\WP_Error {
+	public static function publish_post( \WP_Post $post, bool $original_time = false ): array|\WP_Error {
 		if ( ! is_post_publishable( $post ) ) {
 			$result = new \WP_Error(
 				'atmosphere_post_not_publishable',
@@ -115,7 +115,7 @@ class Publisher {
 		 * behave the same as any other publish).
 		 */
 		if ( ! is_bluesky_post_enabled() ) {
-			$result = self::publish_document_only( $post );
+			$result = self::publish_document_only( $post, $original_time );
 			$result = self::reconcile_post_after_write( $post, $result );
 
 			\do_action( 'atmosphere_publish_post_result', $post, $result );
@@ -127,7 +127,7 @@ class Publisher {
 		// so the embedded publication strongRef points at the current CID.
 		self::maybe_heal_publication();
 
-		$result = self::attempt_publish_post( $post );
+		$result = self::attempt_publish_post( $post, $original_time );
 
 		/*
 		 * Self-heal a stale image blob ref. Blob CIDs are cached in
@@ -165,7 +165,7 @@ class Publisher {
 			 * `applyWrites#create` the same rkeys again and collide.
 			 */
 			Post::set_force_blob_reupload( true );
-			$result = self::attempt_publish_post( $post );
+			$result = self::attempt_publish_post( $post, $original_time );
 			Post::set_force_blob_reupload( false );
 		}
 
@@ -195,12 +195,22 @@ class Publisher {
 	 * transformers, so a retry re-runs the blob upload that the first
 	 * attempt short-circuited from the cache.
 	 *
-	 * @param \WP_Post $post WordPress post.
+	 * @param \WP_Post $post          WordPress post.
+	 * @param bool     $original_time Reserve rkeys from the post's original publish date rather than "now".
 	 * @return array|\WP_Error `applyWrites` response on success, `WP_Error` on failure.
 	 */
-	private static function attempt_publish_post( \WP_Post $post ): array|\WP_Error {
+	private static function attempt_publish_post( \WP_Post $post, bool $original_time = false ): array|\WP_Error {
 		$bsky_transformer = new Post( $post );
 		$doc_transformer  = new Document( $post );
+
+		if ( $original_time ) {
+			// Reserve rkeys from the post's original publish date so a
+			// backfilled record sorts chronologically rather than at the
+			// backfill-run time. Must run before the document-CID
+			// precompute below (the first get_rkey() call).
+			$bsky_transformer->use_original_time();
+			$doc_transformer->use_original_time();
+		}
 
 		/*
 		 * Pre-compute the document's CID locally and inject the
@@ -396,11 +406,21 @@ class Publisher {
 	 *
 	 * @since unreleased
 	 *
-	 * @param \WP_Post $post WordPress post.
+	 * @param \WP_Post $post          WordPress post.
+	 * @param bool     $original_time Reserve the document rkey from the post's original publish date rather than "now".
 	 * @return array|\WP_Error applyWrites response or error.
 	 */
-	private static function publish_document_only( \WP_Post $post ): array|\WP_Error {
-		return self::write_document_only( $post, 'create', ( new Document( $post ) )->get_rkey() );
+	private static function publish_document_only( \WP_Post $post, bool $original_time = false ): array|\WP_Error {
+		$doc_transformer = new Document( $post );
+
+		if ( $original_time ) {
+			// Document-only backfills honour --original-time too: reserve the
+			// document rkey from the post's original publish date so it sorts
+			// chronologically in standard.site readers.
+			$doc_transformer->use_original_time();
+		}
+
+		return self::write_document_only( $post, 'create', $doc_transformer->get_rkey() );
 	}
 
 	/**
@@ -633,7 +653,7 @@ class Publisher {
 
 		$count = \count( $records );
 		for ( $i = 1; $i < $count; $i++ ) {
-			$reply_rkey   = TID::generate();
+			$reply_rkey   = $bsky_transformer->mint_reply_rkey( $i );
 			$reply_record = $records[ $i ];
 
 			if ( empty( $reply_record['createdAt'] ) ) {
