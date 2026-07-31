@@ -477,18 +477,20 @@ class Publisher {
 	 *
 	 * @param \WP_Post $post WordPress post.
 	 * @param string   $rkey The post's reserved rkey, shared by the threadgate.
-	 * @return array|null applyWrites#create entry, or null when the post is ungated.
+	 * @return array applyWrites#create entries — one for a gated post, none otherwise.
 	 */
-	private static function threadgate_write( \WP_Post $post, string $rkey ): ?array {
+	private static function threadgate_writes( \WP_Post $post, string $rkey ): array {
 		if ( ! Threadgate::is_restricted( $post ) ) {
-			return null;
+			return array();
 		}
 
 		return array(
-			'$type'      => 'com.atproto.repo.applyWrites#create',
-			'collection' => 'app.bsky.feed.threadgate',
-			'rkey'       => $rkey,
-			'value'      => ( new Threadgate( $post ) )->transform(),
+			array(
+				'$type'      => 'com.atproto.repo.applyWrites#create',
+				'collection' => 'app.bsky.feed.threadgate',
+				'rkey'       => $rkey,
+				'value'      => ( new Threadgate( $post ) )->transform(),
+			),
 		);
 	}
 
@@ -558,10 +560,10 @@ class Publisher {
 			),
 		);
 
-		$threadgate = self::threadgate_write( $post, $bsky_transformer->get_rkey() );
-		if ( null !== $threadgate ) {
-			$writes[] = $threadgate;
-		}
+		$writes = \array_merge(
+			$writes,
+			self::threadgate_writes( $post, $bsky_transformer->get_rkey() )
+		);
 
 		$result = API::apply_writes( $writes );
 
@@ -645,10 +647,10 @@ class Publisher {
 			),
 		);
 
-		$threadgate = self::threadgate_write( $post, $root_rkey );
-		if ( null !== $threadgate ) {
-			$root_writes[] = $threadgate;
-		}
+		$root_writes = \array_merge(
+			$root_writes,
+			self::threadgate_writes( $post, $root_rkey )
+		);
 
 		$root_result = API::apply_writes( $root_writes );
 

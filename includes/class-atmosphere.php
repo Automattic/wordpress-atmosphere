@@ -1932,11 +1932,9 @@ class Atmosphere {
 							'type'  => 'array',
 							'items' => array(
 								'type' => 'string',
-								'enum' => array(
-									Threadgate::AUDIENCE_NOBODY,
-									Threadgate::AUDIENCE_MENTIONED,
-									Threadgate::AUDIENCE_FOLLOWING,
-									Threadgate::AUDIENCE_FOLLOWER,
+								'enum' => \array_merge(
+									array( Threadgate::AUDIENCE_NOBODY ),
+									\array_keys( Threadgate::audience_rules() )
 								),
 							),
 						),

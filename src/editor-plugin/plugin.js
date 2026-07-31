@@ -130,6 +130,13 @@ const EditorPlugin = () => {
 		setRestriction( buildRestrictionForMode( mode, replyAudiences ) );
 	};
 
+	// Audience checkboxes shown under "Specific people", as [ token, label ].
+	const replyAudienceOptions = [
+		[ REPLY_AUDIENCE.MENTIONED, __( 'People you mention', 'atmosphere' ) ],
+		[ REPLY_AUDIENCE.FOLLOWING, __( 'People you follow', 'atmosphere' ) ],
+		[ REPLY_AUDIENCE.FOLLOWER, __( 'Your followers', 'atmosphere' ) ],
+	];
+
 	/* Precomputed so the notice below avoids a nested ternary. The
 	   server classifies which failures only a reconnect can fix — the
 	   panel keeps no error-code list of its own. The settings link is
@@ -235,55 +242,20 @@ const EditorPlugin = () => {
 				/>
 			) }
 
-			{ enabled && 'custom' === replyMode && (
-				<>
+			{ enabled &&
+				'custom' === replyMode &&
+				replyAudienceOptions.map( ( [ token, label ] ) => (
 					<CheckboxControl
-						label={ __( 'People you mention', 'atmosphere' ) }
-						checked={ replyAudiences.includes(
-							REPLY_AUDIENCE.MENTIONED
-						) }
+						key={ token }
+						label={ label }
+						checked={ replyAudiences.includes( token ) }
 						onChange={ ( on ) =>
 							setRestriction(
-								toggleReplyAudience(
-									restriction,
-									REPLY_AUDIENCE.MENTIONED,
-									on
-								)
+								toggleReplyAudience( restriction, token, on )
 							)
 						}
 					/>
-					<CheckboxControl
-						label={ __( 'People you follow', 'atmosphere' ) }
-						checked={ replyAudiences.includes(
-							REPLY_AUDIENCE.FOLLOWING
-						) }
-						onChange={ ( on ) =>
-							setRestriction(
-								toggleReplyAudience(
-									restriction,
-									REPLY_AUDIENCE.FOLLOWING,
-									on
-								)
-							)
-						}
-					/>
-					<CheckboxControl
-						label={ __( 'Your followers', 'atmosphere' ) }
-						checked={ replyAudiences.includes(
-							REPLY_AUDIENCE.FOLLOWER
-						) }
-						onChange={ ( on ) =>
-							setRestriction(
-								toggleReplyAudience(
-									restriction,
-									REPLY_AUDIENCE.FOLLOWER,
-									on
-								)
-							)
-						}
-					/>
-				</>
-			) }
+				) ) }
 
 			{ sharedUrl && enabled && (
 				<p>
