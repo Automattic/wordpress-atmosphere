@@ -66,7 +66,7 @@ Always reserve the rkey via meta in `get_rkey()` — that meta key is the marker
 
 **Logging:** `atmosphere_debug_log` — `(bool $enabled, string $message)`; defaults to the `WP_DEBUG` state, lets operators opt log lines in/out independently of `WP_DEBUG`.
 
-**Test-only:** `atmosphere_pre_apply_writes` — Publisher fixture uses this to short-circuit `apply_writes` before the HTTP layer.
+**Test-only:** `atmosphere_pre_apply_writes` / `atmosphere_pre_get_record` — Publisher fixture uses these to short-circuit `apply_writes` / `get_record` before the HTTP layer.
 
 Full signatures and docblocks: [`docs/php-coding-standards.md → Hook Patterns`](../../../docs/php-coding-standards.md#hook-patterns).
 

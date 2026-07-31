@@ -475,8 +475,9 @@ class Publisher {
 	 * does not own, touching only `allow`:
 	 *
 	 *  - gated + record absent    → create;
-	 *  - gated + record present   → update, merging `allow` into the existing
-	 *                               record (keeps hiddenReplies + unknown fields);
+	 *  - gated + record present   → update the record, overwriting the fields
+	 *                               this setting owns (`allow`/`post`/`$type`)
+	 *                               and keeping the rest (hiddenReplies + unknown);
 	 *  - everybody + hiddenReplies → update, dropping only `allow`;
 	 *  - everybody + nothing else  → delete;
 	 *  - everybody + never gated   → nothing (an externally-created gate we
@@ -488,14 +489,34 @@ class Publisher {
 	 *
 	 * @since unreleased
 	 *
-	 * @param \WP_Post $post WordPress post.
-	 * @param string   $rkey The post's root rkey, shared by the threadgate.
+	 * @param \WP_Post $post      WordPress post.
+	 * @param string   $rkey      The post's root rkey, shared by the threadgate.
+	 * @param bool     $reconcile Whether to read the live record and reconcile
+	 *                            against it. False on initial publish, where the
+	 *                            rkey is fresh and the gate is simply created.
 	 * @return array{writes: array, written: bool|null} The applyWrites entries
 	 *               (zero or one) and the marker state to persist, or null to
 	 *               leave the marker unchanged.
 	 */
-	private static function threadgate_sync_writes( \WP_Post $post, string $rkey ): array {
+	private static function threadgate_sync_writes( \WP_Post $post, string $rkey, bool $reconcile = true ): array {
 		$desired = Threadgate::is_restricted( $post );
+
+		// Initial publish mints a fresh rkey, so no gate can exist there yet
+		// (a colliding record would fail the post create in the same batch).
+		// Create directly without a read — sparing a round-trip whose transient
+		// failure would otherwise silently drop a brand-new gate.
+		if ( ! $reconcile ) {
+			return $desired
+				? array(
+					'writes'  => array( self::threadgate_write_entry( 'create', $rkey, self::merge_threadgate_value( null, $post ) ) ),
+					'written' => true,
+				)
+				: array(
+					'writes'  => array(),
+					'written' => false,
+				);
+		}
+
 		$written = Threadgate::is_written( $post->ID );
 
 		// Nothing wanted and nothing of ours live: no read, no write, and a
@@ -510,6 +531,12 @@ class Publisher {
 		$current = self::read_threadgate( $rkey );
 
 		if ( false === $current ) {
+			// Unknown remote state: leave the gate and the marker untouched so a
+			// transient error can't clobber moderation state. Log it so the
+			// interim window (until the next post save re-reconciles) is visible.
+			debug_log(
+				\sprintf( 'threadgate reconcile skipped for post %d: could not read the current gate.', $post->ID )
+			);
 			return array(
 				'writes'  => array(),
 				'written' => null,
@@ -541,10 +568,20 @@ class Publisher {
 		}
 
 		if ( ! empty( $current['hiddenReplies'] ) ) {
+			// The record outlives our restriction. Strip only our `allow` (if
+			// present) and keep `written` true: we created this record, so the
+			// post's own delete must still clean it up.
+			if ( ! isset( $current['allow'] ) ) {
+				return array(
+					'writes'  => array(),
+					'written' => true,
+				);
+			}
+
 			unset( $current['allow'] );
 			return array(
 				'writes'  => array( self::threadgate_write_entry( 'update', $rkey, $current ) ),
-				'written' => false,
+				'written' => true,
 			);
 		}
 
@@ -564,7 +601,7 @@ class Publisher {
 	 *               record is genuinely absent (`RecordNotFound`), or false when
 	 *               the remote state is unknown (transport/auth error).
 	 */
-	private static function read_threadgate( string $rkey ) {
+	private static function read_threadgate( string $rkey ): array|null|false {
 		$result = API::get_record( 'app.bsky.feed.threadgate', $rkey );
 
 		if ( \is_array( $result ) ) {
@@ -580,11 +617,13 @@ class Publisher {
 	}
 
 	/**
-	 * Merge this setting's `allow` into an existing threadgate record.
+	 * Build the threadgate record to write, merged over the live one.
 	 *
-	 * Overwrites only the fields the reply-restriction setting owns and keeps
-	 * everything the record already carries (`hiddenReplies`, and any field a
-	 * newer lexicon adds), so external moderation state survives an update.
+	 * Layers the transformer's output (this setting's `allow`/`post`/`$type`
+	 * plus anything an `atmosphere_transform_threadgate` filter adds) on top of
+	 * the record already on the PDS, so fields this setting does not own —
+	 * `hiddenReplies` and any field a newer lexicon adds — survive the write.
+	 * The record's original `createdAt` is kept when it already has one.
 	 *
 	 * @since unreleased
 	 *
@@ -593,14 +632,16 @@ class Publisher {
 	 * @return array The record value to write.
 	 */
 	private static function merge_threadgate_value( ?array $current, \WP_Post $post ): array {
-		$ours  = ( new Threadgate( $post ) )->transform();
-		$value = null === $current ? array() : $current;
+		$ours    = ( new Threadgate( $post ) )->transform();
+		$current = null === $current ? array() : $current;
 
-		$value['$type'] = $ours['$type'];
-		$value['post']  = $ours['post'];
-		$value['allow'] = $ours['allow'];
-		if ( empty( $value['createdAt'] ) ) {
-			$value['createdAt'] = $ours['createdAt'];
+		// Our fields win; the record's other fields (hiddenReplies, unknown)
+		// carry through.
+		$value = \array_merge( $current, $ours );
+
+		// Preserve the record's original creation time rather than restamping.
+		if ( ! empty( $current['createdAt'] ) ) {
+			$value['createdAt'] = $current['createdAt'];
 		}
 
 		return $value;
@@ -749,7 +790,7 @@ class Publisher {
 			),
 		);
 
-		$gate   = self::threadgate_sync_writes( $post, $bsky_transformer->get_rkey() );
+		$gate   = self::threadgate_sync_writes( $post, $bsky_transformer->get_rkey(), false );
 		$writes = \array_merge( $writes, $gate['writes'] );
 
 		$result = API::apply_writes( $writes );
@@ -837,7 +878,7 @@ class Publisher {
 			),
 		);
 
-		$gate        = self::threadgate_sync_writes( $post, $root_rkey );
+		$gate        = self::threadgate_sync_writes( $post, $root_rkey, false );
 		$root_writes = \array_merge( $root_writes, $gate['writes'] );
 
 		// Only a gate we CREATED in this batch should be undone on rollback;

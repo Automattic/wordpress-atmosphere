@@ -423,6 +423,12 @@ class API {
 		 */
 		$short_circuit = \apply_filters( 'atmosphere_pre_get_record', null, $collection, $rkey );
 		if ( null !== $short_circuit ) {
+			if ( ! \is_array( $short_circuit ) && ! \is_wp_error( $short_circuit ) ) {
+				return new \WP_Error(
+					'atmosphere_invalid_pre_get_record_return',
+					\__( 'atmosphere_pre_get_record must return null, an array, or a WP_Error.', 'atmosphere' )
+				);
+			}
 			return $short_circuit;
 		}
 

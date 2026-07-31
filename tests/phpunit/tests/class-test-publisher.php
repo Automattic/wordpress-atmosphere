@@ -647,6 +647,33 @@ class Test_Publisher extends WP_UnitTestCase {
 	}
 
 	/**
+	 * Initial publish creates the gate without reading — so a transient read
+	 * failure can never silently drop a brand-new restriction.
+	 */
+	public function test_publish_creates_threadgate_without_a_read() {
+		$post = self::factory()->post->create_and_get( array( 'post_status' => 'publish' ) );
+		\update_post_meta(
+			$post->ID,
+			Threadgate::META_RESTRICTION,
+			array( Threadgate::AUDIENCE_FOLLOWING )
+		);
+		// A failing read must not matter on initial publish.
+		$this->stub_threadgate_read( $this->threadgate_read_error() );
+
+		\add_filter( 'atmosphere_is_short_form_post', '__return_true' );
+		$this->register_capture( $post->ID );
+
+		$result = Publisher::publish_post( $post );
+
+		$this->assertIsArray( $result );
+		$writes = $this->captured_calls[0]['writes'];
+		$this->assertCount( 3, $writes );
+		$this->assertSame( 'com.atproto.repo.applyWrites#create', $writes[2]['$type'] );
+		$this->assertSame( 'app.bsky.feed.threadgate', $writes[2]['collection'] );
+		$this->assertSame( '1', \get_post_meta( $post->ID, Threadgate::META_WRITTEN, true ) );
+	}
+
+	/**
 	 * Stub the threadgate getRecord read with a canned response.
 	 *
 	 * @param array|\WP_Error $response getRecord response (array with `value`),
@@ -850,7 +877,9 @@ class Test_Publisher extends WP_UnitTestCase {
 		$this->assertSame( 'com.atproto.repo.applyWrites#update', $write['$type'], 'Keep the record, do not delete it.' );
 		$this->assertArrayNotHasKey( 'allow', $write['value'], 'Our allow is removed.' );
 		$this->assertSame( array( 'at://did:plc:other/app.bsky.feed.post/xyz' ), $write['value']['hiddenReplies'] );
-		$this->assertSame( '', \get_post_meta( $post->ID, Threadgate::META_WRITTEN, true ) );
+		// The record is still live, so the marker stays set — the post's own
+		// delete must still clean it up.
+		$this->assertSame( '1', \get_post_meta( $post->ID, Threadgate::META_WRITTEN, true ) );
 	}
 
 	/**
