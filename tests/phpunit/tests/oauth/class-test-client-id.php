@@ -48,6 +48,22 @@ class Test_Client_Id extends WP_UnitTestCase {
 	}
 
 	/**
+	 * The scheme is forced regardless of permalink structure — a plain
+	 * `?rest_route=` URL is handled the same as a pretty `/wp-json/` one.
+	 */
+	public function test_client_id_forces_https_on_plain_permalink_url() {
+		\add_filter(
+			'rest_url',
+			static fn() => 'http://proxied.example/index.php?rest_route=/atmosphere/v1/client-metadata'
+		);
+
+		$this->assertSame(
+			'https://proxied.example/index.php?rest_route=/atmosphere/v1/client-metadata',
+			Client::client_id()
+		);
+	}
+
+	/**
 	 * An https `rest_url()` is passed through unchanged.
 	 */
 	public function test_client_id_keeps_https_rest_url() {
