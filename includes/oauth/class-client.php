@@ -175,7 +175,7 @@ class Client {
 		 * "Invalid client ID" during the pre-publish token refresh, even
 		 * though the browser-side authorize used https and succeeded.
 		 * Forcing the scheme keeps the client_id stable across contexts and
-		 * matching the value advertised in the client metadata document.
+		 * matches the value advertised in the client metadata document.
 		 */
 		return \set_url_scheme( \rest_url( 'atmosphere/v1/client-metadata' ), 'https' );
 	}
