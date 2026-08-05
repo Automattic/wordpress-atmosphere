@@ -154,11 +154,10 @@ const EditorPlugin = () => {
 			     promises can happen yet. Rendered above the toggle because it
 			     explains why the toggle's help text is hedged. The lead comes
 			     from PHP (`reauthLead`), which picks the cause sentence and
-			     already accounts for an operator-initiated disconnect. Gated
-			     on `enabled` too: when sharing is off for this post, the
-			     connection state is beside the point, matching the
-			     pre-publish panel (whose `disabled` check runs first in
-			     `publish_decision()`).
+			     already accounts for an operator-initiated disconnect. Not
+			     gated on `enabled`: a dead connection is a site-level
+			     problem, and other plugins may depend on it, so the
+			     per-post share toggle must not hide it.
 
 			     NEEDS_REAUTH is a page-load snapshot (localized once when the
 			     editor script enqueues), unlike the pre-publish panel below,
@@ -166,7 +165,7 @@ const EditorPlugin = () => {
 			     fresh disconnect) elsewhere won't update this banner until the
 			     page reloads. Fixing that needs polling, which the design
 			     doc rules out — accepted as a known gap. */ }
-			{ NEEDS_REAUTH && enabled && (
+			{ NEEDS_REAUTH && (
 				<BaseControl>
 					<Notice status="warning" isDismissible={ false }>
 						{ REAUTH_LEAD } <ReconnectAction />

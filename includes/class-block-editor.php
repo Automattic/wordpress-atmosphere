@@ -47,6 +47,11 @@ class Block_Editor {
 			return;
 		}
 
+		// Both editor panels only make sense when the site actually cross-posts.
+		if ( ! is_auto_publish_enabled() ) {
+			return;
+		}
+
 		foreach ( self::SCRIPTS as $name ) {
 			self::enqueue_script( $name );
 		}
@@ -100,12 +105,7 @@ class Block_Editor {
 		 */
 		$can_manage = \current_user_can( 'manage_options' );
 
-		/*
-		 * A dead session only warrants a warning when auto-publish is on:
-		 * reconnecting changes nothing if nothing is being cross-posted
-		 * automatically.
-		 */
-		$needs_reauth = needs_reauth() && is_auto_publish_enabled();
+		$needs_reauth = needs_reauth();
 
 		/*
 		 * An operator-initiated disconnect is a state the administrator

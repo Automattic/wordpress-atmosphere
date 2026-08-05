@@ -143,20 +143,21 @@ class Test_Block_Editor extends \WP_UnitTestCase {
 	}
 
 	/**
-	 * A dead connection is only worth a warning when auto-publish is on:
-	 * reconnecting changes nothing if nothing is being cross-posted
-	 * automatically.
+	 * A dead connection is a site-level problem: it still needs a reconnect
+	 * warning even when auto-publish is off, since other behaviors (reaction
+	 * sync, comment publishing, a host plugin's own use of the connection)
+	 * still depend on it.
 	 *
 	 * @covers ::script_data
 	 */
-	public function test_needs_reauth_false_when_auto_publish_off() {
+	public function test_needs_reauth_true_when_auto_publish_off() {
 		$this->login_as_admin();
 		$this->flag_connection_for_reauth();
 		\update_option( 'atmosphere_auto_publish', '0' );
 
 		$data = $this->script_data();
 
-		$this->assertFalse( $data['needsReauth'] );
+		$this->assertTrue( $data['needsReauth'] );
 	}
 
 	/**
@@ -210,5 +211,33 @@ class Test_Block_Editor extends \WP_UnitTestCase {
 		} else {
 			$this->assertSame( '', $data['reconnectUrl'] );
 		}
+	}
+
+	/**
+	 * Neither editor panel makes sense when the site isn't cross-posting, so
+	 * with auto-publish off `enqueue()` must not load the scripts at all.
+	 *
+	 * @covers ::enqueue
+	 */
+	public function test_enqueue_skips_scripts_when_auto_publish_disabled() {
+		\wp_dequeue_script( 'atmosphere-editor-plugin' );
+		\update_option( 'atmosphere_auto_publish', '0' );
+
+		Block_Editor::enqueue();
+
+		$this->assertFalse( \wp_script_is( 'atmosphere-editor-plugin', 'enqueued' ) );
+	}
+
+	/**
+	 * With auto-publish on (the default), `enqueue()` proceeds normally.
+	 *
+	 * @covers ::enqueue
+	 */
+	public function test_enqueue_loads_scripts_when_auto_publish_enabled() {
+		\wp_dequeue_script( 'atmosphere-editor-plugin' );
+
+		Block_Editor::enqueue();
+
+		$this->assertTrue( \wp_script_is( 'atmosphere-editor-plugin', 'enqueued' ) );
 	}
 }
