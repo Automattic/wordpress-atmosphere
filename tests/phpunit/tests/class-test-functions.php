@@ -933,6 +933,7 @@ class Test_Functions extends \WP_UnitTestCase {
 		\remove_all_filters( 'atmosphere_should_sync_reactions' );
 		\remove_all_filters( 'atmosphere_should_sync_replies' );
 		\remove_all_filters( 'atmosphere_should_publish_comments' );
+		\wp_set_current_user( 0 );
 
 		parent::tear_down();
 	}
@@ -1096,8 +1097,11 @@ class Test_Functions extends \WP_UnitTestCase {
 	 * nothing to say.
 	 */
 	public function test_reauth_lead_for_current_user_empty_when_not_needed() {
-		$this->assertSame( '', reauth_lead_for_current_user( true ) );
-		$this->assertSame( '', reauth_lead_for_current_user( false ) );
+		\wp_set_current_user( self::factory()->user->create( array( 'role' => 'administrator' ) ) );
+		$this->assertSame( '', reauth_lead_for_current_user() );
+
+		\wp_set_current_user( self::factory()->user->create( array( 'role' => 'author' ) ) );
+		$this->assertSame( '', reauth_lead_for_current_user() );
 	}
 
 	/**
@@ -1106,6 +1110,7 @@ class Test_Functions extends \WP_UnitTestCase {
 	 * someone who cannot act on them.
 	 */
 	public function test_reauth_lead_for_current_user_generic_for_non_admin() {
+		\wp_set_current_user( self::factory()->user->create( array( 'role' => 'author' ) ) );
 		\update_option( 'atmosphere_identity', array( 'did' => 'did:plc:test123' ) );
 		\update_option(
 			'atmosphere_connection',
@@ -1118,7 +1123,7 @@ class Test_Functions extends \WP_UnitTestCase {
 
 		$this->assertSame(
 			'Your site’s Bluesky connection needs attention.',
-			reauth_lead_for_current_user( false )
+			reauth_lead_for_current_user()
 		);
 
 		\delete_option( 'atmosphere_connection' );
@@ -1129,6 +1134,7 @@ class Test_Functions extends \WP_UnitTestCase {
 	 * An administrator gets the recorded cause via `reauth_reason_lead()`.
 	 */
 	public function test_reauth_lead_for_current_user_reason_for_admin() {
+		\wp_set_current_user( self::factory()->user->create( array( 'role' => 'administrator' ) ) );
 		\update_option( 'atmosphere_identity', array( 'did' => 'did:plc:test123' ) );
 		\update_option(
 			'atmosphere_connection',
@@ -1141,7 +1147,7 @@ class Test_Functions extends \WP_UnitTestCase {
 
 		$this->assertSame(
 			'Your Bluesky session has expired.',
-			reauth_lead_for_current_user( true )
+			reauth_lead_for_current_user()
 		);
 
 		\delete_option( 'atmosphere_connection' );
@@ -1153,13 +1159,14 @@ class Test_Functions extends \WP_UnitTestCase {
 	 * for an administrator.
 	 */
 	public function test_reauth_lead_for_current_user_operator_disconnected() {
+		\wp_set_current_user( self::factory()->user->create( array( 'role' => 'administrator' ) ) );
 		\update_option( 'atmosphere_identity', array( 'did' => 'did:plc:test123' ) );
 		\delete_option( 'atmosphere_connection' );
 		\update_option( Client::DISCONNECTED_OPTION, true );
 
 		$this->assertSame(
 			'ATmosphere is disconnected from Bluesky.',
-			reauth_lead_for_current_user( true )
+			reauth_lead_for_current_user()
 		);
 
 		\delete_option( 'atmosphere_identity' );

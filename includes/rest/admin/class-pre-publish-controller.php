@@ -345,7 +345,7 @@ class Pre_Publish_Controller extends \WP_REST_Controller {
 				 * operator-disconnect swap. The consequence sentence is
 				 * this panel's own.
 				 */
-				$lead   = reauth_lead_for_current_user( \current_user_can( 'manage_options' ) );
+				$lead   = reauth_lead_for_current_user();
 				$tail   = \__( 'This post will not be shared until your site is reconnected.', 'atmosphere' );
 				$reason = '' !== $lead ? $lead . ' ' . $tail : $tail;
 

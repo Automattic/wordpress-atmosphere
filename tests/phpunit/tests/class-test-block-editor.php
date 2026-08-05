@@ -9,7 +9,9 @@
 namespace Atmosphere\Tests;
 
 use Atmosphere\Block_Editor;
+use Atmosphere\Connectors;
 use Atmosphere\OAuth\Client;
+use function Atmosphere\settings_url;
 
 /**
  * Tests for the config the editor scripts receive as `window.atmosphereEditor`.
@@ -188,7 +190,7 @@ class Test_Block_Editor extends \WP_UnitTestCase {
 
 		$data = $this->script_data();
 
-		$this->assertStringContainsString( 'page=atmosphere', $data['reconnectUrl'] );
+		$this->assertSame( settings_url(), $data['reconnectUrl'] );
 	}
 
 	/**
@@ -206,8 +208,7 @@ class Test_Block_Editor extends \WP_UnitTestCase {
 		$data = $this->script_data();
 
 		if ( \class_exists( 'WP_Connector_Registry' ) ) {
-			$this->assertStringContainsString( 'options-connectors.php', $data['reconnectUrl'] );
-			$this->assertStringNotContainsString( 'page=atmosphere', $data['reconnectUrl'] );
+			$this->assertSame( Connectors::screen_url(), $data['reconnectUrl'] );
 		} else {
 			$this->assertSame( '', $data['reconnectUrl'] );
 		}

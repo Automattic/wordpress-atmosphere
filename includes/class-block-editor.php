@@ -15,8 +15,8 @@ namespace Atmosphere;
 \defined( 'ABSPATH' ) || exit;
 
 use Atmosphere\Rest\Admin\Pre_Publish_Controller;
-use Atmosphere\WP_Admin\Admin;
 use function Atmosphere\is_auto_publish_enabled;
+use function Atmosphere\reconnect_url;
 
 /**
  * Block-editor integration.
@@ -130,36 +130,10 @@ class Block_Editor {
 			'disabledMetaKey'   => ATMOSPHERE_META_DISABLED,
 			'customTextMetaKey' => ATMOSPHERE_META_CUSTOM_TEXT,
 			'settingsUrl'       => settings_url(),
-			'reconnectUrl'      => self::reconnect_url(),
+			'reconnectUrl'      => reconnect_url(),
 			'canManage'         => $can_manage,
 			'needsReauth'       => $needs_reauth,
-			'reauthLead'        => reauth_lead_for_current_user( $can_manage ),
+			'reauthLead'        => $needs_reauth ? reauth_lead_for_current_user() : '',
 		);
-	}
-
-	/**
-	 * Where the editor's reconnect prompts should link.
-	 *
-	 * Mirrors {@see \Atmosphere\WP_Admin\Admin::maybe_render_reauth_notice()}'s
-	 * three-way resolution so every surface sends the user to the same place:
-	 * the settings page while it's visible, the Connectors screen when the
-	 * settings page is hidden (connection-only mode) and the Connectors API is
-	 * available, or nowhere when neither exists — a hidden settings page and
-	 * no Connectors screen to fall back to.
-	 *
-	 * @since unreleased
-	 *
-	 * @return string Unescaped admin URL, or '' when there is no reconnect destination.
-	 */
-	private static function reconnect_url(): string {
-		if ( Admin::is_settings_page_visible() ) {
-			return settings_url();
-		}
-
-		if ( \class_exists( 'WP_Connector_Registry' ) ) {
-			return Connectors::screen_url();
-		}
-
-		return '';
 	}
 }

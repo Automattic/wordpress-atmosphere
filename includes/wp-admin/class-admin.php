@@ -26,6 +26,7 @@ use function Atmosphere\is_operator_disconnected;
 use function Atmosphere\is_publication_sync_enabled;
 use function Atmosphere\needs_reauth;
 use function Atmosphere\reauth_reason_lead;
+use function Atmosphere\reconnect_url;
 use function Atmosphere\settings_url;
 
 /**
@@ -572,17 +573,16 @@ class Admin {
 		}
 
 		/*
-		 * Resolve where the reconnect link points. The settings page normally
-		 * hosts it, but in connection-only mode that page is hidden — so fall
-		 * back to the Connectors screen, whose card can also reconnect, when one
-		 * exists (WP 7.0+). Only bail when there's genuinely no screen to link,
-		 * rather than leaving a dead session with no site-wide signal at all.
+		 * Resolve where the reconnect link points via the shared helper: the
+		 * settings page normally hosts it, but in connection-only mode that
+		 * page is hidden, so it falls back to the Connectors screen, whose
+		 * card can also reconnect, when one exists (WP 7.0+). Only bail when
+		 * there's genuinely no screen to link, rather than leaving a dead
+		 * session with no site-wide signal at all.
 		 */
-		if ( self::is_settings_page_visible() ) {
-			$reconnect_url = settings_url();
-		} elseif ( \class_exists( 'WP_Connector_Registry' ) ) {
-			$reconnect_url = Connectors::screen_url();
-		} else {
+		$reconnect_url = reconnect_url();
+
+		if ( '' === $reconnect_url ) {
 			return;
 		}
 

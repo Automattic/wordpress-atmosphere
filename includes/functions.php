@@ -10,6 +10,7 @@ namespace Atmosphere;
 \defined( 'ABSPATH' ) || exit;
 
 use Atmosphere\OAuth\Client;
+use Atmosphere\WP_Admin\Admin;
 
 /**
  * Parse an AT-URI into components.
@@ -625,15 +626,14 @@ function reauth_reason_lead(): string {
  *
  * @since unreleased
  *
- * @param bool $can_manage Whether the current user can manage options.
  * @return string Translated, unescaped sentence. Empty when no reconnect is needed.
  */
-function reauth_lead_for_current_user( bool $can_manage ): string {
+function reauth_lead_for_current_user(): string {
 	if ( ! needs_reauth() ) {
 		return '';
 	}
 
-	if ( ! $can_manage ) {
+	if ( ! \current_user_can( 'manage_options' ) ) {
 		return \__( 'Your site’s Bluesky connection needs attention.', 'atmosphere' );
 	}
 
@@ -656,6 +656,31 @@ function reauth_lead_for_current_user( bool $can_manage ): string {
  */
 function settings_url(): string {
 	return \admin_url( 'options-general.php?page=atmosphere' );
+}
+
+/**
+ * Where reconnect prompts across the plugin should link.
+ *
+ * Single source for the three-way resolution every reconnect surface — the
+ * admin reauth notice and the editor's reconnect prompts — needs: the
+ * settings page while it's visible, the Connectors screen when the settings
+ * page is hidden (connection-only mode) and the Connectors API is available,
+ * or nowhere when neither exists.
+ *
+ * @since unreleased
+ *
+ * @return string Unescaped admin URL, or '' when there is no reconnect destination.
+ */
+function reconnect_url(): string {
+	if ( Admin::is_settings_page_visible() ) {
+		return settings_url();
+	}
+
+	if ( \class_exists( 'WP_Connector_Registry' ) ) {
+		return Connectors::screen_url();
+	}
+
+	return '';
 }
 
 /**
