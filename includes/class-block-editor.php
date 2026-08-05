@@ -47,12 +47,20 @@ class Block_Editor {
 			return;
 		}
 
-		// Both editor panels only make sense when the site actually cross-posts.
-		if ( ! is_auto_publish_enabled() ) {
-			return;
-		}
+		/*
+		 * The document panel is the cross-posting UI itself, so it stays out
+		 * of the way when the site does not cross-post. The pre-publish
+		 * panel's whole job is to answer whether this post will be shared,
+		 * and "automatic publishing is turned off" is that answer — so it
+		 * keeps loading either way.
+		 */
+		$auto_publish_enabled = is_auto_publish_enabled();
 
 		foreach ( self::SCRIPTS as $name ) {
+			if ( 'editor-plugin' === $name && ! $auto_publish_enabled ) {
+				continue;
+			}
+
 			self::enqueue_script( $name );
 		}
 	}

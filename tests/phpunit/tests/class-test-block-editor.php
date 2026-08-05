@@ -214,29 +214,36 @@ class Test_Block_Editor extends \WP_UnitTestCase {
 	}
 
 	/**
-	 * Neither editor panel makes sense when the site isn't cross-posting, so
-	 * with auto-publish off `enqueue()` must not load the scripts at all.
+	 * The document panel is the cross-posting UI itself, so with auto-publish
+	 * off `enqueue()` must not load it. The pre-publish panel's job is to
+	 * answer whether this post will be shared, so it keeps loading either
+	 * way — it will report "automatic publishing is turned off" instead.
 	 *
 	 * @covers ::enqueue
 	 */
-	public function test_enqueue_skips_scripts_when_auto_publish_disabled() {
+	public function test_enqueue_skips_document_panel_when_auto_publish_disabled() {
 		\wp_dequeue_script( 'atmosphere-editor-plugin' );
+		\wp_dequeue_script( 'atmosphere-pre-publish-panel' );
 		\update_option( 'atmosphere_auto_publish', '0' );
 
 		Block_Editor::enqueue();
 
 		$this->assertFalse( \wp_script_is( 'atmosphere-editor-plugin', 'enqueued' ) );
+		$this->assertTrue( \wp_script_is( 'atmosphere-pre-publish-panel', 'enqueued' ) );
 	}
 
 	/**
-	 * With auto-publish on (the default), `enqueue()` proceeds normally.
+	 * With auto-publish on (the default), `enqueue()` loads both panels.
 	 *
 	 * @covers ::enqueue
 	 */
-	public function test_enqueue_loads_scripts_when_auto_publish_enabled() {
+	public function test_enqueue_loads_both_panels_when_auto_publish_enabled() {
 		\wp_dequeue_script( 'atmosphere-editor-plugin' );
+		\wp_dequeue_script( 'atmosphere-pre-publish-panel' );
 
 		Block_Editor::enqueue();
+
+		$this->assertTrue( \wp_script_is( 'atmosphere-pre-publish-panel', 'enqueued' ) );
 
 		$this->assertTrue( \wp_script_is( 'atmosphere-editor-plugin', 'enqueued' ) );
 	}
