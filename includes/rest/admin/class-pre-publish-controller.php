@@ -268,9 +268,10 @@ class Pre_Publish_Controller extends \WP_REST_Controller {
 				'will_publish'    => $decision['will_publish'],
 
 				/*
-				 * Only the expired-session branch sets this, so every other
-				 * "will not publish" reason defaults to false and stays an
-				 * info-level note in the panel.
+				 * Only the reconnect branch sets this, covering both an
+				 * expired session and a deliberate disconnect, so every
+				 * other "will not publish" reason defaults to false and
+				 * stays an info-level note in the panel.
 				 */
 				'needs_reconnect' => $decision['needs_reconnect'] ?? false,
 				'reason'          => $decision['reason'],
