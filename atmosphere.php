@@ -1,7 +1,7 @@
 <?php
 /**
  * Plugin Name: ATmosphere
- * Plugin URI: https://github.com/pfefferle/atmosphere
+ * Plugin URI: https://github.com/Automattic/wordpress-atmosphere
  * Description: Publish WordPress posts to AT Protocol (Bluesky + standard.site) via native OAuth.
  * Version: 2.1.0
  * Author: Automattic
