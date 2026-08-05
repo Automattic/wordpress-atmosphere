@@ -22,6 +22,7 @@ import {
 	CUSTOM_TEXT_META_KEY,
 	PREVIEW_PATH,
 } from '../config';
+import { ReconnectAction } from '../shared/reconnect-notice';
 import { strategyLabel, hasOverLimit, isAuthError } from './utils';
 
 /**
@@ -136,14 +137,29 @@ function PrePublishPanel() {
 		);
 	}
 
+	/*
+	 * A dead connection is the one non-publishing reason someone can act on
+	 * right now, so it renders as a warning with a way out. Every other
+	 * reason (sharing off, private post, unsupported type) is a statement of
+	 * fact and stays at info level.
+	 */
 	if ( ! preview.will_publish ) {
 		return (
-			<Notice status="info" isDismissible={ false }>
+			<Notice
+				status={ preview.needs_reconnect ? 'warning' : 'info' }
+				isDismissible={ false }
+			>
 				{ preview.reason ||
 					__(
 						'This post won’t be shared to Bluesky.',
 						'atmosphere'
 					) }
+				{ preview.needs_reconnect && (
+					<>
+						{ ' ' }
+						<ReconnectAction />
+					</>
+				) }
 			</Notice>
 		);
 	}
