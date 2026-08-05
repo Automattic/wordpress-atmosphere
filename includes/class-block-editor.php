@@ -113,17 +113,14 @@ class Block_Editor {
 		 */
 		$can_manage = \current_user_can( 'manage_options' );
 
-		$needs_reauth = needs_reauth();
-
 		/*
-		 * An operator-initiated disconnect is a state the administrator
-		 * chose, not a problem for every author to worry about — a
-		 * non-admin gets no persistent warning about it. Administrators
-		 * still see it so they can reconnect.
+		 * `reauth_lead_for_current_user()` already folds in the
+		 * operator-disconnect suppression for non-admins (an empty
+		 * lead there), so `needsReauth` is derived from the lead
+		 * rather than re-deriving the same rule here.
 		 */
-		if ( $needs_reauth && ! $can_manage && is_operator_disconnected() ) {
-			$needs_reauth = false;
-		}
+		$reauth_lead  = reauth_lead_for_current_user();
+		$needs_reauth = '' !== $reauth_lead;
 
 		return array(
 			'previewPath'       => Pre_Publish_Controller::full_route(),
@@ -133,7 +130,7 @@ class Block_Editor {
 			'reconnectUrl'      => reconnect_url(),
 			'canManage'         => $can_manage,
 			'needsReauth'       => $needs_reauth,
-			'reauthLead'        => $needs_reauth ? reauth_lead_for_current_user() : '',
+			'reauthLead'        => $reauth_lead,
 		);
 	}
 }

@@ -15,16 +15,23 @@ import { CAN_MANAGE, RECONNECT_URL } from '../config';
  * @return {React.JSX.Element|string} A link for administrators, plain text for everyone else.
  */
 export function ReconnectAction() {
-	// No page to send an administrator to (settings hidden, no Connectors
-	// screen either) is the same dead end as not being able to manage
-	// options in the first place.
-	if ( ! CAN_MANAGE || ! RECONNECT_URL ) {
+	// Someone who can't manage options has no fix of their own to offer.
+	if ( ! CAN_MANAGE ) {
 		return __( 'Ask an administrator to reconnect it.', 'atmosphere' );
+	}
+
+	// An administrator with nowhere to go (settings hidden, no Connectors
+	// screen either) must not be told to ask an administrator about it.
+	if ( ! RECONNECT_URL ) {
+		return __(
+			'Reconnect your Bluesky account to fix this.',
+			'atmosphere'
+		);
 	}
 
 	return (
 		<a href={ RECONNECT_URL }>
-			{ __( 'Reconnect on the settings page.', 'atmosphere' ) }
+			{ __( 'Reconnect your Bluesky account.', 'atmosphere' ) }
 		</a>
 	);
 }

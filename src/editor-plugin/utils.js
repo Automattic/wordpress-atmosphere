@@ -41,7 +41,7 @@ export function shareHelpText( enabled, needsReauth ) {
 
 	if ( needsReauth ) {
 		return __(
-			'Sharing is on for this post, but publishing now will not share it, even after you reconnect.',
+			'Sharing is on for this post, but it will not be shared while your site is disconnected. An administrator can share it later once the connection is back.',
 			'atmosphere'
 		);
 	}

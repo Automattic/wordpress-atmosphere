@@ -1172,4 +1172,24 @@ class Test_Functions extends \WP_UnitTestCase {
 		\delete_option( 'atmosphere_identity' );
 		\delete_option( Client::DISCONNECTED_OPTION );
 	}
+
+	/**
+	 * An operator-initiated disconnect is a state the administrator chose, not
+	 * a problem for every author to worry about: a non-admin gets no lead at
+	 * all for it (not even the generic "needs attention" sentence), matching
+	 * the suppression `Block_Editor::script_data()` relies on for the document
+	 * panel — without this, the pre-publish panel would still nag a
+	 * non-admin about a disconnect the administrator deliberately chose.
+	 */
+	public function test_reauth_lead_for_current_user_empty_for_non_admin_on_operator_disconnect() {
+		\wp_set_current_user( self::factory()->user->create( array( 'role' => 'author' ) ) );
+		\update_option( 'atmosphere_identity', array( 'did' => 'did:plc:test123' ) );
+		\delete_option( 'atmosphere_connection' );
+		\update_option( Client::DISCONNECTED_OPTION, true );
+
+		$this->assertSame( '', reauth_lead_for_current_user() );
+
+		\delete_option( 'atmosphere_identity' );
+		\delete_option( Client::DISCONNECTED_OPTION );
+	}
 }

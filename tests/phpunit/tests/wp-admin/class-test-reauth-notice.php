@@ -227,6 +227,33 @@ class Test_Reauth_Notice extends WP_UnitTestCase {
 	}
 
 	/**
+	 * The notice's lead now delegates to `reauth_lead_for_current_user()`
+	 * rather than hand-rolling the same operator-disconnect /
+	 * `reauth_reason_lead()` branch, so the two surfaces can't drift apart
+	 * again. Pins the rendered body to whatever the shared helper returns
+	 * for a key-rotation cause.
+	 */
+	public function test_notice_lead_matches_shared_reauth_lead_helper(): void {
+		$this->become_admin();
+		$this->seed_identity();
+		\update_option(
+			'atmosphere_connection',
+			array(
+				'did'           => 'did:plc:test',
+				'handle'        => 'example.com',
+				'access_token'  => '',
+				'needs_reauth'  => true,
+				'reauth_reason' => 'key_changed',
+			),
+			false
+		);
+
+		$html = $this->capture_notice();
+
+		$this->assertStringContainsString( \Atmosphere\reauth_lead_for_current_user(), $html );
+	}
+
+	/**
 	 * Healthy session: no notice should render at all.
 	 */
 	public function test_no_output_when_connection_is_healthy(): void {

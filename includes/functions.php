@@ -622,7 +622,9 @@ function reauth_reason_lead(): string {
  * since the recorded causes (rotated security keys, site migrations) are
  * noise for an author whose only move is to ask an admin. The same
  * operator-disconnect swap applies: someone who clicked Disconnect must not
- * be told their session expired.
+ * be told their session expired. And when the operator's disconnect is the
+ * cause, a non-admin gets nothing at all: that is a state the administrator
+ * chose, not a problem for every author to worry about.
  *
  * @since unreleased
  *
@@ -633,12 +635,18 @@ function reauth_lead_for_current_user(): string {
 		return '';
 	}
 
-	if ( ! \current_user_can( 'manage_options' ) ) {
-		return \__( 'Your site’s Bluesky connection needs attention.', 'atmosphere' );
-	}
+	$can_manage = \current_user_can( 'manage_options' );
 
 	if ( is_operator_disconnected() ) {
+		if ( ! $can_manage ) {
+			return '';
+		}
+
 		return \__( 'ATmosphere is disconnected from Bluesky.', 'atmosphere' );
+	}
+
+	if ( ! $can_manage ) {
+		return \__( 'Your site’s Bluesky connection needs attention.', 'atmosphere' );
 	}
 
 	return reauth_reason_lead();

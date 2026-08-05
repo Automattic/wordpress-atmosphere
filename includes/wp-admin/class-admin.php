@@ -25,7 +25,7 @@ use function Atmosphere\is_connection_only_mode;
 use function Atmosphere\is_operator_disconnected;
 use function Atmosphere\is_publication_sync_enabled;
 use function Atmosphere\needs_reauth;
-use function Atmosphere\reauth_reason_lead;
+use function Atmosphere\reauth_lead_for_current_user;
 use function Atmosphere\reconnect_url;
 use function Atmosphere\settings_url;
 
@@ -589,17 +589,21 @@ class Admin {
 		$heading = \__( 'ATmosphere: reconnection required', 'atmosphere' );
 
 		/*
-		 * The cause lead comes from `reauth_reason_lead()` (shared with
-		 * the Site Health test); only the shared tail (what stops working
-		 * + the reconnect link) is composed here. The disconnect gate's
-		 * stale-marker rationale lives in `is_operator_disconnected()`.
+		 * The cause lead comes from `reauth_lead_for_current_user()`
+		 * (shared with the document panel and the pre-publish panel); only
+		 * the notice's own tail (what stops working + the reconnect link)
+		 * is composed here. This gate already requires `manage_options`
+		 * above, so the helper's non-admin (and operator-disconnect
+		 * suppression) arms cannot fire here — the heading still needs its
+		 * own swap since the helper's lead text doesn't distinguish which
+		 * heading to show. The disconnect gate's stale-marker rationale
+		 * lives in `is_operator_disconnected()`.
 		 */
 		if ( is_operator_disconnected() ) {
 			$heading = \__( 'ATmosphere: disconnected', 'atmosphere' );
-			$lead    = \__( 'ATmosphere is disconnected from Bluesky.', 'atmosphere' );
-		} else {
-			$lead = reauth_reason_lead();
 		}
+
+		$lead = reauth_lead_for_current_user();
 
 		/* translators: %s: URL to reconnect the AT Protocol account. */
 		$tail = \__( 'New posts and comments will not publish until you <a href="%s">reconnect your account</a>. Your publishing preferences and verification headers stay in place in the meantime.', 'atmosphere' );

@@ -300,18 +300,14 @@ class Pre_Publish_Controller extends \WP_REST_Controller {
 	 * @return array{will_publish: bool, reason: ?string, needs_reconnect?: bool}
 	 */
 	private function publish_decision( WP_Post $post, string $status, string $password, bool $disabled ): array {
-		if ( $disabled ) {
-			return array(
-				'will_publish' => false,
-				'reason'       => \__( 'Sharing is switched off for this post.', 'atmosphere' ),
-			);
-		}
-
 		/*
-		 * Checked before the connection state: when nothing is being
-		 * cross-posted automatically, a dead connection is not this post's
-		 * problem — reconnecting would not change whether it publishes, so
-		 * the auto-publish-off reason takes priority over a reconnect prompt.
+		 * Checked first, ahead of the per-post toggle and the connection
+		 * state: when nothing is being cross-posted automatically, the
+		 * document panel (home of the per-post toggle) is not even
+		 * enqueued, so any other reason would point at UI that isn't on
+		 * screen. It also beats the connection check — reconnecting would
+		 * not change whether this post publishes, so the auto-publish-off
+		 * reason takes priority over a reconnect prompt.
 		 */
 		if ( ! is_auto_publish_enabled() ) {
 			// Attribute the off state to "another plugin" whenever something
@@ -326,6 +322,13 @@ class Pre_Publish_Controller extends \WP_REST_Controller {
 				'reason'       => $stored_on
 					? \__( 'Automatic publishing to Bluesky is turned off by another plugin on this site.', 'atmosphere' )
 					: \__( 'Automatic publishing to Bluesky is turned off in settings.', 'atmosphere' ),
+			);
+		}
+
+		if ( $disabled ) {
+			return array(
+				'will_publish' => false,
+				'reason'       => \__( 'Sharing is switched off for this post.', 'atmosphere' ),
 			);
 		}
 

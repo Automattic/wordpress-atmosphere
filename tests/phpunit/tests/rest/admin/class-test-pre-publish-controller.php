@@ -559,6 +559,59 @@ class Test_Pre_Publish_Controller extends WP_UnitTestCase {
 	}
 
 	/**
+	 * Order pin: when auto-publish is off AND the post's own per-post toggle
+	 * is also off, the auto-publish reason wins. The document panel (home of
+	 * the per-post toggle) isn't even enqueued when auto-publish is off, so a
+	 * "sharing switched off for this post" reason would point at UI that
+	 * isn't on screen.
+	 *
+	 * @covers ::get_preview
+	 */
+	public function test_preview_auto_publish_off_wins_over_disabled_toggle() {
+		\update_option( 'atmosphere_auto_publish', '0' );
+
+		$post = self::factory()->post->create_and_get();
+
+		$data = $this->controller->get_preview(
+			$this->make_request(
+				$post->ID,
+				array(
+					'content'  => 'Hi.',
+					'disabled' => true,
+				)
+			)
+		)->get_data();
+
+		$this->assertFalse( $data['will_publish'] );
+		$this->assertStringContainsString( 'turned off', $data['reason'] );
+	}
+
+	/**
+	 * Order pin: with auto-publish on (the default), the per-post toggle
+	 * reason still fires and reports no reconnect is needed — the toggle
+	 * check runs before the connection check.
+	 *
+	 * @covers ::get_preview
+	 */
+	public function test_preview_disabled_toggle_reports_reason_when_auto_publish_enabled() {
+		$post = self::factory()->post->create_and_get();
+
+		$data = $this->controller->get_preview(
+			$this->make_request(
+				$post->ID,
+				array(
+					'content'  => 'Hi.',
+					'disabled' => true,
+				)
+			)
+		)->get_data();
+
+		$this->assertFalse( $data['will_publish'] );
+		$this->assertFalse( $data['needs_reconnect'] );
+		$this->assertStringContainsString( 'switched off', $data['reason'] );
+	}
+
+	/**
 	 * A post with sharing switched off is reported that way even when the
 	 * site's connection also needs a reconnect — the toggle-off reason wins
 	 * and the panel doesn't raise a reconnect call to action for it, matching
