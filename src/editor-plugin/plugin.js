@@ -27,10 +27,11 @@ import { __ } from '@wordpress/i18n';
 import {
 	DISABLED_META_KEY,
 	CUSTOM_TEXT_META_KEY,
-	SETTINGS_URL,
-	CAN_MANAGE,
+	NEEDS_REAUTH,
+	REAUTH_LEAD,
 } from '../config';
-import { isSharingEnabled } from './utils';
+import { isSharingEnabled, shareHelpText } from './utils';
+import { ReconnectAction } from '../shared/reconnect-notice';
 
 /**
  * The ATmosphere symbol (the plugin logo), shown after the panel title like
@@ -91,21 +92,14 @@ const EditorPlugin = () => {
 	   shown only to users who can open the settings page; everyone
 	   else is told who can. */
 	const needsReconnect = publishError?.needs_reconnect;
-	const reconnectMessage = CAN_MANAGE ? (
+	const reconnectMessage = (
 		<>
 			{ __(
 				'Sharing to Bluesky failed because your site is no longer connected to Bluesky.',
 				'atmosphere'
 			) }{ ' ' }
-			<a href={ SETTINGS_URL }>
-				{ __( 'Reconnect on the settings page.', 'atmosphere' ) }
-			</a>
+			<ReconnectAction />
 		</>
-	) : (
-		__(
-			'Sharing to Bluesky failed because your site is no longer connected to Bluesky. Ask an administrator to reconnect it.',
-			'atmosphere'
-		)
 	);
 	const retryMessage = publishError?.retrying
 		? __(
@@ -131,23 +125,23 @@ const EditorPlugin = () => {
 				</>
 			}
 		>
+			{ /* The site-level connection is dead, so nothing this panel
+			     promises can happen yet. Rendered above the toggle because it
+			     explains why the toggle's help text is hedged. The lead comes
+			     from PHP (`reauthLead`), which picks the cause sentence and
+			     already accounts for an operator-initiated disconnect. */ }
+			{ NEEDS_REAUTH && (
+				<Notice status="warning" isDismissible={ false }>
+					{ REAUTH_LEAD } <ReconnectAction />
+				</Notice>
+			) }
 			<ToggleControl
 				label={ __( 'Share this post', 'atmosphere' ) }
 				checked={ enabled }
 				onChange={ ( value ) =>
 					setMeta( { ...meta, [ DISABLED_META_KEY ]: ! value } )
 				}
-				help={
-					enabled
-						? __(
-								'This post will be shared via ATmosphere when published.',
-								'atmosphere'
-						  )
-						: __(
-								'This post will not be shared via ATmosphere.',
-								'atmosphere'
-						  )
-				}
+				help={ shareHelpText( enabled, NEEDS_REAUTH ) }
 			/>
 
 			{ enabled && (

@@ -5,6 +5,7 @@
  * editor component.
  */
 
+import { __ } from '@wordpress/i18n';
 import { DISABLED_META_KEY } from '../config';
 
 /**
@@ -18,4 +19,35 @@ import { DISABLED_META_KEY } from '../config';
  */
 export function isSharingEnabled( meta ) {
 	return ! ( meta && meta[ DISABLED_META_KEY ] );
+}
+
+/**
+ * Help text under the share toggle.
+ *
+ * While the connection is dead the toggle still records a preference, so the
+ * copy has to describe a delayed share rather than promise one on publish.
+ *
+ * @param {boolean} enabled     Whether sharing is on for this post.
+ * @param {boolean} needsReauth Whether the site's connection needs a reconnect.
+ * @return {string} Translated help text.
+ */
+export function shareHelpText( enabled, needsReauth ) {
+	if ( ! enabled ) {
+		return __(
+			'This post will not be shared via ATmosphere.',
+			'atmosphere'
+		);
+	}
+
+	if ( needsReauth ) {
+		return __(
+			'This post will be shared once your site is reconnected to Bluesky.',
+			'atmosphere'
+		);
+	}
+
+	return __(
+		'This post will be shared via ATmosphere when published.',
+		'atmosphere'
+	);
 }
