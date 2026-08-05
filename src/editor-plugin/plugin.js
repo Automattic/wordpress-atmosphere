@@ -18,6 +18,7 @@ import {
 	TextareaControl,
 	ExternalLink,
 	Notice,
+	BaseControl,
 	SVG,
 	Path,
 } from '@wordpress/components';
@@ -131,9 +132,11 @@ const EditorPlugin = () => {
 			     from PHP (`reauthLead`), which picks the cause sentence and
 			     already accounts for an operator-initiated disconnect. */ }
 			{ NEEDS_REAUTH && (
-				<Notice status="warning" isDismissible={ false }>
-					{ REAUTH_LEAD } <ReconnectAction />
-				</Notice>
+				<BaseControl>
+					<Notice status="warning" isDismissible={ false }>
+						{ REAUTH_LEAD } <ReconnectAction />
+					</Notice>
+				</BaseControl>
 			) }
 			<ToggleControl
 				label={ __( 'Share this post', 'atmosphere' ) }
