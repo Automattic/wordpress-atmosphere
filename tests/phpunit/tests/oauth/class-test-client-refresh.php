@@ -784,4 +784,117 @@ class Test_Client_Refresh extends WP_UnitTestCase {
 
 		$this->assertFalse( \get_option( Client::REFRESH_STATUS_OPTION ) );
 	}
+
+	/**
+	 * A non-string `error` member from an untrusted auth server must not
+	 * reach the string-typed recorder, where it would fatal the cron run
+	 * instead of failing gracefully.
+	 */
+	public function test_non_string_error_member_does_not_fatal() {
+		$this->mock_token_response( 400, array( 'error' => array( 'code' => 'invalid_grant' ) ) );
+
+		$this->assertWPError( Client::refresh() );
+
+		$this->assertSame( 'http_400', \get_option( Client::REFRESH_STATUS_OPTION )['last_error'] );
+	}
+
+	/**
+	 * A key rotation fails every run before a request is built. Recording it
+	 * keeps the panel from reading as "the renewal never ran", which would
+	 * send the operator after WP-Cron instead of their keys.
+	 */
+	public function test_undecryptable_credentials_are_recorded() {
+		$conn                  = \get_option( 'atmosphere_connection' );
+		$conn['refresh_token'] = 'not-decryptable';
+		\update_option( 'atmosphere_connection', $conn );
+
+		$this->assertWPError( Client::refresh() );
+
+		$status = \get_option( Client::REFRESH_STATUS_OPTION );
+
+		$this->assertNotEmpty( $status['last_error'] );
+		$this->assertNotSame( '', $status['last_error'] );
+	}
+
+	/**
+	 * A connection row without a refresh token is fixed by reconnecting, not
+	 * by looking at cron, so it must not report as a renewal that never ran.
+	 */
+	public function test_missing_refresh_token_is_recorded() {
+		$conn                  = \get_option( 'atmosphere_connection' );
+		$conn['refresh_token'] = '';
+		\update_option( 'atmosphere_connection', $conn );
+
+		$this->assertWPError( Client::refresh() );
+
+		$this->assertSame( 'atmosphere_no_refresh', \get_option( Client::REFRESH_STATUS_OPTION )['last_error'] );
+	}
+
+	/**
+	 * A failure belonging to a session that ended mid-flight is dropped, so a
+	 * freshly reconnected account is not stamped with the old one's error.
+	 */
+	public function test_failure_from_a_replaced_session_is_dropped() {
+		\add_filter(
+			'pre_http_request',
+			static function ( $response, $args, $url ) {
+				if ( false !== \strpos( $url, 'oauth/token' ) ) {
+					// Stand in for the operator reconnecting while this
+					// request was in flight: the row now holds another
+					// account's credentials.
+					$conn                  = \get_option( 'atmosphere_connection' );
+					$conn['refresh_token'] = Encryption::encrypt( 'a-different-accounts-token' );
+					\update_option( 'atmosphere_connection', $conn );
+
+					return array(
+						'response' => array( 'code' => 400 ),
+						'headers'  => new \WpOrg\Requests\Utility\CaseInsensitiveDictionary( array() ),
+						'body'     => \wp_json_encode( array( 'error' => 'invalid_grant' ) ),
+					);
+				}
+
+				return $response;
+			},
+			1,
+			3
+		);
+
+		$this->assertWPError( Client::refresh() );
+
+		$this->assertFalse( \get_option( Client::REFRESH_STATUS_OPTION ) );
+	}
+
+	/**
+	 * The stored code is bounded and stripped: it comes from a remote server
+	 * and ends up in a panel people paste into public threads.
+	 */
+	public function test_recorded_error_is_sanitized_and_bounded() {
+		$this->mock_token_response( 400, array( 'error' => '<b>bad</b>' . \str_repeat( 'x', 200 ) ) );
+
+		$this->assertWPError( Client::refresh() );
+
+		$recorded = \get_option( Client::REFRESH_STATUS_OPTION )['last_error'];
+
+		$this->assertLessThanOrEqual( 64, \strlen( $recorded ) );
+		$this->assertStringNotContainsString( '<b>', $recorded );
+	}
+
+	/**
+	 * A fresh authorization starts a new session, so the previous one's
+	 * history must not carry over.
+	 */
+	public function test_fresh_authorization_clears_the_refresh_history() {
+		\update_option(
+			Client::REFRESH_STATUS_OPTION,
+			array(
+				'last_failure' => \time(),
+				'last_error'   => 'invalid_grant',
+			)
+		);
+
+		\delete_option( 'atmosphere_connection' );
+		Client::disconnect();
+
+		$this->assertFalse( \get_option( Client::REFRESH_STATUS_OPTION ) );
+	}
 }

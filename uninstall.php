@@ -24,6 +24,7 @@ require_once __DIR__ . '/includes/functions.php';
 // Remove options.
 $atmosphere_options = array(
 	'atmosphere_connection',
+	'atmosphere_refresh_status',
 	'atmosphere_identity',
 	'atmosphere_publication_tid',
 	'atmosphere_publication_cid',

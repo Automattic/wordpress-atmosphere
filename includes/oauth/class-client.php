@@ -821,6 +821,13 @@ class Client {
 		$conn = \get_option( 'atmosphere_connection', array() );
 
 		if ( empty( $conn['refresh_token'] ) ) {
+			/*
+			 * Recorded so a malformed connection row does not read as a
+			 * renewal that never ran: this one is fixed by reconnecting,
+			 * not by looking at WP-Cron.
+			 */
+			self::record_refresh_failure( 'atmosphere_no_refresh' );
+
 			return new \WP_Error( 'atmosphere_no_refresh', \__( 'No refresh token available.', 'atmosphere' ) );
 		}
 
@@ -870,13 +877,24 @@ class Client {
 	 * @return true|\WP_Error
 	 */
 	private static function refresh_locked( array $conn ): true|\WP_Error {
+		/*
+		 * Local failures are recorded too. A key rotation makes every
+		 * hourly run fail right here, before a request is even built —
+		 * without a record the panel would report "never renewed",
+		 * which reads as "the worker is not running" and sends the
+		 * operator after the wrong problem.
+		 */
 		$refresh_token = self::decrypt_field( $conn, 'refresh_token' );
 		if ( \is_wp_error( $refresh_token ) ) {
+			self::record_refresh_failure( $refresh_token->get_error_code(), $conn );
+
 			return $refresh_token;
 		}
 
 		$dpop_jwk_json = self::decrypt_field( $conn, 'dpop_jwk' );
 		if ( \is_wp_error( $dpop_jwk_json ) ) {
+			self::record_refresh_failure( $dpop_jwk_json->get_error_code(), $conn );
+
 			return $dpop_jwk_json;
 		}
 
@@ -885,6 +903,8 @@ class Client {
 
 		$dpop_proof = DPoP::create_proof( $dpop_jwk, 'POST', $token_endpoint );
 		if ( false === $dpop_proof ) {
+			self::record_refresh_failure( 'atmosphere_dpop', $conn );
+
 			return new \WP_Error( 'atmosphere_dpop', \__( 'Failed to create DPoP proof for refresh.', 'atmosphere' ) );
 		}
 
@@ -916,7 +936,7 @@ class Client {
 			 * outside, and it is otherwise indistinguishable from a
 			 * worker that never ran.
 			 */
-			self::record_refresh_failure( $response->get_error_code() );
+			self::record_refresh_failure( $response->get_error_code(), $conn );
 
 			return $response;
 		}
@@ -956,6 +976,8 @@ class Client {
 			);
 
 			if ( \is_wp_error( $response ) ) {
+				self::record_refresh_failure( $response->get_error_code(), $conn );
+
 				return $response;
 			}
 
@@ -979,7 +1001,16 @@ class Client {
 		}
 
 		if ( ! is_success_status( $status ) || empty( $data['access_token'] ) ) {
-			$msg = $data['error_description'] ?? ( $data['error'] ?? \__( 'Token refresh failed.', 'atmosphere' ) );
+			$msg = $data['error_description'] ?? ( $data['error'] ?? '' );
+
+			/*
+			 * Same untrusted-body reasoning as `$error` below: neither
+			 * member is guaranteed to be a string, and this one reaches
+			 * a `WP_Error` message and a `sprintf()`.
+			 */
+			if ( ! \is_string( $msg ) || '' === $msg ) {
+				$msg = \__( 'Token refresh failed.', 'atmosphere' );
+			}
 
 			/*
 			 * Only mark the connection as needing reauth for permanent
@@ -996,7 +1027,18 @@ class Client {
 			 * `needs_reauth` is set, so the publish, comment, and API
 			 * callers short-circuit until the user re-authorizes.
 			 */
+
+			/*
+			 * The auth server is whatever the admin's handle resolved to,
+			 * so its body shape is not ours to trust: an `error` member
+			 * that arrives as an object or a number must not reach a
+			 * `string` parameter, where PHP would raise an uncatchable
+			 * TypeError and turn a graceful failure into a fatal on the
+			 * cron and inline-publish paths.
+			 */
 			$error = $data['error'] ?? '';
+			$error = \is_string( $error ) ? $error : '';
+
 			if ( \in_array( $error, array( 'invalid_grant', 'invalid_client', 'unauthorized_client' ), true ) ) {
 				self::mark_needs_reauth( $conn, 'refresh_token' );
 			}
@@ -1010,7 +1052,7 @@ class Client {
 			 * Without this, every report of "it disconnected again"
 			 * starts from zero.
 			 */
-			self::record_refresh_failure( '' !== $error ? $error : 'http_' . $status );
+			self::record_refresh_failure( '' !== $error ? $error : 'http_' . $status, $conn );
 
 			debug_log(
 				\sprintf(
@@ -1235,8 +1277,33 @@ class Client {
 	 * @since unreleased
 	 *
 	 * @param string $error Auth-server error code, or a transport error code.
+	 * @param array  $conn  Connection as read at lock-acquisition time, so a
+	 *                      failure belonging to a session that ended mid-flight
+	 *                      can be dropped.
 	 */
-	private static function record_refresh_failure( string $error ): void {
+	private static function record_refresh_failure( string $error, array $conn = array() ): void {
+		$current = \get_option( 'atmosphere_connection', array() );
+
+		/*
+		 * A worker can still be in flight when the operator disconnects
+		 * or reconnects, and both of those clear this option on purpose.
+		 * Writing the dead session's failure afterwards would resurrect
+		 * the row and date-stamp a brand-new connection with the old
+		 * account's error. Same ciphertext comparison the token write
+		 * uses: libsodium re-encrypts with a fresh nonce, so any change
+		 * to the row at all fails the check.
+		 */
+		if ( ! \is_array( $current ) || empty( $current ) ) {
+			return;
+		}
+
+		if ( ! empty( $conn['refresh_token'] )
+			&& ( empty( $current['refresh_token'] )
+				|| ! \hash_equals( (string) $conn['refresh_token'], (string) $current['refresh_token'] ) )
+		) {
+			return;
+		}
+
 		$status = \get_option( self::REFRESH_STATUS_OPTION, array() );
 
 		if ( ! \is_array( $status ) ) {
@@ -1244,7 +1311,15 @@ class Client {
 		}
 
 		$status['last_failure'] = \time();
-		$status['last_error']   = $error;
+
+		/*
+		 * The code comes from a remote server and is rendered into the
+		 * Site Health panel that people paste into public threads, so it
+		 * is stripped of markup and bounded. Real OAuth error codes are
+		 * short; anything longer is noise or an attempt to use the panel
+		 * as a canvas.
+		 */
+		$status['last_error'] = \substr( \sanitize_text_field( $error ), 0, 64 );
 
 		\update_option( self::REFRESH_STATUS_OPTION, $status, false );
 	}
