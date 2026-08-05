@@ -263,10 +263,59 @@ class Health_Check {
 					'value'   => \implode( ', ', get_supported_post_types() ),
 					'private' => false,
 				),
+				'last_refresh'      => array(
+					'label'   => \__( 'Last Login Renewal', 'atmosphere' ),
+					'value'   => self::last_refresh_debug_value(),
+					'private' => false,
+				),
 			),
 		);
 
 		return $info;
+	}
+
+	/**
+	 * Login-renewal history for the debug panel.
+	 *
+	 * ATmosphere renews its saved Bluesky login in the background. When a
+	 * site keeps losing its connection, the useful question is whether that
+	 * renewal is running at all, and if it ran, what the answer was. Both
+	 * halves are reported, since "never renewed on a site connected for
+	 * weeks" and "renewed fine until it was rejected" call for opposite
+	 * advice.
+	 *
+	 * @since unreleased
+	 *
+	 * @return string
+	 */
+	private static function last_refresh_debug_value(): string {
+		$status = \get_option( Client::REFRESH_STATUS_OPTION, array() );
+
+		if ( ! \is_array( $status ) ) {
+			$status = array();
+		}
+
+		if ( empty( $status['last_success'] ) ) {
+			$success = \__( 'never', 'atmosphere' );
+		} else {
+			$success = \sprintf(
+				/* translators: %s: human-readable time difference, e.g. "2 hours". */
+				\__( '%s ago', 'atmosphere' ),
+				\human_time_diff( (int) $status['last_success'] )
+			);
+		}
+
+		if ( empty( $status['last_failure'] ) ) {
+			return $success;
+		}
+
+		return \sprintf(
+			/* translators: 1: when the last renewal succeeded, 2: how long ago the last one failed, 3: the error reported. */
+			\__( '%1$s (last failure %2$s ago: %3$s)', 'atmosphere' ),
+			$success,
+			\human_time_diff( (int) $status['last_failure'] ),
+			(string) ( $status['last_error'] ?? \__( 'unknown', 'atmosphere' ) )
+		);
 	}
 
 	/**

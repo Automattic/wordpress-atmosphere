@@ -710,6 +710,13 @@ class Client {
 		\delete_option( self::DISCONNECTED_OPTION );
 
 		/*
+		 * A fresh authorization starts a new session, so the previous
+		 * one's refresh history must not carry over and make the new
+		 * connection look like it has already been failing.
+		 */
+		\delete_option( self::REFRESH_STATUS_OPTION );
+
+		/*
 		 * Encrypted token blobs do not need to ride along in every
 		 * request's `alloptions` payload; they're only read on the
 		 * paths that actually talk to the PDS. WP 6.6+ honours the
@@ -768,6 +775,26 @@ class Client {
 	 * @var int
 	 */
 	private const REFRESH_LOCK_TTL = 45;
+
+	/**
+	 * Option holding the outcome of the most recent refresh attempt.
+	 *
+	 * Diagnostic only: nothing branches on it. A dead session looks the
+	 * same from the outside whether the auth server rejected the refresh
+	 * token, the site could not reach the auth server, or the worker
+	 * never ran, and until now none of those left a trace. Site Health
+	 * surfaces this so a support report carries the answer instead of a
+	 * guess.
+	 *
+	 * Kept out of `atmosphere_connection` on purpose: that row is written
+	 * under the careful mid-flight race checks in {@see self::refresh_locked()},
+	 * and a failure record must not have to win those checks to be stored.
+	 *
+	 * @since unreleased
+	 *
+	 * @var string
+	 */
+	public const REFRESH_STATUS_OPTION = 'atmosphere_refresh_status';
 
 	/**
 	 * Refresh the access token.
@@ -881,6 +908,16 @@ class Client {
 		);
 
 		if ( \is_wp_error( $response ) ) {
+			/*
+			 * The site could not reach the auth server at all. The
+			 * refresh token is almost certainly still good, so nothing
+			 * is flagged; the attempt is recorded because a run of these
+			 * is what a firewalled or offline site looks like from the
+			 * outside, and it is otherwise indistinguishable from a
+			 * worker that never ran.
+			 */
+			self::record_refresh_failure( $response->get_error_code() );
+
 			return $response;
 		}
 
@@ -964,6 +1001,25 @@ class Client {
 				self::mark_needs_reauth( $conn, 'refresh_token' );
 			}
 
+			/*
+			 * Record and log the server's own error code. `needs_reauth`
+			 * says a reconnect is required but not why, and the three
+			 * permanent codes above mean very different things: a
+			 * consumed or replayed token, a client the auth server no
+			 * longer recognises, or a client barred from this grant.
+			 * Without this, every report of "it disconnected again"
+			 * starts from zero.
+			 */
+			self::record_refresh_failure( '' !== $error ? $error : 'http_' . $status );
+
+			debug_log(
+				\sprintf(
+					'token refresh failed (status %1$d): %2$s',
+					$status,
+					'' !== $error ? $error : $msg
+				)
+			);
+
 			return new \WP_Error( 'atmosphere_refresh', $msg, array( 'status' => $status ) );
 		}
 
@@ -1018,6 +1074,14 @@ class Client {
 		}
 
 		\update_option( 'atmosphere_connection', $current, false );
+
+		/*
+		 * Stamped after the token write, so the timestamp only ever
+		 * means "credentials on disk were renewed at this moment". A
+		 * long gap since this stamp on a still-connected site is the
+		 * signal that the refresh worker stopped running.
+		 */
+		self::record_refresh_success();
 
 		return true;
 	}
@@ -1140,6 +1204,49 @@ class Client {
 			'atmosphere_decrypt',
 			\__( 'The saved Bluesky login could not be read. Reconnect your Bluesky account to resume sharing.', 'atmosphere' )
 		);
+	}
+
+	/**
+	 * Record that a refresh attempt succeeded.
+	 *
+	 * @since unreleased
+	 */
+	private static function record_refresh_success(): void {
+		$status = \get_option( self::REFRESH_STATUS_OPTION, array() );
+
+		if ( ! \is_array( $status ) ) {
+			$status = array();
+		}
+
+		$status['last_success'] = \time();
+
+		/*
+		 * The previous failure is kept rather than cleared: a session
+		 * that recovers after one rejected attempt is a different story
+		 * from one that never failed, and the difference matters when
+		 * reading a support report weeks later.
+		 */
+		\update_option( self::REFRESH_STATUS_OPTION, $status, false );
+	}
+
+	/**
+	 * Record why a refresh attempt failed.
+	 *
+	 * @since unreleased
+	 *
+	 * @param string $error Auth-server error code, or a transport error code.
+	 */
+	private static function record_refresh_failure( string $error ): void {
+		$status = \get_option( self::REFRESH_STATUS_OPTION, array() );
+
+		if ( ! \is_array( $status ) ) {
+			$status = array();
+		}
+
+		$status['last_failure'] = \time();
+		$status['last_error']   = $error;
+
+		\update_option( self::REFRESH_STATUS_OPTION, $status, false );
 	}
 
 	/**
@@ -1579,6 +1686,13 @@ class Client {
 
 		\delete_option( 'atmosphere_connection' );
 		\delete_option( self::REFRESH_LOCK_OPTION );
+
+		/*
+		 * The refresh history described the session that just ended.
+		 * Keeping it would date-stamp a reconnected account with the
+		 * previous one's last failure.
+		 */
+		\delete_option( self::REFRESH_STATUS_OPTION );
 
 		/*
 		 * Sweep a stale option from 1.0.0 installs. `atmosphere_publication_uri`
