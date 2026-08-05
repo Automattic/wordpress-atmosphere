@@ -23,6 +23,7 @@ use WP_REST_Server;
 use function Atmosphere\is_auto_publish_enabled;
 use function Atmosphere\is_connected;
 use function Atmosphere\is_supported_post_type;
+use function Atmosphere\needs_reauth;
 
 /**
  * Pre-publish preview controller.
@@ -263,12 +264,19 @@ class Pre_Publish_Controller extends \WP_REST_Controller {
 
 		return \rest_ensure_response(
 			array(
-				'will_publish'  => $decision['will_publish'],
-				'reason'        => $decision['reason'],
-				'is_short_form' => $projection['is_short_form'],
-				'strategy'      => $projection['strategy'],
-				'limit'         => $projection['limit'],
-				'records'       => $projection['records'],
+				'will_publish'    => $decision['will_publish'],
+
+				/*
+				 * Only the expired-session branch sets this, so every other
+				 * "will not publish" reason defaults to false and stays an
+				 * info-level note in the panel.
+				 */
+				'needs_reconnect' => $decision['needs_reconnect'] ?? false,
+				'reason'          => $decision['reason'],
+				'is_short_form'   => $projection['is_short_form'],
+				'strategy'        => $projection['strategy'],
+				'limit'           => $projection['limit'],
+				'records'         => $projection['records'],
 			)
 		);
 	}
@@ -287,10 +295,24 @@ class Pre_Publish_Controller extends \WP_REST_Controller {
 	 * @param string  $status   The intended post status (e.g. 'publish', 'private').
 	 * @param string  $password The intended post password ('' when not protected).
 	 * @param bool    $disabled Whether sharing is switched off for this post.
-	 * @return array{will_publish: bool, reason: ?string}
+	 * @return array{will_publish: bool, reason: ?string, needs_reconnect?: bool}
 	 */
 	private function publish_decision( WP_Post $post, string $status, string $password, bool $disabled ): array {
 		if ( ! is_connected() ) {
+			/*
+			 * `is_connected()` is false for both a dead session and a site
+			 * that never connected. Only the first is fixable by an admin,
+			 * so it gets its own copy and lifts the panel's notice from
+			 * info to warning.
+			 */
+			if ( needs_reauth() ) {
+				return array(
+					'will_publish'    => false,
+					'needs_reconnect' => true,
+					'reason'          => \__( 'Your site’s Bluesky connection has expired, so this post will not be shared.', 'atmosphere' ),
+				);
+			}
+
 			return array(
 				'will_publish' => false,
 				'reason'       => \__( 'Your site isn’t connected to Bluesky yet.', 'atmosphere' ),

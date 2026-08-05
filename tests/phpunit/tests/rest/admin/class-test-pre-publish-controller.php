@@ -420,4 +420,74 @@ class Test_Pre_Publish_Controller extends WP_UnitTestCase {
 
 		$this->assertTrue( $this->controller->check_permission( $this->make_request( $post ) ) );
 	}
+
+	/**
+	 * An expired session is reported as reconnectable, not as a site that was
+	 * never connected. The panel raises the notice to a warning off this flag.
+	 *
+	 * @covers ::get_preview
+	 */
+	public function test_preview_expired_session_reports_needs_reconnect() {
+		\update_option( 'atmosphere_identity', array( 'did' => 'did:plc:test123' ) );
+		\update_option(
+			'atmosphere_connection',
+			array(
+				'did'          => 'did:plc:test123',
+				'access_token' => 'test-token',
+				'needs_reauth' => true,
+			)
+		);
+
+		$post = self::factory()->post->create_and_get();
+
+		$data = $this->controller->get_preview(
+			$this->make_request( $post->ID, array( 'content' => 'Hi.' ) )
+		)->get_data();
+
+		$this->assertFalse( $data['will_publish'] );
+		$this->assertTrue( $data['needs_reconnect'] );
+		$this->assertStringContainsString( 'expired', $data['reason'] );
+	}
+
+	/**
+	 * A never-connected site keeps its own copy and is not offered a reconnect.
+	 *
+	 * @covers ::get_preview
+	 */
+	public function test_preview_never_connected_does_not_ask_for_reconnect() {
+		\delete_option( 'atmosphere_connection' );
+		\delete_option( 'atmosphere_identity' );
+
+		$post = self::factory()->post->create_and_get();
+
+		$data = $this->controller->get_preview(
+			$this->make_request( $post->ID, array( 'content' => 'Hi.' ) )
+		)->get_data();
+
+		$this->assertFalse( $data['will_publish'] );
+		$this->assertFalse( $data['needs_reconnect'] );
+	}
+
+	/**
+	 * Reasons that have nothing to do with the connection never ask for a
+	 * reconnect, so the panel keeps them at info level.
+	 *
+	 * @covers ::get_preview
+	 */
+	public function test_preview_unrelated_reason_does_not_ask_for_reconnect() {
+		$post = self::factory()->post->create_and_get();
+
+		$data = $this->controller->get_preview(
+			$this->make_request(
+				$post->ID,
+				array(
+					'content'  => 'Hi.',
+					'disabled' => true,
+				)
+			)
+		)->get_data();
+
+		$this->assertFalse( $data['will_publish'] );
+		$this->assertFalse( $data['needs_reconnect'] );
+	}
 }
