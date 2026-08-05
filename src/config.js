@@ -50,3 +50,23 @@ export const SETTINGS_URL =
  * @type {boolean}
  */
 export const CAN_MANAGE = !! options.canManage;
+
+/**
+ * Whether the site's Bluesky connection needs to be re-authorized.
+ *
+ * False on a never-connected site, so the editor only warns about a
+ * connection that existed and stopped working.
+ *
+ * @type {boolean}
+ */
+export const NEEDS_REAUTH = !! options.needsReauth;
+
+/**
+ * Cause sentence for the reconnect warning, composed server-side.
+ *
+ * Empty when no reconnect is needed. Users without `manage_options` get a
+ * generic sentence instead of the recorded cause.
+ *
+ * @type {string}
+ */
+export const REAUTH_LEAD = options.reauthLead || '';
