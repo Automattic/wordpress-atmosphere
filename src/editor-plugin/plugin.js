@@ -30,7 +30,7 @@ import {
 	CUSTOM_TEXT_META_KEY,
 	NEEDS_REAUTH,
 	REAUTH_LEAD,
-	SETTINGS_URL,
+	RECONNECT_URL,
 	CAN_MANAGE,
 } from '../config';
 import { isSharingEnabled, shareHelpText } from './utils';
@@ -108,14 +108,14 @@ const EditorPlugin = () => {
 			'Sharing to Bluesky failed because your site is no longer connected to Bluesky.',
 			'atmosphere'
 		);
-	} else if ( CAN_MANAGE ) {
+	} else if ( CAN_MANAGE && RECONNECT_URL ) {
 		reconnectMessage = (
 			<>
 				{ __(
 					'Sharing to Bluesky failed because your site is no longer connected to Bluesky.',
 					'atmosphere'
 				) }{ ' ' }
-				<a href={ SETTINGS_URL }>
+				<a href={ RECONNECT_URL }>
 					{ __( 'Reconnect on the settings page.', 'atmosphere' ) }
 				</a>
 			</>
