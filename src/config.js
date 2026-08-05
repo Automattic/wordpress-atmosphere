@@ -43,6 +43,15 @@ export const SETTINGS_URL =
 	options.settingsUrl || 'options-general.php?page=atmosphere';
 
 /**
+ * Where the reconnect prompts should link: the settings page, the
+ * Connectors screen when the settings page is hidden (connection-only
+ * mode), or empty when neither exists.
+ *
+ * @type {string}
+ */
+export const RECONNECT_URL = options.reconnectUrl || '';
+
+/**
  * Whether the current user can open the settings page (manage_options).
  *
  * Reconnect prompts link there only for users who can act on them.

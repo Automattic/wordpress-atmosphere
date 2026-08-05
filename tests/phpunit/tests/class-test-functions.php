@@ -7,6 +7,7 @@
 
 namespace Atmosphere\Tests;
 
+use Atmosphere\OAuth\Client;
 use function Atmosphere\parse_at_uri;
 use function Atmosphere\build_at_uri;
 use function Atmosphere\appview_url;
@@ -25,6 +26,7 @@ use function Atmosphere\get_connection;
 use function Atmosphere\debug_log;
 use function Atmosphere\is_comment_publishing_enabled;
 use function Atmosphere\is_bluesky_post_enabled;
+use function Atmosphere\reauth_lead_for_current_user;
 
 /**
  * Function tests.
@@ -1087,5 +1089,80 @@ class Test_Functions extends \WP_UnitTestCase {
 		\add_filter( 'atmosphere_should_publish_bluesky_post', '__return_false' );
 		$this->assertFalse( is_bluesky_post_enabled() );
 		\remove_filter( 'atmosphere_should_publish_bluesky_post', '__return_false' );
+	}
+
+	/**
+	 * A never-connected site (or one that doesn't need a reconnect) has
+	 * nothing to say.
+	 */
+	public function test_reauth_lead_for_current_user_empty_when_not_needed() {
+		$this->assertSame( '', reauth_lead_for_current_user( true ) );
+		$this->assertSame( '', reauth_lead_for_current_user( false ) );
+	}
+
+	/**
+	 * A user without `manage_options` gets a generic lead: the recorded
+	 * causes (rotated security keys, site migrations) are meaningless to
+	 * someone who cannot act on them.
+	 */
+	public function test_reauth_lead_for_current_user_generic_for_non_admin() {
+		\update_option( 'atmosphere_identity', array( 'did' => 'did:plc:test123' ) );
+		\update_option(
+			'atmosphere_connection',
+			array(
+				'did'          => 'did:plc:test123',
+				'access_token' => 'test-token',
+				'needs_reauth' => true,
+			)
+		);
+
+		$this->assertSame(
+			'Your site’s Bluesky connection needs attention.',
+			reauth_lead_for_current_user( false )
+		);
+
+		\delete_option( 'atmosphere_connection' );
+		\delete_option( 'atmosphere_identity' );
+	}
+
+	/**
+	 * An administrator gets the recorded cause via `reauth_reason_lead()`.
+	 */
+	public function test_reauth_lead_for_current_user_reason_for_admin() {
+		\update_option( 'atmosphere_identity', array( 'did' => 'did:plc:test123' ) );
+		\update_option(
+			'atmosphere_connection',
+			array(
+				'did'          => 'did:plc:test123',
+				'access_token' => 'test-token',
+				'needs_reauth' => true,
+			)
+		);
+
+		$this->assertSame(
+			'Your Bluesky session has expired.',
+			reauth_lead_for_current_user( true )
+		);
+
+		\delete_option( 'atmosphere_connection' );
+		\delete_option( 'atmosphere_identity' );
+	}
+
+	/**
+	 * An operator-initiated disconnect must not claim a session expired, even
+	 * for an administrator.
+	 */
+	public function test_reauth_lead_for_current_user_operator_disconnected() {
+		\update_option( 'atmosphere_identity', array( 'did' => 'did:plc:test123' ) );
+		\delete_option( 'atmosphere_connection' );
+		\update_option( Client::DISCONNECTED_OPTION, true );
+
+		$this->assertSame(
+			'ATmosphere is disconnected from Bluesky.',
+			reauth_lead_for_current_user( true )
+		);
+
+		\delete_option( 'atmosphere_identity' );
+		\delete_option( Client::DISCONNECTED_OPTION );
 	}
 }

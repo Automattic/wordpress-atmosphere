@@ -15,6 +15,8 @@ namespace Atmosphere;
 \defined( 'ABSPATH' ) || exit;
 
 use Atmosphere\Rest\Admin\Pre_Publish_Controller;
+use Atmosphere\WP_Admin\Admin;
+use function Atmosphere\is_auto_publish_enabled;
 
 /**
  * Block-editor integration.
@@ -88,7 +90,7 @@ class Block_Editor {
 	 * Keeps the REST route and the share-toggle meta key defined once on the
 	 * PHP side so the JS never hardcodes (and drifts from) them.
 	 *
-	 * @return array{previewPath: string, disabledMetaKey: string, customTextMetaKey: string, settingsUrl: string, canManage: bool, needsReauth: bool, reauthLead: string}
+	 * @return array{previewPath: string, disabledMetaKey: string, customTextMetaKey: string, settingsUrl: string, reconnectUrl: string, canManage: bool, needsReauth: bool, reauthLead: string}
 	 */
 	private static function script_data(): array {
 		/*
@@ -98,45 +100,58 @@ class Block_Editor {
 		 */
 		$can_manage = \current_user_can( 'manage_options' );
 
+		/*
+		 * A dead session only warrants a warning when auto-publish is on:
+		 * reconnecting changes nothing if nothing is being cross-posted
+		 * automatically.
+		 */
+		$needs_reauth = needs_reauth() && is_auto_publish_enabled();
+
+		/*
+		 * An operator-initiated disconnect is a state the administrator
+		 * chose, not a problem for every author to worry about — a
+		 * non-admin gets no persistent warning about it. Administrators
+		 * still see it so they can reconnect.
+		 */
+		if ( $needs_reauth && ! $can_manage && is_operator_disconnected() ) {
+			$needs_reauth = false;
+		}
+
 		return array(
 			'previewPath'       => Pre_Publish_Controller::full_route(),
 			'disabledMetaKey'   => ATMOSPHERE_META_DISABLED,
 			'customTextMetaKey' => ATMOSPHERE_META_CUSTOM_TEXT,
 			'settingsUrl'       => settings_url(),
+			'reconnectUrl'      => self::reconnect_url(),
 			'canManage'         => $can_manage,
-			'needsReauth'       => needs_reauth(),
-			'reauthLead'        => self::reauth_lead( $can_manage ),
+			'needsReauth'       => $needs_reauth,
+			'reauthLead'        => reauth_lead_for_current_user( $can_manage ),
 		);
 	}
 
 	/**
-	 * Cause sentence for the editor's reconnect warning.
+	 * Where the editor's reconnect prompts should link.
 	 *
-	 * Reuses {@see \Atmosphere\reauth_reason_lead()} so the editor explains a
-	 * dead session in the same words as the admin notice and the Site Health
-	 * test, with the same operator-disconnect swap: someone who clicked
-	 * Disconnect must not be told their session expired.
+	 * Mirrors {@see \Atmosphere\WP_Admin\Admin::maybe_render_reauth_notice()}'s
+	 * three-way resolution so every surface sends the user to the same place:
+	 * the settings page while it's visible, the Connectors screen when the
+	 * settings page is hidden (connection-only mode) and the Connectors API is
+	 * available, or nowhere when neither exists — a hidden settings page and
+	 * no Connectors screen to fall back to.
 	 *
-	 * Users without `manage_options` get a generic sentence instead. The
-	 * recorded causes talk about rotated security keys and site migrations,
-	 * which is noise for an author whose only move is to ask an admin.
+	 * @since unreleased
 	 *
-	 * @param bool $can_manage Whether the current user can manage options.
-	 * @return string Translated, unescaped sentence. Empty when no reconnect is needed.
+	 * @return string Unescaped admin URL, or '' when there is no reconnect destination.
 	 */
-	private static function reauth_lead( bool $can_manage ): string {
-		if ( ! needs_reauth() ) {
-			return '';
+	private static function reconnect_url(): string {
+		if ( Admin::is_settings_page_visible() ) {
+			return settings_url();
 		}
 
-		if ( ! $can_manage ) {
-			return \__( 'Your site’s Bluesky connection needs attention.', 'atmosphere' );
+		if ( \class_exists( 'WP_Connector_Registry' ) ) {
+			return Connectors::screen_url();
 		}
 
-		if ( is_operator_disconnected() ) {
-			return \__( 'ATmosphere is disconnected from Bluesky.', 'atmosphere' );
-		}
-
-		return reauth_reason_lead();
+		return '';
 	}
 }

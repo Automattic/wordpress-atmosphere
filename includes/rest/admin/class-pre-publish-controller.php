@@ -22,9 +22,9 @@ use WP_REST_Response;
 use WP_REST_Server;
 use function Atmosphere\is_auto_publish_enabled;
 use function Atmosphere\is_connected;
-use function Atmosphere\is_operator_disconnected;
 use function Atmosphere\is_supported_post_type;
 use function Atmosphere\needs_reauth;
+use function Atmosphere\reauth_lead_for_current_user;
 
 /**
  * Pre-publish preview controller.
@@ -306,37 +306,12 @@ class Pre_Publish_Controller extends \WP_REST_Controller {
 			);
 		}
 
-		if ( ! is_connected() ) {
-			/*
-			 * `is_connected()` is false for both a dead session and a site
-			 * that never connected. Only the first is fixable by an admin,
-			 * so it gets its own copy and lifts the panel's notice from
-			 * info to warning.
-			 */
-			if ( needs_reauth() ) {
-				/*
-				 * An operator who deliberately clicked Disconnect must not be
-				 * told their session "expired" — same swap as
-				 * {@see \Atmosphere\Block_Editor::reauth_lead()}, so the two
-				 * panels agree.
-				 */
-				$reason = is_operator_disconnected()
-					? \__( 'Your site is disconnected from Bluesky, so this post will not be shared.', 'atmosphere' )
-					: \__( 'Your site’s Bluesky connection has expired, so this post will not be shared.', 'atmosphere' );
-
-				return array(
-					'will_publish'    => false,
-					'needs_reconnect' => true,
-					'reason'          => $reason,
-				);
-			}
-
-			return array(
-				'will_publish' => false,
-				'reason'       => \__( 'Your site isn’t connected to Bluesky yet.', 'atmosphere' ),
-			);
-		}
-
+		/*
+		 * Checked before the connection state: when nothing is being
+		 * cross-posted automatically, a dead connection is not this post's
+		 * problem — reconnecting would not change whether it publishes, so
+		 * the auto-publish-off reason takes priority over a reconnect prompt.
+		 */
 		if ( ! is_auto_publish_enabled() ) {
 			// Attribute the off state to "another plugin" whenever something
 			// external forces it off despite the user's saved preference being
@@ -350,6 +325,39 @@ class Pre_Publish_Controller extends \WP_REST_Controller {
 				'reason'       => $stored_on
 					? \__( 'Automatic publishing to Bluesky is turned off by another plugin on this site.', 'atmosphere' )
 					: \__( 'Automatic publishing to Bluesky is turned off in settings.', 'atmosphere' ),
+			);
+		}
+
+		if ( ! is_connected() ) {
+			/*
+			 * `is_connected()` is false for both a dead session and a site
+			 * that never connected. Only the first is fixable by an admin,
+			 * so it gets its own copy and lifts the panel's notice from
+			 * info to warning.
+			 */
+			if ( needs_reauth() ) {
+				/*
+				 * The cause sentence is shared with the document panel via
+				 * {@see \Atmosphere\reauth_lead_for_current_user()}, so a
+				 * `key_changed` (or any other recorded) cause reads
+				 * identically on both surfaces, including the
+				 * operator-disconnect swap. The consequence sentence is
+				 * this panel's own.
+				 */
+				$lead   = reauth_lead_for_current_user( \current_user_can( 'manage_options' ) );
+				$tail   = \__( 'This post will not be shared until your site is reconnected.', 'atmosphere' );
+				$reason = '' !== $lead ? $lead . ' ' . $tail : $tail;
+
+				return array(
+					'will_publish'    => false,
+					'needs_reconnect' => true,
+					'reason'          => $reason,
+				);
+			}
+
+			return array(
+				'will_publish' => false,
+				'reason'       => \__( 'Your site isn’t connected to Bluesky yet.', 'atmosphere' ),
 			);
 		}
 

@@ -58,7 +58,16 @@ class Test_Pre_Publish_Controller extends WP_UnitTestCase {
 		\delete_option( Client::DISCONNECTED_OPTION );
 		\remove_all_filters( 'atmosphere_long_form_composition' );
 		\remove_all_filters( 'atmosphere_connection_only_mode' );
+		\wp_set_current_user( 0 );
 		parent::tear_down();
+	}
+
+	/**
+	 * Log in as an administrator, so the reconnect reason resolves the
+	 * specific (rather than the generic, non-admin) cause sentence.
+	 */
+	private function login_as_admin(): void {
+		\wp_set_current_user( self::factory()->user->create( array( 'role' => 'administrator' ) ) );
 	}
 
 	/**
@@ -274,6 +283,37 @@ class Test_Pre_Publish_Controller extends WP_UnitTestCase {
 	}
 
 	/**
+	 * When auto-publish is off, a dead connection is beside the point:
+	 * reconnecting would not change whether this post publishes, so the
+	 * auto-publish-off reason wins over a reconnect prompt and no reconnect
+	 * is asked for.
+	 *
+	 * @covers ::get_preview
+	 */
+	public function test_preview_auto_publish_off_ignores_needs_reauth() {
+		\update_option( 'atmosphere_auto_publish', '0' );
+		\update_option( 'atmosphere_identity', array( 'did' => 'did:plc:test123' ) );
+		\update_option(
+			'atmosphere_connection',
+			array(
+				'did'          => 'did:plc:test123',
+				'access_token' => 'test-token',
+				'needs_reauth' => true,
+			)
+		);
+
+		$post = self::factory()->post->create_and_get();
+
+		$data = $this->controller->get_preview(
+			$this->make_request( $post->ID, array( 'content' => 'Hi.' ) )
+		)->get_data();
+
+		$this->assertFalse( $data['will_publish'] );
+		$this->assertFalse( $data['needs_reconnect'] );
+		$this->assertStringContainsString( 'turned off', $data['reason'] );
+	}
+
+	/**
 	 * Connection-only mode forces auto-publish off, so the preview reports
 	 * will_publish=false even with the stored auto-publish option on.
 	 *
@@ -430,6 +470,7 @@ class Test_Pre_Publish_Controller extends WP_UnitTestCase {
 	 * @covers ::get_preview
 	 */
 	public function test_preview_expired_session_reports_needs_reconnect() {
+		$this->login_as_admin();
 		\update_option( 'atmosphere_identity', array( 'did' => 'did:plc:test123' ) );
 		\update_option(
 			'atmosphere_connection',
@@ -495,12 +536,14 @@ class Test_Pre_Publish_Controller extends WP_UnitTestCase {
 
 	/**
 	 * An operator who deliberately disconnected the site is told so, not that
-	 * their session expired — matching the swap {@see \Atmosphere\Block_Editor::reauth_lead()}
-	 * makes for the document panel.
+	 * their session expired — matching the swap
+	 * {@see \Atmosphere\reauth_lead_for_current_user()} makes for the document
+	 * panel.
 	 *
 	 * @covers ::get_preview
 	 */
 	public function test_preview_operator_disconnected_reports_disconnected_reason() {
+		$this->login_as_admin();
 		\update_option( 'atmosphere_identity', array( 'did' => 'did:plc:test123' ) );
 		\delete_option( 'atmosphere_connection' );
 		\update_option( Client::DISCONNECTED_OPTION, true );

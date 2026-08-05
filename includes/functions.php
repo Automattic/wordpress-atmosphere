@@ -611,6 +611,40 @@ function reauth_reason_lead(): string {
 }
 
 /**
+ * Cause sentence explaining why the connection needs a reconnect, addressed
+ * to the current user's capability.
+ *
+ * Single source for the editor's and the pre-publish panel's cause copy, so
+ * a `key_changed` cause (or any other recorded reason) reads identically on
+ * both surfaces. Reuses {@see reauth_reason_lead()} for the capability-aware
+ * detail; a user without `manage_options` gets a generic sentence instead,
+ * since the recorded causes (rotated security keys, site migrations) are
+ * noise for an author whose only move is to ask an admin. The same
+ * operator-disconnect swap applies: someone who clicked Disconnect must not
+ * be told their session expired.
+ *
+ * @since unreleased
+ *
+ * @param bool $can_manage Whether the current user can manage options.
+ * @return string Translated, unescaped sentence. Empty when no reconnect is needed.
+ */
+function reauth_lead_for_current_user( bool $can_manage ): string {
+	if ( ! needs_reauth() ) {
+		return '';
+	}
+
+	if ( ! $can_manage ) {
+		return \__( 'Your site’s Bluesky connection needs attention.', 'atmosphere' );
+	}
+
+	if ( is_operator_disconnected() ) {
+		return \__( 'ATmosphere is disconnected from Bluesky.', 'atmosphere' );
+	}
+
+	return reauth_reason_lead();
+}
+
+/**
  * URL of the ATmosphere settings page.
  *
  * Single source for the settings-page location so reconnect prompts and

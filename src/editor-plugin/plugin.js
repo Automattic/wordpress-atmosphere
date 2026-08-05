@@ -30,6 +30,8 @@ import {
 	CUSTOM_TEXT_META_KEY,
 	NEEDS_REAUTH,
 	REAUTH_LEAD,
+	SETTINGS_URL,
+	CAN_MANAGE,
 } from '../config';
 import { isSharingEnabled, shareHelpText } from './utils';
 import { ReconnectAction } from '../shared/reconnect-notice';
@@ -91,17 +93,39 @@ const EditorPlugin = () => {
 	   server classifies which failures only a reconnect can fix — the
 	   panel keeps no error-code list of its own. The settings link is
 	   shown only to users who can open the settings page; everyone
-	   else is told who can. */
+	   else is told who can.
+
+	   These two strings are kept self-contained (not built from the
+	   shared ReconnectAction lead + link) to preserve their existing
+	   translations; see the NEEDS_REAUTH banner and the pre-publish
+	   panel for the shared, ReconnectAction-based version. When the
+	   banner above is already showing (NEEDS_REAUTH), this notice
+	   drops the call to action instead of repeating it. */
 	const needsReconnect = publishError?.needs_reconnect;
-	const reconnectMessage = (
-		<>
-			{ __(
-				'Sharing to Bluesky failed because your site is no longer connected to Bluesky.',
-				'atmosphere'
-			) }{ ' ' }
-			<ReconnectAction />
-		</>
-	);
+	let reconnectMessage;
+	if ( NEEDS_REAUTH ) {
+		reconnectMessage = __(
+			'Sharing to Bluesky failed because your site is no longer connected to Bluesky.',
+			'atmosphere'
+		);
+	} else if ( CAN_MANAGE ) {
+		reconnectMessage = (
+			<>
+				{ __(
+					'Sharing to Bluesky failed because your site is no longer connected to Bluesky.',
+					'atmosphere'
+				) }{ ' ' }
+				<a href={ SETTINGS_URL }>
+					{ __( 'Reconnect on the settings page.', 'atmosphere' ) }
+				</a>
+			</>
+		);
+	} else {
+		reconnectMessage = __(
+			'Sharing to Bluesky failed because your site is no longer connected to Bluesky. Ask an administrator to reconnect it.',
+			'atmosphere'
+		);
+	}
 	const retryMessage = publishError?.retrying
 		? __(
 				'Sharing to Bluesky failed. Your site will retry automatically.',
@@ -130,8 +154,19 @@ const EditorPlugin = () => {
 			     promises can happen yet. Rendered above the toggle because it
 			     explains why the toggle's help text is hedged. The lead comes
 			     from PHP (`reauthLead`), which picks the cause sentence and
-			     already accounts for an operator-initiated disconnect. */ }
-			{ NEEDS_REAUTH && (
+			     already accounts for an operator-initiated disconnect. Gated
+			     on `enabled` too: when sharing is off for this post, the
+			     connection state is beside the point, matching the
+			     pre-publish panel (whose `disabled` check runs first in
+			     `publish_decision()`).
+
+			     NEEDS_REAUTH is a page-load snapshot (localized once when the
+			     editor script enqueues), unlike the pre-publish panel below,
+			     which refetches live on every keystroke. A reconnect (or a
+			     fresh disconnect) elsewhere won't update this banner until the
+			     page reloads. Fixing that needs polling, which the design
+			     doc rules out — accepted as a known gap. */ }
+			{ NEEDS_REAUTH && enabled && (
 				<BaseControl>
 					<Notice status="warning" isDismissible={ false }>
 						{ REAUTH_LEAD } <ReconnectAction />

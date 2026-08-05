@@ -7,7 +7,7 @@
  */
 
 import { __ } from '@wordpress/i18n';
-import { CAN_MANAGE, SETTINGS_URL } from '../config';
+import { CAN_MANAGE, RECONNECT_URL } from '../config';
 
 /**
  * What to do about a dead connection, addressed to the current user.
@@ -15,12 +15,15 @@ import { CAN_MANAGE, SETTINGS_URL } from '../config';
  * @return {React.JSX.Element|string} A link for administrators, plain text for everyone else.
  */
 export function ReconnectAction() {
-	if ( ! CAN_MANAGE ) {
+	// No page to send an administrator to (settings hidden, no Connectors
+	// screen either) is the same dead end as not being able to manage
+	// options in the first place.
+	if ( ! CAN_MANAGE || ! RECONNECT_URL ) {
 		return __( 'Ask an administrator to reconnect it.', 'atmosphere' );
 	}
 
 	return (
-		<a href={ SETTINGS_URL }>
+		<a href={ RECONNECT_URL }>
 			{ __( 'Reconnect on the settings page.', 'atmosphere' ) }
 		</a>
 	);

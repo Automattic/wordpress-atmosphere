@@ -24,7 +24,9 @@ class Test_Block_Editor extends \WP_UnitTestCase {
 	public function tear_down(): void {
 		\delete_option( 'atmosphere_connection' );
 		\delete_option( 'atmosphere_identity' );
+		\delete_option( 'atmosphere_auto_publish' );
 		\delete_option( Client::DISCONNECTED_OPTION );
+		\remove_all_filters( 'atmosphere_connection_only_mode' );
 		parent::tear_down();
 	}
 
@@ -138,5 +140,75 @@ class Test_Block_Editor extends \WP_UnitTestCase {
 
 		$this->assertTrue( $data['needsReauth'] );
 		$this->assertSame( 'ATmosphere is disconnected from Bluesky.', $data['reauthLead'] );
+	}
+
+	/**
+	 * A dead connection is only worth a warning when auto-publish is on:
+	 * reconnecting changes nothing if nothing is being cross-posted
+	 * automatically.
+	 *
+	 * @covers ::script_data
+	 */
+	public function test_needs_reauth_false_when_auto_publish_off() {
+		$this->login_as_admin();
+		$this->flag_connection_for_reauth();
+		\update_option( 'atmosphere_auto_publish', '0' );
+
+		$data = $this->script_data();
+
+		$this->assertFalse( $data['needsReauth'] );
+	}
+
+	/**
+	 * An operator-initiated disconnect is a state the administrator chose,
+	 * not a problem for every author to worry about: a user without
+	 * `manage_options` gets no persistent reconnect warning for it.
+	 *
+	 * @covers ::script_data
+	 */
+	public function test_author_gets_no_reauth_for_operator_disconnect() {
+		\wp_set_current_user( self::factory()->user->create( array( 'role' => 'author' ) ) );
+		\update_option( 'atmosphere_identity', array( 'did' => 'did:plc:test123' ) );
+		\delete_option( 'atmosphere_connection' );
+		\update_option( Client::DISCONNECTED_OPTION, true );
+
+		$data = $this->script_data();
+
+		$this->assertFalse( $data['needsReauth'] );
+	}
+
+	/**
+	 * The reconnect link points at the settings page while it's visible.
+	 *
+	 * @covers ::script_data
+	 */
+	public function test_reconnect_url_points_to_settings_page_when_visible() {
+		$this->login_as_admin();
+
+		$data = $this->script_data();
+
+		$this->assertStringContainsString( 'page=atmosphere', $data['reconnectUrl'] );
+	}
+
+	/**
+	 * When the settings page is hidden (connection-only mode), the reconnect
+	 * link falls back to the Connectors screen when one exists, or is empty
+	 * when there's nowhere to send the user — matching
+	 * {@see \Atmosphere\WP_Admin\Admin::maybe_render_reauth_notice()}.
+	 *
+	 * @covers ::script_data
+	 */
+	public function test_reconnect_url_falls_back_when_settings_page_hidden() {
+		$this->login_as_admin();
+		\add_filter( 'atmosphere_connection_only_mode', '__return_true' );
+
+		$data = $this->script_data();
+
+		if ( \class_exists( 'WP_Connector_Registry' ) ) {
+			$this->assertStringContainsString( 'options-connectors.php', $data['reconnectUrl'] );
+			$this->assertStringNotContainsString( 'page=atmosphere', $data['reconnectUrl'] );
+		} else {
+			$this->assertSame( '', $data['reconnectUrl'] );
+		}
 	}
 }
