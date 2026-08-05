@@ -41,7 +41,7 @@ export function shareHelpText( enabled, needsReauth ) {
 
 	if ( needsReauth ) {
 		return __(
-			'This post will be shared once your site is reconnected to Bluesky.',
+			'Sharing is on for this post, but nothing is shared while your site is disconnected from Bluesky.',
 			'atmosphere'
 		);
 	}

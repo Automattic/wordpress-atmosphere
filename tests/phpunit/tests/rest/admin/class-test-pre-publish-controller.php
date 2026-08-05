@@ -9,6 +9,7 @@
 
 namespace Atmosphere\Tests\Rest\Admin;
 
+use Atmosphere\OAuth\Client;
 use Atmosphere\Rest\Admin\Pre_Publish_Controller;
 use WP_REST_Request;
 use WP_UnitTestCase;
@@ -54,6 +55,7 @@ class Test_Pre_Publish_Controller extends WP_UnitTestCase {
 		\delete_option( 'atmosphere_identity' );
 		\delete_option( 'atmosphere_auto_publish' );
 		\delete_option( 'atmosphere_support_post_types' );
+		\delete_option( Client::DISCONNECTED_OPTION );
 		\remove_all_filters( 'atmosphere_long_form_composition' );
 		\remove_all_filters( 'atmosphere_connection_only_mode' );
 		parent::tear_down();
@@ -489,5 +491,63 @@ class Test_Pre_Publish_Controller extends WP_UnitTestCase {
 
 		$this->assertFalse( $data['will_publish'] );
 		$this->assertFalse( $data['needs_reconnect'] );
+	}
+
+	/**
+	 * An operator who deliberately disconnected the site is told so, not that
+	 * their session expired — matching the swap {@see \Atmosphere\Block_Editor::reauth_lead()}
+	 * makes for the document panel.
+	 *
+	 * @covers ::get_preview
+	 */
+	public function test_preview_operator_disconnected_reports_disconnected_reason() {
+		\update_option( 'atmosphere_identity', array( 'did' => 'did:plc:test123' ) );
+		\delete_option( 'atmosphere_connection' );
+		\update_option( Client::DISCONNECTED_OPTION, true );
+
+		$post = self::factory()->post->create_and_get();
+
+		$data = $this->controller->get_preview(
+			$this->make_request( $post->ID, array( 'content' => 'Hi.' ) )
+		)->get_data();
+
+		$this->assertTrue( $data['needs_reconnect'] );
+		$this->assertStringContainsString( 'disconnected', $data['reason'] );
+	}
+
+	/**
+	 * A post with sharing switched off is reported that way even when the
+	 * site's connection also needs a reconnect — the toggle-off reason wins
+	 * and the panel doesn't raise a reconnect call to action for it, matching
+	 * the document panel's `shareHelpText( false, true )` behavior.
+	 *
+	 * @covers ::get_preview
+	 */
+	public function test_preview_disabled_toggle_ignores_needs_reauth() {
+		\update_option( 'atmosphere_identity', array( 'did' => 'did:plc:test123' ) );
+		\update_option(
+			'atmosphere_connection',
+			array(
+				'did'          => 'did:plc:test123',
+				'access_token' => 'test-token',
+				'needs_reauth' => true,
+			)
+		);
+
+		$post = self::factory()->post->create_and_get();
+
+		$data = $this->controller->get_preview(
+			$this->make_request(
+				$post->ID,
+				array(
+					'content'  => 'Hi.',
+					'disabled' => true,
+				)
+			)
+		)->get_data();
+
+		$this->assertFalse( $data['will_publish'] );
+		$this->assertFalse( $data['needs_reconnect'] );
+		$this->assertStringContainsString( 'switched off', $data['reason'] );
 	}
 }

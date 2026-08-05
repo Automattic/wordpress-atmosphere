@@ -1,4 +1,4 @@
 Significance: minor
 Type: added
 
-The post editor now warns you when your Bluesky connection has expired, instead of silently skipping the share.
+The post editor now warns you when your Bluesky connection has expired, so you can reconnect before you publish.

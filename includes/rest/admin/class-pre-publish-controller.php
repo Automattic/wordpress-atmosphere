@@ -22,6 +22,7 @@ use WP_REST_Response;
 use WP_REST_Server;
 use function Atmosphere\is_auto_publish_enabled;
 use function Atmosphere\is_connected;
+use function Atmosphere\is_operator_disconnected;
 use function Atmosphere\is_supported_post_type;
 use function Atmosphere\needs_reauth;
 
@@ -298,6 +299,13 @@ class Pre_Publish_Controller extends \WP_REST_Controller {
 	 * @return array{will_publish: bool, reason: ?string, needs_reconnect?: bool}
 	 */
 	private function publish_decision( WP_Post $post, string $status, string $password, bool $disabled ): array {
+		if ( $disabled ) {
+			return array(
+				'will_publish' => false,
+				'reason'       => \__( 'Sharing is switched off for this post.', 'atmosphere' ),
+			);
+		}
+
 		if ( ! is_connected() ) {
 			/*
 			 * `is_connected()` is false for both a dead session and a site
@@ -306,10 +314,20 @@ class Pre_Publish_Controller extends \WP_REST_Controller {
 			 * info to warning.
 			 */
 			if ( needs_reauth() ) {
+				/*
+				 * An operator who deliberately clicked Disconnect must not be
+				 * told their session "expired" — same swap as
+				 * {@see \Atmosphere\Block_Editor::reauth_lead()}, so the two
+				 * panels agree.
+				 */
+				$reason = is_operator_disconnected()
+					? \__( 'Your site is disconnected from Bluesky, so this post will not be shared.', 'atmosphere' )
+					: \__( 'Your site’s Bluesky connection has expired, so this post will not be shared.', 'atmosphere' );
+
 				return array(
 					'will_publish'    => false,
 					'needs_reconnect' => true,
-					'reason'          => \__( 'Your site’s Bluesky connection has expired, so this post will not be shared.', 'atmosphere' ),
+					'reason'          => $reason,
 				);
 			}
 
@@ -332,13 +350,6 @@ class Pre_Publish_Controller extends \WP_REST_Controller {
 				'reason'       => $stored_on
 					? \__( 'Automatic publishing to Bluesky is turned off by another plugin on this site.', 'atmosphere' )
 					: \__( 'Automatic publishing to Bluesky is turned off in settings.', 'atmosphere' ),
-			);
-		}
-
-		if ( $disabled ) {
-			return array(
-				'will_publish' => false,
-				'reason'       => \__( 'Sharing is switched off for this post.', 'atmosphere' ),
 			);
 		}
 
