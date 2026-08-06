@@ -227,7 +227,10 @@ const EditorPlugin = () => {
 				AUTO_PUBLISH_NOTICE && <p>{ AUTO_PUBLISH_NOTICE }</p>
 			) }
 
-			{ sharedUrl && enabled && (
+			{ /* Shown whenever a record exists, including while sharing is
+			     off for this post: the record is up either way, and the
+			     author has no other way to look at what is out there. */ }
+			{ sharedUrl && (
 				<p>
 					<ExternalLink href={ sharedUrl }>
 						{ __( 'View on Bluesky', 'atmosphere' ) }
@@ -235,17 +238,24 @@ const EditorPlugin = () => {
 				</p>
 			) }
 
-			{ /* Sharing is off but the post is still on Bluesky. Removal
-			     happens on the next sync (which needs a live connection and
-			     auto-publishing on), so the wording doesn't promise timing.
-			     The notice stays visible until the record is gone, giving the
-			     author a reason to re-save if it lingers. */ }
+			{ /* Sharing is off but the post is still on Bluesky. With
+			     sharing on, removal happens on the next sync, so the wording
+			     doesn't promise timing and the notice stays visible until
+			     the record is gone, giving the author a reason to re-save if
+			     it lingers. With sharing off site-wide there is no next
+			     sync, so promising removal would be a lie: the record simply
+			     stays until sharing is turned back on. */ }
 			{ sharedUrl && ! enabled && (
 				<Notice status="warning" isDismissible={ false }>
-					{ __(
-						'Sharing is off, but this post is still on Bluesky. It will be removed the next time your site syncs.',
-						'atmosphere'
-					) }
+					{ AUTO_PUBLISH
+						? __(
+								'Sharing is off, but this post is still on Bluesky. It will be removed the next time your site syncs.',
+								'atmosphere'
+						  )
+						: __(
+								'Sharing is off for this post, but it is still on Bluesky. It stays there while automatic sharing is turned off for this site.',
+								'atmosphere'
+						  ) }
 				</Notice>
 			) }
 
