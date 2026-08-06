@@ -167,7 +167,18 @@ class Client {
 	 * @return string
 	 */
 	public static function client_id(): string {
-		return \rest_url( 'atmosphere/v1/client-metadata' );
+		/*
+		 * Force the `https` scheme, mirroring redirect_uri(). AT Protocol
+		 * requires the client_id to be an https URL. rest_url() inherits its
+		 * scheme from the request context, so on a site behind a
+		 * TLS-terminating proxy a CLI/cron request (where is_ssl() is false)
+		 * yields an http client_id — which the auth server rejects as
+		 * "Invalid client ID" during the pre-publish token refresh, even
+		 * though the browser-side authorize used https and succeeded.
+		 * Forcing the scheme keeps the client_id stable across contexts and
+		 * matches the value advertised in the client metadata document.
+		 */
+		return \set_url_scheme( \rest_url( 'atmosphere/v1/client-metadata' ), 'https' );
 	}
 
 	/**
