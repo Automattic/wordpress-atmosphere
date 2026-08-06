@@ -227,17 +227,6 @@ const EditorPlugin = () => {
 				AUTO_PUBLISH_NOTICE && <p>{ AUTO_PUBLISH_NOTICE }</p>
 			) }
 
-			{ /* Shown whenever a record exists, including while sharing is
-			     off for this post: the record is up either way, and the
-			     author has no other way to look at what is out there. */ }
-			{ sharedUrl && (
-				<p>
-					<ExternalLink href={ sharedUrl }>
-						{ __( 'View on Bluesky', 'atmosphere' ) }
-					</ExternalLink>
-				</p>
-			) }
-
 			{ /* Sharing is off but the post is still on Bluesky. With
 			     sharing on, removal happens on the next sync, so the wording
 			     doesn't promise timing and the notice stays visible until
@@ -273,6 +262,17 @@ const EditorPlugin = () => {
 						</p>
 					) }
 				</Notice>
+			) }
+
+			{ /* Shown whenever a record exists, including while sharing is
+			     off for this post: the record is up either way, and the
+			     author has no other way to look at what is out there. */ }
+			{ sharedUrl && (
+				<p>
+					<ExternalLink href={ sharedUrl }>
+						{ __( 'View on Bluesky', 'atmosphere' ) }
+					</ExternalLink>
+				</p>
 			) }
 		</SettingsPanel>
 	);
