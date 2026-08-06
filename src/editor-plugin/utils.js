@@ -51,3 +51,32 @@ export function shareHelpText( enabled, needsReauth ) {
 		'atmosphere'
 	);
 }
+
+/**
+ * The panel's single site-level message, or null when there is nothing to say.
+ *
+ * One fact, one owner: this is the only place the panel speaks about the site
+ * rather than the post, so post-level copy never has to restate any of it.
+ * Precedence matters. Sharing being off outranks the connection, because when
+ * ATmosphere is not the thing publishing, the connection has no bearing on
+ * this screen. Sharing forced off from outside says nothing at all: a host
+ * plugin owns that experience and the reader cannot act on the arrangement.
+ *
+ * @param {boolean} autoPublish       Whether sharing is on for the site.
+ * @param {string}  autoPublishNotice Why sharing is off, when worth saying.
+ * @param {string}  reauthLead        Cause sentence, empty when there is none.
+ * @return {{severity: string, message: string, action: boolean}|null} The message.
+ */
+export function siteStatus( autoPublish, autoPublishNotice, reauthLead ) {
+	if ( ! autoPublish ) {
+		return autoPublishNotice
+			? { severity: 'info', message: autoPublishNotice, action: false }
+			: null;
+	}
+
+	if ( reauthLead ) {
+		return { severity: 'warning', message: reauthLead, action: true };
+	}
+
+	return null;
+}

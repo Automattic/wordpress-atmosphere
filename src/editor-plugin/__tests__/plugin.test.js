@@ -1,4 +1,4 @@
-import { isSharingEnabled, shareHelpText } from '../utils';
+import { isSharingEnabled, shareHelpText, siteStatus } from '../utils';
 
 describe( 'isSharingEnabled', () => {
 	test( 'is enabled by default (no meta / empty meta)', () => {
@@ -42,5 +42,42 @@ describe( 'shareHelpText', () => {
 		expect( shareHelpText( true, true ) ).toBe(
 			'Sharing is on for this post, but it will not be shared while your site is disconnected from Bluesky.'
 		);
+	} );
+} );
+
+describe( 'siteStatus', () => {
+	test( 'says nothing when sharing is on and the connection is fine', () => {
+		expect( siteStatus( true, '', '' ) ).toBeNull();
+	} );
+
+	test( 'warns about the connection, with an action', () => {
+		expect( siteStatus( true, '', 'Your session expired.' ) ).toEqual( {
+			severity: 'warning',
+			message: 'Your session expired.',
+			action: true,
+		} );
+	} );
+
+	test( 'explains sharing being off when the owner turned it off', () => {
+		expect( siteStatus( false, 'Turned off in settings.', '' ) ).toEqual( {
+			severity: 'info',
+			message: 'Turned off in settings.',
+			action: false,
+		} );
+	} );
+
+	test( 'says nothing when sharing was forced off from outside', () => {
+		expect( siteStatus( false, '', '' ) ).toBeNull();
+	} );
+
+	test( 'sharing being off outranks a dead connection', () => {
+		expect( siteStatus( false, '', 'Your session expired.' ) ).toBeNull();
+		expect(
+			siteStatus( false, 'Turned off in settings.', 'Your session expired.' )
+		).toEqual( {
+			severity: 'info',
+			message: 'Turned off in settings.',
+			action: false,
+		} );
 	} );
 } );

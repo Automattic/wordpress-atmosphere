@@ -35,7 +35,7 @@ import {
 	AUTO_PUBLISH,
 	AUTO_PUBLISH_NOTICE,
 } from '../config';
-import { isSharingEnabled, shareHelpText } from './utils';
+import { isSharingEnabled, shareHelpText, siteStatus } from './utils';
 import { ReconnectAction } from '../shared/reconnect-notice';
 
 /**
@@ -89,6 +89,7 @@ const EditorPlugin = () => {
 	}
 
 	const enabled = isSharingEnabled( meta );
+	const site = siteStatus( AUTO_PUBLISH, AUTO_PUBLISH_NOTICE, REAUTH_LEAD );
 	const customText = ( meta && meta[ CUSTOM_TEXT_META_KEY ] ) || '';
 
 	/* Precomputed so the notice below avoids a nested ternary. The
@@ -157,42 +158,33 @@ const EditorPlugin = () => {
 				</>
 			}
 		>
-			{ /* The site-level connection is dead, so nothing this panel
-			     promises can happen yet. Rendered above the toggle because it
-			     explains why the toggle's help text is hedged. The lead comes
-			     from PHP (`reauthLead`), which picks the cause sentence and
-			     already accounts for an operator-initiated disconnect. Not
-			     gated on `enabled`: a dead connection is a site-level
-			     problem, and other plugins may depend on it, so the
-			     per-post share toggle must not hide it.
+			{ /* LEVEL 1 — site. One message, the highest-priority problem
+			     only; see `siteStatus()` for the precedence and why sharing
+			     being off outranks the connection. Because this is the sole
+			     owner of site-level facts, nothing below restates them.
 
-			     Gated on REAUTH_LEAD, not NEEDS_REAUTH: the raw connection
-			     state (NEEDS_REAUTH) also covers a suppressed operator
-			     disconnect, where there is no cause sentence to show a
-			     non-admin. That reader still gets NEEDS_REAUTH's hedge in
-			     the toggle's help text below, just without the cause.
+			     A warning is wrapped in BaseControl so it picks up the block
+			     inspector's 16px bottom margin, which `.components-notice`
+			     does not get on its own. Info is a plain paragraph: it
+			     states a setting, not a problem.
 
-			     NEEDS_REAUTH is a page-load snapshot (localized once when the
-			     editor script enqueues), unlike the pre-publish panel below,
-			     which refetches live on every keystroke. A reconnect (or a
-			     fresh disconnect) elsewhere won't update this banner until the
-			     page reloads. Fixing that needs polling, which the design
-			     doc rules out — accepted as a known gap.
-
-			     Nothing here when sharing is off: ATmosphere is not the
-			     thing publishing this post then, so the connection has no
-			     bearing on it and a reconnect prompt would be answering a
-			     question this screen isn't asking. The site-level state
-			     still shows up on the Connectors card, the admin notice,
-			     and Site Health. */ }
-			{ AUTO_PUBLISH && REAUTH_LEAD && (
+			     The connection state behind this is a page-load snapshot
+			     (localized once when the editor script enqueues), unlike the
+			     pre-publish panel, which refetches live. A reconnect
+			     elsewhere won't update it until the page reloads; polling is
+			     ruled out, so that gap is accepted. */ }
+			{ site && 'warning' === site.severity && (
 				<BaseControl>
 					<Notice status="warning" isDismissible={ false }>
-						{ REAUTH_LEAD } <ReconnectAction />
+						{ site.message } { site.action && <ReconnectAction /> }
 					</Notice>
 				</BaseControl>
 			) }
-			{ AUTO_PUBLISH ? (
+			{ site && 'info' === site.severity && <p>{ site.message }</p> }
+
+			{ /* LEVEL 2 — post. The controls, whose help text always states
+			     the outcome for this post, and at most one notice. */ }
+			{ AUTO_PUBLISH && (
 				<>
 					<ToggleControl
 						label={ __( 'Share this post', 'atmosphere' ) }
@@ -223,36 +215,19 @@ const EditorPlugin = () => {
 						/>
 					) }
 				</>
-			) : (
-				AUTO_PUBLISH_NOTICE && <p>{ AUTO_PUBLISH_NOTICE }</p>
 			) }
 
-			{ /* Sharing is off but the post is still on Bluesky. With
-			     sharing on, removal happens on the next sync, so the wording
-			     doesn't promise timing and the notice stays visible until
-			     the record is gone, giving the author a reason to re-save if
-			     it lingers. With sharing off site-wide there is no next
-			     sync, so promising removal would be a lie: the record simply
-			     stays until sharing is turned back on. */ }
-			{ sharedUrl && ! enabled && (
-				<Notice status="warning" isDismissible={ false }>
-					{ AUTO_PUBLISH
-						? __(
-								'Sharing is off, but this post is still on Bluesky. It will be removed the next time your site syncs.',
-								'atmosphere'
-						  )
-						: __(
-								'Sharing is off for this post, but it is still on Bluesky. It stays there while automatic sharing is turned off for this site.',
-								'atmosphere'
-						  ) }
-				</Notice>
-			) }
+			{ /* A failed attempt outranks a pending removal: it describes
+			     something that already went wrong, and the two would
+			     otherwise stack. The error record comes from the
+			     `atmosphere_publish_error` REST field, cleared server-side on
+			     the next success, so it disappears once a share goes through.
+			     Retrying=true means the backoff ladder has another attempt
+			     queued; otherwise the author's update is the retry.
 
-			{ /* The last share attempt failed. The record comes from the
-			     `atmosphere_publish_error` REST field (cleared server-side on
-			     the next success), so the notice disappears once a share goes
-			     through. Retrying=true means the backoff ladder has another
-			     attempt queued; otherwise the author's update is the retry. */ }
+			     The removal notice only runs while sharing is on: with it off
+			     there is no next sync to remove anything, and the link below
+			     already says the record is there. */ }
 			{ publishError && enabled && (
 				<Notice status="error" isDismissible={ false }>
 					{ needsReconnect ? reconnectMessage : retryMessage }
@@ -263,10 +238,19 @@ const EditorPlugin = () => {
 					) }
 				</Notice>
 			) }
+			{ ! publishError && AUTO_PUBLISH && sharedUrl && ! enabled && (
+				<Notice status="warning" isDismissible={ false }>
+					{ __(
+						'Sharing is off, but this post is still on Bluesky. It will be removed the next time your site syncs.',
+						'atmosphere'
+					) }
+				</Notice>
+			) }
 
-			{ /* Shown whenever a record exists, including while sharing is
-			     off for this post: the record is up either way, and the
-			     author has no other way to look at what is out there. */ }
+			{ /* LEVEL 3 — the record exists. Not a message, so it always
+			     comes last, and it renders whether or not sharing is on for
+			     this post: the record is up either way and the author has no
+			     other way to look at it. */ }
 			{ sharedUrl && (
 				<p>
 					<ExternalLink href={ sharedUrl }>
