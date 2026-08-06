@@ -80,8 +80,15 @@ class Test_Block_Editor extends \WP_UnitTestCase {
 
 		$data = $this->script_data();
 
-		$this->assertTrue( $data['shareStatus']['can_share'] );
+		/*
+		 * Never connected is a setup step, not a problem: nothing to warn
+		 * about, so no message. But the site cannot share either, and the
+		 * toggle's help text has to hedge rather than promise a share the
+		 * pre-publish panel would then deny.
+		 */
 		$this->assertSame( '', $data['shareStatus']['message'] );
+		$this->assertFalse( $data['shareStatus']['can_share'] );
+		$this->assertTrue( $data['shareStatus']['sharing_enabled'] );
 	}
 
 	/**
@@ -229,11 +236,17 @@ class Test_Block_Editor extends \WP_UnitTestCase {
 	public function test_auto_publish_reflects_the_stored_setting() {
 		$this->login_as_admin();
 
-		$this->assertTrue( $this->script_data()['shareStatus']['can_share'] );
+		/*
+		 * `sharing_enabled` is the site's policy, which is what decides
+		 * whether the per-post controls render. It is deliberately not
+		 * `can_share`, which also goes false on a dead connection while the
+		 * toggle must stay put.
+		 */
+		$this->assertTrue( $this->script_data()['shareStatus']['sharing_enabled'] );
 
 		\update_option( 'atmosphere_auto_publish', '0' );
 
-		$this->assertFalse( $this->script_data()['shareStatus']['can_share'] );
+		$this->assertFalse( $this->script_data()['shareStatus']['sharing_enabled'] );
 	}
 
 	/**
@@ -310,7 +323,7 @@ class Test_Block_Editor extends \WP_UnitTestCase {
 	public function test_enabled_sharing_needs_no_notice() {
 		$data = $this->script_data();
 
-		$this->assertTrue( $data['shareStatus']['can_share'] );
+		$this->assertTrue( $data['shareStatus']['sharing_enabled'] );
 		$this->assertSame( '', $data['shareStatus']['message'] );
 	}
 }

@@ -139,6 +139,16 @@ const EditorPlugin = () => {
 				'atmosphere'
 		  );
 
+	/*
+	 * With sharing forced off from outside and no record to link to, every
+	 * child below is conditional and none of them render, which would leave
+	 * a titled panel with nothing in it. An empty panel reads as broken
+	 * rather than as the deliberate silence a host-plugin site is owed.
+	 */
+	if ( ! message && ! SHARE_STATUS.sharing_enabled && ! sharedUrl ) {
+		return null;
+	}
+
 	// `PluginDocumentSettingPanel` moved from edit-post to editor; support both.
 	const SettingsPanel = PluginDocumentSettingPanel || DocumentSettingPanel;
 

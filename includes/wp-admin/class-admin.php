@@ -554,11 +554,15 @@ class Admin {
 	/**
 	 * Render a global admin notice when the OAuth session needs reauth.
 	 *
-	 * Surfaced on every admin screen (gated on `manage_options`) because
-	 * the publish, comment, and update paths silently no-op until the
-	 * user reconnects — without a visible nudge, an expired refresh
-	 * token can sit unnoticed for days. The notice is dismissible per
-	 * page-load only so the user is reminded again on their next visit.
+	 * Surfaced on every admin screen, for every reader, because the
+	 * publish, comment, and update paths silently no-op until the user
+	 * reconnects — without a visible nudge, an expired refresh token can
+	 * sit unnoticed for days, and the person hitting Publish is often not
+	 * the one who can reconnect. There is no capability gate; the action
+	 * sentence is swapped instead, so a reader who cannot reconnect is
+	 * told who can rather than handed a link they cannot follow. The
+	 * notice is dismissible per page-load only, so the user is reminded
+	 * again on their next visit.
 	 *
 	 * Swaps copy when the disconnect was operator-initiated (the user
 	 * clicked Disconnect) so the message does not falsely claim "your
@@ -587,11 +591,11 @@ class Admin {
 		 * The cause lead comes from `reauth_lead_for_current_user()`
 		 * (shared with the document panel and the pre-publish panel); only
 		 * the notice's own tail (what stops working + the reconnect link)
-		 * is composed here. This gate already requires `manage_options`
-		 * above, so the helper's non-admin (and operator-disconnect
-		 * suppression) arms cannot fire here — the heading still needs its
-		 * own swap since the helper's lead text doesn't distinguish which
-		 * heading to show. The disconnect gate's stale-marker rationale
+		 * is composed here. The helper's non-admin and
+		 * operator-disconnect-suppression arms do fire here, since this
+		 * notice has no capability gate, which is why an empty lead falls
+		 * back below. The heading still needs its own swap, as the
+		 * helper's lead text doesn't distinguish which heading to show. The disconnect gate's stale-marker rationale
 		 * lives in `is_operator_disconnected()`.
 		 */
 		if ( is_operator_disconnected() ) {

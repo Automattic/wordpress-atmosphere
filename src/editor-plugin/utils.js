@@ -40,8 +40,10 @@ export function shareHelpText( enabled, canShare ) {
 	}
 
 	if ( ! canShare ) {
+		// Covers a dead connection and a site that was never connected: in
+		// both, the post is queued for a share that cannot happen yet.
 		return __(
-			'Sharing is on for this post, but it will not be shared while your site is disconnected from Bluesky.',
+			'Sharing is on for this post, but it will not be shared until your site is connected to Bluesky.',
 			'atmosphere'
 		);
 	}

@@ -47,8 +47,15 @@ class Block_Editor {
 			return;
 		}
 
+		/*
+		 * Built once and shared by both scripts. Recomputing per script
+		 * would run the whole share decision, the reconnect-URL resolution
+		 * and a capability check twice for an identical result.
+		 */
+		$data = self::script_data();
+
 		foreach ( self::SCRIPTS as $name ) {
-			self::enqueue_script( $name );
+			self::enqueue_script( $name, $data );
 		}
 	}
 
@@ -59,8 +66,9 @@ class Block_Editor {
 	 * loads from a source checkout that hasn't run `npm run build`.
 	 *
 	 * @param string $name The `build/<name>/` directory holding `plugin.js`.
+	 * @param array  $data Shared config to localize onto the script.
 	 */
-	private static function enqueue_script( string $name ): void {
+	private static function enqueue_script( string $name, array $data ): void {
 		$asset_file = ATMOSPHERE_PLUGIN_DIR . 'build/' . $name . '/plugin.asset.php';
 
 		if ( ! \file_exists( $asset_file ) ) {
@@ -81,7 +89,7 @@ class Block_Editor {
 		\wp_set_script_translations( $handle, 'atmosphere' );
 
 		// Single source of truth for values the JS shares with PHP.
-		\wp_localize_script( $handle, 'atmosphereEditor', self::script_data() );
+		\wp_localize_script( $handle, 'atmosphereEditor', $data );
 	}
 
 	/**

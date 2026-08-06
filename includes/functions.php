@@ -699,11 +699,15 @@ function share_status(): array {
 
 	if ( ! is_auto_publish_enabled() ) {
 		/*
-		 * Only the site owner's own choice is explained. The stored option
-		 * still being on means something external forced sharing off, which
-		 * is not theirs to fix.
+		 * Only the site owner's own choice is explained; anything external
+		 * forcing sharing off is not theirs to fix. Read the resolved
+		 * cause, not just the option: a site whose owner had already
+		 * switched sharing off before a host plugin took over is still a
+		 * host-plugin site, and the silence connection-only mode is owed
+		 * must not be defeated by a stale checkbox.
 		 */
-		$owner_turned_it_off = '1' !== (string) \get_option( 'atmosphere_auto_publish', '1' );
+		$owner_turned_it_off = '1' !== (string) \get_option( 'atmosphere_auto_publish', '1' )
+			&& ! is_connection_only_mode();
 
 		$reason = $owner_turned_it_off
 			? \__( 'Automatic publishing to Bluesky is turned off in settings.', 'atmosphere' )
@@ -735,11 +739,13 @@ function share_status(): array {
 	}
 
 	/*
-	 * A reconnect is needed but its cause is suppressed for this reader (a
-	 * non-admin on an operator-initiated disconnect). Nothing to show, but
-	 * the site still cannot share, and the toggle's help text says so.
+	 * Nothing to show, but the site still cannot share, so the toggle's
+	 * help text hedges. Two states land here: a reconnect whose cause is
+	 * suppressed for this reader (a non-admin on an operator-initiated
+	 * disconnect), and a site that has simply never been connected, which
+	 * is a setup step rather than a problem worth a warning.
 	 */
-	if ( needs_reauth() ) {
+	if ( ! is_connected() ) {
 		$ok['can_share'] = false;
 	}
 
