@@ -69,12 +69,28 @@ const atmosphereIcon = (
  * @return {React.JSX.Element|null} The panel, or null for sync blocks.
  */
 const EditorPlugin = () => {
-	const { postType, sharedUrl, publishError } = useSelect( ( select ) => {
+	const {
+		postType,
+		sharedUrl,
+		publishError,
+		isPublished,
+		editedStatus,
+		editedPassword,
+	} = useSelect( ( select ) => {
 		const editor = select( editorStore );
 		return {
 			postType: editor.getCurrentPostType(),
 			sharedUrl: editor.getCurrentPost()?.atmosphere_url,
 			publishError: editor.getCurrentPost()?.atmosphere_publish_error,
+
+			/*
+			 * The saved status, not the edited one: removal only happens on
+			 * a transition away from `publish`, so a post that was never
+			 * published has no record to lose no matter what is edited.
+			 */
+			isPublished: 'publish' === editor.getCurrentPost()?.status,
+			editedStatus: editor.getEditedPostAttribute( 'status' ),
+			editedPassword: editor.getEditedPostAttribute( 'password' ),
 		};
 	}, [] );
 
@@ -90,6 +106,9 @@ const EditorPlugin = () => {
 		enabled,
 		hasRecord: !! sharedUrl,
 		hasPublishError: !! publishError,
+		isPublished,
+		willBeUnpublished:
+			'publish' !== editedStatus || !! editedPassword || ! enabled,
 	} );
 	const customText = ( meta && meta[ CUSTOM_TEXT_META_KEY ] ) || '';
 

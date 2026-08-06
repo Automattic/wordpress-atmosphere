@@ -603,7 +603,7 @@ function get_reauth_reason(): string {
 function reauth_reason_lead(): string {
 	switch ( get_reauth_reason() ) {
 		case Client::REAUTH_REASON_KEY_CHANGED:
-			return \__( 'Your site’s security keys have changed — this can happen after a migration, or when a security plugin rotates them on a schedule — so ATmosphere can no longer read its saved Bluesky login.', 'atmosphere' );
+			return \__( 'Your site’s security keys have changed, so ATmosphere can no longer read its saved Bluesky login. This happens after a migration, or when a security plugin rotates them on a schedule.', 'atmosphere' );
 		case Client::REAUTH_REASON_DECRYPT_FAILED:
 			return \__( 'ATmosphere can no longer read its saved Bluesky login.', 'atmosphere' );
 		default:
@@ -781,14 +781,27 @@ function settings_url(): string {
  */
 function reconnect_url(): string {
 	if ( Admin::is_settings_page_visible() ) {
-		return settings_url();
+		$url = settings_url();
+	} elseif ( \class_exists( 'WP_Connector_Registry' ) ) {
+		$url = Connectors::screen_url();
+	} else {
+		$url = '';
 	}
 
-	if ( \class_exists( 'WP_Connector_Registry' ) ) {
-		return Connectors::screen_url();
-	}
-
-	return '';
+	/**
+	 * Filters where every reconnect prompt sends the reader.
+	 *
+	 * Runs last, so a host plugin driving the connection itself can point
+	 * the admin notice, both editor surfaces, and Site Health at its own
+	 * screen. Returning '' drops the link and leaves the prompts as plain
+	 * text, which is what happens by default when there is no screen to
+	 * link to.
+	 *
+	 * @since unreleased
+	 *
+	 * @param string $url Admin URL to reconnect at, or '' when there is none.
+	 */
+	return (string) \apply_filters( 'atmosphere_reconnect_url', $url );
 }
 
 /**

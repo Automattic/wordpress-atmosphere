@@ -56,6 +56,8 @@ const post = ( overrides = {} ) => ( {
 	enabled: true,
 	hasRecord: false,
 	hasPublishError: false,
+	isPublished: true,
+	willBeUnpublished: false,
 	...overrides,
 } );
 
@@ -120,7 +122,14 @@ describe( 'panelMessage', () => {
 
 	test( 'reports a pending removal, and a failure outranks it', () => {
 		expect(
-			panelMessage( OK, post( { enabled: false, hasRecord: true } ) ).kind
+			panelMessage(
+				OK,
+				post( {
+					enabled: false,
+					hasRecord: true,
+					willBeUnpublished: true,
+				} )
+			).kind
 		).toBe( 'pendingRemoval' );
 
 		expect(
@@ -133,5 +142,32 @@ describe( 'panelMessage', () => {
 				} )
 			).kind
 		).toBe( 'publishError' );
+	} );
+
+	test( 'says nothing about removal for a post that was never published', () => {
+		// `on_status_change()` only removes on a transition away from
+		// publish, so a draft with a stale record loses nothing on save.
+		expect(
+			panelMessage(
+				OK,
+				post( {
+					enabled: false,
+					hasRecord: true,
+					willBeUnpublished: true,
+					isPublished: false,
+				} )
+			)
+		).toBeNull();
+	} );
+
+	test( 'warns when a published post is about to stop being shareable', () => {
+		// Going private, adding a password, or switching the toggle off all
+		// reach the same removal branch.
+		expect(
+			panelMessage(
+				OK,
+				post( { hasRecord: true, willBeUnpublished: true } )
+			).message
+		).toContain( 'cannot be undone' );
 	} );
 } );

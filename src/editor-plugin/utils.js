@@ -65,16 +65,18 @@ export function shareHelpText( enabled, canShare ) {
  * The site-level half is decided in PHP and arrives whole; this only picks
  * between it and the two post-level cases.
  *
- * @param {Object}  shareStatus          Site decision from `Atmosphere\share_status()`.
- * @param {Object}  post                 Post-level state.
- * @param {boolean} post.enabled         Whether sharing is on for this post.
- * @param {boolean} post.hasRecord       Whether the post is on Bluesky.
- * @param {boolean} post.hasPublishError Whether the last share attempt failed.
+ * @param {Object}  shareStatus            Site decision from `Atmosphere\share_status()`.
+ * @param {Object}  post                   Post-level state.
+ * @param {boolean} post.enabled           Whether sharing is on for this post.
+ * @param {boolean} post.hasRecord         Whether the post is on Bluesky.
+ * @param {boolean} post.hasPublishError   Whether the last share attempt failed.
+ * @param {boolean} post.isPublished       Whether the saved post is published.
+ * @param {boolean} post.willBeUnpublished Whether the edited state stops it being shareable.
  * @return {{kind: string, severity: string, message: string, action: boolean}|null} The message.
  */
 export function panelMessage(
 	shareStatus,
-	{ enabled, hasRecord, hasPublishError }
+	{ enabled, hasRecord, hasPublishError, isPublished, willBeUnpublished }
 ) {
 	if ( shareStatus.message ) {
 		return {
@@ -101,12 +103,21 @@ export function panelMessage(
 		};
 	}
 
-	if ( hasRecord && ! enabled ) {
+	/*
+	 * Saving this change deletes the Bluesky record, and that is not
+	 * undoable: republishing later mints a new one with a new URL, so the
+	 * likes, reposts and replies on the old post are gone. Every route here
+	 * goes through the same branch in `on_status_change()`, which only fires
+	 * for a post whose *saved* status is publish, and only while the site is
+	 * connected with sharing on. "This post will not be shared" would read
+	 * like a no-op for something irreversible.
+	 */
+	if ( hasRecord && isPublished && willBeUnpublished ) {
 		return {
 			kind: 'pendingRemoval',
 			severity: 'warning',
 			message: __(
-				'Sharing is off, but this post is still on Bluesky. It will be removed the next time your site syncs.',
+				'This post is on Bluesky. Saving this change will remove it from there, and that cannot be undone.',
 				'atmosphere'
 			),
 			action: false,

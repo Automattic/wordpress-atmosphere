@@ -8,6 +8,8 @@
 namespace Atmosphere\Tests;
 
 use Atmosphere\OAuth\Client;
+use function Atmosphere\reconnect_url;
+use function Atmosphere\reauth_reason_lead;
 use function Atmosphere\parse_at_uri;
 use function Atmosphere\build_at_uri;
 use function Atmosphere\appview_url;
@@ -1191,5 +1193,58 @@ class Test_Functions extends \WP_UnitTestCase {
 
 		\delete_option( 'atmosphere_identity' );
 		\delete_option( Client::DISCONNECTED_OPTION );
+	}
+
+	/**
+	 * A host plugin driving the connection itself can point every reconnect
+	 * prompt at its own screen, which is the whole reason the four surfaces
+	 * resolve through one helper.
+	 */
+	public function test_reconnect_url_is_filterable() {
+		\add_filter(
+			'atmosphere_reconnect_url',
+			static function () {
+				return 'https://example.com/host-plugin-connect';
+			}
+		);
+
+		$this->assertSame( 'https://example.com/host-plugin-connect', reconnect_url() );
+
+		\remove_all_filters( 'atmosphere_reconnect_url' );
+	}
+
+	/**
+	 * Returning an empty string drops the link and leaves the prompts as
+	 * plain text, the same as having no screen to link to.
+	 */
+	public function test_reconnect_url_filter_can_drop_the_link() {
+		\add_filter( 'atmosphere_reconnect_url', '__return_empty_string' );
+
+		$this->assertSame( '', reconnect_url() );
+
+		\remove_all_filters( 'atmosphere_reconnect_url' );
+	}
+
+	/**
+	 * The key-rotation cause is two sentences with no dashes: it renders in a
+	 * narrow sidebar column and in an admin notice.
+	 */
+	public function test_key_changed_cause_avoids_dashes() {
+		\update_option( 'atmosphere_identity', array( 'did' => 'did:plc:test123' ) );
+		\update_option(
+			'atmosphere_connection',
+			array(
+				'did'           => 'did:plc:test123',
+				'access_token'  => 'token',
+				'needs_reauth'  => true,
+				'reauth_reason' => Client::REAUTH_REASON_KEY_CHANGED,
+			)
+		);
+
+		$lead = reauth_reason_lead();
+
+		$this->assertStringContainsString( 'security keys have changed', $lead );
+		$this->assertStringNotContainsString( "\u{2014}", $lead );
+		$this->assertStringNotContainsString( "\u{2013}", $lead );
 	}
 }
