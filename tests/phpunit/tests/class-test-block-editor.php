@@ -28,6 +28,8 @@ class Test_Block_Editor extends \WP_UnitTestCase {
 		\delete_option( 'atmosphere_identity' );
 		\delete_option( 'atmosphere_auto_publish' );
 		\delete_option( Client::DISCONNECTED_OPTION );
+		\delete_option( 'atmosphere_auto_publish' );
+		\remove_all_filters( 'atmosphere_should_auto_publish' );
 		\remove_all_filters( 'atmosphere_connection_only_mode' );
 		parent::tear_down();
 	}
@@ -269,5 +271,46 @@ class Test_Block_Editor extends \WP_UnitTestCase {
 		$this->assertTrue( \wp_script_is( 'atmosphere-pre-publish-panel', 'enqueued' ) );
 
 		$this->assertTrue( \wp_script_is( 'atmosphere-editor-plugin', 'enqueued' ) );
+	}
+
+	/**
+	 * The site owner's own choice is explained, so the missing controls are
+	 * not a mystery.
+	 */
+	public function test_owner_disabled_sharing_is_explained() {
+		\update_option( 'atmosphere_auto_publish', '0' );
+
+		$data = $this->script_data();
+
+		$this->assertFalse( $data['autoPublish'] );
+		$this->assertSame(
+			'Automatic publishing to Bluesky is turned off in settings.',
+			$data['autoPublishNotice']
+		);
+	}
+
+	/**
+	 * Sharing forced off from outside says nothing: the host plugin owns the
+	 * sharing experience there, and narrating the arrangement to an author
+	 * who cannot act on it is noise.
+	 */
+	public function test_externally_disabled_sharing_says_nothing() {
+		\update_option( 'atmosphere_auto_publish', '1' );
+		\add_filter( 'atmosphere_should_auto_publish', '__return_false' );
+
+		$data = $this->script_data();
+
+		$this->assertFalse( $data['autoPublish'] );
+		$this->assertSame( '', $data['autoPublishNotice'] );
+	}
+
+	/**
+	 * Nothing to explain while sharing is on.
+	 */
+	public function test_enabled_sharing_needs_no_notice() {
+		$data = $this->script_data();
+
+		$this->assertTrue( $data['autoPublish'] );
+		$this->assertSame( '', $data['autoPublishNotice'] );
 	}
 }

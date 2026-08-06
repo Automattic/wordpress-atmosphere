@@ -33,6 +33,7 @@ import {
 	RECONNECT_URL,
 	CAN_MANAGE,
 	AUTO_PUBLISH,
+	AUTO_PUBLISH_NOTICE,
 } from '../config';
 import { isSharingEnabled, shareHelpText } from './utils';
 import { ReconnectAction } from '../shared/reconnect-notice';
@@ -176,8 +177,15 @@ const EditorPlugin = () => {
 			     which refetches live on every keystroke. A reconnect (or a
 			     fresh disconnect) elsewhere won't update this banner until the
 			     page reloads. Fixing that needs polling, which the design
-			     doc rules out — accepted as a known gap. */ }
-			{ REAUTH_LEAD && (
+			     doc rules out — accepted as a known gap.
+
+			     Nothing here when sharing is off: ATmosphere is not the
+			     thing publishing this post then, so the connection has no
+			     bearing on it and a reconnect prompt would be answering a
+			     question this screen isn't asking. The site-level state
+			     still shows up on the Connectors card, the admin notice,
+			     and Site Health. */ }
+			{ AUTO_PUBLISH && REAUTH_LEAD && (
 				<BaseControl>
 					<Notice status="warning" isDismissible={ false }>
 						{ REAUTH_LEAD } <ReconnectAction />
@@ -216,12 +224,7 @@ const EditorPlugin = () => {
 					) }
 				</>
 			) : (
-				<p>
-					{ __(
-						'Automatic sharing to Bluesky is turned off for this site.',
-						'atmosphere'
-					) }
-				</p>
+				AUTO_PUBLISH_NOTICE && <p>{ AUTO_PUBLISH_NOTICE }</p>
 			) }
 
 			{ sharedUrl && enabled && (

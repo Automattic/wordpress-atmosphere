@@ -91,7 +91,7 @@ class Block_Editor {
 	 * Keeps the REST route and the share-toggle meta key defined once on the
 	 * PHP side so the JS never hardcodes (and drifts from) them.
 	 *
-	 * @return array{previewPath: string, disabledMetaKey: string, customTextMetaKey: string, reconnectUrl: string, canManage: bool, needsReauth: bool, reauthLead: string, autoPublish: bool}
+	 * @return array{previewPath: string, disabledMetaKey: string, customTextMetaKey: string, reconnectUrl: string, canManage: bool, needsReauth: bool, reauthLead: string, autoPublish: bool, autoPublishNotice: string}
 	 */
 	private static function script_data(): array {
 		/*
@@ -122,6 +122,36 @@ class Block_Editor {
 			'needsReauth'       => $needs_reauth,
 			'reauthLead'        => $reauth_lead,
 			'autoPublish'       => is_auto_publish_enabled(),
+			'autoPublishNotice' => self::auto_publish_notice(),
 		);
+	}
+
+	/**
+	 * Why the sharing controls are missing, when it is worth saying.
+	 *
+	 * Only the site owner's own choice is explained. When the stored
+	 * preference is still on and something external forces sharing off
+	 * (connection-only mode, or the `atmosphere_should_auto_publish`
+	 * filter), the host plugin owns the sharing experience and an
+	 * author cannot act on the arrangement, so the panel drops the
+	 * controls without commentary rather than narrating internal wiring.
+	 *
+	 * The pre-publish panel still explains both cases: there it is
+	 * answering a direct question about one post.
+	 *
+	 * @since unreleased
+	 *
+	 * @return string Translated sentence, or '' when nothing needs saying.
+	 */
+	private static function auto_publish_notice(): string {
+		if ( is_auto_publish_enabled() ) {
+			return '';
+		}
+
+		if ( '1' === (string) \get_option( 'atmosphere_auto_publish', '1' ) ) {
+			return '';
+		}
+
+		return \__( 'Automatic publishing to Bluesky is turned off in settings.', 'atmosphere' );
 	}
 }
