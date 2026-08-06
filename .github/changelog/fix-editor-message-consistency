@@ -1,4 +1,0 @@
-Significance: patch
-Type: fixed
-
-The editor now shows one clear message about sharing instead of several overlapping ones, and warns before a change removes a post from Bluesky.
