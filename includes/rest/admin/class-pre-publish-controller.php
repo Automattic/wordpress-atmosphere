@@ -284,6 +284,35 @@ class Pre_Publish_Controller extends \WP_REST_Controller {
 	}
 
 	/**
+	 * Warn that an existing Bluesky record is about to be removed.
+	 *
+	 * Every state that makes a shared post non-publishable (the per-post
+	 * toggle, an unsupported type, a password, private) sends
+	 * `on_status_change()` down its removal branch, which schedules
+	 * `atmosphere_delete_post`. Read from the author's side that is
+	 * destructive and not undoable: republishing later mints a new record
+	 * with a new URL, so the likes, reposts and replies on the old one are
+	 * gone. "This post will not be shared" reads like a no-op, so the
+	 * reasons say what actually happens when there is a record to lose.
+	 *
+	 * Only appended when sharing is on: with it off the removal branch is
+	 * never reached, and the record simply stays.
+	 *
+	 * @since unreleased
+	 *
+	 * @param WP_Post $post   The post being edited.
+	 * @param string  $reason The reason this post will not be shared.
+	 * @return string The reason, with the removal warning when one applies.
+	 */
+	private function with_removal_warning( WP_Post $post, string $reason ): string {
+		if ( '' === (string) \get_post_meta( $post->ID, Post::META_URI, true ) ) {
+			return $reason;
+		}
+
+		return $reason . ' ' . \__( 'It is on Bluesky now and will be removed.', 'atmosphere' );
+	}
+
+	/**
 	 * Decide whether the post will be shared to Bluesky, with a
 	 * human-readable reason when it will not.
 	 *
@@ -328,28 +357,40 @@ class Pre_Publish_Controller extends \WP_REST_Controller {
 		if ( $disabled ) {
 			return array(
 				'will_publish' => false,
-				'reason'       => \__( 'Sharing is switched off for this post.', 'atmosphere' ),
+				'reason'       => $this->with_removal_warning(
+					$post,
+					\__( 'Sharing is switched off for this post.', 'atmosphere' )
+				),
 			);
 		}
 
 		if ( ! is_supported_post_type( $post->post_type ) ) {
 			return array(
 				'will_publish' => false,
-				'reason'       => \__( 'This post type isn’t shared to Bluesky.', 'atmosphere' ),
+				'reason'       => $this->with_removal_warning(
+					$post,
+					\__( 'This post type isn’t shared to Bluesky.', 'atmosphere' )
+				),
 			);
 		}
 
 		if ( '' !== $password ) {
 			return array(
 				'will_publish' => false,
-				'reason'       => \__( 'Password-protected posts aren’t shared to Bluesky.', 'atmosphere' ),
+				'reason'       => $this->with_removal_warning(
+					$post,
+					\__( 'Password-protected posts aren’t shared to Bluesky.', 'atmosphere' )
+				),
 			);
 		}
 
 		if ( 'private' === $status ) {
 			return array(
 				'will_publish' => false,
-				'reason'       => \__( 'Private posts aren’t shared to Bluesky.', 'atmosphere' ),
+				'reason'       => $this->with_removal_warning(
+					$post,
+					\__( 'Private posts aren’t shared to Bluesky.', 'atmosphere' )
+				),
 			);
 		}
 
