@@ -559,6 +559,79 @@ class Test_Pre_Publish_Controller extends WP_UnitTestCase {
 	}
 
 	/**
+	 * `needs_reconnect` tracks whether a cause is actually shown, not just
+	 * whether the connection is dead: a non-admin on an operator-initiated
+	 * disconnect gets `false` (the lead is suppressed for them, matching the
+	 * document panel showing no banner), while an administrator on the same
+	 * disconnected site gets `true`.
+	 *
+	 * @covers ::get_preview
+	 */
+	public function test_preview_needs_reconnect_follows_capability_on_operator_disconnect() {
+		\update_option( 'atmosphere_identity', array( 'did' => 'did:plc:test123' ) );
+		\delete_option( 'atmosphere_connection' );
+		\update_option( Client::DISCONNECTED_OPTION, true );
+
+		$author = self::factory()->user->create( array( 'role' => 'author' ) );
+		\wp_set_current_user( $author );
+
+		$post = self::factory()->post->create_and_get();
+
+		$data = $this->controller->get_preview(
+			$this->make_request( $post->ID, array( 'content' => 'Hi.' ) )
+		)->get_data();
+
+		$this->assertFalse( $data['will_publish'] );
+		$this->assertFalse( $data['needs_reconnect'] );
+
+		$this->login_as_admin();
+
+		$data = $this->controller->get_preview(
+			$this->make_request( $post->ID, array( 'content' => 'Hi.' ) )
+		)->get_data();
+
+		$this->assertFalse( $data['will_publish'] );
+		$this->assertTrue( $data['needs_reconnect'] );
+	}
+
+	/**
+	 * Order pin: the connection check runs after the password, private, and
+	 * post-type checks, so a private post on a `needs_reauth`-flagged site
+	 * reports the private reason, not a reconnect prompt that reconnecting
+	 * would do nothing to fix.
+	 *
+	 * @covers ::get_preview
+	 */
+	public function test_preview_private_wins_over_needs_reauth() {
+		$this->login_as_admin();
+		\update_option( 'atmosphere_identity', array( 'did' => 'did:plc:test123' ) );
+		\update_option(
+			'atmosphere_connection',
+			array(
+				'did'          => 'did:plc:test123',
+				'access_token' => 'test-token',
+				'needs_reauth' => true,
+			)
+		);
+
+		$post = self::factory()->post->create_and_get();
+
+		$data = $this->controller->get_preview(
+			$this->make_request(
+				$post->ID,
+				array(
+					'content' => 'Secret.',
+					'status'  => 'private',
+				)
+			)
+		)->get_data();
+
+		$this->assertFalse( $data['will_publish'] );
+		$this->assertFalse( $data['needs_reconnect'] );
+		$this->assertStringContainsString( 'Private', $data['reason'] );
+	}
+
+	/**
 	 * Order pin: when auto-publish is off AND the post's own per-post toggle
 	 * is also off, the auto-publish reason wins. The document panel (home of
 	 * the per-post toggle) isn't even enqueued when auto-publish is off, so a

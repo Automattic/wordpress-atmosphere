@@ -40,7 +40,7 @@ describe( 'shareHelpText', () => {
 
 	test( 'stops promising delivery while the connection is dead', () => {
 		expect( shareHelpText( true, true ) ).toBe(
-			'Sharing is on for this post, but it will not be shared while your site is disconnected. An administrator can share it later once the connection is back.'
+			'Sharing is on for this post, but it will not be shared while your site is disconnected from Bluesky.'
 		);
 	} );
 } );

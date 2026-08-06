@@ -16,6 +16,7 @@ namespace Atmosphere;
 
 use Atmosphere\Rest\Admin\Pre_Publish_Controller;
 use function Atmosphere\is_auto_publish_enabled;
+use function Atmosphere\needs_reauth;
 use function Atmosphere\reconnect_url;
 
 /**
@@ -47,20 +48,7 @@ class Block_Editor {
 			return;
 		}
 
-		/*
-		 * The document panel is the cross-posting UI itself, so it stays out
-		 * of the way when the site does not cross-post. The pre-publish
-		 * panel's whole job is to answer whether this post will be shared,
-		 * and "automatic publishing is turned off" is that answer — so it
-		 * keeps loading either way.
-		 */
-		$auto_publish_enabled = is_auto_publish_enabled();
-
 		foreach ( self::SCRIPTS as $name ) {
-			if ( 'editor-plugin' === $name && ! $auto_publish_enabled ) {
-				continue;
-			}
-
 			self::enqueue_script( $name );
 		}
 	}
@@ -103,7 +91,7 @@ class Block_Editor {
 	 * Keeps the REST route and the share-toggle meta key defined once on the
 	 * PHP side so the JS never hardcodes (and drifts from) them.
 	 *
-	 * @return array{previewPath: string, disabledMetaKey: string, customTextMetaKey: string, settingsUrl: string, reconnectUrl: string, canManage: bool, needsReauth: bool, reauthLead: string}
+	 * @return array{previewPath: string, disabledMetaKey: string, customTextMetaKey: string, reconnectUrl: string, canManage: bool, needsReauth: bool, reauthLead: string, autoPublish: bool}
 	 */
 	private static function script_data(): array {
 		/*
@@ -114,23 +102,26 @@ class Block_Editor {
 		$can_manage = \current_user_can( 'manage_options' );
 
 		/*
-		 * `reauth_lead_for_current_user()` already folds in the
-		 * operator-disconnect suppression for non-admins (an empty
-		 * lead there), so `needsReauth` is derived from the lead
-		 * rather than re-deriving the same rule here.
+		 * `needsReauth` is the raw connection state, independent of
+		 * whether a cause sentence is shown for it: `reauthLead` is
+		 * '' both on a healthy connection AND when the cause is
+		 * suppressed for a non-admin on an operator-initiated
+		 * disconnect, and the two must stay distinguishable so
+		 * `shareHelpText()` can hedge without the banner repeating a
+		 * cause it isn't allowed to say.
 		 */
 		$reauth_lead  = reauth_lead_for_current_user();
-		$needs_reauth = '' !== $reauth_lead;
+		$needs_reauth = needs_reauth();
 
 		return array(
 			'previewPath'       => Pre_Publish_Controller::full_route(),
 			'disabledMetaKey'   => ATMOSPHERE_META_DISABLED,
 			'customTextMetaKey' => ATMOSPHERE_META_CUSTOM_TEXT,
-			'settingsUrl'       => settings_url(),
 			'reconnectUrl'      => reconnect_url(),
 			'canManage'         => $can_manage,
 			'needsReauth'       => $needs_reauth,
 			'reauthLead'        => $reauth_lead,
+			'autoPublish'       => is_auto_publish_enabled(),
 		);
 	}
 }

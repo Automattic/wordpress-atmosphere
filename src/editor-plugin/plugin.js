@@ -32,6 +32,7 @@ import {
 	REAUTH_LEAD,
 	RECONNECT_URL,
 	CAN_MANAGE,
+	AUTO_PUBLISH,
 } from '../config';
 import { isSharingEnabled, shareHelpText } from './utils';
 import { ReconnectAction } from '../shared/reconnect-notice';
@@ -120,6 +121,11 @@ const EditorPlugin = () => {
 				</a>
 			</>
 		);
+	} else if ( CAN_MANAGE ) {
+		reconnectMessage = __(
+			'Sharing to Bluesky failed because your site is no longer connected to Bluesky. Reconnect your Bluesky account to fix this.',
+			'atmosphere'
+		);
 	} else {
 		reconnectMessage = __(
 			'Sharing to Bluesky failed because your site is no longer connected to Bluesky. Ask an administrator to reconnect it.',
@@ -159,40 +165,63 @@ const EditorPlugin = () => {
 			     problem, and other plugins may depend on it, so the
 			     per-post share toggle must not hide it.
 
+			     Gated on REAUTH_LEAD, not NEEDS_REAUTH: the raw connection
+			     state (NEEDS_REAUTH) also covers a suppressed operator
+			     disconnect, where there is no cause sentence to show a
+			     non-admin. That reader still gets NEEDS_REAUTH's hedge in
+			     the toggle's help text below, just without the cause.
+
 			     NEEDS_REAUTH is a page-load snapshot (localized once when the
 			     editor script enqueues), unlike the pre-publish panel below,
 			     which refetches live on every keystroke. A reconnect (or a
 			     fresh disconnect) elsewhere won't update this banner until the
 			     page reloads. Fixing that needs polling, which the design
 			     doc rules out — accepted as a known gap. */ }
-			{ NEEDS_REAUTH && (
+			{ REAUTH_LEAD && (
 				<BaseControl>
 					<Notice status="warning" isDismissible={ false }>
 						{ REAUTH_LEAD } <ReconnectAction />
 					</Notice>
 				</BaseControl>
 			) }
-			<ToggleControl
-				label={ __( 'Share this post', 'atmosphere' ) }
-				checked={ enabled }
-				onChange={ ( value ) =>
-					setMeta( { ...meta, [ DISABLED_META_KEY ]: ! value } )
-				}
-				help={ shareHelpText( enabled, NEEDS_REAUTH ) }
-			/>
+			{ AUTO_PUBLISH ? (
+				<>
+					<ToggleControl
+						label={ __( 'Share this post', 'atmosphere' ) }
+						checked={ enabled }
+						onChange={ ( value ) =>
+							setMeta( {
+								...meta,
+								[ DISABLED_META_KEY ]: ! value,
+							} )
+						}
+						help={ shareHelpText( enabled, NEEDS_REAUTH ) }
+					/>
 
-			{ enabled && (
-				<TextareaControl
-					label={ __( 'Custom Bluesky text', 'atmosphere' ) }
-					value={ customText }
-					onChange={ ( value ) =>
-						setMeta( { ...meta, [ CUSTOM_TEXT_META_KEY ]: value } )
-					}
-					help={ __(
-						'Leave empty to use the default message, or write your own. It’s shared with a link back to this post, and you can mention other Bluesky users.',
+					{ enabled && (
+						<TextareaControl
+							label={ __( 'Custom Bluesky text', 'atmosphere' ) }
+							value={ customText }
+							onChange={ ( value ) =>
+								setMeta( {
+									...meta,
+									[ CUSTOM_TEXT_META_KEY ]: value,
+								} )
+							}
+							help={ __(
+								'Leave empty to use the default message, or write your own. It’s shared with a link back to this post, and you can mention other Bluesky users.',
+								'atmosphere'
+							) }
+						/>
+					) }
+				</>
+			) : (
+				<p>
+					{ __(
+						'Automatic sharing to Bluesky is turned off for this site.',
 						'atmosphere'
 					) }
-				/>
+				</p>
 			) }
 
 			{ sharedUrl && enabled && (

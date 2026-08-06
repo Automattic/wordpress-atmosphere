@@ -35,14 +35,6 @@ export const PREVIEW_PATH =
 	options.previewPath || '/atmosphere/1.0/admin/pre-publish-preview';
 
 /**
- * URL of the ATmosphere settings page, for reconnect prompts.
- *
- * @type {string}
- */
-export const SETTINGS_URL =
-	options.settingsUrl || 'options-general.php?page=atmosphere';
-
-/**
  * Where the reconnect prompts should link: the settings page, the
  * Connectors screen when the settings page is hidden (connection-only
  * mode), or empty when neither exists.
@@ -79,3 +71,10 @@ export const NEEDS_REAUTH = !! options.needsReauth;
  * @type {string}
  */
 export const REAUTH_LEAD = options.reauthLead || '';
+
+/**
+ * Whether posts are automatically cross-posted to Bluesky on publish.
+ *
+ * @type {boolean}
+ */
+export const AUTO_PUBLISH = !! options.autoPublish;

@@ -250,7 +250,11 @@ class Test_Reauth_Notice extends WP_UnitTestCase {
 
 		$html = $this->capture_notice();
 
-		$this->assertStringContainsString( \Atmosphere\reauth_lead_for_current_user(), $html );
+		$this->assertStringContainsString(
+			'Your site’s security keys have changed — this can happen after a migration, or when a security plugin rotates them on a schedule — so ATmosphere can no longer read its saved Bluesky login.',
+			$html,
+			'The notice must render the key-rotation cause sentence verbatim, matching the shared reauth-lead helper.'
+		);
 	}
 
 	/**

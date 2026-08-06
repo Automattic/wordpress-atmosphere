@@ -163,13 +163,15 @@ class Test_Block_Editor extends \WP_UnitTestCase {
 	}
 
 	/**
-	 * An operator-initiated disconnect is a state the administrator chose,
-	 * not a problem for every author to worry about: a user without
-	 * `manage_options` gets no persistent reconnect warning for it.
+	 * `needsReauth` reports the raw connection state, with no suppression:
+	 * it stays true for a non-admin on an operator-initiated disconnect so
+	 * `shareHelpText()` can still hedge. Only `reauthLead` (which drives the
+	 * banner) is suppressed, since an operator-initiated disconnect is a
+	 * state the administrator chose, not a cause every author needs to see.
 	 *
 	 * @covers ::script_data
 	 */
-	public function test_author_gets_no_reauth_for_operator_disconnect() {
+	public function test_author_gets_no_reauth_lead_for_operator_disconnect() {
 		\wp_set_current_user( self::factory()->user->create( array( 'role' => 'author' ) ) );
 		\update_option( 'atmosphere_identity', array( 'did' => 'did:plc:test123' ) );
 		\delete_option( 'atmosphere_connection' );
@@ -177,7 +179,8 @@ class Test_Block_Editor extends \WP_UnitTestCase {
 
 		$data = $this->script_data();
 
-		$this->assertFalse( $data['needsReauth'] );
+		$this->assertTrue( $data['needsReauth'] );
+		$this->assertSame( '', $data['reauthLead'] );
 	}
 
 	/**
@@ -215,21 +218,40 @@ class Test_Block_Editor extends \WP_UnitTestCase {
 	}
 
 	/**
-	 * The document panel is the cross-posting UI itself, so with auto-publish
-	 * off `enqueue()` must not load it. The pre-publish panel's job is to
-	 * answer whether this post will be shared, so it keeps loading either
-	 * way — it will report "automatic publishing is turned off" instead.
+	 * `autoPublish` mirrors `is_auto_publish_enabled()` so the editor-plugin
+	 * script can hide the per-post toggle without gating its own enqueue on
+	 * the same setting.
+	 *
+	 * @covers ::script_data
+	 */
+	public function test_auto_publish_reflects_the_stored_setting() {
+		$this->login_as_admin();
+
+		$this->assertTrue( $this->script_data()['autoPublish'] );
+
+		\update_option( 'atmosphere_auto_publish', '0' );
+
+		$this->assertFalse( $this->script_data()['autoPublish'] );
+	}
+
+	/**
+	 * The document panel describes state that predates auto-publish being
+	 * switched off (a shared URL, a still-on-Bluesky removal warning, a
+	 * publish error, the per-post toggle a CLI backfill still reads), so
+	 * `enqueue()` must keep loading it even with auto-publish off. Only the
+	 * toggle and custom-text field hide themselves client-side; the script
+	 * itself stays enqueued exactly like the pre-publish panel.
 	 *
 	 * @covers ::enqueue
 	 */
-	public function test_enqueue_skips_document_panel_when_auto_publish_disabled() {
+	public function test_enqueue_loads_both_panels_when_auto_publish_disabled() {
 		\wp_dequeue_script( 'atmosphere-editor-plugin' );
 		\wp_dequeue_script( 'atmosphere-pre-publish-panel' );
 		\update_option( 'atmosphere_auto_publish', '0' );
 
 		Block_Editor::enqueue();
 
-		$this->assertFalse( \wp_script_is( 'atmosphere-editor-plugin', 'enqueued' ) );
+		$this->assertTrue( \wp_script_is( 'atmosphere-editor-plugin', 'enqueued' ) );
 		$this->assertTrue( \wp_script_is( 'atmosphere-pre-publish-panel', 'enqueued' ) );
 	}
 

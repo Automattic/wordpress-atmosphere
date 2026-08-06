@@ -332,39 +332,6 @@ class Pre_Publish_Controller extends \WP_REST_Controller {
 			);
 		}
 
-		if ( ! is_connected() ) {
-			/*
-			 * `is_connected()` is false for both a dead session and a site
-			 * that never connected. Only the first is fixable by an admin,
-			 * so it gets its own copy and lifts the panel's notice from
-			 * info to warning.
-			 */
-			if ( needs_reauth() ) {
-				/*
-				 * The cause sentence is shared with the document panel via
-				 * {@see \Atmosphere\reauth_lead_for_current_user()}, so a
-				 * `key_changed` (or any other recorded) cause reads
-				 * identically on both surfaces, including the
-				 * operator-disconnect swap. The consequence sentence is
-				 * this panel's own.
-				 */
-				$lead   = reauth_lead_for_current_user();
-				$tail   = \__( 'This post will not be shared until your site is reconnected.', 'atmosphere' );
-				$reason = '' !== $lead ? $lead . ' ' . $tail : $tail;
-
-				return array(
-					'will_publish'    => false,
-					'needs_reconnect' => true,
-					'reason'          => $reason,
-				);
-			}
-
-			return array(
-				'will_publish' => false,
-				'reason'       => \__( 'Your site isn’t connected to Bluesky yet.', 'atmosphere' ),
-			);
-		}
-
 		if ( ! is_supported_post_type( $post->post_type ) ) {
 			return array(
 				'will_publish' => false,
@@ -383,6 +350,45 @@ class Pre_Publish_Controller extends \WP_REST_Controller {
 			return array(
 				'will_publish' => false,
 				'reason'       => \__( 'Private posts aren’t shared to Bluesky.', 'atmosphere' ),
+			);
+		}
+
+		if ( ! is_connected() ) {
+			/*
+			 * `is_connected()` is false for both a dead session and a site
+			 * that never connected. Only the first is fixable by an admin,
+			 * so it gets its own copy and lifts the panel's notice from
+			 * info to warning.
+			 */
+			if ( needs_reauth() ) {
+				/*
+				 * The cause sentence is shared with the document panel via
+				 * {@see \Atmosphere\reauth_lead_for_current_user()}, so a
+				 * `key_changed` (or any other recorded) cause reads
+				 * identically on both surfaces, including the
+				 * operator-disconnect swap. The consequence sentence is
+				 * this panel's own.
+				 *
+				 * `needs_reconnect` tracks whether a cause sentence is
+				 * actually shown, not just whether the connection is dead:
+				 * a non-admin reading a suppressed operator-disconnect gets
+				 * `false`, matching the document panel showing no banner
+				 * for the same reader.
+				 */
+				$lead   = reauth_lead_for_current_user();
+				$tail   = \__( 'This post will not be shared until your site is reconnected.', 'atmosphere' );
+				$reason = '' !== $lead ? $lead . ' ' . $tail : $tail;
+
+				return array(
+					'will_publish'    => false,
+					'needs_reconnect' => '' !== $lead,
+					'reason'          => $reason,
+				);
+			}
+
+			return array(
+				'will_publish' => false,
+				'reason'       => \__( 'Your site isn’t connected to Bluesky yet.', 'atmosphere' ),
 			);
 		}
 
