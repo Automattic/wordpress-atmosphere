@@ -24,7 +24,7 @@ use function Atmosphere\is_auto_publish_enabled;
 use function Atmosphere\is_connected;
 use function Atmosphere\is_supported_post_type;
 use function Atmosphere\needs_reauth;
-use function Atmosphere\reauth_lead_for_current_user;
+use function Atmosphere\share_status;
 
 /**
  * Pre-publish preview controller.
@@ -309,19 +309,19 @@ class Pre_Publish_Controller extends \WP_REST_Controller {
 		 * not change whether this post publishes, so the auto-publish-off
 		 * reason takes priority over a reconnect prompt.
 		 */
-		if ( ! is_auto_publish_enabled() ) {
-			// Attribute the off state to "another plugin" whenever something
-			// external forces it off despite the user's saved preference being
-			// on — connection-only mode OR the `atmosphere_should_auto_publish`
-			// filter. Only blame settings when the stored option is itself off,
-			// so the editor never tells the author "turned off in settings" while
-			// their checkbox is checked.
-			$stored_on = '1' === (string) \get_option( 'atmosphere_auto_publish', '1' );
+		$site = share_status();
+
+		if ( ! $site['sharing_enabled'] ) {
+			/*
+			 * `reason`, not `message`: this panel was asked a direct question
+			 * about a post, so it always answers, including in the state where
+			 * the document panel deliberately says nothing because a host
+			 * plugin owns the sharing experience. Same sentence either way,
+			 * decided in {@see \Atmosphere\share_status()}.
+			 */
 			return array(
 				'will_publish' => false,
-				'reason'       => $stored_on
-					? \__( 'Automatic publishing to Bluesky is turned off by another plugin on this site.', 'atmosphere' )
-					: \__( 'Automatic publishing to Bluesky is turned off in settings.', 'atmosphere' ),
+				'reason'       => $site['reason'],
 			);
 		}
 
@@ -363,7 +363,7 @@ class Pre_Publish_Controller extends \WP_REST_Controller {
 			if ( needs_reauth() ) {
 				/*
 				 * The cause sentence is shared with the document panel via
-				 * {@see \Atmosphere\reauth_lead_for_current_user()}, so a
+				 * {@see \Atmosphere\share_status()}, so a
 				 * `key_changed` (or any other recorded) cause reads
 				 * identically on both surfaces, including the
 				 * operator-disconnect swap. The consequence sentence is
@@ -375,7 +375,7 @@ class Pre_Publish_Controller extends \WP_REST_Controller {
 				 * `false`, matching the document panel showing no banner
 				 * for the same reader.
 				 */
-				$lead   = reauth_lead_for_current_user();
+				$lead   = $site['reason'];
 				$tail   = \__( 'This post will not be shared until your site is reconnected.', 'atmosphere' );
 				$reason = '' !== $lead ? $lead . ' ' . $tail : $tail;
 

@@ -21,6 +21,7 @@ import {
 	DISABLED_META_KEY,
 	CUSTOM_TEXT_META_KEY,
 	PREVIEW_PATH,
+	SHARE_STATUS,
 } from '../config';
 import { ReconnectAction } from '../shared/reconnect-notice';
 import { strategyLabel, hasOverLimit, isAuthError } from './utils';
@@ -235,12 +236,26 @@ function PrePublishPanel() {
 }
 
 registerPlugin( 'atmosphere-pre-publish-panel', {
-	render: () => (
-		<PluginPrePublishPanel
-			title={ __( 'Bluesky', 'atmosphere' ) }
-			initialOpen
-		>
-			<PrePublishPanel />
-		</PluginPrePublishPanel>
-	),
+	render: () => {
+		/*
+		 * A host plugin owns the sharing experience in connection-only mode,
+		 * so ATmosphere says nothing about sharing anywhere in the editor,
+		 * here included. The document panel is silent in the same state.
+		 *
+		 * Only the UI hides. The REST projector still answers in full, since
+		 * anything else asking it deserves the reason rather than silence.
+		 */
+		if ( 'sharing_off_external' === SHARE_STATUS.state ) {
+			return null;
+		}
+
+		return (
+			<PluginPrePublishPanel
+				title={ __( 'Bluesky', 'atmosphere' ) }
+				initialOpen
+			>
+				<PrePublishPanel />
+			</PluginPrePublishPanel>
+		);
+	},
 } );

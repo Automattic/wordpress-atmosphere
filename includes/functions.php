@@ -676,12 +676,21 @@ function reauth_lead_for_current_user(): string {
  * are separate because the toggle still records a preference while the
  * connection is down, and `wp atmosphere backfill` reads that meta later.
  *
- * @return array{state: string, message: string, severity: string, action: bool, can_share: bool, sharing_enabled: bool}
+ * Two sentences come out of it, from the same decision. `message` is for an
+ * ambient surface like the document panel, which may say nothing at all when
+ * there is nothing the reader can act on. `reason` is for a surface that was
+ * asked a direct question, like the pre-publish panel, which always has to
+ * answer. They differ in exactly one state: sharing forced off from outside,
+ * where the panel stays quiet but "will this post be shared" still needs an
+ * answer.
+ *
+ * @return array{state: string, message: string, reason: string, severity: string, action: bool, can_share: bool, sharing_enabled: bool}
  */
 function share_status(): array {
 	$ok = array(
 		'state'           => 'ok',
 		'message'         => '',
+		'reason'          => '',
 		'severity'        => 'info',
 		'action'          => false,
 		'can_share'       => true,
@@ -696,11 +705,14 @@ function share_status(): array {
 		 */
 		$owner_turned_it_off = '1' !== (string) \get_option( 'atmosphere_auto_publish', '1' );
 
+		$reason = $owner_turned_it_off
+			? \__( 'Automatic publishing to Bluesky is turned off in settings.', 'atmosphere' )
+			: \__( 'Automatic publishing to Bluesky is turned off by another plugin on this site.', 'atmosphere' );
+
 		return array(
 			'state'           => $owner_turned_it_off ? 'sharing_off' : 'sharing_off_external',
-			'message'         => $owner_turned_it_off
-				? \__( 'Automatic publishing to Bluesky is turned off in settings.', 'atmosphere' )
-				: '',
+			'message'         => $owner_turned_it_off ? $reason : '',
+			'reason'          => $reason,
 			'severity'        => 'info',
 			'action'          => false,
 			'can_share'       => false,
@@ -714,6 +726,7 @@ function share_status(): array {
 		return array(
 			'state'           => 'needs_reconnect',
 			'message'         => $lead,
+			'reason'          => $lead,
 			'severity'        => 'warning',
 			'action'          => true,
 			'can_share'       => false,
