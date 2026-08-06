@@ -173,16 +173,38 @@ class Test_Reauth_Notice extends WP_UnitTestCase {
 	}
 
 	/**
-	 * Cap gate: a logged-out request must produce no output, even when
-	 * the underlying state would otherwise render the notice.
+	 * A reader without `manage_options` still gets the notice, because the
+	 * connection being dead affects the whole site. They are told who can
+	 * fix it instead of being handed a link to a screen they cannot open.
 	 */
-	public function test_no_output_without_manage_options_cap(): void {
+	public function test_renders_for_a_reader_without_manage_options(): void {
 		$this->seed_identity();
 		\update_option( Client::DISCONNECTED_OPTION, \time(), false );
 
 		$html = $this->capture_notice();
 
-		$this->assertSame( '', $html );
+		$this->assertStringContainsString( 'Ask an administrator to reconnect it.', $html );
+		$this->assertStringNotContainsString( '<a href', $html );
+	}
+
+	/**
+	 * With both outgoing lanes already off, naming posts and comments would
+	 * be wrong: nothing was publishing anyway, and what breaks is whatever
+	 * else uses the connection.
+	 */
+	public function test_consequence_copy_follows_what_the_site_actually_uses(): void {
+		$this->seed_identity();
+		\update_option( 'atmosphere_auto_publish', '0' );
+		\update_option( 'atmosphere_publish_comments', '0' );
+		\wp_set_current_user( self::factory()->user->create( array( 'role' => 'administrator' ) ) );
+
+		$html = $this->capture_notice();
+
+		$this->assertStringContainsString( 'uses your Bluesky connection', $html );
+		$this->assertStringNotContainsString( 'New posts and comments', $html );
+
+		\delete_option( 'atmosphere_auto_publish' );
+		\delete_option( 'atmosphere_publish_comments' );
 	}
 
 	/**

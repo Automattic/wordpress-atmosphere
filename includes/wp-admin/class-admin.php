@@ -21,6 +21,7 @@ use function Atmosphere\handle_typeahead_url;
 use function Atmosphere\has_identity;
 use function Atmosphere\is_auto_publish_enabled;
 use function Atmosphere\is_connected;
+use function Atmosphere\is_comment_publishing_enabled;
 use function Atmosphere\is_connection_only_mode;
 use function Atmosphere\is_operator_disconnected;
 use function Atmosphere\is_publication_sync_enabled;
@@ -564,27 +565,21 @@ class Admin {
 	 * session has expired" for a state the user just chose.
 	 */
 	public static function maybe_render_reauth_notice(): void {
-		if ( ! \current_user_can( 'manage_options' ) ) {
-			return;
-		}
-
 		if ( ! needs_reauth() ) {
 			return;
 		}
+
+		$can_manage = \current_user_can( 'manage_options' );
 
 		/*
 		 * Resolve where the reconnect link points via the shared helper: the
 		 * settings page normally hosts it, but in connection-only mode that
 		 * page is hidden, so it falls back to the Connectors screen, whose
-		 * card can also reconnect, when one exists (WP 7.0+). Only bail when
-		 * there's genuinely no screen to link, rather than leaving a dead
-		 * session with no site-wide signal at all.
+		 * card can also reconnect, when one exists (WP 7.0+). An empty
+		 * result only costs the link: the notice itself still renders, so a
+		 * dead session is never left without a site-wide signal.
 		 */
-		$reconnect_url = reconnect_url();
-
-		if ( '' === $reconnect_url ) {
-			return;
-		}
+		$reconnect_url = $can_manage ? reconnect_url() : '';
 
 		$heading = \__( 'ATmosphere: reconnection required', 'atmosphere' );
 
@@ -605,15 +600,48 @@ class Admin {
 
 		$lead = reauth_lead_for_current_user();
 
-		/* translators: %s: URL to reconnect the AT Protocol account. */
-		$tail = \__( 'New posts and comments will not publish until you <a href="%s">reconnect your account</a>. Your publishing preferences and verification headers stay in place in the meantime.', 'atmosphere' );
+		/*
+		 * The helper suppresses the cause for a reader without
+		 * `manage_options` on an operator-initiated disconnect. This notice
+		 * still renders for them, so fall back to the same generic sentence
+		 * the helper gives every other non-admin rather than opening with
+		 * the consequence and no subject.
+		 */
+		if ( '' === $lead ) {
+			$lead = \__( 'Your site’s Bluesky connection needs attention.', 'atmosphere' );
+		}
 
 		/*
-		 * Only the tail goes through sprintf: a lead translation
-		 * containing a stray `%` must not be able to corrupt the
-		 * placeholder substitution (PHP 8 throws on missing arguments).
+		 * What actually stops working depends on what this site uses the
+		 * connection for. Naming posts and comments is wrong when both
+		 * outgoing lanes are already off, which is exactly connection-only
+		 * mode: there the host plugin's features are what break.
 		 */
-		$message = $lead . ' ' . \sprintf( $tail, \esc_url( $reconnect_url ) );
+		if ( is_auto_publish_enabled() || is_comment_publishing_enabled() ) {
+			$consequence = \__( 'New posts and comments will not publish until the connection is restored.', 'atmosphere' );
+		} else {
+			$consequence = \__( 'Anything on this site that uses your Bluesky connection will stop working until it is restored.', 'atmosphere' );
+		}
+
+		/*
+		 * Only the action sentence goes through sprintf: a lead or
+		 * consequence translation containing a stray `%` must not be able to
+		 * corrupt the placeholder substitution (PHP 8 throws on missing
+		 * arguments).
+		 */
+		if ( ! $can_manage ) {
+			$action = \__( 'Ask an administrator to reconnect it.', 'atmosphere' );
+		} elseif ( '' === $reconnect_url ) {
+			$action = \__( 'Reconnect your Bluesky account to fix this.', 'atmosphere' );
+		} else {
+			$action = \sprintf(
+				/* translators: %s: URL to reconnect the Bluesky account. */
+				\__( '<a href="%s">Reconnect your account</a> to fix this.', 'atmosphere' ),
+				\esc_url( $reconnect_url )
+			);
+		}
+
+		$message = $lead . ' ' . $consequence . ' ' . $action . ' ' . \__( 'Your publishing preferences and verification headers stay in place in the meantime.', 'atmosphere' );
 
 		?>
 		<div class="notice notice-warning is-dismissible">
