@@ -472,19 +472,36 @@ function has_identity(): bool {
  *
  * @since unreleased
  *
+ * Replaces the stored identity outright. It is not a partial update: a key
+ * you leave out is stored as an empty string, so passing only `handle` clears
+ * the DID, which takes `has_identity()` false and stops
+ * `/.well-known/atproto-did` answering. Read {@see get_identity()} and pass
+ * the full array back if you mean to change one field.
+ *
  * @param array $identity Identity to store. Only `did`, `handle`, and
- *                        `pds_endpoint` are persisted; a missing key is
- *                        stored as an empty string and any other keys are
- *                        dropped.
- * @return bool Whether the option was updated (see `update_option()`).
+ *                        `pds_endpoint` are persisted; a missing or
+ *                        non-scalar key is stored as an empty string and
+ *                        any other keys are dropped.
+ * @return bool False both when the write fails and when the stored value was
+ *              already identical, per `update_option()`. Not a success flag.
  */
 function set_identity( array $identity ): bool {
+	/*
+	 * Scalar guard: `(string)` on an array warns and stores the literal
+	 * "Array", which `has_identity()` would then treat as a live identity
+	 * and the well-known endpoint would serve. No first-party caller can
+	 * do that, but this helper is documented for third parties.
+	 */
+	$field = static function ( $value ): string {
+		return \is_scalar( $value ) ? (string) $value : '';
+	};
+
 	return \update_option(
 		'atmosphere_identity',
 		array(
-			'did'          => (string) ( $identity['did'] ?? '' ),
-			'handle'       => (string) ( $identity['handle'] ?? '' ),
-			'pds_endpoint' => (string) ( $identity['pds_endpoint'] ?? '' ),
+			'did'          => $field( $identity['did'] ?? '' ),
+			'handle'       => $field( $identity['handle'] ?? '' ),
+			'pds_endpoint' => $field( $identity['pds_endpoint'] ?? '' ),
 		),
 		true
 	);

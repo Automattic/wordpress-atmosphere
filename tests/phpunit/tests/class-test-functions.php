@@ -1123,4 +1123,46 @@ class Test_Functions extends \WP_UnitTestCase {
 
 		\delete_option( 'atmosphere_identity' );
 	}
+
+	/**
+	 * A non-scalar value must not become the literal "Array", which
+	 * `has_identity()` would treat as a live identity and the well-known
+	 * endpoint would then serve.
+	 */
+	public function test_set_identity_drops_non_scalar_values() {
+		set_identity(
+			array(
+				'did'          => array( 'nested' => 'value' ),
+				'handle'       => 'example.com',
+				'pds_endpoint' => 'https://pds.example.com',
+			)
+		);
+
+		$stored = \get_option( 'atmosphere_identity' );
+
+		$this->assertSame( '', $stored['did'] );
+		$this->assertStringNotContainsString( 'Array', (string) $stored['did'] );
+	}
+
+	/**
+	 * The helper replaces rather than merges. Pinned because the failure is
+	 * silent and expensive: a partial call clears the DID, which takes
+	 * `has_identity()` false and stops the well-known endpoint answering.
+	 */
+	public function test_set_identity_replaces_rather_than_merges() {
+		set_identity(
+			array(
+				'did'          => 'did:plc:test123',
+				'handle'       => 'old.example.com',
+				'pds_endpoint' => 'https://pds.example.com',
+			)
+		);
+
+		set_identity( array( 'handle' => 'new.example.com' ) );
+
+		$stored = \get_option( 'atmosphere_identity' );
+
+		$this->assertSame( 'new.example.com', $stored['handle'] );
+		$this->assertSame( '', $stored['did'] );
+	}
 }

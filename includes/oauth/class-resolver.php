@@ -54,6 +54,25 @@ class Resolver {
 			return $response;
 		}
 
+		/*
+		 * This hop points at the user's own domain, so it is the one most
+		 * likely to sit behind a CDN answering 503 or a WAF answering 429,
+		 * and it is reached before plc.directory — without the gate a
+		 * custom-domain user gets "could not resolve handle" for an outage.
+		 *
+		 * 404 is excluded on purpose: a host with no well-known file has
+		 * simply not set up handle verification, which is a different
+		 * problem from an upstream being down, and the existing
+		 * `atmosphere_resolve_handle` message says so.
+		 */
+		if ( 404 !== (int) \wp_remote_retrieve_response_code( $response ) ) {
+			$upstream_error = self::upstream_error( $response, \__( 'handle verification document', 'atmosphere' ) );
+
+			if ( $upstream_error ) {
+				return $upstream_error;
+			}
+		}
+
 		$body = \trim( \wp_remote_retrieve_body( $response ) );
 
 		if ( \str_starts_with( $body, 'did:' ) ) {
@@ -124,9 +143,14 @@ class Resolver {
 	 * with a 500 / 503 / 429 whose body still decodes — an HTML error page,
 	 * or rate-limit JSON with no `id` — which would otherwise fall through
 	 * to the generic "invalid document" branch and hide a transient upstream
-	 * failure behind a malformed-document message. Callers can read
-	 * `get_error_data()['status']` to tell a transient 5xx / 429 from a
-	 * structural 4xx. Returns null for a 2xx response so the caller parses.
+	 * failure behind a malformed-document message.
+	 *
+	 * The status travels as `upstream_status`, deliberately not `status`:
+	 * that key is what `rest_convert_error_to_response()` reads to set the
+	 * REST response's own code, so an attacker-chosen host answering 401 or
+	 * 403 must not be able to make it the site's API status. No caller
+	 * branches on it today; the improvement users actually see is the
+	 * message. Returns null for a 2xx response so the caller parses.
 	 *
 	 * @since unreleased
 	 *
@@ -142,12 +166,22 @@ class Resolver {
 		}
 
 		if ( 429 === $status ) {
+			/*
+			 * The header comes from a host the submitted handle chose, and
+			 * this message is rendered by `settings_errors()`, which prints
+			 * it without escaping. Coercing to an int is the whole defence:
+			 * a non-numeric value (an HTTP-date, markup, or the array PHP
+			 * hands back for a repeated header) becomes 0 and falls through
+			 * to the variant with no value in it. Also fixes `Retry-After: 0`,
+			 * whose string form is falsy and used to be dropped silently.
+			 */
 			$retry_after = \wp_remote_retrieve_header( $response, 'retry-after' );
+			$retry_after = \is_numeric( $retry_after ) ? (int) $retry_after : 0;
 
 			$message = $retry_after
 				? \sprintf(
-					/* translators: 1: resource label, 2: Retry-After header value. */
-					\__( 'Rate limited while fetching the %1$s. Retry after %2$s.', 'atmosphere' ),
+					/* translators: 1: resource label, 2: seconds to wait before retrying. */
+					\__( 'Rate limited while fetching the %1$s. Retry after %2$d seconds.', 'atmosphere' ),
 					$label,
 					$retry_after
 				)
@@ -157,7 +191,7 @@ class Resolver {
 					$label
 				);
 
-			return new \WP_Error( 'atmosphere_upstream_rate_limited', $message, array( 'status' => $status ) );
+			return new \WP_Error( 'atmosphere_upstream_rate_limited', $message, array( 'upstream_status' => $status ) );
 		}
 
 		return new \WP_Error(
@@ -168,7 +202,7 @@ class Resolver {
 				$label,
 				$status
 			),
-			array( 'status' => $status )
+			array( 'upstream_status' => $status )
 		);
 	}
 

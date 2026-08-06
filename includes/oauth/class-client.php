@@ -16,6 +16,7 @@ use Atmosphere\Atmosphere;
 use function Atmosphere\clear_scheduled_hooks;
 use function Atmosphere\debug_log;
 use function Atmosphere\get_connection;
+use function Atmosphere\set_identity;
 use function Atmosphere\is_success_status;
 
 /**
@@ -647,15 +648,7 @@ class Client {
 		 * pre-split shape; the canonical source of truth for identity
 		 * is `atmosphere_identity`.
 		 */
-		\update_option(
-			'atmosphere_identity',
-			array(
-				'did'          => $resolved['did'],
-				'handle'       => $resolved['handle'],
-				'pds_endpoint' => $resolved['pds_endpoint'],
-			),
-			true
-		);
+		set_identity( $resolved );
 
 		$connection = array(
 			'did'                 => $resolved['did'],
