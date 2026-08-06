@@ -22,16 +22,16 @@ export function isSharingEnabled( meta ) {
 }
 
 /**
- * Help text under the share toggle.
+ * Help text under the share toggle: what happens to THIS post.
  *
- * While the connection is dead the toggle still records a preference, so the
- * copy has to describe a delayed share rather than promise one on publish.
+ * The control describing itself, so it always renders with the control and is
+ * never counted as one of the panel's messages.
  *
- * @param {boolean} enabled     Whether sharing is on for this post.
- * @param {boolean} needsReauth Whether the site's connection needs a reconnect.
+ * @param {boolean} enabled  Whether sharing is on for this post.
+ * @param {boolean} canShare Whether the site can share at all right now.
  * @return {string} Translated help text.
  */
-export function shareHelpText( enabled, needsReauth ) {
+export function shareHelpText( enabled, canShare ) {
 	if ( ! enabled ) {
 		return __(
 			'This post will not be shared via ATmosphere.',
@@ -39,7 +39,7 @@ export function shareHelpText( enabled, needsReauth ) {
 		);
 	}
 
-	if ( needsReauth ) {
+	if ( ! canShare ) {
 		return __(
 			'Sharing is on for this post, but it will not be shared while your site is disconnected from Bluesky.',
 			'atmosphere'
@@ -53,29 +53,62 @@ export function shareHelpText( enabled, needsReauth ) {
 }
 
 /**
- * The panel's single site-level message, or null when there is nothing to say.
+ * The one message the panel shows, or null when there is nothing to say.
  *
- * One fact, one owner: this is the only place the panel speaks about the site
- * rather than the post, so post-level copy never has to restate any of it.
- * Precedence matters. Sharing being off outranks the connection, because when
- * ATmosphere is not the thing publishing, the connection has no bearing on
- * this screen. Sharing forced off from outside says nothing at all: a host
- * plugin owns that experience and the reader cannot act on the arrangement.
+ * Every state here is a view of the same small set of problems, and showing
+ * two at once makes the reader work out which to act on: a dead connection
+ * explains both a failed share and a removal that is not happening, so it
+ * speaks for them. Highest priority first, and only one ever wins.
  *
- * @param {boolean} autoPublish       Whether sharing is on for the site.
- * @param {string}  autoPublishNotice Why sharing is off, when worth saying.
- * @param {string}  reauthLead        Cause sentence, empty when there is none.
- * @return {{severity: string, message: string, action: boolean}|null} The message.
+ * The site-level half is decided in PHP and arrives whole; this only picks
+ * between it and the two post-level cases.
+ *
+ * @param {Object}  shareStatus          Site decision from `Atmosphere\share_status()`.
+ * @param {Object}  post                 Post-level state.
+ * @param {boolean} post.enabled         Whether sharing is on for this post.
+ * @param {boolean} post.hasRecord       Whether the post is on Bluesky.
+ * @param {boolean} post.hasPublishError Whether the last share attempt failed.
+ * @return {{kind: string, severity: string, message: string, action: boolean}|null} The message.
  */
-export function siteStatus( autoPublish, autoPublishNotice, reauthLead ) {
-	if ( ! autoPublish ) {
-		return autoPublishNotice
-			? { severity: 'info', message: autoPublishNotice, action: false }
-			: null;
+export function panelMessage(
+	shareStatus,
+	{ enabled, hasRecord, hasPublishError }
+) {
+	if ( shareStatus.message ) {
+		return {
+			kind: shareStatus.state,
+			severity: shareStatus.severity,
+			message: shareStatus.message,
+			action: !! shareStatus.action,
+		};
 	}
 
-	if ( reauthLead ) {
-		return { severity: 'warning', message: reauthLead, action: true };
+	// Nothing post-level is worth saying while the site cannot share at all:
+	// whatever went wrong or is pending is a consequence of that, and the
+	// site either explained it above or deliberately stayed quiet.
+	if ( ! shareStatus.can_share ) {
+		return null;
+	}
+
+	if ( hasPublishError && enabled ) {
+		return {
+			kind: 'publishError',
+			severity: 'error',
+			message: '',
+			action: false,
+		};
+	}
+
+	if ( hasRecord && ! enabled ) {
+		return {
+			kind: 'pendingRemoval',
+			severity: 'warning',
+			message: __(
+				'Sharing is off, but this post is still on Bluesky. It will be removed the next time your site syncs.',
+				'atmosphere'
+			),
+			action: false,
+		};
 	}
 
 	return null;

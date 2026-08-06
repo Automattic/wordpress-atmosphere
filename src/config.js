@@ -53,38 +53,20 @@ export const RECONNECT_URL = options.reconnectUrl || '';
 export const CAN_MANAGE = !! options.canManage;
 
 /**
- * Whether the site's Bluesky connection needs to be re-authorized.
+ * The site-level share decision, computed once in PHP.
  *
- * False on a never-connected site, so the editor only warns about a
- * connection that existed and stopped working.
+ * `{ state, message, severity, action, can_share }` — see
+ * `Atmosphere\share_status()`. The panel renders this rather than deriving
+ * the same answer from separate flags, which is what let the editor's two
+ * surfaces contradict each other.
  *
- * @type {boolean}
+ * @type {Object}
  */
-export const NEEDS_REAUTH = !! options.needsReauth;
-
-/**
- * Cause sentence for the reconnect warning, composed server-side.
- *
- * Empty when no reconnect is needed. Users without `manage_options` get a
- * generic sentence instead of the recorded cause.
- *
- * @type {string}
- */
-export const REAUTH_LEAD = options.reauthLead || '';
-
-/**
- * Whether posts are automatically cross-posted to Bluesky on publish.
- *
- * @type {boolean}
- */
-export const AUTO_PUBLISH = !! options.autoPublish;
-
-/**
- * Why the sharing controls are hidden, when it is worth saying.
- *
- * Empty when sharing is on, and also when something external forces it off:
- * the site owner did not choose that and cannot act on it from here.
- *
- * @type {string}
- */
-export const AUTO_PUBLISH_NOTICE = options.autoPublishNotice || '';
+export const SHARE_STATUS = options.shareStatus || {
+	state: 'ok',
+	message: '',
+	severity: 'info',
+	action: false,
+	can_share: true,
+	sharing_enabled: true,
+};

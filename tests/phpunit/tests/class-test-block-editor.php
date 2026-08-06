@@ -80,8 +80,8 @@ class Test_Block_Editor extends \WP_UnitTestCase {
 
 		$data = $this->script_data();
 
-		$this->assertFalse( $data['needsReauth'] );
-		$this->assertSame( '', $data['reauthLead'] );
+		$this->assertTrue( $data['shareStatus']['can_share'] );
+		$this->assertSame( '', $data['shareStatus']['message'] );
 	}
 
 	/**
@@ -95,8 +95,8 @@ class Test_Block_Editor extends \WP_UnitTestCase {
 
 		$data = $this->script_data();
 
-		$this->assertTrue( $data['needsReauth'] );
-		$this->assertSame( 'Your Bluesky session has expired.', $data['reauthLead'] );
+		$this->assertFalse( $data['shareStatus']['can_share'] );
+		$this->assertSame( 'Your Bluesky session has expired.', $data['shareStatus']['message'] );
 	}
 
 	/**
@@ -109,7 +109,7 @@ class Test_Block_Editor extends \WP_UnitTestCase {
 		$this->login_as_admin();
 		$this->flag_connection_for_reauth( Client::REAUTH_REASON_KEY_CHANGED );
 
-		$this->assertStringContainsString( 'security keys', $this->script_data()['reauthLead'] );
+		$this->assertStringContainsString( 'security keys', $this->script_data()['shareStatus']['message'] );
 	}
 
 	/**
@@ -124,9 +124,9 @@ class Test_Block_Editor extends \WP_UnitTestCase {
 
 		$data = $this->script_data();
 
-		$this->assertTrue( $data['needsReauth'] );
+		$this->assertFalse( $data['shareStatus']['can_share'] );
 		$this->assertFalse( $data['canManage'] );
-		$this->assertSame( 'Your site’s Bluesky connection needs attention.', $data['reauthLead'] );
+		$this->assertSame( 'Your site’s Bluesky connection needs attention.', $data['shareStatus']['message'] );
 	}
 
 	/**
@@ -142,8 +142,8 @@ class Test_Block_Editor extends \WP_UnitTestCase {
 
 		$data = $this->script_data();
 
-		$this->assertTrue( $data['needsReauth'] );
-		$this->assertSame( 'ATmosphere is disconnected from Bluesky.', $data['reauthLead'] );
+		$this->assertFalse( $data['shareStatus']['can_share'] );
+		$this->assertSame( 'ATmosphere is disconnected from Bluesky.', $data['shareStatus']['message'] );
 	}
 
 	/**
@@ -161,7 +161,7 @@ class Test_Block_Editor extends \WP_UnitTestCase {
 
 		$data = $this->script_data();
 
-		$this->assertTrue( $data['needsReauth'] );
+		$this->assertFalse( $data['shareStatus']['can_share'] );
 	}
 
 	/**
@@ -181,8 +181,8 @@ class Test_Block_Editor extends \WP_UnitTestCase {
 
 		$data = $this->script_data();
 
-		$this->assertTrue( $data['needsReauth'] );
-		$this->assertSame( '', $data['reauthLead'] );
+		$this->assertFalse( $data['shareStatus']['can_share'] );
+		$this->assertSame( '', $data['shareStatus']['message'] );
 	}
 
 	/**
@@ -229,11 +229,11 @@ class Test_Block_Editor extends \WP_UnitTestCase {
 	public function test_auto_publish_reflects_the_stored_setting() {
 		$this->login_as_admin();
 
-		$this->assertTrue( $this->script_data()['autoPublish'] );
+		$this->assertTrue( $this->script_data()['shareStatus']['can_share'] );
 
 		\update_option( 'atmosphere_auto_publish', '0' );
 
-		$this->assertFalse( $this->script_data()['autoPublish'] );
+		$this->assertFalse( $this->script_data()['shareStatus']['can_share'] );
 	}
 
 	/**
@@ -282,10 +282,10 @@ class Test_Block_Editor extends \WP_UnitTestCase {
 
 		$data = $this->script_data();
 
-		$this->assertFalse( $data['autoPublish'] );
+		$this->assertFalse( $data['shareStatus']['can_share'] );
 		$this->assertSame(
 			'Automatic publishing to Bluesky is turned off in settings.',
-			$data['autoPublishNotice']
+			$data['shareStatus']['message']
 		);
 	}
 
@@ -300,8 +300,8 @@ class Test_Block_Editor extends \WP_UnitTestCase {
 
 		$data = $this->script_data();
 
-		$this->assertFalse( $data['autoPublish'] );
-		$this->assertSame( '', $data['autoPublishNotice'] );
+		$this->assertFalse( $data['shareStatus']['can_share'] );
+		$this->assertSame( '', $data['shareStatus']['message'] );
 	}
 
 	/**
@@ -310,7 +310,7 @@ class Test_Block_Editor extends \WP_UnitTestCase {
 	public function test_enabled_sharing_needs_no_notice() {
 		$data = $this->script_data();
 
-		$this->assertTrue( $data['autoPublish'] );
-		$this->assertSame( '', $data['autoPublishNotice'] );
+		$this->assertTrue( $data['shareStatus']['can_share'] );
+		$this->assertSame( '', $data['shareStatus']['message'] );
 	}
 }

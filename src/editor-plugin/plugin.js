@@ -28,14 +28,11 @@ import { __ } from '@wordpress/i18n';
 import {
 	DISABLED_META_KEY,
 	CUSTOM_TEXT_META_KEY,
-	NEEDS_REAUTH,
-	REAUTH_LEAD,
 	RECONNECT_URL,
 	CAN_MANAGE,
-	AUTO_PUBLISH,
-	AUTO_PUBLISH_NOTICE,
+	SHARE_STATUS,
 } from '../config';
-import { isSharingEnabled, shareHelpText, siteStatus } from './utils';
+import { isSharingEnabled, shareHelpText, panelMessage } from './utils';
 import { ReconnectAction } from '../shared/reconnect-notice';
 
 /**
@@ -89,7 +86,11 @@ const EditorPlugin = () => {
 	}
 
 	const enabled = isSharingEnabled( meta );
-	const site = siteStatus( AUTO_PUBLISH, AUTO_PUBLISH_NOTICE, REAUTH_LEAD );
+	const message = panelMessage( SHARE_STATUS, {
+		enabled,
+		hasRecord: !! sharedUrl,
+		hasPublishError: !! publishError,
+	} );
 	const customText = ( meta && meta[ CUSTOM_TEXT_META_KEY ] ) || '';
 
 	/* Precomputed so the notice below avoids a nested ternary. The
@@ -98,20 +99,14 @@ const EditorPlugin = () => {
 	   shown only to users who can open the settings page; everyone
 	   else is told who can.
 
-	   These two strings are kept self-contained (not built from the
-	   shared ReconnectAction lead + link) to preserve their existing
-	   translations; see the NEEDS_REAUTH banner and the pre-publish
-	   panel for the shared, ReconnectAction-based version. When the
-	   banner above is already showing (NEEDS_REAUTH), this notice
-	   drops the call to action instead of repeating it. */
+	   These strings are kept self-contained (not built from the shared
+	   ReconnectAction lead + link) to preserve their existing
+	   translations. There is no variant that drops the call to action:
+	   this notice only renders when the site can share, so it can never
+	   sit under a banner that already carries one. */
 	const needsReconnect = publishError?.needs_reconnect;
 	let reconnectMessage;
-	if ( NEEDS_REAUTH ) {
-		reconnectMessage = __(
-			'Sharing to Bluesky failed because your site is no longer connected to Bluesky.',
-			'atmosphere'
-		);
-	} else if ( CAN_MANAGE && RECONNECT_URL ) {
+	if ( CAN_MANAGE && RECONNECT_URL ) {
 		reconnectMessage = (
 			<>
 				{ __(
@@ -158,33 +153,46 @@ const EditorPlugin = () => {
 				</>
 			}
 		>
-			{ /* LEVEL 1 — site. One message, the highest-priority problem
-			     only; see `siteStatus()` for the precedence and why sharing
-			     being off outranks the connection. Because this is the sole
-			     owner of site-level facts, nothing below restates them.
-
-			     A warning is wrapped in BaseControl so it picks up the block
-			     inspector's 16px bottom margin, which `.components-notice`
-			     does not get on its own. Info is a plain paragraph: it
-			     states a setting, not a problem.
-
-			     The connection state behind this is a page-load snapshot
-			     (localized once when the editor script enqueues), unlike the
-			     pre-publish panel, which refetches live. A reconnect
-			     elsewhere won't update it until the page reloads; polling is
-			     ruled out, so that gap is accepted. */ }
-			{ site && 'warning' === site.severity && (
+			{ /* One message, never two. `panelMessage()` owns the
+			     precedence and the reasoning; the component only renders
+			     what it decided. A warning or error is a Notice wrapped in
+			     BaseControl, which is what gives it the block inspector's
+			     16px bottom margin; an informational message is a plain
+			     paragraph, because it states a setting rather than a
+			     problem. */ }
+			{ message && 'info' === message.severity && (
+				<p>{ message.message }</p>
+			) }
+			{ message && 'info' !== message.severity && (
 				<BaseControl>
-					<Notice status="warning" isDismissible={ false }>
-						{ site.message } { site.action && <ReconnectAction /> }
+					<Notice status={ message.severity } isDismissible={ false }>
+						{ 'publishError' === message.kind ? (
+							<>
+								{ needsReconnect
+									? reconnectMessage
+									: retryMessage }
+								{ publishError.message && (
+									<p style={ { marginBottom: 0 } }>
+										<small>{ publishError.message }</small>
+									</p>
+								) }
+							</>
+						) : (
+							<>
+								{ message.message }{ ' ' }
+								{ message.action && <ReconnectAction /> }
+							</>
+						) }
 					</Notice>
 				</BaseControl>
 			) }
-			{ site && 'info' === site.severity && <p>{ site.message }</p> }
 
-			{ /* LEVEL 2 — post. The controls, whose help text always states
-			     the outcome for this post, and at most one notice. */ }
-			{ AUTO_PUBLISH && (
+			{ /* The controls, whose help text always states the outcome for
+			     this post. They follow the site's sharing policy, not the
+			     connection: with the connection down the toggle still records
+			     a preference, and `wp atmosphere backfill` reads that meta
+			     when the site recovers. */ }
+			{ SHARE_STATUS.sharing_enabled && (
 				<>
 					<ToggleControl
 						label={ __( 'Share this post', 'atmosphere' ) }
@@ -195,7 +203,10 @@ const EditorPlugin = () => {
 								[ DISABLED_META_KEY ]: ! value,
 							} )
 						}
-						help={ shareHelpText( enabled, NEEDS_REAUTH ) }
+						help={ shareHelpText(
+							enabled,
+							SHARE_STATUS.can_share
+						) }
 					/>
 
 					{ enabled && (
@@ -217,40 +228,9 @@ const EditorPlugin = () => {
 				</>
 			) }
 
-			{ /* A failed attempt outranks a pending removal: it describes
-			     something that already went wrong, and the two would
-			     otherwise stack. The error record comes from the
-			     `atmosphere_publish_error` REST field, cleared server-side on
-			     the next success, so it disappears once a share goes through.
-			     Retrying=true means the backoff ladder has another attempt
-			     queued; otherwise the author's update is the retry.
-
-			     The removal notice only runs while sharing is on: with it off
-			     there is no next sync to remove anything, and the link below
-			     already says the record is there. */ }
-			{ publishError && enabled && (
-				<Notice status="error" isDismissible={ false }>
-					{ needsReconnect ? reconnectMessage : retryMessage }
-					{ publishError.message && (
-						<p style={ { marginBottom: 0 } }>
-							<small>{ publishError.message }</small>
-						</p>
-					) }
-				</Notice>
-			) }
-			{ ! publishError && AUTO_PUBLISH && sharedUrl && ! enabled && (
-				<Notice status="warning" isDismissible={ false }>
-					{ __(
-						'Sharing is off, but this post is still on Bluesky. It will be removed the next time your site syncs.',
-						'atmosphere'
-					) }
-				</Notice>
-			) }
-
-			{ /* LEVEL 3 — the record exists. Not a message, so it always
-			     comes last, and it renders whether or not sharing is on for
-			     this post: the record is up either way and the author has no
-			     other way to look at it. */ }
+			{ /* A fact, not a message, so it always comes last and renders
+			     whether or not sharing is on for this post: the record is up
+			     either way and there is no other way to look at it. */ }
 			{ sharedUrl && (
 				<p>
 					<ExternalLink href={ sharedUrl }>

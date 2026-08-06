@@ -15,8 +15,7 @@ namespace Atmosphere;
 \defined( 'ABSPATH' ) || exit;
 
 use Atmosphere\Rest\Admin\Pre_Publish_Controller;
-use function Atmosphere\is_auto_publish_enabled;
-use function Atmosphere\needs_reauth;
+use function Atmosphere\share_status;
 use function Atmosphere\reconnect_url;
 
 /**
@@ -91,7 +90,7 @@ class Block_Editor {
 	 * Keeps the REST route and the share-toggle meta key defined once on the
 	 * PHP side so the JS never hardcodes (and drifts from) them.
 	 *
-	 * @return array{previewPath: string, disabledMetaKey: string, customTextMetaKey: string, reconnectUrl: string, canManage: bool, needsReauth: bool, reauthLead: string, autoPublish: bool, autoPublishNotice: string}
+	 * @return array{previewPath: string, disabledMetaKey: string, customTextMetaKey: string, reconnectUrl: string, canManage: bool, shareStatus: array}
 	 */
 	private static function script_data(): array {
 		/*
@@ -102,56 +101,18 @@ class Block_Editor {
 		$can_manage = \current_user_can( 'manage_options' );
 
 		/*
-		 * `needsReauth` is the raw connection state, independent of
-		 * whether a cause sentence is shown for it: `reauthLead` is
-		 * '' both on a healthy connection AND when the cause is
-		 * suppressed for a non-admin on an operator-initiated
-		 * disconnect, and the two must stay distinguishable so
-		 * `shareHelpText()` can hedge without the banner repeating a
-		 * cause it isn't allowed to say.
+		 * One decision object rather than a set of loose flags. The panel
+		 * renders what {@see \Atmosphere\share_status()} decided instead of
+		 * re-deriving it in JavaScript, which is how the two editor surfaces
+		 * used to end up contradicting each other.
 		 */
-		$reauth_lead  = reauth_lead_for_current_user();
-		$needs_reauth = needs_reauth();
-
 		return array(
 			'previewPath'       => Pre_Publish_Controller::full_route(),
 			'disabledMetaKey'   => ATMOSPHERE_META_DISABLED,
 			'customTextMetaKey' => ATMOSPHERE_META_CUSTOM_TEXT,
 			'reconnectUrl'      => reconnect_url(),
 			'canManage'         => $can_manage,
-			'needsReauth'       => $needs_reauth,
-			'reauthLead'        => $reauth_lead,
-			'autoPublish'       => is_auto_publish_enabled(),
-			'autoPublishNotice' => self::auto_publish_notice(),
+			'shareStatus'       => share_status(),
 		);
-	}
-
-	/**
-	 * Why the sharing controls are missing, when it is worth saying.
-	 *
-	 * Only the site owner's own choice is explained. When the stored
-	 * preference is still on and something external forces sharing off
-	 * (connection-only mode, or the `atmosphere_should_auto_publish`
-	 * filter), the host plugin owns the sharing experience and an
-	 * author cannot act on the arrangement, so the panel drops the
-	 * controls without commentary rather than narrating internal wiring.
-	 *
-	 * The pre-publish panel still explains both cases: there it is
-	 * answering a direct question about one post.
-	 *
-	 * @since unreleased
-	 *
-	 * @return string Translated sentence, or '' when nothing needs saying.
-	 */
-	private static function auto_publish_notice(): string {
-		if ( is_auto_publish_enabled() ) {
-			return '';
-		}
-
-		if ( '1' === (string) \get_option( 'atmosphere_auto_publish', '1' ) ) {
-			return '';
-		}
-
-		return \__( 'Automatic publishing to Bluesky is turned off in settings.', 'atmosphere' );
 	}
 }

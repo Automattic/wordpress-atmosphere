@@ -653,6 +653,87 @@ function reauth_lead_for_current_user(): string {
 }
 
 /**
+ * The site-level answer to "can this site share right now, and if not, why".
+ *
+ * Single source for both editor surfaces. The document panel used to derive
+ * this in JavaScript from three separate flags while
+ * {@see \Atmosphere\Rest\Admin\Pre_Publish_Controller::publish_decision()}
+ * derived it again in PHP, so the two drifted and the panel could state the
+ * same fact twice, in two severities, or with its explanation suppressed.
+ *
+ * Precedence is the whole point:
+ *
+ *  - Sharing off outranks the connection. When ATmosphere is not the thing
+ *    publishing, the connection has no bearing on the post being edited.
+ *  - Sharing forced off from outside says nothing at all: a host plugin owns
+ *    that experience and the reader cannot act on the arrangement.
+ *
+ * @since unreleased
+ *
+ * `sharing_enabled` is the site's policy (is cross-posting switched on) and
+ * decides whether the per-post controls render at all. `can_share` is whether
+ * a share could succeed right now, which a dead connection also breaks. They
+ * are separate because the toggle still records a preference while the
+ * connection is down, and `wp atmosphere backfill` reads that meta later.
+ *
+ * @return array{state: string, message: string, severity: string, action: bool, can_share: bool, sharing_enabled: bool}
+ */
+function share_status(): array {
+	$ok = array(
+		'state'           => 'ok',
+		'message'         => '',
+		'severity'        => 'info',
+		'action'          => false,
+		'can_share'       => true,
+		'sharing_enabled' => true,
+	);
+
+	if ( ! is_auto_publish_enabled() ) {
+		/*
+		 * Only the site owner's own choice is explained. The stored option
+		 * still being on means something external forced sharing off, which
+		 * is not theirs to fix.
+		 */
+		$owner_turned_it_off = '1' !== (string) \get_option( 'atmosphere_auto_publish', '1' );
+
+		return array(
+			'state'           => $owner_turned_it_off ? 'sharing_off' : 'sharing_off_external',
+			'message'         => $owner_turned_it_off
+				? \__( 'Automatic publishing to Bluesky is turned off in settings.', 'atmosphere' )
+				: '',
+			'severity'        => 'info',
+			'action'          => false,
+			'can_share'       => false,
+			'sharing_enabled' => false,
+		);
+	}
+
+	$lead = reauth_lead_for_current_user();
+
+	if ( '' !== $lead ) {
+		return array(
+			'state'           => 'needs_reconnect',
+			'message'         => $lead,
+			'severity'        => 'warning',
+			'action'          => true,
+			'can_share'       => false,
+			'sharing_enabled' => true,
+		);
+	}
+
+	/*
+	 * A reconnect is needed but its cause is suppressed for this reader (a
+	 * non-admin on an operator-initiated disconnect). Nothing to show, but
+	 * the site still cannot share, and the toggle's help text says so.
+	 */
+	if ( needs_reauth() ) {
+		$ok['can_share'] = false;
+	}
+
+	return $ok;
+}
+
+/**
  * URL of the ATmosphere settings page.
  *
  * Single source for the settings-page location so reconnect prompts and

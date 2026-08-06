@@ -1,4 +1,4 @@
-import { isSharingEnabled, shareHelpText, siteStatus } from '../utils';
+import { isSharingEnabled, shareHelpText, panelMessage } from '../utils';
 
 describe( 'isSharingEnabled', () => {
 	test( 'is enabled by default (no meta / empty meta)', () => {
@@ -21,7 +21,7 @@ describe( 'isSharingEnabled', () => {
 
 describe( 'shareHelpText', () => {
 	test( 'says nothing will be shared when the toggle is off', () => {
-		expect( shareHelpText( false, false ) ).toBe(
+		expect( shareHelpText( false, true ) ).toBe(
 			'This post will not be shared via ATmosphere.'
 		);
 	} );
@@ -33,51 +33,105 @@ describe( 'shareHelpText', () => {
 	} );
 
 	test( 'promises delivery on publish when the connection is healthy', () => {
-		expect( shareHelpText( true, false ) ).toBe(
+		expect( shareHelpText( true, true ) ).toBe(
 			'This post will be shared via ATmosphere when published.'
 		);
 	} );
 
 	test( 'stops promising delivery while the connection is dead', () => {
-		expect( shareHelpText( true, true ) ).toBe(
+		expect( shareHelpText( true, false ) ).toBe(
 			'Sharing is on for this post, but it will not be shared while your site is disconnected from Bluesky.'
 		);
 	} );
 } );
 
-describe( 'siteStatus', () => {
-	test( 'says nothing when sharing is on and the connection is fine', () => {
-		expect( siteStatus( true, '', '' ) ).toBeNull();
+const OK = {
+	state: 'ok',
+	message: '',
+	severity: 'info',
+	action: false,
+	can_share: true,
+};
+const post = ( overrides = {} ) => ( {
+	enabled: true,
+	hasRecord: false,
+	hasPublishError: false,
+	...overrides,
+} );
+
+describe( 'panelMessage', () => {
+	test( 'says nothing when everything is fine', () => {
+		expect( panelMessage( OK, post() ) ).toBeNull();
 	} );
 
-	test( 'warns about the connection, with an action', () => {
-		expect( siteStatus( true, '', 'Your session expired.' ) ).toEqual( {
+	test( 'renders whatever the site decided, with its action', () => {
+		const status = {
+			state: 'needs_reconnect',
+			message: 'Your session expired.',
+			severity: 'warning',
+			action: true,
+			can_share: false,
+		};
+
+		expect( panelMessage( status, post() ) ).toEqual( {
+			kind: 'needs_reconnect',
 			severity: 'warning',
 			message: 'Your session expired.',
 			action: true,
 		} );
 	} );
 
-	test( 'explains sharing being off when the owner turned it off', () => {
-		expect( siteStatus( false, 'Turned off in settings.', '' ) ).toEqual( {
-			severity: 'info',
-			message: 'Turned off in settings.',
-			action: false,
-		} );
-	} );
+	test( 'a site problem outranks a failed share, so only one shows', () => {
+		const status = {
+			state: 'needs_reconnect',
+			message: 'Your session expired.',
+			severity: 'warning',
+			action: true,
+			can_share: false,
+		};
 
-	test( 'says nothing when sharing was forced off from outside', () => {
-		expect( siteStatus( false, '', '' ) ).toBeNull();
-	} );
-
-	test( 'sharing being off outranks a dead connection', () => {
-		expect( siteStatus( false, '', 'Your session expired.' ) ).toBeNull();
 		expect(
-			siteStatus( false, 'Turned off in settings.', 'Your session expired.' )
-		).toEqual( {
+			panelMessage( status, post( { hasPublishError: true } ) ).kind
+		).toBe( 'needs_reconnect' );
+	} );
+
+	test( 'stays silent when the site said nothing and cannot share', () => {
+		const status = {
+			state: 'sharing_off_external',
+			message: '',
 			severity: 'info',
-			message: 'Turned off in settings.',
 			action: false,
-		} );
+			can_share: false,
+		};
+
+		expect(
+			panelMessage(
+				status,
+				post( { hasPublishError: true, hasRecord: true } )
+			)
+		).toBeNull();
+	} );
+
+	test( 'reports a failed share when the site is otherwise fine', () => {
+		expect(
+			panelMessage( OK, post( { hasPublishError: true } ) )
+		).toMatchObject( { kind: 'publishError', severity: 'error' } );
+	} );
+
+	test( 'reports a pending removal, and a failure outranks it', () => {
+		expect(
+			panelMessage( OK, post( { enabled: false, hasRecord: true } ) ).kind
+		).toBe( 'pendingRemoval' );
+
+		expect(
+			panelMessage(
+				OK,
+				post( {
+					enabled: true,
+					hasRecord: true,
+					hasPublishError: true,
+				} )
+			).kind
+		).toBe( 'publishError' );
 	} );
 } );
