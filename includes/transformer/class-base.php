@@ -16,6 +16,7 @@ use Atmosphere\Mention;
 use function Atmosphere\build_at_uri;
 use function Atmosphere\get_did;
 use function Atmosphere\get_publishable_content;
+use function Atmosphere\render_publishable_content;
 use function Atmosphere\sanitize_text;
 use function Atmosphere\to_iso8601;
 
@@ -222,6 +223,13 @@ abstract class Base {
 	/**
 	 * Get a short plain-text excerpt for a post.
 	 *
+	 * A stored `post_excerpt` is an author-provided public teaser and is used
+	 * verbatim — this is the same string Jetpack surfaces as the public preview
+	 * of a gated post, so it stays public here too. Only the *derived* excerpt,
+	 * generated when no excerpt was written, is pulled from the body, and it
+	 * reads through {@see get_publishable_content()} so a gated body never leaks
+	 * into it.
+	 *
 	 * @param \WP_Post $post      Post object.
 	 * @param int      $word_limit Words to keep.
 	 * @return string
@@ -299,7 +307,7 @@ abstract class Base {
 		}
 
 		$html = Mention::without_links(
-			static fn() => \apply_filters( 'the_content', get_publishable_content( $post ) ) // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Core WordPress filter.
+			static fn() => render_publishable_content( $post )
 		);
 
 		$this->html_content_cache[ $post->ID ] = $html;

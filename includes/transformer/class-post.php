@@ -20,6 +20,7 @@ use function Atmosphere\build_at_uri;
 use function Atmosphere\debug_log;
 use function Atmosphere\get_did;
 use function Atmosphere\get_publishable_content;
+use function Atmosphere\render_publishable_content;
 use function Atmosphere\grapheme_length;
 use function Atmosphere\sanitize_text;
 use function Atmosphere\truncate_graphemes;
@@ -607,11 +608,17 @@ class Post extends Base {
 				$link_facets = $short['facets'];
 
 				$embed = $this->build_images_embed();
-				if ( '' === $text && null === $embed ) {
+				if ( '' === $text && ( null === $embed || $this->is_body_gated() ) ) {
 					/*
-					 * Empty body and no images: there is nothing to publish
-					 * natively, so fall back to the link-card composition. This
-					 * is a link-card record, so flip $is_short to false (the
+					 * Fall back to the link-card composition when there is
+					 * nothing to publish natively — an empty body with no
+					 * images, or a body gated away entirely. In the gated case
+					 * build_images_embed() can still surface the (public)
+					 * featured image, but an image with no text and no link
+					 * home is not a useful share of a gated post; the link card
+					 * restores a title and a link back to the post.
+					 *
+					 * This is a link-card record, so flip $is_short to false (the
 					 * embed-filter strategy label and the
 					 * atmosphere_transform_bsky_post context below must report
 					 * `link-card`, not `short-form`), and the short-form anchor
@@ -1139,6 +1146,24 @@ class Post extends Base {
 		$texts[ $last ] = $kept . $sep . $cta;
 
 		return $texts;
+	}
+
+	/**
+	 * Whether the whole body was gated away.
+	 *
+	 * True when the post has stored content but none of it is publicly
+	 * publishable — i.e. a membership plugin gated the entire body (see
+	 * {@see \Atmosphere\get_publishable_content()}). Distinguishes a genuinely
+	 * empty post from one that only looks empty because it is fully gated, so
+	 * the short-form path can fall back to a link card that still links home
+	 * instead of shipping a bare, contextless featured image. A split (partly
+	 * gated) post keeps a public portion, so it is not "body gated" here.
+	 *
+	 * @return bool
+	 */
+	private function is_body_gated(): bool {
+		return '' !== (string) $this->object->post_content
+			&& '' === get_publishable_content( $this->object );
 	}
 
 	/**
@@ -2054,7 +2079,7 @@ class Post extends Base {
 		}
 
 		$html = Mention::without_links(
-			fn() => \apply_filters( 'the_content', get_publishable_content( $this->object ) ) // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Core WordPress filter.
+			fn() => render_publishable_content( $this->object )
 		);
 
 		/*

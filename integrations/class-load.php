@@ -33,12 +33,21 @@ class Load {
 	 */
 	public static function register(): void {
 		// Jetpack paid-content gating: keep subscriber-only bodies out of
-		// public AT Protocol records. Guard on Jetpack being active rather than
-		// on Jetpack_Memberships: Jetpack loads that class lazily, so it is
-		// often not present yet at this hook. JETPACK__VERSION is defined as
-		// soon as the plugin file loads, and the integration resolves the
-		// access level at publish time, when the class is available.
-		if ( \defined( 'JETPACK__VERSION' ) || \class_exists( 'Jetpack_Memberships' ) ) {
+		// public AT Protocol records. The membership feature ships in more than
+		// one shape, so check every signal that it could be present:
+		// - JETPACK__VERSION: the Jetpack plugin (self-hosted, Atomic).
+		// - IS_WPCOM: WordPress.com Simple, where jetpack-mu-wpcom provides the
+		// gating blocks without ever defining JETPACK__VERSION.
+		// - Jetpack_Memberships: the class itself, when already loaded.
+		// Missing any of these once left the filter unregistered on Simple
+		// sites, federating gated posts in full. Detection stays coarse on
+		// purpose; the filter itself is cheap and fails closed, and the
+		// integration resolves the real access level at publish time.
+		if (
+			\defined( 'JETPACK__VERSION' )
+			|| \defined( 'IS_WPCOM' )
+			|| \class_exists( 'Jetpack_Memberships' )
+		) {
 			Jetpack::init();
 		}
 	}

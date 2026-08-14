@@ -36,6 +36,8 @@ interface Content_Parser {
 }
 ```
 
+`$content` is the post's **publishable** content — the body already stripped of any subscriber-only / paywalled portions by membership integrations (see `Atmosphere\get_publishable_content()`), not the raw `post_content`. Parse it directly, or render it with `Atmosphere\render_publishable_content( $post )` (which `Parser_Base::get_rendered_html()` uses). **Do not** re-render it with a bare `apply_filters( 'the_content', … )`: a membership plugin's own `the_content` gate reads the *global* post and would put the gated body — or a "subscribe to keep reading" form — back into the record.
+
 `applies_to( \WP_Post $post ): bool` is optional. `Parser_Base` provides it with a default `true` result; override it when a format only works for certain posts, such as block-editor-only formats. If your parser reads saved block markup directly, use `saved_content_survives_rendering( $post )` in the guard so render-time visibility filters can force a fallback to rendered HTML.
 
 ### Example

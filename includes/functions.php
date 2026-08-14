@@ -793,9 +793,12 @@ function is_sharing_enabled( \WP_Post $post ): bool {
  *  - A post with an inline gated region returns the content with that region
  *    removed.
  *
- * Every body-derived record field (document `textContent`/`content`/
- * `description`/images, the Bluesky post text and link-card excerpt) reads
- * through this helper, so a single integration closes all of them at once.
+ * Every record field *derived from the body* (document `textContent`/
+ * `content`/`description`/images, the Bluesky post text, and the derived
+ * link-card excerpt) reads through this helper, so a single integration closes
+ * all of them at once. The one field that does not is an author-written
+ * `post_excerpt`: it is a deliberate public teaser (the same string a
+ * membership plugin shows in place of the gated body), so it is used as-is.
  * Integrations MUST fail closed: any ambiguity — gating state unreadable, an
  * unrecognised access level — must return less content, never more.
  *
@@ -805,6 +808,23 @@ function is_sharing_enabled( \WP_Post $post ): bool {
  * @return string Publicly publishable post content.
  */
 function get_publishable_content( \WP_Post $post ): string {
+	/*
+	 * Per-request memoization. Integrations doing real work here (Jetpack
+	 * parses and re-serializes the block tree) are hit several times per
+	 * transform and again on every keystroke of the pre-publish preview, so
+	 * the repeated parse dominates. Key on the post ID plus a hash of the
+	 * stored content: the pre-publish endpoint projects a clone that keeps the
+	 * real ID but carries unsaved content, and the hash keeps those from
+	 * colliding with — or masking — the saved post.
+	 */
+	static $cache = array();
+
+	$key = $post->ID . ':' . \md5( (string) $post->post_content );
+
+	if ( isset( $cache[ $key ] ) ) {
+		return $cache[ $key ];
+	}
+
 	/**
 	 * Filters the portion of a post's content that is safe to federate.
 	 *
@@ -819,7 +839,60 @@ function get_publishable_content( \WP_Post $post ): string {
 	 * @param string   $content The post's stored content (`post_content`).
 	 * @param \WP_Post $post    The post being published.
 	 */
-	return (string) \apply_filters( 'atmosphere_publishable_content', $post->post_content, $post );
+	$content = (string) \apply_filters( 'atmosphere_publishable_content', $post->post_content, $post );
+
+	$cache[ $key ] = $content;
+
+	return $content;
+}
+
+/**
+ * Render a post's publishable content through the `the_content` filter chain.
+ *
+ * Wraps the render in a pair of actions so membership/paywall integrations can
+ * step their own `the_content` gating aside for its duration. Those callbacks
+ * key off the current viewer, but ATmosphere already narrowed the body to the
+ * publicly readable portion via {@see get_publishable_content()} and publishes
+ * from a logged-out context (WP-Cron); left in place, a membership gate would
+ * re-render the *global* post as a "subscribe to keep reading" form and
+ * overwrite the safe body. The actions always fire in pairs, even if the filter
+ * chain throws, so an integration can restore its own state in the `post` hook.
+ *
+ * @since unreleased
+ *
+ * @param \WP_Post $post Post object.
+ * @return string The rendered HTML.
+ */
+function render_publishable_content( \WP_Post $post ): string {
+	/**
+	 * Fires before ATmosphere renders a post's publishable content.
+	 *
+	 * Membership integrations suspend their own `the_content` gating here so it
+	 * does not overwrite the already-narrowed body. Must be mirrored by
+	 * {@see 'atmosphere_post_render_publishable_content'}.
+	 *
+	 * @since unreleased
+	 *
+	 * @param \WP_Post $post The post being rendered.
+	 */
+	\do_action( 'atmosphere_pre_render_publishable_content', $post );
+
+	try {
+		// phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Core WordPress filter.
+		return (string) \apply_filters( 'the_content', get_publishable_content( $post ) );
+	} finally {
+		/**
+		 * Fires after ATmosphere renders a post's publishable content.
+		 *
+		 * Mirror of {@see 'atmosphere_pre_render_publishable_content'}; fires
+		 * even when the render throws.
+		 *
+		 * @since unreleased
+		 *
+		 * @param \WP_Post $post The post that was rendered.
+		 */
+		\do_action( 'atmosphere_post_render_publishable_content', $post );
+	}
 }
 
 /**

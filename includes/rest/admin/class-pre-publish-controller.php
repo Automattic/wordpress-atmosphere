@@ -86,13 +86,13 @@ class Pre_Publish_Controller extends \WP_REST_Controller {
 					'permission_callback' => array( $this, 'check_permission' ),
 					'show_in_index'       => false,
 					'args'                => array(
-						'id'         => array(
+						'id'          => array(
 							'description'       => \__( 'The ID of the post being edited.', 'atmosphere' ),
 							'type'              => 'integer',
 							'required'          => true,
 							'sanitize_callback' => 'absint',
 						),
-						'title'      => array(
+						'title'       => array(
 							'description'       => \__( 'The unsaved post title.', 'atmosphere' ),
 							'type'              => 'string',
 							'default'           => '',
@@ -107,29 +107,29 @@ class Pre_Publish_Controller extends \WP_REST_Controller {
 						 * strip the `<!-- wp:* -->` block delimiters and
 						 * corrupt the projection.
 						 */
-						'content'    => array(
+						'content'     => array(
 							'description' => \__( 'The unsaved post content.', 'atmosphere' ),
 							'type'        => 'string',
 							'default'     => '',
 						),
-						'excerpt'    => array(
+						'excerpt'     => array(
 							'description'       => \__( 'The unsaved post excerpt.', 'atmosphere' ),
 							'type'              => 'string',
 							'default'           => '',
 							'sanitize_callback' => 'sanitize_text_field',
 						),
-						'status'     => array(
+						'status'      => array(
 							'description'       => \__( 'The intended post status / visibility.', 'atmosphere' ),
 							'type'              => 'string',
 							'default'           => 'publish',
 							'sanitize_callback' => 'sanitize_key',
 						),
-						'password'   => array(
+						'password'    => array(
 							'description' => \__( 'The intended post password (empty when not protected).', 'atmosphere' ),
 							'type'        => 'string',
 							'default'     => '',
 						),
-						'disabled'   => array(
+						'disabled'    => array(
 							'description' => \__( 'Whether sharing is switched off for this post.', 'atmosphere' ),
 							'type'        => 'boolean',
 							'default'     => false,
@@ -142,7 +142,7 @@ class Pre_Publish_Controller extends \WP_REST_Controller {
 						 * line breaks while stripping tags, matching the meta's
 						 * registered sanitizer.
 						 */
-						'customText' => array(
+						'customText'  => array(
 							'description'       => \__( 'The unsaved custom Bluesky text (empty to use the default composition).', 'atmosphere' ),
 							'type'              => 'string',
 							'default'           => '',
@@ -151,6 +151,20 @@ class Pre_Publish_Controller extends \WP_REST_Controller {
 							// published anyway.
 							'maxLength'         => 2000,
 							'sanitize_callback' => 'sanitize_textarea_field',
+						),
+
+						/*
+						 * The unsaved whole-post access level (e.g. a membership
+						 * plugin's subscriber/paid visibility). Forwarded so the
+						 * preview reflects a gating change the author has made but
+						 * not yet saved; integrations read it on
+						 * `atmosphere_pre_projection`. Opaque to this endpoint.
+						 */
+						'accessLevel' => array(
+							'description'       => \__( 'The unsaved whole-post access level, when a membership plugin is active.', 'atmosphere' ),
+							'type'              => 'string',
+							'default'           => '',
+							'sanitize_callback' => 'sanitize_key',
 						),
 					),
 				),
@@ -257,7 +271,24 @@ class Pre_Publish_Controller extends \WP_REST_Controller {
 		if ( $request->has_param( 'customText' ) ) {
 			$transformer->set_custom_text_override( (string) $request['customText'] );
 		}
-		$projection = $transformer->project();
+
+		/*
+		 * Let integrations reflect *unsaved* editor state that the transformer
+		 * would otherwise read from the last save. A membership integration, for
+		 * instance, gates on the post's access level, which is only written on
+		 * save; without this the preview would show the full body of a paid post
+		 * the author is still drafting, then publish a teaser. The clone carries
+		 * unsaved content/title/excerpt already; this covers state that lives in
+		 * meta rather than the post row. Paired so the override never leaks past
+		 * this request, even if projection throws.
+		 */
+		\do_action( 'atmosphere_pre_projection', $draft, $request );
+
+		try {
+			$projection = $transformer->project();
+		} finally {
+			\do_action( 'atmosphere_post_projection', $draft, $request );
+		}
 
 		\remove_filter( 'pre_http_request', $block_http, 0 );
 

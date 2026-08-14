@@ -338,19 +338,192 @@ class Test_Jetpack extends \WP_UnitTestCase {
 	}
 
 	/**
-	 * A paywall block carrying attributes is still detected and split on.
+	 * A paywall block carrying attributes is still detected and split on when
+	 * the post is gated.
 	 */
 	public function test_split_detects_paywall_block_with_attributes() {
 		$content = "<!-- wp:paragraph --><p>Public lede.</p><!-- /wp:paragraph -->\n"
 			. "<!-- wp:jetpack/paywall {\"tierId\":123} /-->\n"
 			. '<!-- wp:paragraph --><p>Gated remainder.</p><!-- /wp:paragraph -->';
 
-		// No access-level meta set: detection must not depend on it.
 		$post = self::factory()->post->create_and_get( array( 'post_content' => $content ) );
+		\update_post_meta( $post->ID, '_jetpack_newsletter_access', 'subscribers' );
 
 		$result = get_publishable_content( $post );
 
 		$this->assertStringContainsString( 'Public lede.', $result );
 		$this->assertStringNotContainsString( 'Gated remainder.', $result );
+	}
+
+	/**
+	 * A paywall block on a public post is inert: Jetpack renders the whole post
+	 * to everyone when the access level is empty / everybody, so we must not
+	 * truncate at the block. A stray or imported block on a public post would
+	 * otherwise silently drop the body to a teaser.
+	 */
+	public function test_paywall_block_on_public_post_is_not_truncated() {
+		$content = "<!-- wp:paragraph --><p>Public lede.</p><!-- /wp:paragraph -->\n"
+			. "<!-- wp:jetpack/paywall /-->\n"
+			. '<!-- wp:paragraph --><p>Still public remainder.</p><!-- /wp:paragraph -->';
+
+		// No access-level meta: the post is public, so nothing is gated.
+		$post = self::factory()->post->create_and_get( array( 'post_content' => $content ) );
+
+		$result = get_publishable_content( $post );
+
+		$this->assertStringContainsString( 'Public lede.', $result );
+		$this->assertStringContainsString( 'Still public remainder.', $result );
+	}
+
+	/**
+	 * A paywall block nested below the top level cannot be split safely. On a
+	 * gated post we fail closed (publish nothing); on a public post the block is
+	 * inert and the whole body stays. Regression guard for a nested block
+	 * emptying a post that is not gated at all.
+	 */
+	public function test_nested_paywall_block_gated_fails_closed_public_kept() {
+		$content = "<!-- wp:group --><div class=\"wp-block-group\">\n"
+			. "<!-- wp:paragraph --><p>Grouped lede.</p><!-- /wp:paragraph -->\n"
+			. "<!-- wp:jetpack/paywall /-->\n"
+			. "<!-- wp:paragraph --><p>Grouped remainder.</p><!-- /wp:paragraph -->\n"
+			. '</div><!-- /wp:group -->';
+
+		$public = self::factory()->post->create_and_get( array( 'post_content' => $content ) );
+		$this->assertStringContainsString( 'Grouped remainder.', get_publishable_content( $public ) );
+
+		$gated = self::factory()->post->create_and_get( array( 'post_content' => $content ) );
+		\update_post_meta( $gated->ID, '_jetpack_newsletter_access', 'subscribers' );
+		$this->assertSame( '', get_publishable_content( $gated ) );
+	}
+
+	/**
+	 * An inline subscriber-only region is stripped even on a public post: the
+	 * premium-content block gates its own region regardless of the post's
+	 * whole-post access level.
+	 */
+	public function test_inline_region_stripped_on_public_post() {
+		$post = self::factory()->post->create_and_get( array( 'post_content' => self::INLINE_CONTENT ) );
+
+		$result = get_publishable_content( $post );
+
+		$this->assertStringNotContainsString( 'Secret subscriber body.', $result );
+		$this->assertStringContainsString( 'Public before region.', $result );
+		$this->assertStringContainsString( 'Public after region.', $result );
+	}
+
+	// ---------------------------------------------------------------------
+	// Transformer fallbacks and render seam.
+	// ---------------------------------------------------------------------
+
+	/**
+	 * A whole-post-gated short-form post with a featured image must not ship a
+	 * bare, contextless image. Its body is gated away, so the short-form path
+	 * falls back to the link-card composition that still carries a link home
+	 * instead of publishing the (public) featured image on its own.
+	 */
+	public function test_gated_titleless_post_with_featured_image_uses_link_card() {
+		$thumb = self::factory()->attachment->create();
+		$post  = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => '',
+				'post_content' => 'Secret body.',
+				'post_excerpt' => '',
+			)
+		);
+		\update_post_meta( $post->ID, '_jetpack_newsletter_access', 'subscribers' );
+		\set_post_thumbnail( $post, $thumb );
+
+		// The embed filter reports the composition strategy the record actually
+		// used; projection stands in a placeholder blob so build_images_embed()
+		// would otherwise return the featured image and hide the fallback.
+		$captured = array();
+		\add_filter(
+			'atmosphere_post_embed',
+			static function ( $embed, $post_obj, $strategy ) use ( &$captured ) {
+				$captured[] = array(
+					'strategy' => $strategy,
+					'type'     => \is_array( $embed ) ? ( $embed['$type'] ?? null ) : null,
+				);
+				return $embed;
+			},
+			10,
+			3
+		);
+
+		( new Post( $post ) )->project();
+
+		\remove_all_filters( 'atmosphere_post_embed' );
+
+		$this->assertNotEmpty( $captured );
+		$last = \end( $captured );
+		$this->assertSame( 'link-card', $last['strategy'] );
+		$this->assertNotSame( 'app.bsky.embed.images', $last['type'] );
+	}
+
+	/**
+	 * The render seam unhooks Jetpack's `the_content` paywall for the duration
+	 * of a publishable render and restores it afterwards, so the paywall's
+	 * subscribe form never overwrites the already-narrowed body.
+	 */
+	public function test_render_seam_suspends_and_restores_paywall_filter() {
+		$callback = 'Automattic\Jetpack\Extensions\Subscriptions\add_paywall';
+		\add_filter( 'the_content', $callback, 8 );
+		$post = self::factory()->post->create_and_get();
+
+		$this->assertSame( 8, \has_filter( 'the_content', $callback ) );
+
+		\do_action( 'atmosphere_pre_render_publishable_content', $post );
+		$this->assertFalse( \has_filter( 'the_content', $callback ), 'paywall filter suspended during render' );
+
+		\do_action( 'atmosphere_post_render_publishable_content', $post );
+		$this->assertSame( 8, \has_filter( 'the_content', $callback ), 'paywall filter restored after render' );
+
+		\remove_filter( 'the_content', $callback, 8 );
+	}
+
+	/**
+	 * The pre-publish preview gates on the *unsaved* access level so a paid post
+	 * in progress previews as a teaser, matching what it would publish, rather
+	 * than reading the still-public last save.
+	 */
+	public function test_preview_projection_reflects_unsaved_access_level() {
+		$request = new \WP_REST_Request( 'POST', '/' );
+		$request->set_param( 'accessLevel', 'subscribers' );
+
+		$post = self::factory()->post->create_and_get( array( 'post_content' => 'Draft paid body.' ) );
+		\update_post_meta( $post->ID, '_jetpack_newsletter_access', 'everybody' );
+
+		\do_action( 'atmosphere_pre_projection', $post, $request );
+		$this->assertSame( '', get_publishable_content( $post ), 'unsaved subscriber level gates the preview' );
+		\do_action( 'atmosphere_post_projection', $post );
+
+		// The override is scoped to the projection: an unrelated public post
+		// (distinct content, so a distinct cache key) still publishes in full.
+		$public = self::factory()->post->create_and_get( array( 'post_content' => 'Saved public body.' ) );
+		$this->assertSame( 'Saved public body.', get_publishable_content( $public ) );
+	}
+
+	/**
+	 * The integration registers on WordPress.com Simple, where the membership
+	 * blocks ship via jetpack-mu-wpcom without JETPACK__VERSION ever being
+	 * defined. Keying registration off Jetpack's constant alone left gated
+	 * posts federating in full there.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_integration_registers_on_wpcom_simple() {
+		if ( \defined( 'JETPACK__VERSION' ) || \class_exists( 'Jetpack_Memberships' ) ) {
+			$this->markTestSkipped( 'Cannot isolate IS_WPCOM while another Jetpack signal is present.' );
+		}
+
+		if ( ! \defined( 'IS_WPCOM' ) ) {
+			\define( 'IS_WPCOM', true );
+		}
+		\remove_all_filters( 'atmosphere_publishable_content' );
+
+		Load::register();
+
+		$this->assertNotFalse( \has_filter( 'atmosphere_publishable_content' ) );
 	}
 }

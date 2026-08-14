@@ -54,10 +54,81 @@ class Jetpack {
 	private const SUBSCRIBER_VIEW_BLOCK = 'premium-content/subscriber-view';
 
 	/**
-	 * Register the publishable-content filter.
+	 * Jetpack's `the_content` paywall callback.
+	 *
+	 * Jetpack hooks this at priority 8 to replace a gated post's rendered body
+	 * with a "subscribe to keep reading" form whenever the current request
+	 * cannot view the post — which is always true in the logged-out WP-Cron
+	 * context we publish from. Left in place, it would overwrite the already
+	 * narrowed body we hand to `the_content` with that form. {@see
+	 * self::suspend_paywall_filter()} unhooks it around our own renders.
+	 *
+	 * @var string
+	 */
+	private const PAYWALL_CONTENT_FILTER = 'Automattic\Jetpack\Extensions\Subscriptions\add_paywall';
+
+	/**
+	 * Nesting depth of the current publishable-render suspension.
+	 *
+	 * @var int
+	 */
+	private static int $suspend_depth = 0;
+
+	/**
+	 * Priority the paywall filter was attached at before suspension, or null
+	 * when it was not attached.
+	 *
+	 * @var int|null
+	 */
+	private static ?int $suspended_priority = null;
+
+	/**
+	 * Per-post access-level override, keyed by post ID.
+	 *
+	 * Set while the pre-publish preview projects a draft, so gating tracks the
+	 * access level the author has chosen in the editor but not yet saved
+	 * (the meta this normally reads is only written on save). Empty outside a
+	 * projection.
+	 *
+	 * @var array<int,string>
+	 */
+	private static array $access_override = array();
+
+	/**
+	 * Register the publishable-content filter and render seam.
 	 */
 	public static function init(): void {
 		\add_filter( 'atmosphere_publishable_content', array( self::class, 'filter_publishable_content' ), 10, 2 );
+
+		// Neutralise Jetpack's own `the_content` paywall while ATmosphere
+		// renders the already-narrowed body (see PAYWALL_CONTENT_FILTER).
+		\add_action( 'atmosphere_pre_render_publishable_content', array( self::class, 'suspend_paywall_filter' ) );
+		\add_action( 'atmosphere_post_render_publishable_content', array( self::class, 'restore_paywall_filter' ) );
+
+		// Reflect the editor's unsaved access level during pre-publish preview.
+		\add_action( 'atmosphere_pre_projection', array( self::class, 'set_access_override' ), 10, 2 );
+		\add_action( 'atmosphere_post_projection', array( self::class, 'clear_access_override' ) );
+	}
+
+	/**
+	 * Capture the unsaved access level for the duration of a preview projection.
+	 *
+	 * @param \WP_Post $post    The projected draft (keeps the real post ID).
+	 * @param mixed    $request The REST request driving the preview.
+	 */
+	public static function set_access_override( \WP_Post $post, $request ): void {
+		if ( $request instanceof \WP_REST_Request && $request->has_param( 'accessLevel' ) ) {
+			self::$access_override[ $post->ID ] = (string) $request['accessLevel'];
+		}
+	}
+
+	/**
+	 * Drop the access-level override once the projection is done.
+	 *
+	 * @param \WP_Post $post The projected draft.
+	 */
+	public static function clear_access_override( \WP_Post $post ): void {
+		unset( self::$access_override[ $post->ID ] );
 	}
 
 	/**
@@ -67,10 +138,17 @@ class Jetpack {
 	 *
 	 *  1. Whole-post — `_jetpack_newsletter_access` is a non-public level and
 	 *     there is no split point, so nothing federates.
-	 *  2. Split-point — a `jetpack/paywall` block; only the content above it is
-	 *     public.
+	 *  2. Split-point — a `jetpack/paywall` block on a gated post; only the
+	 *     content above it is public.
 	 *  3. Inline — a `premium-content/container`; the `subscriber-view` region
-	 *     is removed and the rest kept.
+	 *     is removed and the rest kept regardless of the post's access level.
+	 *
+	 * The whole-post and split gates both key off the stored access level, not
+	 * the mere presence of a paywall block: Jetpack renders the entire post to
+	 * everyone when the access level is empty / `everybody`, and the block's own
+	 * `parent` restriction is only an editor hint (imports, WP-CLI, migrated
+	 * content, and the REST API can all leave a stray or nested block behind).
+	 * Reading the access level keeps a public post from being wrongly truncated.
 	 *
 	 * @param string   $content The stored post content.
 	 * @param \WP_Post $post    The post being published.
@@ -86,6 +164,8 @@ class Jetpack {
 		// rather than re-parsing the content each time.
 		$blocks = \parse_blocks( $content );
 
+		$is_public = self::is_access_level_public( $post );
+
 		// Name-based detection is robust to block attributes and whitespace that
 		// a serialized-string match would miss. Detection is depth-aware so a
 		// nested marker is never mistaken for its absence.
@@ -94,32 +174,84 @@ class Jetpack {
 
 		// Whole-post gate: a non-public access level with no split point means
 		// the entire body is subscriber-only.
-		if ( ! $has_split && ! self::is_access_level_public( $post ) ) {
+		if ( ! $is_public && ! $has_split ) {
 			return '';
 		}
 
-		// Nothing to strip: publish the stored content verbatim, exactly as
-		// before, without a serialize round-trip.
-		if ( ! $has_split && ! $has_subscriber ) {
-			return $content;
-		}
+		$split_applied = false;
 
-		// Split-point: keep only the content above the paywall block. Jetpack
-		// treats content above the block as public regardless of the post's
-		// access level. Fail closed if the block is present but not at the top
-		// level (an unsupported nesting we cannot safely split).
-		if ( $has_split ) {
+		// Split-point: keep only the content above the paywall block. The block
+		// gates the content below it only on a genuinely gated post; on a public
+		// post it is inert, so we leave that post whole. Fail closed if the block
+		// is present but nested where we cannot safely locate the split.
+		if ( $has_split && ! $is_public ) {
 			$above = self::blocks_above_paywall( $blocks );
 			if ( null === $above ) {
 				return '';
 			}
-			$blocks = $above;
+			$blocks         = $above;
+			$split_applied  = true;
+			$has_subscriber = self::blocks_contain( $blocks, self::SUBSCRIBER_VIEW_BLOCK );
 		}
 
-		// Inline: drop any subscriber-only regions from what remains.
-		$blocks = self::remove_blocks_by_name( $blocks, self::SUBSCRIBER_VIEW_BLOCK );
+		// Inline paid-content regions gate independently of the post's access
+		// level, so strip them whether or not the post is otherwise public.
+		if ( $has_subscriber ) {
+			$blocks = self::remove_blocks_by_name( $blocks, self::SUBSCRIBER_VIEW_BLOCK );
+
+			return \serialize_blocks( $blocks );
+		}
+
+		// No split performed and nothing inline to strip: publish the stored
+		// content verbatim, without a serialize round-trip that could reflow the
+		// markup of an unchanged, fully public post.
+		if ( ! $split_applied ) {
+			return $content;
+		}
 
 		return \serialize_blocks( $blocks );
+	}
+
+	/**
+	 * Unhook Jetpack's `the_content` paywall while ATmosphere renders.
+	 *
+	 * Fired from `atmosphere_pre_render_publishable_content`. ATmosphere hands
+	 * `the_content` a body already narrowed by {@see
+	 * self::filter_publishable_content()}, but Jetpack's own paywall callback
+	 * (see {@see self::PAYWALL_CONTENT_FILTER}) still runs against the original
+	 * global post and, finding no visible viewer, would replace that body with a
+	 * subscribe form. Remembering its priority so
+	 * {@see self::restore_paywall_filter()} can put it back exactly as it was.
+	 * Depth-counted so nested renders suspend once and restore once.
+	 */
+	public static function suspend_paywall_filter(): void {
+		if ( 0 === self::$suspend_depth ) {
+			$priority                 = \has_filter( 'the_content', self::PAYWALL_CONTENT_FILTER );
+			self::$suspended_priority = ( false === $priority ) ? null : (int) $priority;
+
+			if ( null !== self::$suspended_priority ) {
+				\remove_filter( 'the_content', self::PAYWALL_CONTENT_FILTER, self::$suspended_priority );
+			}
+		}
+
+		++self::$suspend_depth;
+	}
+
+	/**
+	 * Re-hook Jetpack's `the_content` paywall after ATmosphere renders.
+	 *
+	 * Fired from `atmosphere_post_render_publishable_content`; the mirror of
+	 * {@see self::suspend_paywall_filter()}.
+	 */
+	public static function restore_paywall_filter(): void {
+		if ( self::$suspend_depth > 0 ) {
+			--self::$suspend_depth;
+		}
+
+		if ( 0 === self::$suspend_depth && null !== self::$suspended_priority ) {
+			\add_filter( 'the_content', self::PAYWALL_CONTENT_FILTER, self::$suspended_priority );
+			self::$suspended_priority = null;
+		}
 	}
 
 	/**
@@ -178,7 +310,11 @@ class Jetpack {
 	 * @return bool
 	 */
 	private static function is_access_level_public( \WP_Post $post ): bool {
-		if (
+		if ( isset( self::$access_override[ $post->ID ] ) ) {
+			// Pre-publish preview: use the editor's unsaved access level. Applied
+			// last so it wins over Jetpack's memoized save-time lookup below.
+			$level = self::$access_override[ $post->ID ];
+		} elseif (
 			\class_exists( 'Jetpack_Memberships' )
 			&& \method_exists( 'Jetpack_Memberships', 'get_post_access_level' )
 		) {

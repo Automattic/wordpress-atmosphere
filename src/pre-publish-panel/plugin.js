@@ -25,6 +25,18 @@ import {
 import { strategyLabel, hasOverLimit, isAuthError } from './utils';
 
 /**
+ * Jetpack's whole-post newsletter access meta key.
+ *
+ * Read straight from the editor so the preview tracks a subscriber/paid
+ * visibility change before it is saved; the server only reads this from the
+ * last save otherwise. Undefined (empty) when Jetpack is not active, which the
+ * server treats as public.
+ *
+ * @type {string}
+ */
+const JETPACK_ACCESS_META_KEY = '_jetpack_newsletter_access';
+
+/**
  * The pre-publish panel body.
  *
  * @return {React.JSX.Element} Panel.
@@ -47,6 +59,7 @@ function PrePublishPanel() {
 	const [ meta ] = useEntityProp( 'postType', postType, 'meta' );
 	const disabled = !! ( meta && meta[ DISABLED_META_KEY ] );
 	const customText = ( meta && meta[ CUSTOM_TEXT_META_KEY ] ) || '';
+	const accessLevel = ( meta && meta[ JETPACK_ACCESS_META_KEY ] ) || '';
 
 	const [ preview, setPreview ] = useState( null );
 	const [ loading, setLoading ] = useState( true );
@@ -76,6 +89,7 @@ function PrePublishPanel() {
 					password,
 					disabled,
 					customText,
+					accessLevel,
 				},
 			} )
 				.then( ( result ) => {
@@ -108,6 +122,7 @@ function PrePublishPanel() {
 		password,
 		disabled,
 		customText,
+		accessLevel,
 	] );
 
 	if ( loading ) {

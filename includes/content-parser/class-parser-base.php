@@ -15,6 +15,7 @@ namespace Atmosphere\Content_Parser;
 
 use Atmosphere\Transformer\Post;
 use function Atmosphere\get_publishable_content;
+use function Atmosphere\render_publishable_content;
 use function Atmosphere\sanitize_text;
 use function Atmosphere\to_iso8601;
 use function Atmosphere\truncate_graphemes;
@@ -140,8 +141,7 @@ abstract class Parser_Base implements Content_Parser {
 		}
 
 		try {
-			// phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Core WordPress filter.
-			$html = \apply_filters( 'the_content', get_publishable_content( $post ) );
+			$html = render_publishable_content( $post );
 		} finally {
 			if ( $has_query ) {
 				if ( $previous_query_post instanceof \WP_Post ) {
