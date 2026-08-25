@@ -47,7 +47,7 @@ ATmosphere exposes a small set of filters and actions for plugins to extend beha
 | `atmosphere_syncable_post_types` | filter | Add or remove post types eligible for cross-posting. |
 | `atmosphere_connection_only_mode` | filter | Return `true` to embed ATmosphere purely as a connection layer: auto cross-posting, reaction/reply import, and comment publishing all default off, and the Settings → ATmosphere screen is hidden. |
 | `atmosphere_should_auto_publish` | filter | Effective on/off for automatic post cross-posting; runs after the stored setting and connection-only mode, and has the final say. |
-| `atmosphere_should_publish_bluesky_post` | filter | Return `false` to publish the `site.standard.document` record only, without a companion `app.bsky.feed.post`, across backfill, auto-publish, and edits. Shapes what a publish writes (not whether it runs), so it is a pure filter with no connection-only pass. Forward-only — leaves already-published Bluesky posts in place. |
+| `atmosphere_should_publish_bluesky_post` | filter | Return `false` to publish the `site.standard.document` record only, without a companion `app.bsky.feed.post`, across backfill, auto-publish, and edits. Receives the post being published as a second argument, so the answer can be made per post (by type, meta, or author). Shapes what a publish writes (not whether it runs), so it is a pure filter with no connection-only pass. Forward-only — leaves already-published Bluesky posts in place. |
 | `atmosphere_should_publish_comments` | filter | Effective on/off for publishing local comments as Bluesky replies; runs after the stored setting and connection-only mode, and has the final say. Re-enable this lane while in connection-only mode. Not the per-comment `_comment` filter below. |
 | `atmosphere_should_publish_comment` | filter | Customise which approved comments from users allowed to publish posts are mirrored as Bluesky replies. |
 | `atmosphere_should_sync_reactions` | filter | Effective on/off for importing Bluesky likes and reposts; runs after the stored setting and connection-only mode, and has the final say. |
@@ -405,6 +405,39 @@ The filter shapes *what* a publish writes, not *whether* the site publishes,
 so — unlike the connection-only lane switches — it has no connection-only pass
 and stays a pure filter. A host embedded as a connection layer can still choose
 document-only output when it runs a manual backfill.
+
+**Decide per post, not just site-wide.** The filter receives the post being
+published as a second argument, so a callback can route individual posts.
+A site-wide `__return_false` still works unchanged — it simply ignores the post.
+The post is always a real `WP_Post`, so no `null` check is needed.
+
+Route a whole post type document-only (e.g. short-form status updates or an
+activity-log CPT) while long-form posts keep their Bluesky companion:
+
+```php
+add_filter(
+	'atmosphere_should_publish_bluesky_post',
+	function ( $enabled, $post ) {
+		return 'status' === $post->post_type ? false : $enabled;
+	},
+	10,
+	2
+);
+```
+
+Or honor a per-post author choice stored in post meta ("publish this one
+quietly"):
+
+```php
+add_filter(
+	'atmosphere_should_publish_bluesky_post',
+	function ( $enabled, $post ) {
+		return get_post_meta( $post->ID, 'skip_bluesky', true ) ? false : $enabled;
+	},
+	10,
+	2
+);
+```
 
 **This is a one-way choice, on purpose.** A post first published as a
 document-only record does not retroactively gain a Bluesky companion if you
