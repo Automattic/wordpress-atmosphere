@@ -1075,17 +1075,46 @@ class Test_Functions extends \WP_UnitTestCase {
 	 * @group atmosphere
 	 */
 	public function test_is_bluesky_post_enabled_defaults_true() {
-		$this->assertTrue( is_bluesky_post_enabled() );
+		$post = self::factory()->post->create_and_get();
+		$this->assertTrue( is_bluesky_post_enabled( $post ) );
 	}
 
 	/**
-	 * The filter can disable the Bluesky companion post.
+	 * A site-wide (one-argument) callback still disables the companion post —
+	 * the added post parameter must not break callbacks that ignore it.
 	 *
 	 * @group atmosphere
 	 */
 	public function test_is_bluesky_post_enabled_filter_can_disable() {
+		$post = self::factory()->post->create_and_get();
+
 		\add_filter( 'atmosphere_should_publish_bluesky_post', '__return_false' );
-		$this->assertFalse( is_bluesky_post_enabled() );
+		$this->assertFalse( is_bluesky_post_enabled( $post ) );
 		\remove_filter( 'atmosphere_should_publish_bluesky_post', '__return_false' );
+	}
+
+	/**
+	 * The filter receives the post being published, so a callback can answer
+	 * per post — here, gating on the post type.
+	 *
+	 * @group atmosphere
+	 */
+	public function test_is_bluesky_post_enabled_filter_receives_post() {
+		$article = self::factory()->post->create_and_get( array( 'post_type' => 'post' ) );
+		$page    = self::factory()->post->create_and_get( array( 'post_type' => 'page' ) );
+
+		\add_filter(
+			'atmosphere_should_publish_bluesky_post',
+			static function ( $enabled, $post ) {
+				return 'page' === $post->post_type ? false : $enabled;
+			},
+			10,
+			2
+		);
+
+		$this->assertTrue( is_bluesky_post_enabled( $article ), 'Posts keep the Bluesky companion.' );
+		$this->assertFalse( is_bluesky_post_enabled( $page ), 'Pages are routed document-only.' );
+
+		\remove_all_filters( 'atmosphere_should_publish_bluesky_post' );
 	}
 }

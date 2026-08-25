@@ -114,7 +114,7 @@ class Publisher {
 		 * is cleaned up) and the result action (so metrics/notice subscribers
 		 * behave the same as any other publish).
 		 */
-		if ( ! is_bluesky_post_enabled() ) {
+		if ( ! is_bluesky_post_enabled( $post ) ) {
 			$result = self::publish_document_only( $post, $original_time );
 			$result = self::reconcile_post_after_write( $post, $result );
 
@@ -900,7 +900,7 @@ class Publisher {
 		 * Run the same reconcile race-guard the dual update paths end with, so
 		 * a document edit that races a visibility change is still cleaned up.
 		 */
-		if ( ! is_bluesky_post_enabled() ) {
+		if ( ! is_bluesky_post_enabled( $post ) ) {
 			return self::reconcile_post_after_write( $post, self::update_document_only( $post ) );
 		}
 
