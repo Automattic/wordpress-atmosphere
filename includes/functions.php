@@ -463,6 +463,12 @@ function has_identity(): bool {
 /**
  * Persist the AT Protocol identity (DID, handle, PDS endpoint).
  *
+ * Replaces the stored identity outright. It is not a partial update: a key
+ * you leave out is stored as an empty string, so passing only `handle` clears
+ * the DID, which takes `has_identity()` false and stops
+ * `/.well-known/atproto-did` answering. Read {@see get_identity()} and pass
+ * the full array back if you mean to change one field.
+ *
  * The canonical write surface for `atmosphere_identity`, mirroring the
  * read helpers ({@see get_identity()} and friends). A consumer that writes
  * identity from outside the OAuth token exchange — a recovery or
@@ -471,12 +477,6 @@ function has_identity(): bool {
  * {@see get_identity()}'s lazy migration also relies on) live in one place.
  *
  * @since unreleased
- *
- * Replaces the stored identity outright. It is not a partial update: a key
- * you leave out is stored as an empty string, so passing only `handle` clears
- * the DID, which takes `has_identity()` false and stops
- * `/.well-known/atproto-did` answering. Read {@see get_identity()} and pass
- * the full array back if you mean to change one field.
  *
  * @param array $identity Identity to store. Only `did`, `handle`, and
  *                        `pds_endpoint` are persisted; a missing or

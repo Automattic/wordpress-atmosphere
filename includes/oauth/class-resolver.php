@@ -172,11 +172,23 @@ class Resolver {
 			 * it without escaping. Coercing to an int is the whole defence:
 			 * a non-numeric value (an HTTP-date, markup, or the array PHP
 			 * hands back for a repeated header) becomes 0 and falls through
-			 * to the variant with no value in it. Also fixes `Retry-After: 0`,
-			 * whose string form is falsy and used to be dropped silently.
+			 * to the variant with no value in it.
+			 *
+			 * The range check then drops what survives the coercion but is
+			 * not a wait worth printing: `Retry-After: 0`, whose string form
+			 * is falsy and used to be dropped by accident; a negative, which
+			 * `is_numeric()` accepts and would render as "Retry after -30
+			 * seconds"; and exponent notation, where `1e5` expands to a
+			 * 27-hour wait. Display noise rather than a hazard, since the
+			 * value is an int by the time it reaches `%2$d`, but the
+			 * no-value message reads better than a nonsense one.
 			 */
 			$retry_after = \wp_remote_retrieve_header( $response, 'retry-after' );
 			$retry_after = \is_numeric( $retry_after ) ? (int) $retry_after : 0;
+
+			if ( $retry_after < 1 || $retry_after > DAY_IN_SECONDS ) {
+				$retry_after = 0;
+			}
 
 			$message = $retry_after
 				? \sprintf(

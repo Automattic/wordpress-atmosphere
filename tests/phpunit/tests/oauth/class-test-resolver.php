@@ -805,7 +805,7 @@ class Test_Resolver extends WP_UnitTestCase {
 	/**
 	 * `Retry-After: 0` used to be dropped because the string is falsy. Zero is
 	 * not a useful wait, so it still takes the no-value message, but by way of
-	 * the numeric coercion rather than by accident.
+	 * the range check rather than by accident.
 	 */
 	public function test_rate_limit_message_handles_a_zero_retry_after() {
 		$this->stub_response( 'plc.directory', 429, '{}', array( 'retry-after' => '0' ) );
@@ -814,6 +814,34 @@ class Test_Resolver extends WP_UnitTestCase {
 			'Retry after',
 			Resolver::resolve_did( 'did:plc:test123' )->get_error_message()
 		);
+	}
+
+	/**
+	 * `is_numeric()` accepts a negative, which would otherwise render as
+	 * "Retry after -30 seconds". The range check takes it to the no-value
+	 * message instead.
+	 */
+	public function test_rate_limit_message_drops_a_negative_retry_after() {
+		$this->stub_response( 'plc.directory', 429, '{}', array( 'retry-after' => '-30' ) );
+
+		$message = Resolver::resolve_did( 'did:plc:test123' )->get_error_message();
+
+		$this->assertStringNotContainsString( 'Retry after', $message );
+		$this->assertStringNotContainsString( '-30', $message );
+	}
+
+	/**
+	 * `is_numeric()` also accepts exponent notation, where `1e5` expands to a
+	 * 27-hour wait. Anything past a day is not a plausible delta-seconds value,
+	 * so it takes the no-value message.
+	 */
+	public function test_rate_limit_message_drops_an_implausibly_large_retry_after() {
+		$this->stub_response( 'plc.directory', 429, '{}', array( 'retry-after' => '1e5' ) );
+
+		$message = Resolver::resolve_did( 'did:plc:test123' )->get_error_message();
+
+		$this->assertStringNotContainsString( 'Retry after', $message );
+		$this->assertStringNotContainsString( '100000', $message );
 	}
 
 	/**
