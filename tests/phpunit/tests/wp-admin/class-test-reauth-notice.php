@@ -173,11 +173,13 @@ class Test_Reauth_Notice extends WP_UnitTestCase {
 	}
 
 	/**
-	 * A reader without `manage_options` still gets the notice, because the
-	 * connection being dead affects the whole site. They are told who can
-	 * fix it instead of being handed a link to a screen they cannot open.
+	 * A reader who can publish but not reconnect still gets the notice: they
+	 * are the person hitting Publish into a dead connection. They are told
+	 * who can fix it instead of being handed a link to a screen they cannot
+	 * open.
 	 */
 	public function test_renders_for_a_reader_without_manage_options(): void {
+		\wp_set_current_user( self::factory()->user->create( array( 'role' => 'contributor' ) ) );
 		$this->seed_identity();
 		\update_option( Client::DISCONNECTED_OPTION, \time(), false );
 
@@ -185,6 +187,31 @@ class Test_Reauth_Notice extends WP_UnitTestCase {
 
 		$this->assertStringContainsString( 'Ask an administrator to reconnect it.', $html );
 		$this->assertStringNotContainsString( '<a href', $html );
+	}
+
+	/**
+	 * A subscriber never publishes anything, so the notice is not theirs to
+	 * see. On a membership or WooCommerce site that is most of the logged-in
+	 * users, and telling every customer the site's Bluesky connection is
+	 * broken is noise they cannot act on.
+	 */
+	public function test_stays_hidden_from_a_reader_who_cannot_publish(): void {
+		\wp_set_current_user( self::factory()->user->create( array( 'role' => 'subscriber' ) ) );
+		$this->seed_identity();
+		\update_option( Client::DISCONNECTED_OPTION, \time(), false );
+
+		$this->assertSame( '', $this->capture_notice() );
+	}
+
+	/**
+	 * Same for a logged-out visitor, who cannot reach an admin screen at all.
+	 */
+	public function test_stays_hidden_from_a_logged_out_visitor(): void {
+		\wp_set_current_user( 0 );
+		$this->seed_identity();
+		\update_option( Client::DISCONNECTED_OPTION, \time(), false );
+
+		$this->assertSame( '', $this->capture_notice() );
 	}
 
 	/**

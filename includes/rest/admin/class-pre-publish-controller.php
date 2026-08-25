@@ -303,12 +303,11 @@ class Pre_Publish_Controller extends \WP_REST_Controller {
 	private function publish_decision( WP_Post $post, string $status, string $password, bool $disabled ): array {
 		/*
 		 * Checked first, ahead of the per-post toggle and the connection
-		 * state: when nothing is being cross-posted automatically, the
-		 * document panel (home of the per-post toggle) is not even
-		 * enqueued, so any other reason would point at UI that isn't on
-		 * screen. It also beats the connection check — reconnecting would
-		 * not change whether this post publishes, so the auto-publish-off
-		 * reason takes priority over a reconnect prompt.
+		 * state. Automatic sharing being off decides the answer on its own:
+		 * the per-post toggle only records a preference for `backfill` in
+		 * that state, and reconnecting would not change whether this post
+		 * publishes either, so both would be pointing at something that
+		 * cannot alter the outcome.
 		 */
 		$site = share_status();
 

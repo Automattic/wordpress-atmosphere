@@ -554,15 +554,18 @@ class Admin {
 	/**
 	 * Render a global admin notice when the OAuth session needs reauth.
 	 *
-	 * Surfaced on every admin screen, for every reader, because the
-	 * publish, comment, and update paths silently no-op until the user
-	 * reconnects — without a visible nudge, an expired refresh token can
-	 * sit unnoticed for days, and the person hitting Publish is often not
-	 * the one who can reconnect. There is no capability gate; the action
-	 * sentence is swapped instead, so a reader who cannot reconnect is
-	 * told who can rather than handed a link they cannot follow. The
-	 * notice is dismissible per page-load only, so the user is reminded
-	 * again on their next visit.
+	 * Surfaced on every admin screen, because the publish, comment, and
+	 * update paths silently no-op until the user reconnects — without a
+	 * visible nudge, an expired refresh token can sit unnoticed for days,
+	 * and the person hitting Publish is often not the one who can
+	 * reconnect. That argument reaches as far as `edit_posts` and no
+	 * further: it covers authors, editors and contributors, and leaves out
+	 * subscribers, who on a membership or WooCommerce site are most of the
+	 * logged-in users and have nothing to do with sharing. Within that
+	 * audience there is no further gate; the action sentence is swapped
+	 * instead, so a reader who cannot reconnect is told who can rather
+	 * than handed a link they cannot follow. The notice is dismissible per
+	 * page-load only, so the user is reminded again on their next visit.
 	 *
 	 * Swaps copy when the disconnect was operator-initiated (the user
 	 * clicked Disconnect) so the message does not falsely claim "your
@@ -570,6 +573,10 @@ class Admin {
 	 */
 	public static function maybe_render_reauth_notice(): void {
 		if ( ! needs_reauth() ) {
+			return;
+		}
+
+		if ( ! \current_user_can( 'edit_posts' ) ) {
 			return;
 		}
 

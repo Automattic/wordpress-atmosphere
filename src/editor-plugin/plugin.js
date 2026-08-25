@@ -72,25 +72,47 @@ const EditorPlugin = () => {
 	const {
 		postType,
 		sharedUrl,
+		hasRecord,
 		publishError,
-		isPublished,
 		editedStatus,
 		editedPassword,
+		isBeingScheduled,
+		isDirty,
 	} = useSelect( ( select ) => {
 		const editor = select( editorStore );
 		return {
 			postType: editor.getCurrentPostType(),
 			sharedUrl: editor.getCurrentPost()?.atmosphere_url,
-			publishError: editor.getCurrentPost()?.atmosphere_publish_error,
 
 			/*
-			 * The saved status, not the edited one: removal only happens on
-			 * a transition away from `publish`, so a post that was never
-			 * published has no record to lose no matter what is edited.
+			 * Not `!! sharedUrl`: that is a Bluesky web URL built from the
+			 * post's own AT-URI, so a document-only site never has one even
+			 * though the cleanup path still deletes its document record.
+			 * This field is the server's `has_post_records()`, the same fact
+			 * the deletion is keyed off.
 			 */
-			isPublished: 'publish' === editor.getCurrentPost()?.status,
+			hasRecord: !! editor.getCurrentPost()?.atmosphere_has_record,
+			publishError: editor.getCurrentPost()?.atmosphere_publish_error,
 			editedStatus: editor.getEditedPostAttribute( 'status' ),
 			editedPassword: editor.getEditedPostAttribute( 'password' ),
+
+			/*
+			 * `wp_insert_post()` rewrites `publish` to `future` when the
+			 * date is a minute or more ahead, on updates as well as inserts,
+			 * so moving a published post's date forward removes its record
+			 * exactly like unpublishing does. Gutenberg's schedule control
+			 * only edits the date, never the status, so the edited status is
+			 * still `publish` and would miss it. This selector applies core's
+			 * own one-minute rule.
+			 */
+			isBeingScheduled: editor.isEditedPostBeingScheduled(),
+
+			/*
+			 * Picks the tense of the removal warning: the condition behind it
+			 * is state rather than a pending edit, so it survives the save
+			 * that acts on it.
+			 */
+			isDirty: editor.isEditedPostDirty(),
 		};
 	}, [] );
 
@@ -104,11 +126,14 @@ const EditorPlugin = () => {
 	const enabled = isSharingEnabled( meta );
 	const message = panelMessage( SHARE_STATUS, {
 		enabled,
-		hasRecord: !! sharedUrl,
+		hasRecord,
 		hasPublishError: !! publishError,
-		isPublished,
 		willBeUnpublished:
-			'publish' !== editedStatus || !! editedPassword || ! enabled,
+			'publish' !== editedStatus ||
+			isBeingScheduled ||
+			!! editedPassword ||
+			! enabled,
+		isDirty,
 	} );
 	const customText = ( meta && meta[ CUSTOM_TEXT_META_KEY ] ) || '';
 
@@ -118,7 +143,15 @@ const EditorPlugin = () => {
 	   shown only to users who can open the settings page; everyone
 	   else is told who can.
 
-	   These strings are kept self-contained (not built from the shared
+	   These three branches are only reachable on a stale snapshot, which
+	   is the bug this panel exists for: `SHARE_STATUS` is fixed at page
+	   load, while `atmosphere_publish_error` refreshes with every save. A
+	   connection that dies mid-session leaves `can_share` true (so
+	   `panelMessage()` reaches `publishError` at all) while the REST field
+	   starts reporting `needs_reconnect`. On a fresh load the site-level
+	   banner has already taken over and none of this renders.
+
+	   The strings are kept self-contained (not built from the shared
 	   ReconnectAction lead + link) to preserve their existing
 	   translations. There is no variant that drops the call to action:
 	   this notice only renders when the site can share, so it can never
@@ -159,12 +192,17 @@ const EditorPlugin = () => {
 		  );
 
 	/*
-	 * With sharing forced off from outside and no record to link to, every
-	 * child below is conditional and none of them render, which would leave
-	 * a titled panel with nothing in it. An empty panel reads as broken
-	 * rather than as the deliberate silence a host-plugin site is owed.
+	 * Sharing forced off from outside, with no record to link to: a host
+	 * plugin owns the sharing experience, so the panel stays out of the way
+	 * rather than narrating an arrangement the author cannot act on.
+	 *
+	 * Keyed on the state rather than on `sharing_enabled`, which is also
+	 * false when the site owner turned automatic sharing off in settings.
+	 * That is the author's own site policy, not another plugin's, and the
+	 * per-post toggle still decides whether `backfill` reaches this post, so
+	 * the panel renders there.
 	 */
-	if ( ! message && ! SHARE_STATUS.sharing_enabled && ! sharedUrl ) {
+	if ( 'sharing_off_external' === SHARE_STATUS.state && ! sharedUrl ) {
 		return null;
 	}
 
@@ -217,44 +255,44 @@ const EditorPlugin = () => {
 			) }
 
 			{ /* The controls, whose help text always states the outcome for
-			     this post. They follow the site's sharing policy, not the
-			     connection: with the connection down the toggle still records
-			     a preference, and `wp atmosphere backfill` reads that meta
-			     when the site recovers. */ }
-			{ SHARE_STATUS.sharing_enabled && (
-				<>
-					<ToggleControl
-						label={ __( 'Share this post', 'atmosphere' ) }
-						checked={ enabled }
-						onChange={ ( value ) =>
-							setMeta( {
-								...meta,
-								[ DISABLED_META_KEY ]: ! value,
-							} )
-						}
-						help={ shareHelpText(
-							enabled,
-							SHARE_STATUS.can_share
-						) }
-					/>
+			     this post. They render in every state, because the meta they
+			     write is load-bearing in every state: it is what
+			     `is_post_publishable()` reads, so it decides whether
+			     `wp atmosphere backfill` ever touches this post, and it
+			     decides again if the connection comes back or the site turns
+			     automatic sharing on. Hiding them left that preference
+			     invisible and unchangeable while it still had an effect. */ }
+			<ToggleControl
+				label={ __( 'Share this post', 'atmosphere' ) }
+				checked={ enabled }
+				onChange={ ( value ) =>
+					setMeta( {
+						...meta,
+						[ DISABLED_META_KEY ]: ! value,
+					} )
+				}
+				help={ shareHelpText(
+					enabled,
+					SHARE_STATUS.can_share,
+					SHARE_STATUS.sharing_enabled
+				) }
+			/>
 
-					{ enabled && (
-						<TextareaControl
-							label={ __( 'Custom Bluesky text', 'atmosphere' ) }
-							value={ customText }
-							onChange={ ( value ) =>
-								setMeta( {
-									...meta,
-									[ CUSTOM_TEXT_META_KEY ]: value,
-								} )
-							}
-							help={ __(
-								'Leave empty to use the default message, or write your own. It’s shared with a link back to this post, and you can mention other Bluesky users.',
-								'atmosphere'
-							) }
-						/>
+			{ enabled && (
+				<TextareaControl
+					label={ __( 'Custom Bluesky text', 'atmosphere' ) }
+					value={ customText }
+					onChange={ ( value ) =>
+						setMeta( {
+							...meta,
+							[ CUSTOM_TEXT_META_KEY ]: value,
+						} )
+					}
+					help={ __(
+						'Leave empty to use the default message, or write your own. It’s shared with a link back to this post, and you can mention other Bluesky users.',
+						'atmosphere'
 					) }
-				</>
+				/>
 			) }
 
 			{ /* A fact, not a message, so it always comes last and renders

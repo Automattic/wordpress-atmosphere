@@ -591,10 +591,12 @@ function get_reauth_reason(): string {
  * Lead sentence explaining why the connection needs a reconnect.
  *
  * Single source for the cause copy so every surface that reads the
- * `reauth_reason` marker — the admin reconnect notice and the Site
- * Health test — explains the same failure with the same words. Each
- * caller appends its own consequence/action tail; copy edits and
- * translations happen once, here.
+ * `reauth_reason` marker explains the same failure with the same words.
+ * Read by the Site Health test directly, and by the admin notice and both
+ * editor surfaces through {@see reauth_lead_for_current_user()}, which
+ * drops the cause for a reader who cannot act on it. Each caller appends
+ * its own consequence/action tail; copy edits and translations happen
+ * once, here.
  *
  * @since 2.1.0
  *
@@ -668,13 +670,12 @@ function reauth_lead_for_current_user(): string {
  *  - Sharing forced off from outside says nothing at all: a host plugin owns
  *    that experience and the reader cannot act on the arrangement.
  *
- * @since unreleased
- *
- * `sharing_enabled` is the site's policy (is cross-posting switched on) and
- * decides whether the per-post controls render at all. `can_share` is whether
- * a share could succeed right now, which a dead connection also breaks. They
- * are separate because the toggle still records a preference while the
- * connection is down, and `wp atmosphere backfill` reads that meta later.
+ * `sharing_enabled` is the site's policy (is cross-posting switched on).
+ * `can_share` is whether a share could succeed right now, which a dead
+ * connection also breaks. They are separate because the toggle still records
+ * a preference while the connection is down, and `wp atmosphere backfill`
+ * reads that meta later. Neither hides the per-post controls: the panel
+ * renders them in every state and lets the help text explain what they mean.
  *
  * Two sentences come out of it, from the same decision. `message` is for an
  * ambient surface like the document panel, which may say nothing at all when
@@ -683,6 +684,8 @@ function reauth_lead_for_current_user(): string {
  * answer. They differ in exactly one state: sharing forced off from outside,
  * where the panel stays quiet but "will this post be shared" still needs an
  * answer.
+ *
+ * @since unreleased
  *
  * @return array{state: string, message: string, reason: string, severity: string, action: bool, can_share: bool, sharing_enabled: bool}
  */
@@ -801,7 +804,20 @@ function reconnect_url(): string {
 	 *
 	 * @param string $url Admin URL to reconnect at, or '' when there is none.
 	 */
-	return (string) \apply_filters( 'atmosphere_reconnect_url', $url );
+	$url = (string) \apply_filters( 'atmosphere_reconnect_url', $url );
+
+	/*
+	 * Sanitized here rather than at each sink. The PHP surfaces already run
+	 * `esc_url()`, but `Block_Editor::script_data()` localizes this value raw
+	 * and `reconnect-notice.js` renders it as `<a href={ RECONNECT_URL }>`,
+	 * where react-dom only warns about a `javascript:` scheme in development
+	 * and emits the attribute anyway. A filter callback is trusted PHP, so
+	 * this is not a privilege boundary; it stops a host plugin piping an
+	 * option value straight through from becoming one. `sanitize_url()`
+	 * returns '' for a rejected scheme, which the existing empty-string
+	 * branches already degrade to plain text.
+	 */
+	return \sanitize_url( $url );
 }
 
 /**

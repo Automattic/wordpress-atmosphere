@@ -44,9 +44,10 @@ export const PREVIEW_PATH =
 export const RECONNECT_URL = options.reconnectUrl || '';
 
 /**
- * Whether the current user can open the settings page (manage_options).
+ * Whether the current user can manage the connection (manage_options).
  *
- * Reconnect prompts link there only for users who can act on them.
+ * Reconnect prompts link to `RECONNECT_URL` only for users who can act on
+ * them; everyone else is told to ask an administrator.
  *
  * @type {boolean}
  */
@@ -55,10 +56,15 @@ export const CAN_MANAGE = !! options.canManage;
 /**
  * The site-level share decision, computed once in PHP.
  *
- * `{ state, message, severity, action, can_share }` — see
+ * `{ state, message, severity, action, can_share, sharing_enabled }` — see
  * `Atmosphere\share_status()`. The panel renders this rather than deriving
  * the same answer from separate flags, which is what let the editor's two
  * surfaces contradict each other.
+ *
+ * `can_share` is whether a share could succeed right now; `sharing_enabled`
+ * is whether the site cross-posts automatically at all. Both feed the help
+ * text under the share toggle, and `state` decides the one case where the
+ * panel removes itself entirely (`sharing_off_external`).
  *
  * @type {Object}
  */

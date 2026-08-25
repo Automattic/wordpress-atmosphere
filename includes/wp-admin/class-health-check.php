@@ -175,8 +175,12 @@ class Health_Check {
 	 */
 	private static function reauth_description(): string {
 		/*
-		 * The cause sentence is shared with the admin reconnect notice
-		 * via `reauth_reason_lead()`; only the action tail is owned here.
+		 * The cause sentence comes from `reauth_reason_lead()`, shared with
+		 * the admin notice and both editor surfaces (those three read it
+		 * through `reauth_lead_for_current_user()`, which drops the cause
+		 * for a reader who cannot reconnect; this screen needs
+		 * `view_site_health_checks`, so it always shows it). Only the action
+		 * tail is owned here.
 		 */
 		$description = \sprintf(
 			'<p>%s %s</p>',

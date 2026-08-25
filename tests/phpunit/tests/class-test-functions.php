@@ -9,6 +9,7 @@ namespace Atmosphere\Tests;
 
 use Atmosphere\OAuth\Client;
 use function Atmosphere\reconnect_url;
+use function Atmosphere\share_status;
 use function Atmosphere\reauth_reason_lead;
 use function Atmosphere\parse_at_uri;
 use function Atmosphere\build_at_uri;
@@ -1246,5 +1247,137 @@ class Test_Functions extends \WP_UnitTestCase {
 		$this->assertStringContainsString( 'security keys have changed', $lead );
 		$this->assertStringNotContainsString( "\u{2014}", $lead );
 		$this->assertStringNotContainsString( "\u{2013}", $lead );
+	}
+
+	/**
+	 * The filter's return value reaches React as a raw `href`, because
+	 * `Block_Editor::script_data()` localizes it without escaping and
+	 * react-dom only warns about a `javascript:` scheme in development.
+	 * Sanitizing at the source covers every consumer at once.
+	 */
+	public function test_reconnect_url_filter_cannot_inject_a_script_scheme() {
+		\add_filter(
+			'atmosphere_reconnect_url',
+			static function () {
+				return 'javascript:alert(1)'; // phpcs:ignore WordPress.WP.EnqueuedResources
+			}
+		);
+
+		$this->assertSame( '', reconnect_url() );
+
+		\remove_all_filters( 'atmosphere_reconnect_url' );
+	}
+
+	/**
+	 * Sanitizing must not damage the ordinary case: an admin URL with a
+	 * query string survives intact.
+	 */
+	public function test_reconnect_url_filter_keeps_a_normal_admin_url() {
+		\add_filter(
+			'atmosphere_reconnect_url',
+			static function () {
+				return 'https://example.com/wp-admin/options-general.php?page=atmosphere&reconnect=1';
+			}
+		);
+
+		$this->assertSame(
+			'https://example.com/wp-admin/options-general.php?page=atmosphere&reconnect=1',
+			reconnect_url()
+		);
+
+		\remove_all_filters( 'atmosphere_reconnect_url' );
+	}
+
+	/**
+	 * `share_status()` decides the notice level and whether a reconnect link
+	 * renders on both editor surfaces, so `state`, `severity` and `action`
+	 * are load-bearing and were never asserted anywhere.
+	 */
+	public function test_share_status_is_quiet_and_shareable_when_healthy() {
+		$this->connect_site();
+
+		$status = share_status();
+
+		$this->assertSame( 'ok', $status['state'] );
+		$this->assertSame( '', $status['message'] );
+		$this->assertSame( 'info', $status['severity'] );
+		$this->assertFalse( $status['action'] );
+		$this->assertTrue( $status['can_share'] );
+		$this->assertTrue( $status['sharing_enabled'] );
+	}
+
+	/**
+	 * Sharing switched off by the site owner: the panel says so and points
+	 * at the setting, but there is nothing to reconnect.
+	 */
+	public function test_share_status_reports_sharing_off_without_an_action() {
+		$this->connect_site();
+		\update_option( 'atmosphere_auto_publish', '0' );
+
+		$status = share_status();
+
+		$this->assertSame( 'sharing_off', $status['state'] );
+		$this->assertNotSame( '', $status['message'] );
+		$this->assertFalse( $status['action'] );
+		$this->assertFalse( $status['can_share'] );
+		$this->assertFalse( $status['sharing_enabled'] );
+	}
+
+	/**
+	 * Sharing forced off from outside: `reason` still answers the direct
+	 * question the pre-publish panel asks, while `message` stays empty so
+	 * the ambient document panel keeps quiet.
+	 */
+	public function test_share_status_stays_silent_when_forced_off_externally() {
+		$this->connect_site();
+		\add_filter( 'atmosphere_should_auto_publish', '__return_false' );
+
+		$status = share_status();
+
+		$this->assertSame( 'sharing_off_external', $status['state'] );
+		$this->assertSame( '', $status['message'] );
+		$this->assertNotSame( '', $status['reason'] );
+		$this->assertFalse( $status['sharing_enabled'] );
+
+		\remove_all_filters( 'atmosphere_should_auto_publish' );
+	}
+
+	/**
+	 * A dead connection is a warning with a call to action, and it leaves
+	 * `sharing_enabled` true: site policy still says cross-post, so the
+	 * per-post toggle keeps recording a preference for when it recovers.
+	 */
+	public function test_share_status_asks_for_a_reconnect_without_disabling_sharing() {
+		$this->connect_site();
+		\update_option(
+			'atmosphere_connection',
+			array(
+				'did'          => 'did:plc:test123',
+				'access_token' => 'token',
+				'needs_reauth' => true,
+			)
+		);
+
+		$status = share_status();
+
+		$this->assertSame( 'needs_reconnect', $status['state'] );
+		$this->assertSame( 'warning', $status['severity'] );
+		$this->assertTrue( $status['action'] );
+		$this->assertFalse( $status['can_share'] );
+		$this->assertTrue( $status['sharing_enabled'] );
+	}
+
+	/**
+	 * Put the site in a connected, sharing-enabled state.
+	 */
+	private function connect_site(): void {
+		\update_option( 'atmosphere_identity', array( 'did' => 'did:plc:test123' ) );
+		\update_option(
+			'atmosphere_connection',
+			array(
+				'did'          => 'did:plc:test123',
+				'access_token' => 'token',
+			)
+		);
 	}
 }
