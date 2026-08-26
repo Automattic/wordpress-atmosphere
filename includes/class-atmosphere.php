@@ -2589,10 +2589,14 @@ class Atmosphere {
 	 * retrying before then is guaranteed to burn a rung of the ladder on
 	 * an identical 429. So the longer of the two wins.
 	 *
-	 * The result is capped at an hour. A malformed or hostile
-	 * `ratelimit-reset` should not be able to park a queued publish days
-	 * into the future — at that point the ladder has effectively been
-	 * disabled by a header we do not control.
+	 * Only the PDS-supplied wait is capped, and at a day rather than an
+	 * hour: Bluesky budgets repo writes per day as well as per hour, so
+	 * a daily-limit 429 legitimately reports a reset most of a day out,
+	 * and an hour-capped wait would spend every rung of the ladder
+	 * inside a window that is still closed. The cap is there so a
+	 * malformed or hostile `ratelimit-reset` cannot park a queued
+	 * publish weeks into the future; it must never shorten the ladder's
+	 * own step, which is why it applies to the header value alone.
 	 *
 	 * @since unreleased
 	 *
@@ -2612,7 +2616,7 @@ class Atmosphere {
 		 * Pad by a second so the retry lands just after the window
 		 * rolls over rather than exactly on the boundary.
 		 */
-		return \min( \max( $delay, $retry_after + 1 ), HOUR_IN_SECONDS );
+		return \max( $delay, \min( $retry_after + 1, DAY_IN_SECONDS ) );
 	}
 
 	/**

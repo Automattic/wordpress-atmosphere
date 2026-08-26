@@ -333,6 +333,48 @@ class Test_Backfill_Command_Invoke extends \WP_UnitTestCase {
 	}
 
 	/**
+	 * A long post publishes as a thread, and when a reply create spends
+	 * the last of the budget the compensating rollback gets a 429 of its
+	 * own — so the failure arrives as `atmosphere_thread_rollback_failed`
+	 * with the 429 nested inside. The rest of the queue is just as
+	 * rate-limited, so the run still has to stop.
+	 */
+	public function test_rate_limited_inside_a_thread_rollback_aborts_remaining() {
+		self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		self::factory()->post->create( array( 'post_status' => 'publish' ) );
+
+		$this->mock_apply_writes_error(
+			'atmosphere_thread_rollback_failed',
+			array(
+				'original_error' => new \WP_Error(
+					'atmosphere_rate_limited',
+					'Rate limit exceeded.',
+					array(
+						'status' => 429,
+						'reset'  => \time() + 30 * MINUTE_IN_SECONDS,
+					)
+				),
+			)
+		);
+
+		try {
+			$this->run_command( array() );
+			$this->fail( 'Expected WP_CLI_Halt after the rate-limit abort.' );
+		} catch ( \WP_CLI_Halt $e ) {
+			$warnings = \implode( "\n", \WP_CLI::messages( 'warning' ) );
+
+			$this->assertStringContainsString( 'Bluesky rate limit reached', $warnings );
+			$this->assertStringContainsString( 'resets in about', $warnings );
+			$this->assertSame(
+				1,
+				$this->publish_failure_count(),
+				'A nested 429 must stop the queue like a top-level one.'
+			);
+		}
+	}
+
+	/**
 	 * `--limit=0` is accepted as "no cap" and the run proceeds.
 	 */
 	public function test_limit_zero_is_no_cap() {

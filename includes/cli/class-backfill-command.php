@@ -385,9 +385,15 @@ class Backfill_Command extends \WP_CLI_Command {
 						 * publish never gets `Document::META_URI`, so it
 						 * stays in the unsynced set and the next run picks
 						 * up exactly where this one left off.
+						 *
+						 * The 429 does not always arrive as the top-level
+						 * code, hence `find_rate_limit_error()` rather than
+						 * a bare code comparison.
 						 */
-						if ( 'atmosphere_rate_limited' === $result->get_error_code() ) {
-							\WP_CLI::warning( self::rate_limit_message( $result ) );
+						$rate_limit_error = self::find_rate_limit_error( $result );
+
+						if ( $rate_limit_error instanceof \WP_Error ) {
+							\WP_CLI::warning( self::rate_limit_message( $rate_limit_error ) );
 							break;
 						}
 					} elseif ( $already_synced && \is_array( $result ) && empty( $result ) ) {
@@ -568,6 +574,46 @@ class Backfill_Command extends \WP_CLI_Command {
 		}
 
 		return (int) $raw;
+	}
+
+	/**
+	 * Find the rate-limit failure inside a publish error, if there is one.
+	 *
+	 * A 429 does not always surface as the top-level error code. A long
+	 * post publishes as a thread, and when a reply create is the write
+	 * that exhausts the budget, the compensating rollback draws on that
+	 * same spent budget and gets a 429 of its own — so the Publisher
+	 * returns `atmosphere_thread_rollback_failed`, carrying the original
+	 * and the rollback failure as data rather than the rate-limit code.
+	 * The rest of the queue is just as rate-limited either way, so the
+	 * abort has to look one level down.
+	 *
+	 * @since unreleased
+	 *
+	 * @param \WP_Error $error Failure returned by the Publisher.
+	 * @return \WP_Error|null The rate-limit failure, or null when this
+	 *                       error is not one.
+	 */
+	private static function find_rate_limit_error( \WP_Error $error ): ?\WP_Error {
+		if ( 'atmosphere_rate_limited' === $error->get_error_code() ) {
+			return $error;
+		}
+
+		$data = $error->get_error_data();
+
+		if ( ! \is_array( $data ) ) {
+			return null;
+		}
+
+		foreach ( array( 'original_error', 'rollback_error' ) as $key ) {
+			$nested = $data[ $key ] ?? null;
+
+			if ( $nested instanceof \WP_Error && 'atmosphere_rate_limited' === $nested->get_error_code() ) {
+				return $nested;
+			}
+		}
+
+		return null;
 	}
 
 	/**

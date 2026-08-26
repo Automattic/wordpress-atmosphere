@@ -3713,11 +3713,11 @@ class Test_Atmosphere extends WP_UnitTestCase {
 	}
 
 	/**
-	 * A wildly out-of-range reset cannot park a queued publish days out.
-	 * Past an hour the header has effectively disabled the ladder, and
-	 * we do not control that header.
+	 * A wildly out-of-range reset cannot park a queued publish weeks
+	 * out. Past a day the header has effectively disabled the ladder,
+	 * and we do not control that header.
 	 */
-	public function test_rate_limit_retry_delay_is_capped_at_an_hour() {
+	public function test_rate_limit_retry_delay_is_capped_at_a_day() {
 		$post = self::factory()->post->create_and_get( array( 'post_status' => 'publish' ) );
 
 		\wp_clear_scheduled_hook( 'atmosphere_publish_post', array( $post->ID ) );
@@ -3730,7 +3730,41 @@ class Test_Atmosphere extends WP_UnitTestCase {
 		$next = \wp_next_scheduled( 'atmosphere_publish_post', array( $post->ID ) );
 
 		$this->assertNotFalse( $next );
-		$this->assertLessThanOrEqual( \time() + HOUR_IN_SECONDS + 5, $next );
+		$this->assertLessThanOrEqual( \time() + DAY_IN_SECONDS + 5, $next );
+	}
+
+	/**
+	 * The cap applies to the PDS-supplied wait, never to the ladder's
+	 * own step: a site that filters in a longer ladder must not get a
+	 * *shorter* wait just because the failure happened to be a 429.
+	 */
+	public function test_rate_limit_retry_delay_never_shortens_the_ladder() {
+		$post = self::factory()->post->create_and_get( array( 'post_status' => 'publish' ) );
+
+		\wp_clear_scheduled_hook( 'atmosphere_publish_post', array( $post->ID ) );
+		\wp_clear_scheduled_hook( 'atmosphere_update_post', array( $post->ID ) );
+
+		$ladder = function () {
+			return array( 6 * HOUR_IN_SECONDS );
+		};
+
+		\add_filter( 'atmosphere_publish_retry_delays', $ladder );
+
+		/* A short window; the ladder's own six hours has to win. */
+		$this->force_apply_writes_rate_limited( 5 * MINUTE_IN_SECONDS );
+
+		\do_action( 'atmosphere_publish_post', $post->ID );
+
+		$next = \wp_next_scheduled( 'atmosphere_publish_post', array( $post->ID ) );
+
+		\remove_filter( 'atmosphere_publish_retry_delays', $ladder );
+
+		$this->assertNotFalse( $next );
+		$this->assertGreaterThan(
+			\time() + 5 * HOUR_IN_SECONDS,
+			$next,
+			'A 429 must not clamp a filtered ladder step down to the cap.'
+		);
 	}
 
 	/**
