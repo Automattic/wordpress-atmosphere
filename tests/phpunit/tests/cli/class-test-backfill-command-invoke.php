@@ -244,6 +244,28 @@ class Test_Backfill_Command_Invoke extends \WP_UnitTestCase {
 	}
 
 	/**
+	 * A failure that never left the site spends no rate-limit budget,
+	 * so there is nothing to pace against. Only a failure the PDS
+	 * answered carries an HTTP status.
+	 */
+	public function test_throttle_does_not_wait_on_a_local_failure() {
+		self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		$this->mock_apply_writes_error( 'atmosphere_missing_tid' );
+
+		$started = \microtime( true );
+
+		try {
+			$this->run_command( array( 'throttle' => '5' ) );
+		} catch ( \WP_CLI_Halt $e ) {
+			// Failures exit non-zero; the timing is what matters here.
+			unset( $e );
+		}
+
+		$this->assertLessThan( 5.0, \microtime( true ) - $started );
+	}
+
+	/**
 	 * Nothing is paced after the final post — the wait would only delay
 	 * the summary the operator is waiting for.
 	 */

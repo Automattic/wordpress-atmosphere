@@ -3665,7 +3665,7 @@ class Test_Atmosphere extends WP_UnitTestCase {
 	/**
 	 * Short-circuit applyWrites with a rate-limit rejection.
 	 *
-	 * @param int $retry_after Seconds the PDS says the window has left.
+	 * @param int $retry_after Seconds until the rate-limit window resets.
 	 */
 	private function force_apply_writes_rate_limited( int $retry_after ): void {
 		\add_filter(
@@ -3690,7 +3690,7 @@ class Test_Atmosphere extends WP_UnitTestCase {
 	 * clears mirror that, so the creation-time event does not mask the
 	 * retry the worker schedules.
 	 *
-	 * @param int $retry_after Seconds the PDS says the window has left.
+	 * @param int $retry_after Seconds until the rate-limit window resets.
 	 * @return int|false Timestamp of the scheduled retry, or false when
 	 *                   none was scheduled.
 	 */

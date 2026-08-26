@@ -351,7 +351,7 @@ class Backfill_Command extends \WP_CLI_Command {
 						: Publisher::publish_post( $post, $original_time );
 
 					if ( \is_wp_error( $result ) ) {
-						$reached_pds = true;
+						$reached_pds = self::spent_write_budget( $result );
 
 						\WP_CLI::warning(
 							\sprintf(
@@ -584,15 +584,51 @@ class Backfill_Command extends \WP_CLI_Command {
 			return \__( 'Connection to AT Protocol was lost; aborting the remaining posts.', 'atmosphere' );
 		}
 
-		$candidates = \array_merge( array( $error ), Publisher::underlying_errors( $error ) );
-
-		foreach ( $candidates as $candidate ) {
+		foreach ( self::failure_chain( $error ) as $candidate ) {
 			if ( API::is_rate_limit_error( $candidate ) ) {
 				return self::rate_limit_message( $candidate );
 			}
 		}
 
 		return null;
+	}
+
+	/**
+	 * A publish failure plus whatever failures it wraps.
+	 *
+	 * @since unreleased
+	 *
+	 * @param \WP_Error $error Failure returned by the Publisher.
+	 * @return \WP_Error[] The failure itself first, then its causes.
+	 */
+	private static function failure_chain( \WP_Error $error ): array {
+		return \array_merge( array( $error ), Publisher::underlying_errors( $error ) );
+	}
+
+	/**
+	 * Whether a failed post still cost the account rate-limit budget.
+	 *
+	 * Only a failure the PDS actually answered carries an HTTP status.
+	 * A locally-generated one (a missing TID, a filter short-circuiting
+	 * the write, a lost connection) never left the site, so throttling
+	 * after it would sleep for nothing. A failed thread rollback keeps
+	 * its status one level down, hence the walk.
+	 *
+	 * @since unreleased
+	 *
+	 * @param \WP_Error $error Failure returned by the Publisher.
+	 * @return bool
+	 */
+	private static function spent_write_budget( \WP_Error $error ): bool {
+		foreach ( self::failure_chain( $error ) as $candidate ) {
+			$data = $candidate->get_error_data();
+
+			if ( \is_array( $data ) && isset( $data['status'] ) ) {
+				return true;
+			}
+		}
+
+		return false;
 	}
 
 	/**
