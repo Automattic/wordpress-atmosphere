@@ -2574,10 +2574,45 @@ class Atmosphere {
 		self::record_publish_error( $post_id, $result, true );
 		\update_post_meta( $post_id, self::META_PUBLISH_RETRIES, $attempts + 1 );
 		\wp_schedule_single_event(
-			\time() + $delays[ $attempts ],
+			\time() + self::publish_retry_delay( $delays[ $attempts ], $result ),
 			$hook,
 			array( $post_id )
 		);
+	}
+
+	/**
+	 * Resolve how long to wait before the next publish attempt.
+	 *
+	 * Normally this is just the ladder's own step. The exception is a
+	 * rate-limited PDS: it tells us exactly when the window rolls over
+	 * (`API::rate_limited_error()` carries that as `retry_after`), and
+	 * retrying before then is guaranteed to burn a rung of the ladder on
+	 * an identical 429. So the longer of the two wins.
+	 *
+	 * The result is capped at an hour. A malformed or hostile
+	 * `ratelimit-reset` should not be able to park a queued publish days
+	 * into the future — at that point the ladder has effectively been
+	 * disabled by a header we do not control.
+	 *
+	 * @since unreleased
+	 *
+	 * @param int       $delay Ladder delay for this attempt, in seconds.
+	 * @param \WP_Error $error The failure being retried.
+	 * @return int Seconds to wait.
+	 */
+	private static function publish_retry_delay( int $delay, \WP_Error $error ): int {
+		$data        = $error->get_error_data();
+		$retry_after = \is_array( $data ) && isset( $data['retry_after'] ) ? (int) $data['retry_after'] : 0;
+
+		if ( $retry_after <= 0 ) {
+			return $delay;
+		}
+
+		/*
+		 * Pad by a second so the retry lands just after the window
+		 * rolls over rather than exactly on the boundary.
+		 */
+		return \min( \max( $delay, $retry_after + 1 ), HOUR_IN_SECONDS );
 	}
 
 	/**
