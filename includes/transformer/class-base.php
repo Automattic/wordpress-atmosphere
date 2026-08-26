@@ -203,7 +203,7 @@ abstract class Base {
 	 *
 	 * @var int
 	 */
-	protected const MAX_TAGS = 8;
+	private const MAX_TAGS = 8;
 
 	/**
 	 * Collect tags from post taxonomies (max 8, no "uncategorized").
@@ -249,7 +249,13 @@ abstract class Base {
 		 * The return value is normalized before use. Entries that are
 		 * not strings are dropped, the rest are trimmed, empties are
 		 * removed, and the result is de-duplicated and capped again at
-		 * {@see self::MAX_TAGS}.
+		 * {@see self::MAX_TAGS}. That bounds how many tags a record
+		 * carries, not how long each one is: both lexicons also bound a
+		 * single tag (64 graphemes for `app.bsky.feed.post`), and an
+		 * over-long entry is passed through as-is, exactly as an
+		 * over-long WordPress tag name already is. A filter that builds
+		 * tag names rather than picking from existing terms should keep
+		 * them short itself.
 		 *
 		 * @since unreleased
 		 *
@@ -275,6 +281,13 @@ abstract class Base {
 		 * deliberate: `(string) $term` on a WP_Term would fatal, and
 		 * stringifying an integer would quietly write the junk keyword
 		 * this filter mostly exists to remove.
+		 *
+		 * Deliberately quieter than the non-array branch above, which
+		 * does call `_doing_it_wrong()`. A filter returning the wrong
+		 * type outright is a bug in that filter; a filter returning a
+		 * mixed list is usually a `get_terms()` result someone forgot to
+		 * pluck, and warning once per post across a backfill would be
+		 * noise rather than signal.
 		 */
 		$normalized = array();
 

@@ -230,7 +230,9 @@ add_filter(
 );
 ```
 
-Prefer this over `atmosphere_transform_document` / `atmosphere_transform_bsky_post` for tag changes. Those run after the cap, so removing a tag there shortens the list rather than making room for the next one. Non-string entries are dropped from the return value, and the result is de-duplicated and capped again, so a filter cannot push a record past what the lexicons accept.
+Prefer this over `atmosphere_transform_document` / `atmosphere_transform_bsky_post` for tag changes. Those run after the cap, so removing a tag there shortens the list rather than making room for the next one.
+
+Non-string entries are dropped from the return value, and the result is de-duplicated and capped again, so a filter cannot write more than 8 tags into a record. The per-tag length limit (64 graphemes for `app.bsky.feed.post`) is not enforced, the same way it is not enforced for an over-long WordPress tag name, so a filter that builds tag names rather than picking from existing terms should keep them short itself.
 
 ATmosphere models one root publication per WordPress site. It verifies that publication at `/.well-known/site.standard.publication` and does not currently implement Standard.site's non-root publication verification path (`/.well-known/site.standard.publication/path/to/publication`). Social Standard.site lexicons such as `site.standard.graph.subscription` and `site.standard.graph.recommend` are also out of scope for the plugin's publishing flow; ATmosphere requests explicit `repo:` scopes only for `app.bsky.feed.post`, `site.standard.document`, and `site.standard.publication`, and intentionally keeps the documented `include:site.standard.authFull` permission set for Standard.site compatibility even though it does not publish or manage social records itself.
 
