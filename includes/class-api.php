@@ -23,9 +23,9 @@ class API {
 	/**
 	 * Latest rate-limit snapshot the PDS reported.
 	 *
-	 * Shape: `[ 'limit' => ?int, 'remaining' => ?int, 'reset' => ?int,
-	 * 'policy' => ?string ]`, where `reset` is a Unix timestamp. Null
-	 * until a response in this process has carried the headers.
+	 * Shape: `[ 'limit' => ?int, 'remaining' => ?int, 'reset' => ?int ]`,
+	 * where `reset` is a Unix timestamp. Null until a response in this
+	 * process has carried the headers.
 	 *
 	 * Process-local on purpose. A long-running `wp atmosphere backfill`
 	 * wants to know what the last write cost it; an ordinary web request
@@ -48,6 +48,32 @@ class API {
 	 */
 	public static function last_rate_limit(): ?array {
 		return self::$last_rate_limit;
+	}
+
+	/**
+	 * Error code minted for a PDS rate limit (HTTP 429).
+	 *
+	 * Declared next to the method that mints it so consumers classify a
+	 * failure through {@see API::is_rate_limit_error()} instead of
+	 * typing the string at every call site, the same convention
+	 * {@see Client::is_reconnect_error()} follows.
+	 *
+	 * @since unreleased
+	 *
+	 * @var string
+	 */
+	public const RATE_LIMITED = 'atmosphere_rate_limited';
+
+	/**
+	 * Whether a failure is a rate limit reported by the PDS.
+	 *
+	 * @since unreleased
+	 *
+	 * @param \WP_Error $error Failure to classify.
+	 * @return bool
+	 */
+	public static function is_rate_limit_error( \WP_Error $error ): bool {
+		return self::RATE_LIMITED === $error->get_error_code();
 	}
 
 	/**
@@ -246,11 +272,28 @@ class API {
 		}
 
 		if ( ! is_success_status( $status ) ) {
-			$msg = $body['message'] ?? ( $body['error'] ?? \__( 'PDS request failed.', 'atmosphere' ) );
+			$msg = self::error_message( $body, \__( 'PDS request failed.', 'atmosphere' ) );
 			return new \WP_Error( 'atmosphere_pds', $msg, array( 'status' => $status ) );
 		}
 
 		return \is_array( $body ) ? $body : array();
+	}
+
+	/**
+	 * Pull the human-readable failure text out of a PDS error body.
+	 *
+	 * The PDS uses `message` for the prose and `error` for the machine
+	 * name, but not every failure carries both, so the caller supplies
+	 * the wording for the case where neither is there.
+	 *
+	 * @since unreleased
+	 *
+	 * @param array  $body     Decoded response body.
+	 * @param string $fallback Message to use when the body says nothing.
+	 * @return string
+	 */
+	private static function error_message( array $body, string $fallback ): string {
+		return $body['message'] ?? ( $body['error'] ?? $fallback );
 	}
 
 	/**
@@ -282,13 +325,11 @@ class API {
 		$limit     = \wp_remote_retrieve_header( $response, 'ratelimit-limit' );
 		$remaining = \wp_remote_retrieve_header( $response, 'ratelimit-remaining' );
 		$reset     = \wp_remote_retrieve_header( $response, 'ratelimit-reset' );
-		$policy    = \wp_remote_retrieve_header( $response, 'ratelimit-policy' );
 
 		$snapshot = array(
 			'limit'     => \is_numeric( $limit ) ? (int) $limit : null,
 			'remaining' => \is_numeric( $remaining ) ? (int) $remaining : null,
 			'reset'     => self::reset_timestamp( $reset ),
-			'policy'    => \is_string( $policy ) && '' !== $policy ? $policy : null,
 		);
 
 		if ( null === $snapshot['limit'] && null === $snapshot['remaining'] && null === $snapshot['reset'] ) {
@@ -351,14 +392,11 @@ class API {
 	 * @return \WP_Error
 	 */
 	private static function rate_limited_error( array $body, ?array $snapshot ): \WP_Error {
-		$snapshot = $snapshot ?? array();
-		$reset    = $snapshot['reset'] ?? null;
-
-		$message = $body['message'] ?? ( $body['error'] ?? \__( 'The PDS rate limit was reached.', 'atmosphere' ) );
+		$reset = $snapshot['reset'] ?? null;
 
 		return new \WP_Error(
-			'atmosphere_rate_limited',
-			$message,
+			self::RATE_LIMITED,
+			self::error_message( $body, \__( 'The PDS rate limit was reached.', 'atmosphere' ) ),
 			array(
 				'status'      => 429,
 				'reset'       => $reset,

@@ -3683,26 +3683,38 @@ class Test_Atmosphere extends WP_UnitTestCase {
 	}
 
 	/**
+	 * Publish a post against a rate-limited PDS and report when the
+	 * retry was scheduled for.
+	 *
+	 * WP-Cron unschedules an event before running its callback; the two
+	 * clears mirror that, so the creation-time event does not mask the
+	 * retry the worker schedules.
+	 *
+	 * @param int $retry_after Seconds the PDS says the window has left.
+	 * @return int|false Timestamp of the scheduled retry, or false when
+	 *                   none was scheduled.
+	 */
+	private function rate_limited_retry_time( int $retry_after ) {
+		$post = self::factory()->post->create_and_get( array( 'post_status' => 'publish' ) );
+
+		\wp_clear_scheduled_hook( 'atmosphere_publish_post', array( $post->ID ) );
+		\wp_clear_scheduled_hook( 'atmosphere_update_post', array( $post->ID ) );
+
+		$this->force_apply_writes_rate_limited( $retry_after );
+
+		\do_action( 'atmosphere_publish_post', $post->ID );
+
+		return \wp_next_scheduled( 'atmosphere_publish_post', array( $post->ID ) );
+	}
+
+	/**
 	 * A rate-limited publish waits for the window the PDS reported.
 	 *
 	 * Retrying on the ladder's own first rung would spend a rung on a
 	 * request that is guaranteed to come back with the same 429.
 	 */
 	public function test_publish_worker_waits_for_the_rate_limit_window() {
-		$post = self::factory()->post->create_and_get( array( 'post_status' => 'publish' ) );
-
-		/*
-		 * WP-Cron unschedules an event before running its callback; mirror
-		 * that so the creation-time event doesn't mask the retry.
-		 */
-		\wp_clear_scheduled_hook( 'atmosphere_publish_post', array( $post->ID ) );
-		\wp_clear_scheduled_hook( 'atmosphere_update_post', array( $post->ID ) );
-
-		$this->force_apply_writes_rate_limited( 20 * MINUTE_IN_SECONDS );
-
-		\do_action( 'atmosphere_publish_post', $post->ID );
-
-		$next = \wp_next_scheduled( 'atmosphere_publish_post', array( $post->ID ) );
+		$next = $this->rate_limited_retry_time( 20 * MINUTE_IN_SECONDS );
 
 		$this->assertNotFalse( $next, 'A rate-limited publish is transient and must still be retried.' );
 		$this->assertGreaterThan(
@@ -3718,16 +3730,7 @@ class Test_Atmosphere extends WP_UnitTestCase {
 	 * and we do not control that header.
 	 */
 	public function test_rate_limit_retry_delay_is_capped_at_a_day() {
-		$post = self::factory()->post->create_and_get( array( 'post_status' => 'publish' ) );
-
-		\wp_clear_scheduled_hook( 'atmosphere_publish_post', array( $post->ID ) );
-		\wp_clear_scheduled_hook( 'atmosphere_update_post', array( $post->ID ) );
-
-		$this->force_apply_writes_rate_limited( WEEK_IN_SECONDS );
-
-		\do_action( 'atmosphere_publish_post', $post->ID );
-
-		$next = \wp_next_scheduled( 'atmosphere_publish_post', array( $post->ID ) );
+		$next = $this->rate_limited_retry_time( WEEK_IN_SECONDS );
 
 		$this->assertNotFalse( $next );
 		$this->assertLessThanOrEqual( \time() + DAY_IN_SECONDS + 5, $next );
@@ -3739,11 +3742,6 @@ class Test_Atmosphere extends WP_UnitTestCase {
 	 * *shorter* wait just because the failure happened to be a 429.
 	 */
 	public function test_rate_limit_retry_delay_never_shortens_the_ladder() {
-		$post = self::factory()->post->create_and_get( array( 'post_status' => 'publish' ) );
-
-		\wp_clear_scheduled_hook( 'atmosphere_publish_post', array( $post->ID ) );
-		\wp_clear_scheduled_hook( 'atmosphere_update_post', array( $post->ID ) );
-
 		$ladder = function () {
 			return array( 6 * HOUR_IN_SECONDS );
 		};
@@ -3751,11 +3749,7 @@ class Test_Atmosphere extends WP_UnitTestCase {
 		\add_filter( 'atmosphere_publish_retry_delays', $ladder );
 
 		/* A short window; the ladder's own six hours has to win. */
-		$this->force_apply_writes_rate_limited( 5 * MINUTE_IN_SECONDS );
-
-		\do_action( 'atmosphere_publish_post', $post->ID );
-
-		$next = \wp_next_scheduled( 'atmosphere_publish_post', array( $post->ID ) );
+		$next = $this->rate_limited_retry_time( 5 * MINUTE_IN_SECONDS );
 
 		\remove_filter( 'atmosphere_publish_retry_delays', $ladder );
 

@@ -9,6 +9,7 @@ namespace Atmosphere\Cli;
 
 \defined( 'ABSPATH' ) || exit;
 
+use Atmosphere\API;
 use Atmosphere\Backfill;
 use Atmosphere\Publisher;
 use Atmosphere\Transformer\Document;
@@ -147,8 +148,8 @@ class Backfill_Command extends \WP_CLI_Command {
 		 * absent --throttle both mean "no wait". See
 		 * self::whole_number_flag() for why the validation is this strict.
 		 */
-		$limit    = self::whole_number_flag( $assoc_args, 'limit', 0 );
-		$throttle = self::whole_number_flag( $assoc_args, 'throttle', 0 );
+		$limit    = self::whole_number_flag( $assoc_args, 'limit' );
+		$throttle = self::whole_number_flag( $assoc_args, 'throttle' );
 
 		$batch         = isset( $assoc_args['batch'] ) ? \max( 1, (int) $assoc_args['batch'] ) : self::DEFAULT_BATCH;
 		$dry_run       = ! empty( $assoc_args['dry-run'] );
@@ -349,9 +350,9 @@ class Backfill_Command extends \WP_CLI_Command {
 						? Publisher::update_post( $post )
 						: Publisher::publish_post( $post, $original_time );
 
-					$reached_pds = true;
-
 					if ( \is_wp_error( $result ) ) {
+						$reached_pds = true;
+
 						\WP_CLI::warning(
 							\sprintf(
 								/* translators: 1: post ID, 2: error message. */
@@ -362,38 +363,10 @@ class Backfill_Command extends \WP_CLI_Command {
 						);
 						++$errors;
 
-						/*
-						 * A lost connection will fail identically for every
-						 * remaining post. Stop now instead of grinding
-						 * through the rest of the queue (a query each) only
-						 * to report the same error N times. $errors > 0
-						 * already guarantees a non-zero exit below.
-						 */
-						if ( 'atmosphere_not_connected' === $result->get_error_code() ) {
-							\WP_CLI::warning( \__( 'Connection to AT Protocol was lost; aborting the remaining posts.', 'atmosphere' ) );
-							break;
-						}
+						$abort = self::abort_reason( $result );
 
-						/*
-						 * The PDS budgets writes per account, so once the
-						 * window is spent every remaining post in the queue
-						 * gets the same 429. Grinding through them would
-						 * only bury the real cause under N identical
-						 * warnings. Stop and say when the window reopens.
-						 *
-						 * Safe to stop mid-queue: a post that failed to
-						 * publish never gets `Document::META_URI`, so it
-						 * stays in the unsynced set and the next run picks
-						 * up exactly where this one left off.
-						 *
-						 * The 429 does not always arrive as the top-level
-						 * code, hence `find_rate_limit_error()` rather than
-						 * a bare code comparison.
-						 */
-						$rate_limit_error = self::find_rate_limit_error( $result );
-
-						if ( $rate_limit_error instanceof \WP_Error ) {
-							\WP_CLI::warning( self::rate_limit_message( $rate_limit_error ) );
+						if ( null !== $abort ) {
+							\WP_CLI::warning( $abort );
 							break;
 						}
 					} elseif ( $already_synced && \is_array( $result ) && empty( $result ) ) {
@@ -401,9 +374,10 @@ class Backfill_Command extends \WP_CLI_Command {
 						 * `update_post()` returns an empty array when the
 						 * post carries a document URI but has no Bluesky
 						 * publication history to update (a half-synced
-						 * state) — nothing was sent to the PDS. Reporting
-						 * "Updated" here would inflate $synced and hide that
-						 * no record was written.
+						 * state) — nothing was sent to the PDS, so this post
+						 * costs no rate-limit budget and is not throttled.
+						 * Reporting "Updated" here would inflate $synced and
+						 * hide that no record was written.
 						 */
 						\WP_CLI::warning(
 							\sprintf(
@@ -414,6 +388,8 @@ class Backfill_Command extends \WP_CLI_Command {
 						);
 						++$skipped;
 					} else {
+						$reached_pds = true;
+
 						/*
 						 * Both branches pass the same placeholders so PHPCS's
 						 * translators-comment sniff is satisfied by attaching
@@ -545,19 +521,18 @@ class Backfill_Command extends \WP_CLI_Command {
 	 * and `(int)` would truncate to a number the operator never typed.
 	 *
 	 * Failure exits through `WP_CLI::error()` rather than falling back to
-	 * the default. A publish-to-the-internet command must refuse to run
-	 * on a value it had to guess at.
+	 * zero. A publish-to-the-internet command must refuse to run on a
+	 * value it had to guess at.
 	 *
 	 * @since unreleased
 	 *
-	 * @param array  $assoc_args    Flag arguments.
-	 * @param string $flag          Flag name, without the leading dashes.
-	 * @param int    $default_value Value used when the flag is absent.
-	 * @return int
+	 * @param array  $assoc_args Flag arguments.
+	 * @param string $flag       Flag name, without the leading dashes.
+	 * @return int The flag value, or 0 when it was not supplied.
 	 */
-	private static function whole_number_flag( array $assoc_args, string $flag, int $default_value ): int {
+	private static function whole_number_flag( array $assoc_args, string $flag ): int {
 		if ( ! isset( $assoc_args[ $flag ] ) ) {
-			return $default_value;
+			return 0;
 		}
 
 		$raw = $assoc_args[ $flag ];
@@ -577,39 +552,43 @@ class Backfill_Command extends \WP_CLI_Command {
 	}
 
 	/**
-	 * Find the rate-limit failure inside a publish error, if there is one.
+	 * Whether a publish failure dooms the rest of the queue, and what to
+	 * tell the operator when it does.
 	 *
-	 * A 429 does not always surface as the top-level error code. A long
-	 * post publishes as a thread, and when a reply create is the write
-	 * that exhausts the budget, the compensating rollback draws on that
-	 * same spent budget and gets a 429 of its own — so the Publisher
-	 * returns `atmosphere_thread_rollback_failed`, carrying the original
-	 * and the rollback failure as data rather than the rate-limit code.
-	 * The rest of the queue is just as rate-limited either way, so the
-	 * abort has to look one level down.
+	 * Two failures repeat identically for every remaining post: a lost
+	 * connection, and a spent write budget. Grinding through the queue
+	 * (a query each) would only bury the cause under N identical
+	 * warnings, so the run stops. `$errors > 0` already guarantees a
+	 * non-zero exit.
+	 *
+	 * Nothing is lost by stopping mid-queue: a post that failed to
+	 * publish never gets `Document::META_URI`, so it stays in the
+	 * unsynced set and the next run picks up exactly where this one
+	 * left off.
+	 *
+	 * A rate limit does not always arrive as the top-level failure. A
+	 * long post publishes as a thread, and when a reply create spends
+	 * the last of the budget the compensating rollback draws on that
+	 * same spent budget and gets a 429 of its own, so the Publisher
+	 * returns a rollback failure with the 429 nested inside. The rest
+	 * of the queue is just as rate-limited either way, hence the walk
+	 * through the wrapped failures.
 	 *
 	 * @since unreleased
 	 *
 	 * @param \WP_Error $error Failure returned by the Publisher.
-	 * @return \WP_Error|null The rate-limit failure, or null when this
-	 *                       error is not one.
+	 * @return string|null Message to warn with, or null to keep going.
 	 */
-	private static function find_rate_limit_error( \WP_Error $error ): ?\WP_Error {
-		if ( 'atmosphere_rate_limited' === $error->get_error_code() ) {
-			return $error;
+	private static function abort_reason( \WP_Error $error ): ?string {
+		if ( 'atmosphere_not_connected' === $error->get_error_code() ) {
+			return \__( 'Connection to AT Protocol was lost; aborting the remaining posts.', 'atmosphere' );
 		}
 
-		$data = $error->get_error_data();
+		$candidates = \array_merge( array( $error ), Publisher::underlying_errors( $error ) );
 
-		if ( ! \is_array( $data ) ) {
-			return null;
-		}
-
-		foreach ( array( 'original_error', 'rollback_error' ) as $key ) {
-			$nested = $data[ $key ] ?? null;
-
-			if ( $nested instanceof \WP_Error && 'atmosphere_rate_limited' === $nested->get_error_code() ) {
-				return $nested;
+		foreach ( $candidates as $candidate ) {
+			if ( API::is_rate_limit_error( $candidate ) ) {
+				return self::rate_limit_message( $candidate );
 			}
 		}
 

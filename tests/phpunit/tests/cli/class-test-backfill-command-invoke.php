@@ -174,11 +174,13 @@ class Test_Backfill_Command_Invoke extends \WP_UnitTestCase {
 	}
 
 	/**
-	 * Data provider of `--limit` values the validator must reject.
+	 * Data provider of whole-number flag values the validator must
+	 * reject. Shared by every flag that goes through
+	 * `whole_number_flag()`.
 	 *
 	 * @return array<string, array{0: mixed}>
 	 */
-	public function data_invalid_limits(): array {
+	public function data_invalid_whole_number_flags(): array {
 		return array(
 			'decimal'     => array( '5.5' ),
 			'exponent'    => array( '1e3' ),
@@ -191,7 +193,7 @@ class Test_Backfill_Command_Invoke extends \WP_UnitTestCase {
 	/**
 	 * `--limit` rejects decimals, exponents, negatives, and bare flags.
 	 *
-	 * @dataProvider data_invalid_limits
+	 * @dataProvider data_invalid_whole_number_flags
 	 *
 	 * @param mixed $value Raw --limit value.
 	 */
@@ -209,7 +211,7 @@ class Test_Backfill_Command_Invoke extends \WP_UnitTestCase {
 	 * A bare `--throttle` would otherwise arrive as boolean true and
 	 * silently pace the whole run at one second.
 	 *
-	 * @dataProvider data_invalid_limits
+	 * @dataProvider data_invalid_whole_number_flags
 	 *
 	 * @param mixed $value Raw --throttle value.
 	 */
@@ -277,86 +279,82 @@ class Test_Backfill_Command_Invoke extends \WP_UnitTestCase {
 	}
 
 	/**
+	 * Shapes a rate limit can reach the backfill loop in.
+	 *
+	 * A long post publishes as a thread, and when a reply create spends
+	 * the last of the budget the compensating rollback draws on that
+	 * same spent budget and gets a 429 of its own, so the failure
+	 * arrives as `atmosphere_thread_rollback_failed` with the real 429
+	 * nested inside. Either shape has to stop the run.
+	 *
+	 * @return array<string, array{0: string, 1: array, 2: bool}>
+	 */
+	public function data_rate_limit_shapes(): array {
+		return array(
+			'top-level with reset'    => array(
+				'atmosphere_rate_limited',
+				array(
+					'status' => 429,
+					'reset'  => 0,
+				),
+				true,
+			),
+			'top-level, headers gone' => array(
+				'atmosphere_rate_limited',
+				array( 'status' => 429 ),
+				false,
+			),
+			'nested in the rollback'  => array(
+				'atmosphere_thread_rollback_failed',
+				array( 'original_error' => 'nest' ),
+				true,
+			),
+			'nested as the rollback'  => array(
+				'atmosphere_thread_rollback_failed',
+				array( 'rollback_error' => 'nest' ),
+				true,
+			),
+		);
+	}
+
+	/**
 	 * Once the write budget is spent every remaining post gets the same
 	 * 429, so the run stops and reports when the window reopens instead
 	 * of burying the cause under N identical warnings.
+	 *
+	 * @dataProvider data_rate_limit_shapes
+	 *
+	 * @param string $code          Error code the Publisher returns.
+	 * @param array  $data          Error data; `reset` of 0 and a 'nest'
+	 *                              placeholder are filled in here so the
+	 *                              provider stays free of wall-clock time.
+	 * @param bool   $expects_reset Whether the warning can name a reset.
 	 */
-	public function test_rate_limited_midrun_aborts_remaining() {
+	public function test_rate_limited_midrun_aborts_remaining( string $code, array $data, bool $expects_reset ) {
 		self::factory()->post->create( array( 'post_status' => 'publish' ) );
 		self::factory()->post->create( array( 'post_status' => 'publish' ) );
 		self::factory()->post->create( array( 'post_status' => 'publish' ) );
 
-		$this->mock_apply_writes_error(
-			'atmosphere_rate_limited',
-			array(
-				'status' => 429,
-				'reset'  => \time() + 30 * MINUTE_IN_SECONDS,
-			)
-		);
+		$reset = \time() + 30 * MINUTE_IN_SECONDS;
 
-		try {
-			$this->run_command( array() );
-			$this->fail( 'Expected WP_CLI_Halt after the rate-limit abort.' );
-		} catch ( \WP_CLI_Halt $e ) {
-			$warnings = \implode( "\n", \WP_CLI::messages( 'warning' ) );
-
-			$this->assertStringContainsString( 'Bluesky rate limit reached', $warnings );
-			$this->assertStringContainsString( 'resets in about', $warnings );
-			$this->assertSame(
-				1,
-				$this->publish_failure_count(),
-				'Only the first post may be attempted once the window is spent.'
-			);
+		if ( isset( $data['reset'] ) ) {
+			$data['reset'] = $reset;
 		}
-	}
 
-	/**
-	 * A 429 whose headers were stripped still aborts, just without a
-	 * "come back at" it cannot honestly supply.
-	 */
-	public function test_rate_limited_without_reset_still_aborts() {
-		self::factory()->post->create( array( 'post_status' => 'publish' ) );
-		self::factory()->post->create( array( 'post_status' => 'publish' ) );
-
-		$this->mock_apply_writes_error( 'atmosphere_rate_limited', array( 'status' => 429 ) );
-
-		try {
-			$this->run_command( array() );
-			$this->fail( 'Expected WP_CLI_Halt after the rate-limit abort.' );
-		} catch ( \WP_CLI_Halt $e ) {
-			$warnings = \implode( "\n", \WP_CLI::messages( 'warning' ) );
-
-			$this->assertStringContainsString( 'Bluesky rate limit reached', $warnings );
-			$this->assertStringNotContainsString( 'resets in about', $warnings );
-			$this->assertSame( 1, $this->publish_failure_count() );
-		}
-	}
-
-	/**
-	 * A long post publishes as a thread, and when a reply create spends
-	 * the last of the budget the compensating rollback gets a 429 of its
-	 * own — so the failure arrives as `atmosphere_thread_rollback_failed`
-	 * with the 429 nested inside. The rest of the queue is just as
-	 * rate-limited, so the run still has to stop.
-	 */
-	public function test_rate_limited_inside_a_thread_rollback_aborts_remaining() {
-		self::factory()->post->create( array( 'post_status' => 'publish' ) );
-		self::factory()->post->create( array( 'post_status' => 'publish' ) );
-		self::factory()->post->create( array( 'post_status' => 'publish' ) );
-
-		$this->mock_apply_writes_error(
-			'atmosphere_thread_rollback_failed',
-			array(
-				'original_error' => new \WP_Error(
+		foreach ( array( 'original_error', 'rollback_error' ) as $key ) {
+			if ( isset( $data[ $key ] ) ) {
+				$data[ $key ] = new \WP_Error(
 					'atmosphere_rate_limited',
 					'Rate limit exceeded.',
 					array(
 						'status' => 429,
-						'reset'  => \time() + 30 * MINUTE_IN_SECONDS,
+						'reset'  => $reset,
 					)
-				),
-			)
-		);
+				);
+			}
+		}
+
+		$this->mock_apply_writes_error( $code, $data );
 
 		try {
 			$this->run_command( array() );
@@ -365,11 +363,17 @@ class Test_Backfill_Command_Invoke extends \WP_UnitTestCase {
 			$warnings = \implode( "\n", \WP_CLI::messages( 'warning' ) );
 
 			$this->assertStringContainsString( 'Bluesky rate limit reached', $warnings );
-			$this->assertStringContainsString( 'resets in about', $warnings );
+
+			if ( $expects_reset ) {
+				$this->assertStringContainsString( 'resets in about', $warnings );
+			} else {
+				$this->assertStringNotContainsString( 'resets in about', $warnings );
+			}
+
 			$this->assertSame(
 				1,
 				$this->publish_failure_count(),
-				'A nested 429 must stop the queue like a top-level one.'
+				'Only the first post may be attempted once the window is spent.'
 			);
 		}
 	}
@@ -610,13 +614,7 @@ class Test_Backfill_Command_Invoke extends \WP_UnitTestCase {
 			$this->assertStringContainsString( 'aborting the remaining posts', $warnings );
 
 			// Only the first post should have been attempted.
-			$failures = 0;
-			foreach ( \WP_CLI::messages( 'warning' ) as $message ) {
-				if ( false !== \strpos( $message, 'Failed to publish' ) ) {
-					++$failures;
-				}
-			}
-			$this->assertSame( 1, $failures );
+			$this->assertSame( 1, $this->publish_failure_count() );
 		}
 	}
 

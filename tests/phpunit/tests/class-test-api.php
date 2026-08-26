@@ -138,12 +138,29 @@ class Test_API extends \WP_UnitTestCase {
 	 * The rate-limit branches must not look like an auth problem, so
 	 * none of them may trigger a refresh.
 	 *
+	 * @param string $reason Failure message, when the default is not
+	 *                       specific enough for the caller.
 	 * @return callable
 	 */
-	private function no_token_calls(): callable {
-		return function () {
-			$this->fail( 'Token endpoint should not be called.' );
+	private function no_token_calls( string $reason = 'Token endpoint should not be called.' ): callable {
+		return function () use ( $reason ) {
+			$this->fail( $reason );
 		};
+	}
+
+	/**
+	 * Stub a single fixed PDS response, with the token endpoint off
+	 * limits.
+	 *
+	 * @param int   $status  HTTP status code.
+	 * @param array $body    Response body to JSON-encode.
+	 * @param array $headers Response headers.
+	 */
+	private function stub_pds( int $status, array $body, array $headers = array() ): void {
+		$this->stub_http(
+			$this->no_token_calls(),
+			fn() => $this->http_response( $status, $body, $headers )
+		);
 	}
 
 	/**
@@ -154,20 +171,16 @@ class Test_API extends \WP_UnitTestCase {
 	public function test_rate_limited_response_returns_dedicated_error() {
 		$reset = \time() + 900;
 
-		$this->stub_http(
-			$this->no_token_calls(),
-			fn() => $this->http_response(
-				429,
-				array(
-					'error'   => 'RateLimitExceeded',
-					'message' => 'Rate Limit Exceeded',
-				),
-				array(
-					'ratelimit-limit'     => '5000',
-					'ratelimit-remaining' => '0',
-					'ratelimit-reset'     => (string) $reset,
-					'ratelimit-policy'    => '5000;w=3600',
-				)
+		$this->stub_pds(
+			429,
+			array(
+				'error'   => 'RateLimitExceeded',
+				'message' => 'Rate Limit Exceeded',
+			),
+			array(
+				'ratelimit-limit'     => '5000',
+				'ratelimit-remaining' => '0',
+				'ratelimit-reset'     => (string) $reset,
 			)
 		);
 
@@ -193,17 +206,13 @@ class Test_API extends \WP_UnitTestCase {
 	public function test_rate_limit_headers_are_captured_on_success() {
 		$reset = \time() + 300;
 
-		$this->stub_http(
-			$this->no_token_calls(),
-			fn() => $this->http_response(
-				200,
-				array( 'ok' => true ),
-				array(
-					'ratelimit-limit'     => '3000',
-					'ratelimit-remaining' => '2999',
-					'ratelimit-reset'     => (string) $reset,
-					'ratelimit-policy'    => '3000;w=300',
-				)
+		$this->stub_pds(
+			200,
+			array( 'ok' => true ),
+			array(
+				'ratelimit-limit'     => '3000',
+				'ratelimit-remaining' => '2999',
+				'ratelimit-reset'     => (string) $reset,
 			)
 		);
 
@@ -216,7 +225,6 @@ class Test_API extends \WP_UnitTestCase {
 		$this->assertSame( 3000, $snapshot['limit'] );
 		$this->assertSame( 2999, $snapshot['remaining'] );
 		$this->assertSame( $reset, $snapshot['reset'] );
-		$this->assertSame( '3000;w=300', $snapshot['policy'] );
 	}
 
 	/**
@@ -225,14 +233,7 @@ class Test_API extends \WP_UnitTestCase {
 	 * Small values are read as "seconds from now".
 	 */
 	public function test_rate_limit_reset_accepts_delta_seconds() {
-		$this->stub_http(
-			$this->no_token_calls(),
-			fn() => $this->http_response(
-				200,
-				array( 'ok' => true ),
-				array( 'ratelimit-reset' => '60' )
-			)
-		);
+		$this->stub_pds( 200, array( 'ok' => true ), array( 'ratelimit-reset' => '60' ) );
 
 		API::get( '/xrpc/com.atproto.repo.getRecord' );
 
@@ -313,9 +314,7 @@ class Test_API extends \WP_UnitTestCase {
 	 */
 	public function test_request_rejects_redirect_response() {
 		$this->stub_http(
-			function () {
-				$this->fail( 'Token endpoint should not be called for a PDS redirect response.' );
-			},
+			$this->no_token_calls( 'Token endpoint should not be called for a PDS redirect response.' ),
 			function () {
 				return $this->http_response( 307, array() );
 			}
@@ -438,9 +437,7 @@ class Test_API extends \WP_UnitTestCase {
 		$pds_calls = 0;
 
 		$this->stub_http(
-			function () {
-				$this->fail( 'Token endpoint must not be called when there is no refresh token.' );
-			},
+			$this->no_token_calls( 'Token endpoint must not be called when there is no refresh token.' ),
 			function () use ( &$pds_calls ) {
 				++$pds_calls;
 				return $this->http_response(
