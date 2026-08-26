@@ -3663,6 +3663,77 @@ class Test_Atmosphere extends WP_UnitTestCase {
 	}
 
 	/**
+	 * Short-circuit applyWrites with a rate-limit rejection.
+	 *
+	 * @param int $retry_after Seconds the PDS says the window has left.
+	 */
+	private function force_apply_writes_rate_limited( int $retry_after ): void {
+		\add_filter(
+			'atmosphere_pre_apply_writes',
+			static fn() => new \WP_Error(
+				'atmosphere_rate_limited',
+				'Rate Limit Exceeded',
+				array(
+					'status'      => 429,
+					'reset'       => \time() + $retry_after,
+					'retry_after' => $retry_after,
+				)
+			)
+		);
+	}
+
+	/**
+	 * A rate-limited publish waits for the window the PDS reported.
+	 *
+	 * Retrying on the ladder's own first rung would spend a rung on a
+	 * request that is guaranteed to come back with the same 429.
+	 */
+	public function test_publish_worker_waits_for_the_rate_limit_window() {
+		$post = self::factory()->post->create_and_get( array( 'post_status' => 'publish' ) );
+
+		/*
+		 * WP-Cron unschedules an event before running its callback; mirror
+		 * that so the creation-time event doesn't mask the retry.
+		 */
+		\wp_clear_scheduled_hook( 'atmosphere_publish_post', array( $post->ID ) );
+		\wp_clear_scheduled_hook( 'atmosphere_update_post', array( $post->ID ) );
+
+		$this->force_apply_writes_rate_limited( 20 * MINUTE_IN_SECONDS );
+
+		\do_action( 'atmosphere_publish_post', $post->ID );
+
+		$next = \wp_next_scheduled( 'atmosphere_publish_post', array( $post->ID ) );
+
+		$this->assertNotFalse( $next, 'A rate-limited publish is transient and must still be retried.' );
+		$this->assertGreaterThan(
+			\time() + 15 * MINUTE_IN_SECONDS,
+			$next,
+			'The retry must wait for the reported window, not the one-minute first rung.'
+		);
+	}
+
+	/**
+	 * A wildly out-of-range reset cannot park a queued publish days out.
+	 * Past an hour the header has effectively disabled the ladder, and
+	 * we do not control that header.
+	 */
+	public function test_rate_limit_retry_delay_is_capped_at_an_hour() {
+		$post = self::factory()->post->create_and_get( array( 'post_status' => 'publish' ) );
+
+		\wp_clear_scheduled_hook( 'atmosphere_publish_post', array( $post->ID ) );
+		\wp_clear_scheduled_hook( 'atmosphere_update_post', array( $post->ID ) );
+
+		$this->force_apply_writes_rate_limited( WEEK_IN_SECONDS );
+
+		\do_action( 'atmosphere_publish_post', $post->ID );
+
+		$next = \wp_next_scheduled( 'atmosphere_publish_post', array( $post->ID ) );
+
+		$this->assertNotFalse( $next );
+		$this->assertLessThanOrEqual( \time() + HOUR_IN_SECONDS + 5, $next );
+	}
+
+	/**
 	 * Returning an empty ladder from the delays filter disables
 	 * retries entirely.
 	 */

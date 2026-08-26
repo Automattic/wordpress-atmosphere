@@ -136,7 +136,7 @@ class API {
 			$body = array();
 		}
 
-		self::capture_rate_limit( $response );
+		$rate_limit = self::capture_rate_limit( $response );
 
 		// Persist any nonce the server sends back.
 		$response_nonce = \wp_remote_retrieve_header( $response, 'dpop-nonce' );
@@ -242,7 +242,7 @@ class API {
 		 * Waiting is the caller's decision.
 		 */
 		if ( 429 === $status ) {
-			return self::rate_limited_error( $body );
+			return self::rate_limited_error( $body, $rate_limit );
 		}
 
 		if ( ! is_success_status( $status ) ) {
@@ -263,13 +263,17 @@ class API {
 	 * A response without any of the headers leaves the previous reading
 	 * in place rather than clearing it: an intermediary that strips them
 	 * on one call should not erase what the last real answer told us.
+	 * The return value is still null in that case, so a caller reasoning
+	 * about *this* response cannot mistake a stale reading for a fresh
+	 * one.
 	 *
 	 * @since unreleased
 	 *
 	 * @param array $response Raw `wp_remote_*` response.
-	 * @return void
+	 * @return array|null Snapshot for this response, or null when it
+	 *                    carried no rate-limit headers.
 	 */
-	private static function capture_rate_limit( array $response ): void {
+	private static function capture_rate_limit( array $response ): ?array {
 		/*
 		 * `wp_remote_retrieve_header()` returns an array when a header
 		 * repeats, so each read is guarded by a type check rather than a
@@ -288,10 +292,12 @@ class API {
 		);
 
 		if ( null === $snapshot['limit'] && null === $snapshot['remaining'] && null === $snapshot['reset'] ) {
-			return;
+			return null;
 		}
 
 		self::$last_rate_limit = $snapshot;
+
+		return $snapshot;
 	}
 
 	/**
@@ -333,13 +339,19 @@ class API {
 	 * neither, both are null and the caller falls back to its own
 	 * backoff — the error code alone is still the useful signal.
 	 *
+	 * Reads only the snapshot from the 429 itself, never the stored
+	 * one. Reporting an earlier request's reset time here would send a
+	 * caller back at a moment that has nothing to do with the window it
+	 * actually hit.
+	 *
 	 * @since unreleased
 	 *
-	 * @param array $body Decoded response body.
+	 * @param array      $body     Decoded response body.
+	 * @param array|null $snapshot Rate-limit headers on this response.
 	 * @return \WP_Error
 	 */
-	private static function rate_limited_error( array $body ): \WP_Error {
-		$snapshot = self::$last_rate_limit ?? array();
+	private static function rate_limited_error( array $body, ?array $snapshot ): \WP_Error {
+		$snapshot = $snapshot ?? array();
 		$reset    = $snapshot['reset'] ?? null;
 
 		$message = $body['message'] ?? ( $body['error'] ?? \__( 'The PDS rate limit was reached.', 'atmosphere' ) );

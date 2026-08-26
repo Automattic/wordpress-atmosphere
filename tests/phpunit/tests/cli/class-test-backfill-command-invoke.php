@@ -119,17 +119,35 @@ class Test_Backfill_Command_Invoke extends \WP_UnitTestCase {
 	 * Register an error short-circuit for `applyWrites`.
 	 *
 	 * @param string $code Error code to return.
+	 * @param array  $data Error data to attach.
 	 * @return void
 	 */
-	private function mock_apply_writes_error( string $code ): void {
+	private function mock_apply_writes_error( string $code, array $data = array() ): void {
 		\add_filter(
 			'atmosphere_pre_apply_writes',
-			static function () use ( $code ) {
-				return new \WP_Error( $code, 'Simulated apply_writes failure.' );
+			static function () use ( $code, $data ) {
+				return new \WP_Error( $code, 'Simulated apply_writes failure.', $data );
 			},
 			10,
 			2
 		);
+	}
+
+	/**
+	 * Count the "Failed to publish" warnings in the captured log.
+	 *
+	 * @return int
+	 */
+	private function publish_failure_count(): int {
+		$failures = 0;
+
+		foreach ( \WP_CLI::messages( 'warning' ) as $message ) {
+			if ( false !== \strpos( $message, 'Failed to publish' ) ) {
+				++$failures;
+			}
+		}
+
+		return $failures;
 	}
 
 	/**
@@ -183,6 +201,134 @@ class Test_Backfill_Command_Invoke extends \WP_UnitTestCase {
 			$this->fail( 'Expected WP_CLI_Halt for an invalid --limit.' );
 		} catch ( \WP_CLI_Halt $e ) {
 			$this->assertStringContainsString( 'Invalid --limit', $e->getMessage() );
+		}
+	}
+
+	/**
+	 * `--throttle` gets the same strict whole-number check as `--limit`.
+	 * A bare `--throttle` would otherwise arrive as boolean true and
+	 * silently pace the whole run at one second.
+	 *
+	 * @dataProvider data_invalid_limits
+	 *
+	 * @param mixed $value Raw --throttle value.
+	 */
+	public function test_invalid_throttle_aborts( $value ) {
+		try {
+			$this->run_command( array( 'throttle' => $value ) );
+			$this->fail( 'Expected WP_CLI_Halt for an invalid --throttle.' );
+		} catch ( \WP_CLI_Halt $e ) {
+			$this->assertStringContainsString( 'Invalid --throttle', $e->getMessage() );
+		}
+	}
+
+	/**
+	 * `--throttle` waits between posts that reached the PDS.
+	 */
+	public function test_throttle_waits_between_posts() {
+		self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		$this->mock_apply_writes_success();
+
+		$started = \microtime( true );
+		$this->run_command( array( 'throttle' => '1' ) );
+		$elapsed = \microtime( true ) - $started;
+
+		$this->assertGreaterThanOrEqual(
+			1.0,
+			$elapsed,
+			'Two published posts with --throttle=1 must wait once between them.'
+		);
+	}
+
+	/**
+	 * Nothing is paced after the final post — the wait would only delay
+	 * the summary the operator is waiting for.
+	 */
+	public function test_throttle_does_not_wait_after_the_last_post() {
+		self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		$this->mock_apply_writes_success();
+
+		$started = \microtime( true );
+		$this->run_command( array( 'throttle' => '5' ) );
+		$elapsed = \microtime( true ) - $started;
+
+		$this->assertLessThan( 5.0, $elapsed );
+	}
+
+	/**
+	 * Skipped posts cost no rate-limit budget, so they are not paced
+	 * either. A dry run of a large archive must not take hours.
+	 */
+	public function test_throttle_does_not_wait_on_dry_run() {
+		self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		self::factory()->post->create( array( 'post_status' => 'publish' ) );
+
+		$started = \microtime( true );
+		$this->run_command(
+			array(
+				'throttle' => '5',
+				'dry-run'  => true,
+			)
+		);
+		$elapsed = \microtime( true ) - $started;
+
+		$this->assertLessThan( 5.0, $elapsed );
+	}
+
+	/**
+	 * Once the write budget is spent every remaining post gets the same
+	 * 429, so the run stops and reports when the window reopens instead
+	 * of burying the cause under N identical warnings.
+	 */
+	public function test_rate_limited_midrun_aborts_remaining() {
+		self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		self::factory()->post->create( array( 'post_status' => 'publish' ) );
+
+		$this->mock_apply_writes_error(
+			'atmosphere_rate_limited',
+			array(
+				'status' => 429,
+				'reset'  => \time() + 30 * MINUTE_IN_SECONDS,
+			)
+		);
+
+		try {
+			$this->run_command( array() );
+			$this->fail( 'Expected WP_CLI_Halt after the rate-limit abort.' );
+		} catch ( \WP_CLI_Halt $e ) {
+			$warnings = \implode( "\n", \WP_CLI::messages( 'warning' ) );
+
+			$this->assertStringContainsString( 'Bluesky rate limit reached', $warnings );
+			$this->assertStringContainsString( 'resets in about', $warnings );
+			$this->assertSame(
+				1,
+				$this->publish_failure_count(),
+				'Only the first post may be attempted once the window is spent.'
+			);
+		}
+	}
+
+	/**
+	 * A 429 whose headers were stripped still aborts, just without a
+	 * "come back at" it cannot honestly supply.
+	 */
+	public function test_rate_limited_without_reset_still_aborts() {
+		self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		self::factory()->post->create( array( 'post_status' => 'publish' ) );
+
+		$this->mock_apply_writes_error( 'atmosphere_rate_limited', array( 'status' => 429 ) );
+
+		try {
+			$this->run_command( array() );
+			$this->fail( 'Expected WP_CLI_Halt after the rate-limit abort.' );
+		} catch ( \WP_CLI_Halt $e ) {
+			$warnings = \implode( "\n", \WP_CLI::messages( 'warning' ) );
+
+			$this->assertStringContainsString( 'Bluesky rate limit reached', $warnings );
+			$this->assertStringNotContainsString( 'resets in about', $warnings );
+			$this->assertSame( 1, $this->publish_failure_count() );
 		}
 	}
 
