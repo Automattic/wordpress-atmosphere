@@ -119,17 +119,35 @@ class Test_Backfill_Command_Invoke extends \WP_UnitTestCase {
 	 * Register an error short-circuit for `applyWrites`.
 	 *
 	 * @param string $code Error code to return.
+	 * @param array  $data Error data to attach.
 	 * @return void
 	 */
-	private function mock_apply_writes_error( string $code ): void {
+	private function mock_apply_writes_error( string $code, array $data = array() ): void {
 		\add_filter(
 			'atmosphere_pre_apply_writes',
-			static function () use ( $code ) {
-				return new \WP_Error( $code, 'Simulated apply_writes failure.' );
+			static function () use ( $code, $data ) {
+				return new \WP_Error( $code, 'Simulated apply_writes failure.', $data );
 			},
 			10,
 			2
 		);
+	}
+
+	/**
+	 * Count the "Failed to publish" warnings in the captured log.
+	 *
+	 * @return int
+	 */
+	private function publish_failure_count(): int {
+		$failures = 0;
+
+		foreach ( \WP_CLI::messages( 'warning' ) as $message ) {
+			if ( false !== \strpos( $message, 'Failed to publish' ) ) {
+				++$failures;
+			}
+		}
+
+		return $failures;
 	}
 
 	/**
@@ -156,11 +174,13 @@ class Test_Backfill_Command_Invoke extends \WP_UnitTestCase {
 	}
 
 	/**
-	 * Data provider of `--limit` values the validator must reject.
+	 * Data provider of whole-number flag values the validator must
+	 * reject. Shared by every flag that goes through
+	 * `whole_number_flag()`.
 	 *
 	 * @return array<string, array{0: mixed}>
 	 */
-	public function data_invalid_limits(): array {
+	public function data_invalid_whole_number_flags(): array {
 		return array(
 			'decimal'     => array( '5.5' ),
 			'exponent'    => array( '1e3' ),
@@ -173,7 +193,7 @@ class Test_Backfill_Command_Invoke extends \WP_UnitTestCase {
 	/**
 	 * `--limit` rejects decimals, exponents, negatives, and bare flags.
 	 *
-	 * @dataProvider data_invalid_limits
+	 * @dataProvider data_invalid_whole_number_flags
 	 *
 	 * @param mixed $value Raw --limit value.
 	 */
@@ -183,6 +203,200 @@ class Test_Backfill_Command_Invoke extends \WP_UnitTestCase {
 			$this->fail( 'Expected WP_CLI_Halt for an invalid --limit.' );
 		} catch ( \WP_CLI_Halt $e ) {
 			$this->assertStringContainsString( 'Invalid --limit', $e->getMessage() );
+		}
+	}
+
+	/**
+	 * `--throttle` gets the same strict whole-number check as `--limit`.
+	 * A bare `--throttle` would otherwise arrive as boolean true and
+	 * silently pace the whole run at one second.
+	 *
+	 * @dataProvider data_invalid_whole_number_flags
+	 *
+	 * @param mixed $value Raw --throttle value.
+	 */
+	public function test_invalid_throttle_aborts( $value ) {
+		try {
+			$this->run_command( array( 'throttle' => $value ) );
+			$this->fail( 'Expected WP_CLI_Halt for an invalid --throttle.' );
+		} catch ( \WP_CLI_Halt $e ) {
+			$this->assertStringContainsString( 'Invalid --throttle', $e->getMessage() );
+		}
+	}
+
+	/**
+	 * `--throttle` waits between posts that reached the PDS.
+	 */
+	public function test_throttle_waits_between_posts() {
+		self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		$this->mock_apply_writes_success();
+
+		$started = \microtime( true );
+		$this->run_command( array( 'throttle' => '1' ) );
+		$elapsed = \microtime( true ) - $started;
+
+		$this->assertGreaterThanOrEqual(
+			1.0,
+			$elapsed,
+			'Two published posts with --throttle=1 must wait once between them.'
+		);
+	}
+
+	/**
+	 * A failure that never left the site spends no rate-limit budget,
+	 * so there is nothing to pace against. Only a failure the PDS
+	 * answered carries an HTTP status.
+	 */
+	public function test_throttle_does_not_wait_on_a_local_failure() {
+		self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		$this->mock_apply_writes_error( 'atmosphere_missing_tid' );
+
+		$started = \microtime( true );
+
+		try {
+			$this->run_command( array( 'throttle' => '5' ) );
+		} catch ( \WP_CLI_Halt $e ) {
+			// Failures exit non-zero; the timing is what matters here.
+			unset( $e );
+		}
+
+		$this->assertLessThan( 5.0, \microtime( true ) - $started );
+	}
+
+	/**
+	 * Nothing is paced after the final post — the wait would only delay
+	 * the summary the operator is waiting for.
+	 */
+	public function test_throttle_does_not_wait_after_the_last_post() {
+		self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		$this->mock_apply_writes_success();
+
+		$started = \microtime( true );
+		$this->run_command( array( 'throttle' => '5' ) );
+		$elapsed = \microtime( true ) - $started;
+
+		$this->assertLessThan( 5.0, $elapsed );
+	}
+
+	/**
+	 * Skipped posts cost no rate-limit budget, so they are not paced
+	 * either. A dry run of a large archive must not take hours.
+	 */
+	public function test_throttle_does_not_wait_on_dry_run() {
+		self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		self::factory()->post->create( array( 'post_status' => 'publish' ) );
+
+		$started = \microtime( true );
+		$this->run_command(
+			array(
+				'throttle' => '5',
+				'dry-run'  => true,
+			)
+		);
+		$elapsed = \microtime( true ) - $started;
+
+		$this->assertLessThan( 5.0, $elapsed );
+	}
+
+	/**
+	 * Shapes a rate limit can reach the backfill loop in.
+	 *
+	 * A long post publishes as a thread, and when a reply create spends
+	 * the last of the budget the compensating rollback draws on that
+	 * same spent budget and gets a 429 of its own, so the failure
+	 * arrives as `atmosphere_thread_rollback_failed` with the real 429
+	 * nested inside. Either shape has to stop the run.
+	 *
+	 * @return array<string, array{0: string, 1: array, 2: bool}>
+	 */
+	public function data_rate_limit_shapes(): array {
+		return array(
+			'top-level with reset'    => array(
+				'atmosphere_rate_limited',
+				array(
+					'status' => 429,
+					'reset'  => 0,
+				),
+				true,
+			),
+			'top-level, headers gone' => array(
+				'atmosphere_rate_limited',
+				array( 'status' => 429 ),
+				false,
+			),
+			'nested in the rollback'  => array(
+				'atmosphere_thread_rollback_failed',
+				array( 'original_error' => 'nest' ),
+				true,
+			),
+			'nested as the rollback'  => array(
+				'atmosphere_thread_rollback_failed',
+				array( 'rollback_error' => 'nest' ),
+				true,
+			),
+		);
+	}
+
+	/**
+	 * Once the write budget is spent every remaining post gets the same
+	 * 429, so the run stops and reports when the window reopens instead
+	 * of burying the cause under N identical warnings.
+	 *
+	 * @dataProvider data_rate_limit_shapes
+	 *
+	 * @param string $code          Error code the Publisher returns.
+	 * @param array  $data          Error data; `reset` of 0 and a 'nest'
+	 *                              placeholder are filled in here so the
+	 *                              provider stays free of wall-clock time.
+	 * @param bool   $expects_reset Whether the warning can name a reset.
+	 */
+	public function test_rate_limited_midrun_aborts_remaining( string $code, array $data, bool $expects_reset ) {
+		self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		self::factory()->post->create( array( 'post_status' => 'publish' ) );
+
+		$reset = \time() + 30 * MINUTE_IN_SECONDS;
+
+		if ( isset( $data['reset'] ) ) {
+			$data['reset'] = $reset;
+		}
+
+		foreach ( array( 'original_error', 'rollback_error' ) as $key ) {
+			if ( isset( $data[ $key ] ) ) {
+				$data[ $key ] = new \WP_Error(
+					'atmosphere_rate_limited',
+					'Rate limit exceeded.',
+					array(
+						'status' => 429,
+						'reset'  => $reset,
+					)
+				);
+			}
+		}
+
+		$this->mock_apply_writes_error( $code, $data );
+
+		try {
+			$this->run_command( array() );
+			$this->fail( 'Expected WP_CLI_Halt after the rate-limit abort.' );
+		} catch ( \WP_CLI_Halt $e ) {
+			$warnings = \implode( "\n", \WP_CLI::messages( 'warning' ) );
+
+			$this->assertStringContainsString( 'Bluesky rate limit reached', $warnings );
+
+			if ( $expects_reset ) {
+				$this->assertStringContainsString( 'resets in about', $warnings );
+			} else {
+				$this->assertStringNotContainsString( 'resets in about', $warnings );
+			}
+
+			$this->assertSame(
+				1,
+				$this->publish_failure_count(),
+				'Only the first post may be attempted once the window is spent.'
+			);
 		}
 	}
 
@@ -422,13 +636,7 @@ class Test_Backfill_Command_Invoke extends \WP_UnitTestCase {
 			$this->assertStringContainsString( 'aborting the remaining posts', $warnings );
 
 			// Only the first post should have been attempted.
-			$failures = 0;
-			foreach ( \WP_CLI::messages( 'warning' ) as $message ) {
-				if ( false !== \strpos( $message, 'Failed to publish' ) ) {
-					++$failures;
-				}
-			}
-			$this->assertSame( 1, $failures );
+			$this->assertSame( 1, $this->publish_failure_count() );
 		}
 	}
 
