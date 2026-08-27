@@ -44,6 +44,7 @@ ATmosphere exposes a small set of filters and actions for plugins to extend beha
 | `atmosphere_document_contributors` | filter | Add contributor metadata to `site.standard.document` records. |
 | `atmosphere_publication_labels` | filter | Add standard self-labels to `site.standard.publication` records. |
 | `atmosphere_publication_show_in_discover` | filter | Override `preferences.showInDiscover` (defaults to the site's `blog_public` option) for `site.standard.publication` records. |
+| `atmosphere_record_tags` | filter | Add, change, or remove the tags/keywords written into a post's records. Runs before the 8-tag cap and covers both the Bluesky post and the document. |
 | `atmosphere_syncable_post_types` | filter | Add or remove post types eligible for cross-posting. |
 | `atmosphere_connection_only_mode` | filter | Return `true` to embed ATmosphere purely as a connection layer: auto cross-posting, reaction/reply import, and comment publishing all default off, and the Settings → ATmosphere screen is hidden. |
 | `atmosphere_should_auto_publish` | filter | Effective on/off for automatic post cross-posting; runs after the stored setting and connection-only mode, and has the final say. |
@@ -214,6 +215,24 @@ add_filter( 'atmosphere_publication_show_in_discover', '__return_false' );
 ```
 
 The field-specific filters run before `atmosphere_transform_document` and `atmosphere_transform_publication`, so a final record-level filter can still inspect or override the complete record.
+
+### Tags and keywords
+
+A post's `tags` come from its post tags plus its categories (minus `uncategorized`), de-duplicated and capped at 8 by `Transformer\Base::collect_tags()`. The same list feeds the `app.bsky.feed.post` and the `site.standard.document`.
+
+`atmosphere_record_tags` filters that list before the cap:
+
+```php
+// Drop legacy terms a migration left behind.
+add_filter(
+	'atmosphere_record_tags',
+	static fn( array $tags ): array => array_values( array_diff( $tags, array( '1', 'imported' ) ) )
+);
+```
+
+Prefer this over `atmosphere_transform_document` / `atmosphere_transform_bsky_post` for tag changes. Those run after the cap, so removing a tag there shortens the list rather than making room for the next one.
+
+Non-string entries are dropped from the return value, and the result is de-duplicated and capped again, so a filter cannot write more than 8 tags into a record. The per-tag length limit (64 graphemes for `app.bsky.feed.post`) is not enforced, the same way it is not enforced for an over-long WordPress tag name, so a filter that builds tag names rather than picking from existing terms should keep them short itself.
 
 ATmosphere models one root publication per WordPress site. It verifies that publication at `/.well-known/site.standard.publication` and does not currently implement Standard.site's non-root publication verification path (`/.well-known/site.standard.publication/path/to/publication`). Social Standard.site lexicons such as `site.standard.graph.subscription` and `site.standard.graph.recommend` are also out of scope for the plugin's publishing flow; ATmosphere requests explicit `repo:` scopes only for `app.bsky.feed.post`, `site.standard.document`, and `site.standard.publication`, and intentionally keeps the documented `include:site.standard.authFull` permission set for Standard.site compatibility even though it does not publish or manage social records itself.
 

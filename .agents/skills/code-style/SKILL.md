@@ -58,6 +58,8 @@ Always reserve the rkey via meta in `get_rkey()` — that meta key is the marker
 
 **Transform filters:** `atmosphere_transform_bsky_post`, `atmosphere_transform_comment`, `atmosphere_transform_document`, `atmosphere_transform_publication`.
 
+**Records:** `atmosphere_record_tags` (tag/keyword list for both record types; runs before the 8-tag cap, so prefer it over the record-level transform filters for tag changes).
+
 **Content / composition:** `atmosphere_content_parser` (deprecated; use `Content_Parser\Registry::register()`), `atmosphere_document_content`, `atmosphere_long_form_composition`, `atmosphere_teaser_thread_posts`.
 
 **Gating:** `atmosphere_syncable_post_types`, `atmosphere_should_publish_comment`, `atmosphere_should_publish_bluesky_post` (return `false` for document-only publishing — no `app.bsky.feed.post` companion; pure filter, forward-only), `atmosphere_should_sync_reply`, `atmosphere_backfill_query_chunk_size`, `atmosphere_oauth_redirect_uri`, `atmosphere_client_metadata`, `atmosphere_publish_retry_delays` (backoff ladder for failed publish/update cron workers; length = retry budget; empty array disables retries).
