@@ -108,6 +108,12 @@ class Jetpack {
 		// Reflect the editor's unsaved access level during pre-publish preview.
 		\add_action( 'atmosphere_pre_projection', array( self::class, 'set_access_override' ), 10, 2 );
 		\add_action( 'atmosphere_post_projection', array( self::class, 'clear_access_override' ) );
+
+		// The publishable-content memo keys on post ID + content hash, but our
+		// output also turns on the unsaved access override, which never touches
+		// the stored content. Fold it into the key so an overridden preview does
+		// not share — or mask — the saved post's slot.
+		\add_filter( 'atmosphere_publishable_content_cache_key', array( self::class, 'vary_cache_key' ), 10, 2 );
 	}
 
 	/**
@@ -129,6 +135,27 @@ class Jetpack {
 	 */
 	public static function clear_access_override( \WP_Post $post ): void {
 		unset( self::$access_override[ $post->ID ] );
+	}
+
+	/**
+	 * Fold the unsaved access override into the publishable-content memo key.
+	 *
+	 * During a preview projection the projected post keeps its real ID and
+	 * often its saved content, yet {@see self::$access_override} can flip the
+	 * gating decision without changing a byte of `post_content`. Left out of the
+	 * key, the overridden result would share the saved post's cache slot. Only
+	 * appends while an override is set, so it is inert outside a projection.
+	 *
+	 * @param string   $key  The default cache key (post ID + content hash).
+	 * @param \WP_Post $post The post being published.
+	 * @return string The key, varied by the access override when one is set.
+	 */
+	public static function vary_cache_key( string $key, \WP_Post $post ): string {
+		if ( isset( self::$access_override[ $post->ID ] ) ) {
+			$key .= ':access=' . self::$access_override[ $post->ID ];
+		}
+
+		return $key;
 	}
 
 	/**

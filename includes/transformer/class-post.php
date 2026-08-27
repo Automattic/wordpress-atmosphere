@@ -1163,7 +1163,7 @@ class Post extends Base {
 	 */
 	private function is_body_gated(): bool {
 		return '' !== (string) $this->object->post_content
-			&& '' === get_publishable_content( $this->object );
+			&& '' === \trim( get_publishable_content( $this->object ) );
 	}
 
 	/**

@@ -816,10 +816,33 @@ function get_publishable_content( \WP_Post $post ): string {
 	 * stored content: the pre-publish endpoint projects a clone that keeps the
 	 * real ID but carries unsaved content, and the hash keeps those from
 	 * colliding with — or masking — the saved post.
+	 *
+	 * The cache is bounded. `Backfill_Command` walks every post ID in a single
+	 * process and drops its per-post object-cache entries each batch precisely
+	 * to keep memory flat; an unbounded memo here would hold every visited
+	 * post's content for the life of that run and undo it. Evict the oldest
+	 * entry once the cap is reached — the transform path only ever reads back
+	 * the post it is working on.
 	 */
 	static $cache = array();
 
 	$key = $post->ID . ':' . \md5( (string) $post->post_content );
+
+	/**
+	 * Filters the memoization key for {@see get_publishable_content()}.
+	 *
+	 * The default key covers the post ID and its stored content. Integrations
+	 * whose publishable-content output also depends on state the stored content
+	 * does not capture — an unsaved access-level override applied during a
+	 * preview projection, for instance — should append that state so each
+	 * variant gets its own cache slot instead of masking another's.
+	 *
+	 * @since unreleased
+	 *
+	 * @param string   $key  The default cache key (post ID + content hash).
+	 * @param \WP_Post $post The post being published.
+	 */
+	$key = (string) \apply_filters( 'atmosphere_publishable_content_cache_key', $key, $post );
 
 	if ( isset( $cache[ $key ] ) ) {
 		return $cache[ $key ];
@@ -840,6 +863,12 @@ function get_publishable_content( \WP_Post $post ): string {
 	 * @param \WP_Post $post    The post being published.
 	 */
 	$content = (string) \apply_filters( 'atmosphere_publishable_content', $post->post_content, $post );
+
+	// Keep the memo bounded (see the note above): once full, drop the
+	// oldest entry before recording the newest.
+	if ( \count( $cache ) >= 100 ) {
+		\array_shift( $cache );
+	}
 
 	$cache[ $key ] = $content;
 

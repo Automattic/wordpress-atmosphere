@@ -526,4 +526,86 @@ class Test_Jetpack extends \WP_UnitTestCase {
 
 		$this->assertNotFalse( \has_filter( 'atmosphere_publishable_content' ) );
 	}
+
+	/**
+	 * A gated split post whose only content above the paywall is whitespace is
+	 * still fully gated: `blocks_above_paywall()` keeps the leading freeform
+	 * block, so the publishable content serialises to whitespace rather than an
+	 * exact `''`. `is_body_gated()` must trim before comparing, or a titleless
+	 * post with a featured image slips past the link-card fallback and ships as
+	 * a bare, contextless image.
+	 */
+	public function test_gated_split_post_with_whitespace_above_paywall_uses_link_card() {
+		$content = "\n<!-- wp:jetpack/paywall /-->\n<!-- wp:paragraph --><p>Secret paywalled body.</p><!-- /wp:paragraph -->";
+		$thumb   = self::factory()->attachment->create();
+		$post    = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => '',
+				'post_content' => $content,
+				'post_excerpt' => '',
+			)
+		);
+		\update_post_meta( $post->ID, '_jetpack_newsletter_access', 'subscribers' );
+		// Set the thumbnail meta directly: set_post_thumbnail() deletes it when
+		// the attachment has no real image file (as factory attachments do), and
+		// the featured image must be present for the bare-image path to exist.
+		\update_post_meta( $post->ID, '_thumbnail_id', $thumb );
+
+		// The publishable content is whitespace-only, so a strict `'' ===` check
+		// would read it as a real, publishable body.
+		$this->assertNotSame( '', get_publishable_content( $post ), 'guard: content above the paywall is whitespace, not empty' );
+		$this->assertSame( '', \trim( get_publishable_content( $post ) ), 'guard: that whitespace trims to nothing' );
+
+		$captured = array();
+		\add_filter(
+			'atmosphere_post_embed',
+			static function ( $embed, $post_obj, $strategy ) use ( &$captured ) {
+				$captured[] = array(
+					'strategy' => $strategy,
+					'type'     => \is_array( $embed ) ? ( $embed['$type'] ?? null ) : null,
+				);
+				return $embed;
+			},
+			10,
+			3
+		);
+
+		( new Post( $post ) )->project();
+
+		\remove_all_filters( 'atmosphere_post_embed' );
+
+		$this->assertNotEmpty( $captured );
+		$last = \end( $captured );
+		$this->assertSame( 'link-card', $last['strategy'] );
+		$this->assertNotSame( 'app.bsky.embed.images', $last['type'] );
+	}
+
+	/**
+	 * A preview projection keeps the post's real ID and can leave its content
+	 * untouched while flipping only the unsaved access level. The publishable
+	 * content memo keys on ID + content hash, so without the access override in
+	 * the key the overridden preview would collide with — and return — the
+	 * saved post's cached public body, leaking it into the preview and, if a
+	 * second consumer ran in the same request, into the record.
+	 */
+	public function test_preview_override_does_not_collide_with_saved_post_cache() {
+		$post = self::factory()->post->create_and_get( array( 'post_content' => 'Shared body.' ) );
+		\update_post_meta( $post->ID, '_jetpack_newsletter_access', 'everybody' );
+
+		// Saved, public: full body federates and is memoized.
+		$this->assertSame( 'Shared body.', get_publishable_content( $post ), 'public save federates in full' );
+
+		// Same post, same content, but the editor flips the level to subscribers
+		// in an unsaved preview. The override must recompute, not reuse the
+		// cached public body under a colliding key.
+		$request = new \WP_REST_Request( 'POST', '/' );
+		$request->set_param( 'accessLevel', 'subscribers' );
+
+		\do_action( 'atmosphere_pre_projection', $post, $request );
+		$this->assertSame( '', get_publishable_content( $post ), 'unsaved subscriber override must not reuse the public cache entry' );
+		\do_action( 'atmosphere_post_projection', $post );
+
+		// Override lifted: the saved public value is served again.
+		$this->assertSame( 'Shared body.', get_publishable_content( $post ), 'override lifts cleanly after the projection' );
+	}
 }
