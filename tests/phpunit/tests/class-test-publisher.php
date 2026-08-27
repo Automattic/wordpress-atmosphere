@@ -692,6 +692,47 @@ class Test_Publisher extends WP_UnitTestCase {
 	}
 
 	/**
+	 * A per-post filter routes each post independently in a single run: a post
+	 * flagged "quiet" via post meta is written document-only while an ordinary
+	 * post keeps its Bluesky companion. Proves the post reaches the filter and
+	 * shapes that post's applyWrites batch.
+	 *
+	 * @group atmosphere
+	 * @group publisher
+	 */
+	public function test_publish_companion_decided_per_post() {
+		\add_filter(
+			'atmosphere_should_publish_bluesky_post',
+			static function ( $enabled, $post ) {
+				return \get_post_meta( $post->ID, 'quiet', true ) ? false : $enabled;
+			},
+			10,
+			2
+		);
+
+		$loud  = self::factory()->post->create_and_get( array( 'post_status' => 'publish' ) );
+		$quiet = self::factory()->post->create_and_get( array( 'post_status' => 'publish' ) );
+		\update_post_meta( $quiet->ID, 'quiet', '1' );
+
+		$this->register_capture( $loud->ID );
+
+		Publisher::publish_post( $loud );
+		Publisher::publish_post( $quiet );
+
+		$this->assertCount( 2, $this->captured_calls, 'Each post makes one applyWrites call.' );
+
+		$loud_writes = $this->captured_calls[0]['writes'];
+		$this->assertCount( 2, $loud_writes, 'The ordinary post keeps the Bluesky companion.' );
+		$loud_collections = \wp_list_pluck( $loud_writes, 'collection' );
+		$this->assertContains( 'app.bsky.feed.post', $loud_collections );
+		$this->assertContains( 'site.standard.document', $loud_collections );
+
+		$quiet_writes = $this->captured_calls[1]['writes'];
+		$this->assertCount( 1, $quiet_writes, 'The quiet post is written document-only.' );
+		$this->assertSame( 'site.standard.document', $quiet_writes[0]['collection'] );
+	}
+
+	/**
 	 * Doc-only update issues a single document #update against the stored TID.
 	 *
 	 * @group atmosphere

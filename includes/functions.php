@@ -1129,11 +1129,14 @@ function is_publication_sync_enabled(): bool {
  * choice away. It is therefore a pure filter, not the
  * "option → force off in connection-only → filter last" contract.
  *
+ * The post is passed to the filter so a callback can answer per post.
+ *
  * @since unreleased
  *
+ * @param \WP_Post $post The post being published.
  * @return bool True when the Bluesky companion post should be published. Default true.
  */
-function is_bluesky_post_enabled(): bool {
+function is_bluesky_post_enabled( \WP_Post $post ): bool {
 	/**
 	 * Filters whether a companion Bluesky feed post is published alongside the
 	 * site.standard.document record.
@@ -1143,9 +1146,10 @@ function is_bluesky_post_enabled(): bool {
 	 *
 	 * @since unreleased
 	 *
-	 * @param bool $enabled Whether to publish the Bluesky companion post. Default true.
+	 * @param bool     $enabled Whether to publish the Bluesky companion post. Default true.
+	 * @param \WP_Post $post    The post being published.
 	 */
-	return (bool) \apply_filters( 'atmosphere_should_publish_bluesky_post', true );
+	return (bool) \apply_filters( 'atmosphere_should_publish_bluesky_post', true, $post );
 }
 
 /**
