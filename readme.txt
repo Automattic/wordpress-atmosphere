@@ -2,7 +2,7 @@
 Contributors: automattic, pfefferle, kraftbj, jeherve, ryanc413
 Tags: at-protocol, bluesky, connector, atproto, crossposting
 Requires at least: 6.5
-Tested up to: 7.0
+Tested up to: 7.1
 Requires PHP: 8.2
 Stable tag: 2.1.0
 License: GPL-2.0-or-later
