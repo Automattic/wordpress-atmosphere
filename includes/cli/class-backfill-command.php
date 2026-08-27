@@ -9,6 +9,7 @@ namespace Atmosphere\Cli;
 
 \defined( 'ABSPATH' ) || exit;
 
+use Atmosphere\API;
 use Atmosphere\Backfill;
 use Atmosphere\Publisher;
 use Atmosphere\Transformer\Document;
@@ -67,6 +68,16 @@ class Backfill_Command extends \WP_CLI_Command {
 	 * progress ticks and how often per-post caches are dropped to keep
 	 * long runs from growing memory unboundedly.
 	 *
+	 * [--throttle=<seconds>]
+	 * : Seconds to wait between posts that actually reach the PDS. Default:
+	 * 0 (no wait). Bluesky budgets repo writes at 5,000 points per hour and
+	 * 35,000 per day, and one publish costs 6 (two record creates), so an
+	 * unthrottled run of a large archive exhausts the hourly budget inside
+	 * the first ~830 posts and every post after that is rejected until the
+	 * window rolls over. `--throttle=5` holds a run just under that
+	 * ceiling. Skipped and dry-run posts are never waited on, they cost no
+	 * budget.
+	 *
 	 * [--dry-run]
 	 * : List the posts that would be published. Does NOT call the
 	 * publisher.
@@ -99,6 +110,9 @@ class Backfill_Command extends \WP_CLI_Command {
 	 *     # Restrict to a single post type.
 	 *     $ wp atmosphere backfill --post-type=article
 	 *
+	 *     # Backfill a large archive at a pace the Bluesky rate limit allows.
+	 *     $ wp atmosphere backfill --throttle=5
+	 *
 	 * @when after_wp_load
 	 *
 	 * @param array $args       Positional arguments (unused).
@@ -130,31 +144,12 @@ class Backfill_Command extends \WP_CLI_Command {
 		$ids_arg = isset( $assoc_args['ids'] ) ? (string) $assoc_args['ids'] : '';
 
 		/*
-		 * Validate --limit with a strict whole-number check before
-		 * coercion. `ctype_digit` accepts only digit strings, so it
-		 * rejects every silent-coercion trap at once: a bare `--limit`
-		 * (boolean true, not a string), negatives (`-1`), and decimals or
-		 * exponents (`5.5`, `1e3`) that `is_numeric()` would pass and
-		 * `(int)` would truncate to an unintended value. Literal `0` and
-		 * an absent flag still mean "no cap".
+		 * Literal `0` and an absent --limit both mean "no cap"; `0` and an
+		 * absent --throttle both mean "no wait". See
+		 * self::whole_number_flag() for why the validation is this strict.
 		 */
-		if ( isset( $assoc_args['limit'] ) ) {
-			$raw_limit = $assoc_args['limit'];
-
-			if ( ! \is_string( $raw_limit ) || ! \ctype_digit( $raw_limit ) ) {
-				\WP_CLI::error(
-					\sprintf(
-						/* translators: %s: the rejected --limit value. */
-						\__( 'Invalid --limit value "%s": expected 0 (no cap) or a positive whole number.', 'atmosphere' ),
-						\is_scalar( $raw_limit ) ? (string) $raw_limit : \gettype( $raw_limit )
-					)
-				);
-			}
-
-			$limit = (int) $raw_limit;
-		} else {
-			$limit = 0;
-		}
+		$limit    = self::whole_number_flag( $assoc_args, 'limit' );
+		$throttle = self::whole_number_flag( $assoc_args, 'throttle' );
 
 		$batch         = isset( $assoc_args['batch'] ) ? \max( 1, (int) $assoc_args['batch'] ) : self::DEFAULT_BATCH;
 		$dry_run       = ! empty( $assoc_args['dry-run'] );
@@ -291,6 +286,12 @@ class Backfill_Command extends \WP_CLI_Command {
 		}
 
 		foreach ( $post_ids as $post_id ) {
+			/*
+			 * Only a post that actually reached the PDS spends rate-limit
+			 * budget, so only those are worth throttling on.
+			 */
+			$reached_pds = false;
+
 			$post = \get_post( $post_id );
 
 			if ( ! $post instanceof \WP_Post ) {
@@ -350,6 +351,8 @@ class Backfill_Command extends \WP_CLI_Command {
 						: Publisher::publish_post( $post, $original_time );
 
 					if ( \is_wp_error( $result ) ) {
+						$reached_pds = self::spent_write_budget( $result );
+
 						\WP_CLI::warning(
 							\sprintf(
 								/* translators: 1: post ID, 2: error message. */
@@ -360,15 +363,10 @@ class Backfill_Command extends \WP_CLI_Command {
 						);
 						++$errors;
 
-						/*
-						 * A lost connection will fail identically for every
-						 * remaining post. Stop now instead of grinding
-						 * through the rest of the queue (a query each) only
-						 * to report the same error N times. $errors > 0
-						 * already guarantees a non-zero exit below.
-						 */
-						if ( 'atmosphere_not_connected' === $result->get_error_code() ) {
-							\WP_CLI::warning( \__( 'Connection to AT Protocol was lost; aborting the remaining posts.', 'atmosphere' ) );
+						$abort = self::abort_reason( $result );
+
+						if ( null !== $abort ) {
+							\WP_CLI::warning( $abort );
 							break;
 						}
 					} elseif ( $already_synced && \is_array( $result ) && empty( $result ) ) {
@@ -376,9 +374,10 @@ class Backfill_Command extends \WP_CLI_Command {
 						 * `update_post()` returns an empty array when the
 						 * post carries a document URI but has no Bluesky
 						 * publication history to update (a half-synced
-						 * state) — nothing was sent to the PDS. Reporting
-						 * "Updated" here would inflate $synced and hide that
-						 * no record was written.
+						 * state) — nothing was sent to the PDS, so this post
+						 * costs no rate-limit budget and is not throttled.
+						 * Reporting "Updated" here would inflate $synced and
+						 * hide that no record was written.
 						 */
 						\WP_CLI::warning(
 							\sprintf(
@@ -389,6 +388,8 @@ class Backfill_Command extends \WP_CLI_Command {
 						);
 						++$skipped;
 					} else {
+						$reached_pds = true;
+
 						/*
 						 * Both branches pass the same placeholders so PHPCS's
 						 * translators-comment sniff is satisfied by attaching
@@ -447,6 +448,14 @@ class Backfill_Command extends \WP_CLI_Command {
 					);
 				}
 			}
+
+			/*
+			 * Pace the run. After the last post there is nothing left to
+			 * pace, so the wait would only delay the summary.
+			 */
+			if ( $throttle > 0 && $reached_pds && $ticks < $total ) {
+				\sleep( $throttle );
+			}
 		}
 
 		// Final-batch sweep so the trailing posts under one full $batch are not left cached.
@@ -500,6 +509,154 @@ class Backfill_Command extends \WP_CLI_Command {
 		}
 
 		\WP_CLI::success( $summary );
+	}
+
+	/**
+	 * Read a flag that must be a whole number, or exit.
+	 *
+	 * `ctype_digit` accepts only digit strings, so one check rejects
+	 * every silent-coercion trap at once: a valueless flag (WP-CLI hands
+	 * those over as boolean `true`, not a string), negatives (`-1`), and
+	 * decimals or exponents (`5.5`, `1e3`) that `is_numeric()` would pass
+	 * and `(int)` would truncate to a number the operator never typed.
+	 *
+	 * Failure exits through `WP_CLI::error()` rather than falling back to
+	 * zero. A publish-to-the-internet command must refuse to run on a
+	 * value it had to guess at.
+	 *
+	 * @since unreleased
+	 *
+	 * @param array  $assoc_args Flag arguments.
+	 * @param string $flag       Flag name, without the leading dashes.
+	 * @return int The flag value, or 0 when it was not supplied.
+	 */
+	private static function whole_number_flag( array $assoc_args, string $flag ): int {
+		if ( ! isset( $assoc_args[ $flag ] ) ) {
+			return 0;
+		}
+
+		$raw = $assoc_args[ $flag ];
+
+		if ( ! \is_string( $raw ) || ! \ctype_digit( $raw ) ) {
+			\WP_CLI::error(
+				\sprintf(
+					/* translators: 1: flag name, e.g. "limit". 2: the rejected value. */
+					\__( 'Invalid --%1$s value "%2$s": expected 0 or a positive whole number.', 'atmosphere' ),
+					$flag,
+					\is_scalar( $raw ) ? (string) $raw : \gettype( $raw )
+				)
+			);
+		}
+
+		return (int) $raw;
+	}
+
+	/**
+	 * Whether a publish failure dooms the rest of the queue, and what to
+	 * tell the operator when it does.
+	 *
+	 * Two failures repeat identically for every remaining post: a lost
+	 * connection, and a spent write budget. Grinding through the queue
+	 * (a query each) would only bury the cause under N identical
+	 * warnings, so the run stops. `$errors > 0` already guarantees a
+	 * non-zero exit.
+	 *
+	 * Nothing is lost by stopping mid-queue: a post that failed to
+	 * publish never gets `Document::META_URI`, so it stays in the
+	 * unsynced set and the next run picks up exactly where this one
+	 * left off.
+	 *
+	 * A rate limit does not always arrive as the top-level failure. A
+	 * long post publishes as a thread, and when a reply create spends
+	 * the last of the budget the compensating rollback draws on that
+	 * same spent budget and gets a 429 of its own, so the Publisher
+	 * returns a rollback failure with the 429 nested inside. The rest
+	 * of the queue is just as rate-limited either way, hence the walk
+	 * through the wrapped failures.
+	 *
+	 * @since unreleased
+	 *
+	 * @param \WP_Error $error Failure returned by the Publisher.
+	 * @return string|null Message to warn with, or null to keep going.
+	 */
+	private static function abort_reason( \WP_Error $error ): ?string {
+		if ( 'atmosphere_not_connected' === $error->get_error_code() ) {
+			return \__( 'Connection to AT Protocol was lost; aborting the remaining posts.', 'atmosphere' );
+		}
+
+		foreach ( self::failure_chain( $error ) as $candidate ) {
+			if ( API::is_rate_limit_error( $candidate ) ) {
+				return self::rate_limit_message( $candidate );
+			}
+		}
+
+		return null;
+	}
+
+	/**
+	 * A publish failure plus whatever failures it wraps.
+	 *
+	 * @since unreleased
+	 *
+	 * @param \WP_Error $error Failure returned by the Publisher.
+	 * @return \WP_Error[] The failure itself first, then its causes.
+	 */
+	private static function failure_chain( \WP_Error $error ): array {
+		return \array_merge( array( $error ), Publisher::underlying_errors( $error ) );
+	}
+
+	/**
+	 * Whether a failed post still cost the account rate-limit budget.
+	 *
+	 * Only a failure the PDS actually answered carries an HTTP status.
+	 * A locally-generated one (a missing TID, a filter short-circuiting
+	 * the write, a lost connection) never left the site, so throttling
+	 * after it would sleep for nothing. A failed thread rollback keeps
+	 * its status one level down, hence the walk.
+	 *
+	 * @since unreleased
+	 *
+	 * @param \WP_Error $error Failure returned by the Publisher.
+	 * @return bool
+	 */
+	private static function spent_write_budget( \WP_Error $error ): bool {
+		foreach ( self::failure_chain( $error ) as $candidate ) {
+			$data = $candidate->get_error_data();
+
+			if ( \is_array( $data ) && isset( $data['status'] ) ) {
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	/**
+	 * Build the abort message for a rate-limited run.
+	 *
+	 * The PDS reports when the window rolls over, so the operator gets a
+	 * "come back at" rather than a bare failure. When the header was
+	 * missing or unreadable the error carries no reset and the message
+	 * drops that sentence instead of guessing at a number.
+	 *
+	 * @since unreleased
+	 *
+	 * @param \WP_Error $error Rate-limit error from the publisher.
+	 * @return string
+	 */
+	private static function rate_limit_message( \WP_Error $error ): string {
+		$data  = $error->get_error_data();
+		$reset = \is_array( $data ) && ! empty( $data['reset'] ) ? (int) $data['reset'] : 0;
+
+		if ( $reset <= \time() ) {
+			return \__( 'Bluesky rate limit reached; aborting the remaining posts. Re-run the same command later and it will continue where this run stopped.', 'atmosphere' );
+		}
+
+		return \sprintf(
+			/* translators: %s: human-readable duration, e.g. "34 mins". */
+			\__( 'Bluesky rate limit reached; aborting the remaining posts. The limit resets in about %s. Re-run the same command then and it will continue where this run stopped.', 'atmosphere' ),
+			\human_time_diff( \time(), $reset )
+		);
 	}
 
 	/**
