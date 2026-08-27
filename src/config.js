@@ -50,3 +50,16 @@ export const SETTINGS_URL =
  * @type {boolean}
  */
 export const CAN_MANAGE = !! options.canManage;
+
+/**
+ * Whether the site holds a live Bluesky connection.
+ *
+ * False also covers a lapsed connection (needs re-authorization), so the
+ * document panel can warn that a share-on post won't actually be shared.
+ * Defaults to connected in a source checkout / tests so the panel doesn't
+ * cry wolf when PHP hasn't localized the flag.
+ *
+ * @type {boolean}
+ */
+export const IS_CONNECTED =
+	options.isConnected === undefined ? true : !! options.isConnected;

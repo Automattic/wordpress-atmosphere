@@ -1,0 +1,4 @@
+Significance: minor
+Type: added
+
+The post editor now warns you when your site isn't connected to Bluesky, so a post set to share doesn't quietly fail to go out.

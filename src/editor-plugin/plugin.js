@@ -29,8 +29,9 @@ import {
 	CUSTOM_TEXT_META_KEY,
 	SETTINGS_URL,
 	CAN_MANAGE,
+	IS_CONNECTED,
 } from '../config';
-import { isSharingEnabled } from './utils';
+import { isSharingEnabled, shouldShowNotConnectedNotice } from './utils';
 
 /**
  * The ATmosphere symbol (the plugin logo), shown after the panel title like
@@ -107,6 +108,32 @@ const EditorPlugin = () => {
 			'atmosphere'
 		)
 	);
+	/* The site has no live connection, so a share-on post won't actually
+	   go out. Suppressed when a reconnect-flavored publish error already
+	   says as much (see `showNotConnected` below). Same audience split as
+	   the reconnect notice: only managers get the settings link. */
+	const notConnectedMessage = CAN_MANAGE ? (
+		<>
+			{ __(
+				'Your site isn’t connected to Bluesky, so this post won’t be shared.',
+				'atmosphere'
+			) }{ ' ' }
+			<a href={ SETTINGS_URL }>
+				{ __( 'Connect on the settings page.', 'atmosphere' ) }
+			</a>
+		</>
+	) : (
+		__(
+			'Your site isn’t connected to Bluesky, so this post won’t be shared. Ask an administrator to connect it.',
+			'atmosphere'
+		)
+	);
+	const showNotConnected = shouldShowNotConnectedNotice( {
+		enabled,
+		isConnected: IS_CONNECTED,
+		hasReconnectError: !! ( publishError && needsReconnect ),
+	} );
+
 	const retryMessage = publishError?.retrying
 		? __(
 				'Sharing to Bluesky failed. Your site will retry automatically.',
@@ -149,6 +176,16 @@ const EditorPlugin = () => {
 						  )
 				}
 			/>
+
+			{ /* Sharing is on but the site has no live connection, so
+			     nothing will actually be published until it's connected.
+			     Warns up front rather than letting the author discover it
+			     from a post-publish failure. */ }
+			{ showNotConnected && (
+				<Notice status="warning" isDismissible={ false }>
+					{ notConnectedMessage }
+				</Notice>
+			) }
 
 			{ enabled && (
 				<TextareaControl
