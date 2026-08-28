@@ -93,18 +93,19 @@ class Block_Editor {
 	 */
 	private static function script_data(): array {
 		return array(
-			'previewPath'             => Pre_Publish_Controller::full_route(),
-			'disabledMetaKey'         => ATMOSPHERE_META_DISABLED,
-			'customTextMetaKey'       => ATMOSPHERE_META_CUSTOM_TEXT,
-			'replyRestrictionMetaKey' => Threadgate::META_RESTRICTION,
-			'settingsUrl'             => settings_url(),
+			'previewPath'              => Pre_Publish_Controller::full_route(),
+			'disabledMetaKey'          => ATMOSPHERE_META_DISABLED,
+			'customTextMetaKey'        => ATMOSPHERE_META_CUSTOM_TEXT,
+			'replyRestrictionMetaKey'  => Threadgate::META_RESTRICTION,
+			'threadgateNeedsReconnect' => threadgate_needs_reconnect(),
+			'settingsUrl'              => settings_url(),
 
 			/*
 			 * The settings page needs `manage_options`; authors and
 			 * editors see the panel too, so reconnect prompts must not
 			 * link them into an authorization error.
 			 */
-			'canManage'               => \current_user_can( 'manage_options' ),
+			'canManage'                => \current_user_can( 'manage_options' ),
 		);
 	}
 }

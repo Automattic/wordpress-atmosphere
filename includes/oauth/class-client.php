@@ -34,6 +34,18 @@ class Client {
 	 *
 	 * @var string[]
 	 */
+	/**
+	 * Scope that lets the plugin write reply restrictions.
+	 *
+	 * Named so the surfaces that check for it and the list that requests
+	 * it cannot drift apart.
+	 *
+	 * @since unreleased
+	 *
+	 * @var string
+	 */
+	public const THREADGATE_SCOPE = 'repo:app.bsky.feed.threadgate';
+
 	private const SCOPES = array(
 
 		/*
@@ -58,7 +70,7 @@ class Client {
 		 *
 		 * `repo` permissions: https://atproto.com/specs/permission#repo.
 		 */
-		'repo:app.bsky.feed.threadgate',
+		self::THREADGATE_SCOPE,
 
 		/*
 		 * Write one Standard.site document record per synced WordPress post.
@@ -692,6 +704,14 @@ class Client {
 			'key_fingerprint'     => Encryption::key_fingerprint(),
 			'expires_at'          => \time() + ( $data['expires_in'] ?? 3600 ),
 			'needs_reauth'        => false,
+
+			/*
+			 * What the server actually granted, when it says. Read back
+			 * by `connection_scopes()` so a feature that needs a scope
+			 * added after this site connected can tell, rather than
+			 * failing the write.
+			 */
+			'scope'               => (string) ( $data['scope'] ?? '' ),
 		);
 
 		/*
@@ -1021,6 +1041,16 @@ class Client {
 		 * so the current fingerprint is the right one for this row.
 		 */
 		$current['key_fingerprint'] = Encryption::key_fingerprint();
+
+		/*
+		 * Same opportunistic backfill for the granted scope: rows
+		 * connected before it was stored pick it up on their next
+		 * refresh, so a scope gap becomes visible within the hour
+		 * without anyone reconnecting just to find out.
+		 */
+		if ( ! empty( $data['scope'] ) ) {
+			$current['scope'] = (string) $data['scope'];
+		}
 
 		if ( ! empty( $data['refresh_token'] ) ) {
 			$current['refresh_token'] = Encryption::encrypt( $data['refresh_token'] );

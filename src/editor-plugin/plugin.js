@@ -33,6 +33,7 @@ import {
 	REPLY_RESTRICTION_META_KEY,
 	SETTINGS_URL,
 	CAN_MANAGE,
+	THREADGATE_NEEDS_RECONNECT,
 } from '../config';
 import {
 	isSharingEnabled,
@@ -241,6 +242,32 @@ const EditorPlugin = () => {
 					) }
 				/>
 			) }
+
+			{ enabled &&
+				THREADGATE_NEEDS_RECONNECT &&
+				replyMode !== 'everybody' && (
+					<Notice status="warning" isDismissible={ false }>
+						{ CAN_MANAGE ? (
+							<>
+								{ __(
+									'This restriction is skipped until the site reconnects to Bluesky. The post still shares as usual.',
+									'atmosphere'
+								) }{ ' ' }
+								<a href={ SETTINGS_URL }>
+									{ __(
+										'Reconnect on the settings page.',
+										'atmosphere'
+									) }
+								</a>
+							</>
+						) : (
+							__(
+								'This restriction is skipped until an administrator reconnects the site to Bluesky. The post still shares as usual.',
+								'atmosphere'
+							)
+						) }
+					</Notice>
+				) }
 
 			{ enabled &&
 				'custom' === replyMode &&

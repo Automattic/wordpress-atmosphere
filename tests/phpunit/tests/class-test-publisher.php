@@ -629,6 +629,44 @@ class Test_Publisher extends WP_UnitTestCase {
 	}
 
 	/**
+	 * A connection known to lack the threadgate scope publishes the post
+	 * without the gate, rather than failing the whole batch.
+	 *
+	 * `set_up()` seeds a connection with no stored scope, so the sibling
+	 * test above already proves an unknown grant is allowed through. This
+	 * one stores a grant that is known and missing the scope: the post and
+	 * document still go out, the gate stays home, and the written marker
+	 * is left untouched so the first update after a reconnect creates it.
+	 */
+	public function test_publish_post_skips_threadgate_when_scope_is_missing() {
+		$connection          = \get_option( 'atmosphere_connection' );
+		$connection['scope'] = 'atproto repo:app.bsky.feed.post repo:site.standard.document';
+		\update_option( 'atmosphere_connection', $connection );
+
+		$post = self::factory()->post->create_and_get(
+			array( 'post_status' => 'publish' )
+		);
+		\update_post_meta(
+			$post->ID,
+			Threadgate::META_RESTRICTION,
+			array( Threadgate::AUDIENCE_FOLLOWING )
+		);
+
+		\add_filter( 'atmosphere_is_short_form_post', '__return_true' );
+		$this->register_capture( $post->ID );
+
+		$result = Publisher::publish_post( $post );
+
+		$this->assertIsArray( $result );
+		$writes = $this->captured_calls[0]['writes'];
+		$this->assertCount( 2, $writes, 'The post and document publish; the gate is skipped.' );
+		foreach ( $writes as $write ) {
+			$this->assertNotSame( 'app.bsky.feed.threadgate', $write['collection'] );
+		}
+		$this->assertFalse( Threadgate::is_written( $post->ID ), 'Nothing was written, so the marker stays unset.' );
+	}
+
+	/**
 	 * An unrestricted post writes no threadgate record.
 	 */
 	public function test_publish_post_omits_threadgate_when_everybody() {

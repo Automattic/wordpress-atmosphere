@@ -499,6 +499,20 @@ class Publisher {
 	 *               leave the marker unchanged.
 	 */
 	private static function threadgate_sync_writes( \WP_Post $post, string $rkey, bool $reconcile = true ): array {
+		/*
+		 * The gate rides in the same atomic batch as the post, so a write
+		 * the server will refuse for lack of scope would fail the post
+		 * too. Leave the gate out and let the post through; the stored
+		 * restriction is picked up by the first update after a reconnect.
+		 * The marker is left alone: nothing was written or removed.
+		 */
+		if ( threadgate_needs_reconnect() ) {
+			return array(
+				'writes'  => array(),
+				'written' => null,
+			);
+		}
+
 		$desired = Threadgate::is_restricted( $post );
 
 		// Initial publish mints a fresh rkey, so no gate can exist there yet
