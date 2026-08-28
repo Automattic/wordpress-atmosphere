@@ -536,22 +536,33 @@ class Test_Health_Check extends \WP_UnitTestCase {
 	 * @return string
 	 */
 	private function run_ajax_handler(): string {
-		\add_filter( 'wp_doing_ajax', '__return_true' );
-		\add_filter(
-			'wp_die_ajax_handler',
-			static fn () => static function ( $message ) {
+		$die_handler = static function () {
+			return static function ( $message ) {
 				throw new \WPDieException( \esc_html( (string) $message ) );
-			}
-		);
+			};
+		};
 
+		\add_filter( 'wp_doing_ajax', '__return_true' );
+		\add_filter( 'wp_die_ajax_handler', $die_handler );
+
+		/*
+		 * The base test case restores all hooks in tear_down(), so these
+		 * cannot leak into another test. They are still removed here so
+		 * the rest of the calling test runs in a normal, non-ajax context.
+		 */
 		\ob_start();
 		try {
 			Health_Check::ajax_client_metadata();
+			$this->fail( 'Expected the handler to end in wp_die().' );
 		} catch ( \WPDieException $e ) {
 			return (string) \ob_get_clean();
+		} finally {
+			if ( \ob_get_level() > 0 && '' !== (string) \ob_get_contents() ) {
+				\ob_end_clean();
+			}
+			\remove_filter( 'wp_doing_ajax', '__return_true' );
+			\remove_filter( 'wp_die_ajax_handler', $die_handler );
 		}
-		\ob_end_clean();
-		$this->fail( 'Expected the handler to end in wp_die().' );
 	}
 
 	/**
