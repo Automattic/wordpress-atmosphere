@@ -81,8 +81,11 @@ class Test_Health_Check extends \WP_UnitTestCase {
 		$this->assertArrayNotHasKey( 'atmosphere_test_client_metadata', $tests['direct'], 'A test that makes a request must not block the screen.' );
 
 		$async = $tests['async']['atmosphere_test_client_metadata'];
-		$this->assertTrue( $async['has_rest'] );
-		$this->assertStringContainsString( 'wp-site-health/v1/tests/atmosphere-client-metadata', $async['test'], 'Driven from the core namespace, which REST allow lists let through.' );
+		$this->assertArrayNotHasKey( 'has_rest', $async, 'Driven over admin-ajax, so a REST restriction cannot stop the test from running.' );
+		$this->assertSame( Health_Check::REACHABILITY_TEST, $async['test'] );
+		$this->assertSame( 1, \substr_count( $async['test'], '_' ), 'Core replaces only the first underscore when building the ajax action.' );
+		$this->assertSame( 'health-check-' . \str_replace( '_', '-', $async['test'] ), Health_Check::REACHABILITY_ACTION );
+		$this->assertNotFalse( \has_action( 'wp_ajax_' . Health_Check::REACHABILITY_ACTION, array( Health_Check::class, 'ajax_client_metadata' ) ) );
 		$this->assertIsCallable( $async['async_direct_test'] );
 		$this->assertTrue( $async['skip_cron'], 'The cron run discards the description, so the loopback is skipped there.' );
 	}
@@ -517,5 +520,89 @@ class Test_Health_Check extends \WP_UnitTestCase {
 
 		$this->assertSame( 'good', Health_Check::test_client_metadata()['status'] );
 		$this->assertSame( 1, $calls, 'The configured https scheme lets the check run.' );
+	}
+
+	/**
+	 * Run the ajax handler and return what it printed.
+	 *
+	 * Outside an ajax request `wp_send_json()` ends in a bare `die`, which
+	 * would take PHPUnit down with it and exit 0, so the run would look
+	 * green with the rest of the suite never executed. Marking the
+	 * request as ajax routes it through `wp_die()` instead, and the ajax
+	 * die handler is made to throw, the same way the base test case
+	 * already treats the non-ajax one. The buffer then holds exactly the
+	 * response.
+	 *
+	 * @return string
+	 */
+	private function run_ajax_handler(): string {
+		\add_filter( 'wp_doing_ajax', '__return_true' );
+		\add_filter(
+			'wp_die_ajax_handler',
+			static fn () => static function ( $message ) {
+				throw new \WPDieException( \esc_html( (string) $message ) );
+			}
+		);
+
+		\ob_start();
+		try {
+			Health_Check::ajax_client_metadata();
+		} catch ( \WPDieException $e ) {
+			return (string) \ob_get_clean();
+		}
+		\ob_end_clean();
+		$this->fail( 'Expected the handler to end in wp_die().' );
+	}
+
+	/**
+	 * A valid request from a user who may view Site Health gets the test
+	 * result wrapped the way the screen reads it.
+	 */
+	public function test_ajax_handler_returns_the_result_for_site_health_viewers() {
+		\wp_set_current_user( self::factory()->user->create( array( 'role' => 'administrator' ) ) );
+		$_REQUEST['_wpnonce'] = \wp_create_nonce( 'health-check-site-status' );
+		$this->use_https_site();
+		$this->stub_loopback( $this->good_metadata_response() );
+
+		$json = \json_decode( $this->run_ajax_handler(), true );
+
+		$this->assertTrue( $json['success'] );
+		$this->assertSame( 'good', $json['data']['status'] );
+		$this->assertSame( 'atmosphere_test_client_metadata', $json['data']['test'] );
+	}
+
+	/**
+	 * A missing or wrong nonce stops the request before any loopback.
+	 */
+	public function test_ajax_handler_requires_the_site_health_nonce() {
+		\wp_set_current_user( self::factory()->user->create( array( 'role' => 'administrator' ) ) );
+		$_REQUEST['_wpnonce'] = 'wrong';
+		$called               = false;
+		\add_filter(
+			'pre_http_request',
+			static function ( $pre ) use ( &$called ) {
+				$called = true;
+
+				return $pre;
+			}
+		);
+
+		$output = $this->run_ajax_handler();
+
+		$this->assertStringNotContainsString( '"success":true', $output );
+		$this->assertFalse( $called, 'No loopback without a valid nonce.' );
+	}
+
+	/**
+	 * A valid nonce is not enough: the user must be allowed to view Site
+	 * Health, as for core's own tests.
+	 */
+	public function test_ajax_handler_refuses_users_without_the_capability() {
+		\wp_set_current_user( self::factory()->user->create( array( 'role' => 'subscriber' ) ) );
+		$_REQUEST['_wpnonce'] = \wp_create_nonce( 'health-check-site-status' );
+
+		$json = \json_decode( $this->run_ajax_handler(), true );
+
+		$this->assertFalse( $json['success'] );
 	}
 }

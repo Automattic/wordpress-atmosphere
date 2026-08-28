@@ -19,7 +19,6 @@ namespace Atmosphere\WP_Admin;
 \defined( 'ABSPATH' ) || exit;
 
 use Atmosphere\OAuth\Client;
-use Atmosphere\Rest\Admin\Health_Check_Controller;
 use Atmosphere\OAuth\Encryption;
 use function Atmosphere\get_did;
 use function Atmosphere\get_identity;
@@ -42,6 +41,28 @@ use function Atmosphere\truncate_text;
 class Health_Check {
 
 	/**
+	 * Async test identifier for the reachability test.
+	 *
+	 * Core turns this into the admin-ajax action by prefixing
+	 * `health-check-` and replacing the first underscore with a hyphen,
+	 * so it must carry exactly one underscore.
+	 *
+	 * @since unreleased
+	 *
+	 * @var string
+	 */
+	public const REACHABILITY_TEST = 'atmosphere_reachability';
+
+	/**
+	 * The admin-ajax action core calls for {@see self::REACHABILITY_TEST}.
+	 *
+	 * @since unreleased
+	 *
+	 * @var string
+	 */
+	public const REACHABILITY_ACTION = 'health-check-atmosphere-reachability';
+
+	/**
 	 * Register the direct (non-async) status tests.
 	 *
 	 * The connection test only reads options — no HTTP — so it cannot
@@ -60,15 +81,17 @@ class Health_Check {
 
 		/*
 		 * Asynchronous, like every core test that makes an HTTP request,
-		 * so the loopback never holds up the Site Health screen. The
-		 * driver route sits in core's namespace; the controller says why.
+		 * so the loopback never holds up the Site Health screen. Driven
+		 * over admin-ajax rather than REST on purpose: the test exists to
+		 * catch plugins that restrict the REST API, and a REST-driven test
+		 * could not run under exactly that restriction. Core still supports
+		 * the admin-ajax form (it is the default when `has_rest` is unset).
 		 * The cron run keeps only the pass/fail counters, not the
 		 * description that makes this test useful, so it is skipped.
 		 */
 		$tests['async']['atmosphere_test_client_metadata'] = array(
 			'label'             => \__( 'ATmosphere Bluesky Reachability Test', 'atmosphere' ),
-			'test'              => \rest_url( Health_Check_Controller::ROUTE_NAMESPACE . Health_Check_Controller::CLIENT_METADATA_ROUTE ),
-			'has_rest'          => true,
+			'test'              => self::REACHABILITY_TEST,
 			'async_direct_test' => array( self::class, 'test_client_metadata' ),
 			'skip_cron'         => true,
 		);
@@ -150,6 +173,24 @@ class Health_Check {
 	}
 
 	/**
+	 * Serve the reachability test to the Site Health screen.
+	 *
+	 * Same nonce and capability core used for its own admin-ajax tests.
+	 * The screen reads `response.data`, hence `wp_send_json_success()`.
+	 *
+	 * @since unreleased
+	 */
+	public static function ajax_client_metadata(): void {
+		\check_ajax_referer( 'health-check-site-status' );
+
+		if ( ! \current_user_can( 'view_site_health_checks' ) ) {
+			\wp_send_json_error( null, 403 );
+		}
+
+		\wp_send_json_success( self::test_client_metadata() );
+	}
+
+	/**
 	 * Client-metadata reachability test.
 	 *
 	 * The OAuth `client_id` is a URL on this site, and the auth server
@@ -159,10 +200,9 @@ class Health_Check {
 	 * the REST API to an allow list is the usual cause, and core's own
 	 * REST test does not catch it because it only fetches `wp/v2`.
 	 *
-	 * Runs asynchronously, driven by {@see Health_Check_Controller}, so
-	 * the loopback never blocks the Site Health screen. The driver route
-	 * is in core's namespace so that a REST allow list does not stop the
-	 * test itself from running.
+	 * Runs asynchronously over admin-ajax ({@see self::ajax_client_metadata()}),
+	 * so the loopback never blocks the Site Health screen, and a REST
+	 * restriction cannot stop the test itself from running.
 	 *
 	 * Unlike core's loopback, this one sends no cookies and no HTTP auth
 	 * credentials. The auth server has none either, so the request has

@@ -22,7 +22,6 @@ use Atmosphere\Transformer\Preview;
 use Atmosphere\Transformer\Publication;
 use Atmosphere\Integrations\Load;
 use Atmosphere\Rest\Admin\Connection_Controller;
-use Atmosphere\Rest\Admin\Health_Check_Controller;
 use Atmosphere\Rest\Admin\Pre_Publish_Controller;
 use Atmosphere\Rest\Client_Metadata_Controller;
 use Atmosphere\Rest\Reactions_Controller;
@@ -192,6 +191,7 @@ class Atmosphere {
 		 * callables.
 		 */
 		\add_filter( 'site_status_tests', array( Health_Check::class, 'add_tests' ) );
+		\add_action( 'wp_ajax_' . Health_Check::REACHABILITY_ACTION, array( Health_Check::class, 'ajax_client_metadata' ) );
 		\add_filter( 'debug_information', array( Health_Check::class, 'debug_information' ) );
 
 		/*
@@ -1838,7 +1838,6 @@ class Atmosphere {
 	public function register_rest_controllers(): void {
 		( new Client_Metadata_Controller() )->register_routes();
 		( new Connection_Controller() )->register_routes();
-		( new Health_Check_Controller() )->register_routes();
 		( new Pre_Publish_Controller() )->register_routes();
 		( new Reactions_Controller() )->register_routes();
 	}
