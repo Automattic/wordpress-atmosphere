@@ -249,6 +249,11 @@ class Test_Client_Authorize extends WP_UnitTestCase {
 		$this->assertSame( Client::scopes(), $query['scope'] );
 		$this->assertStringNotContainsString( 'transition:generic', $query['scope'] );
 		$this->assertStringContainsString( 'repo:app.bsky.feed.post', $query['scope'] );
+		$this->assertStringContainsString(
+			'repo:app.bsky.feed.threadgate',
+			$query['scope'],
+			'Threadgates are their own record, so writing them needs its own scope.'
+		);
 		$this->assertStringContainsString( 'repo:site.standard.document', $query['scope'] );
 		$this->assertStringContainsString( 'repo:site.standard.publication', $query['scope'] );
 		$this->assertStringContainsString( 'blob:image/*', $query['scope'] );

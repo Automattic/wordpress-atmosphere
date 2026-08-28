@@ -52,6 +52,15 @@ class Client {
 		'repo:app.bsky.feed.post',
 
 		/*
+		 * Write the reply restrictions a post can carry. The threadgate is
+		 * a separate record from the post it gates, so writing the post
+		 * does not imply permission to write this one.
+		 *
+		 * `repo` permissions: https://atproto.com/specs/permission#repo.
+		 */
+		'repo:app.bsky.feed.threadgate',
+
+		/*
 		 * Write one Standard.site document record per synced WordPress post.
 		 *
 		 * `repo` permissions: https://atproto.com/specs/permission#repo.
