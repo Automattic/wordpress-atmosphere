@@ -97,7 +97,6 @@ class Health_Check {
 			'skip_cron'         => true,
 		);
 
-
 		$tests['direct']['atmosphere_test_threadgate_scope'] = array(
 			'label' => \__( 'ATmosphere Bluesky Reply Restrictions Test', 'atmosphere' ),
 			'test'  => array( self::class, 'test_threadgate_scope' ),
