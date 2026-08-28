@@ -139,8 +139,26 @@ class Preview {
 	 * @return array|\WP_Error Preview payload, or error for unsupported types.
 	 */
 	public static function for_post( \WP_Post $post, string $type = '' ): array|\WP_Error {
+		$defaults = array( new Document( $post ), new Post( $post ) );
+
+		/*
+		 * The threadgate joins the preview only for a gated post that has a
+		 * reserved rkey. Two guards:
+		 *  - ungated posts publish no gate, and an unconditional add would
+		 *    show an empty `allow` (read as "nobody can reply"), the opposite
+		 *    of the truth (no record = everybody);
+		 *  - the gate's `post` field is an AT-URI built from the post's rkey
+		 *    (`Post::META_TID`), so before the post has ever been published
+		 *    that rkey is empty and the preview would emit a malformed
+		 *    `at://did/app.bsky.feed.post/` reference.
+		 */
+		$has_rkey = '' !== (string) \get_post_meta( $post->ID, Post::META_TID, true );
+		if ( $has_rkey && Threadgate::is_restricted( $post ) ) {
+			$defaults[] = new Threadgate( $post );
+		}
+
 		return self::resolve(
-			array( new Document( $post ), new Post( $post ) ),
+			$defaults,
 			$post,
 			'site.standard.document',
 			$type
