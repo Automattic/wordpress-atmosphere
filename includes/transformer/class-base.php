@@ -172,6 +172,48 @@ abstract class Base {
 	}
 
 	/**
+	 * Reserve the record's rkey (TID) and refresh its DID provenance.
+	 *
+	 * Shared by the Post, Document, and Comment transformers, which each
+	 * store an rkey plus the DID it was minted under so the delete guards
+	 * in {@see \Atmosphere\Publisher} can refuse a wrong-repo delete after
+	 * a disconnect + reconnect-to-a-different-account. The subclass supplies
+	 * the meta accessors (post vs comment meta); the key set comes from its
+	 * `static::META_DID` / `static::META_TID` constants.
+	 *
+	 * Two invariants live here once, both load-bearing for the guard:
+	 *
+	 * 1. The DID is written BEFORE the TID, so a partial failure between
+	 *    the two writes leaves the safe "DID set, no TID" state. The
+	 *    inverse, "TID set, no DID", reads as "origin unknown" and lets the
+	 *    guard fall through to the current DID, re-opening the wrong-repo
+	 *    delete.
+	 * 2. The DID is compared before writing, so read-path callers (the
+	 *    `wp_head` document-link renderer that routes through
+	 *    `Document::get_rkey()`) don't issue a DB write on every pageload,
+	 *    only on an actual account transition.
+	 *
+	 * @param callable $read  Reader: `fn( string $key ): mixed`.
+	 * @param callable $write Writer: `fn( string $key, string $value ): void`.
+	 * @return string The reserved 13-character TID.
+	 */
+	protected function reserve_rkey_with_provenance( callable $read, callable $write ): string {
+		$current_did = get_did();
+		$stored_did  = (string) $read( static::META_DID );
+		if ( $stored_did !== $current_did ) {
+			$write( static::META_DID, $current_did );
+		}
+
+		$rkey = (string) $read( static::META_TID );
+		if ( '' === $rkey ) {
+			$rkey = $this->original_time ? $this->historical_rkey() : TID::generate();
+			$write( static::META_TID, $rkey );
+		}
+
+		return $rkey;
+	}
+
+	/**
 	 * WordPress locale as BCP-47 language tag array.
 	 *
 	 * @return string[]

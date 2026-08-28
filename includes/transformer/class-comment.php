@@ -18,7 +18,6 @@ namespace Atmosphere\Transformer;
 \defined( 'ABSPATH' ) || exit;
 
 use Atmosphere\Reaction_Sync;
-use function Atmosphere\get_did;
 use function Atmosphere\sanitize_text;
 use function Atmosphere\truncate_text;
 
@@ -169,32 +168,10 @@ class Comment extends Base {
 	public function get_rkey(): string {
 		$comment_id = (int) $this->object->comment_ID;
 
-		/*
-		 * Persist DID provenance on every call, mirroring
-		 * Post::get_rkey(). After a disconnect + reconnect-to-a-different-DID
-		 * the reply's META_TID already exists from the prior account, so a
-		 * one-shot guard would never refresh META_DID to the current
-		 * account and the mismatch guard in delete_comment() would later
-		 * block a legitimate cleanup. Written BEFORE META_TID so a
-		 * partial failure leaves the safe "DID set, no TID" state rather
-		 * than "TID set, no DID" (which lets the guard fall through to
-		 * get_did() and re-open the wrong-repo delete). Compared before
-		 * writing so a republish of an unchanged comment is a no-op.
-		 */
-		$current_did = get_did();
-		$stored_did  = (string) \get_comment_meta( $comment_id, self::META_DID, true );
-		if ( $stored_did !== $current_did ) {
-			\update_comment_meta( $comment_id, self::META_DID, $current_did );
-		}
-
-		$rkey = \get_comment_meta( $comment_id, self::META_TID, true );
-
-		if ( empty( $rkey ) ) {
-			$rkey = TID::generate();
-			\update_comment_meta( $comment_id, self::META_TID, $rkey );
-		}
-
-		return $rkey;
+		return $this->reserve_rkey_with_provenance(
+			fn ( string $key ) => \get_comment_meta( $comment_id, $key, true ),
+			fn ( string $key, string $value ) => \update_comment_meta( $comment_id, $key, $value )
+		);
 	}
 
 	/**
