@@ -596,6 +596,50 @@ function needs_reauth(): bool {
 }
 
 /**
+ * The OAuth scopes the server granted, when known.
+ *
+ * Null means the connection predates scope storage and has not been
+ * refreshed since, or the server did not say. Callers must treat null as
+ * "no information", not as "nothing granted".
+ *
+ * @since unreleased
+ *
+ * @return string[]|null Granted scope tokens, or null when unknown.
+ */
+function connection_scopes(): ?array {
+	$scope = (string) ( get_connection()['scope'] ?? '' );
+
+	if ( '' === \trim( $scope ) ) {
+		return null;
+	}
+
+	return \array_values( \array_filter( \explode( ' ', $scope ) ) );
+}
+
+/**
+ * Whether reply restrictions need a reconnect before they can be written.
+ *
+ * True only when the site is connected, the granted scope is known, and
+ * the threadgate scope is not in it. A connection whose scope is unknown
+ * is allowed through: the write is attempted, and a rejection surfaces
+ * through the normal publish error. Hiding a working feature on every
+ * pre-existing install would be worse than the occasional failed write.
+ *
+ * @since unreleased
+ *
+ * @return bool
+ */
+function threadgate_needs_reconnect(): bool {
+	if ( ! is_connected() ) {
+		return false;
+	}
+
+	$scopes = connection_scopes();
+
+	return null !== $scopes && ! \in_array( Client::THREADGATE_SCOPE, $scopes, true );
+}
+
+/**
  * Whether the operator explicitly disconnected the site.
  *
  * The explicit-disconnect marker only counts when the connection row is
@@ -1023,11 +1067,14 @@ function is_publication_sync_enabled(): bool {
  * choice away. It is therefore a pure filter, not the
  * "option → force off in connection-only → filter last" contract.
  *
+ * The post is passed to the filter so a callback can answer per post.
+ *
  * @since unreleased
  *
+ * @param \WP_Post $post The post being published.
  * @return bool True when the Bluesky companion post should be published. Default true.
  */
-function is_bluesky_post_enabled(): bool {
+function is_bluesky_post_enabled( \WP_Post $post ): bool {
 	/**
 	 * Filters whether a companion Bluesky feed post is published alongside the
 	 * site.standard.document record.
@@ -1037,9 +1084,10 @@ function is_bluesky_post_enabled(): bool {
 	 *
 	 * @since unreleased
 	 *
-	 * @param bool $enabled Whether to publish the Bluesky companion post. Default true.
+	 * @param bool     $enabled Whether to publish the Bluesky companion post. Default true.
+	 * @param \WP_Post $post    The post being published.
 	 */
-	return (bool) \apply_filters( 'atmosphere_should_publish_bluesky_post', true );
+	return (bool) \apply_filters( 'atmosphere_should_publish_bluesky_post', true, $post );
 }
 
 /**
