@@ -78,7 +78,13 @@ class Test_Health_Check extends \WP_UnitTestCase {
 		);
 
 		$this->assertArrayHasKey( 'atmosphere_test_connection', $tests['direct'] );
-		$this->assertArrayHasKey( 'atmosphere_test_client_metadata', $tests['direct'] );
+		$this->assertArrayNotHasKey( 'atmosphere_test_client_metadata', $tests['direct'], 'A test that makes a request must not block the screen.' );
+
+		$async = $tests['async']['atmosphere_test_client_metadata'];
+		$this->assertTrue( $async['has_rest'] );
+		$this->assertStringContainsString( 'wp-site-health/v1/tests/atmosphere-client-metadata', $async['test'], 'Driven from the core namespace, which REST allow lists let through.' );
+		$this->assertIsCallable( $async['async_direct_test'] );
+		$this->assertTrue( $async['skip_cron'], 'The cron run discards the description, so the loopback is skipped there.' );
 	}
 
 	/**
@@ -236,29 +242,19 @@ class Test_Health_Check extends \WP_UnitTestCase {
 	}
 
 	/**
-	 * Stub the loopback to the client metadata URL.
+	 * Stub every loopback to the client metadata URL with one response.
 	 *
 	 * @param mixed $response Array response or WP_Error to return.
-	 * @return array Captured request args, by reference via closure.
 	 */
-	private function stub_loopback( $response ): array {
-		$captured = array();
-
+	private function stub_loopback( $response ): void {
 		\add_filter(
 			'pre_http_request',
-			static function ( $pre, $args, $url ) use ( $response, &$captured ) {
-				if ( Client::client_id() !== $url ) {
-					return $pre;
-				}
-				$captured = $args;
-
-				return $response;
+			static function ( $pre, $args, $url ) use ( $response ) {
+				return Client::client_id() === $url ? $response : $pre;
 			},
 			10,
 			3
 		);
-
-		return $captured;
 	}
 
 	/**
@@ -369,6 +365,9 @@ class Test_Health_Check extends \WP_UnitTestCase {
 		$this->assertNotEmpty( $captured, 'The loopback must have been made.' );
 		$this->assertEmpty( $captured['cookies'] ?? array() );
 		$this->assertArrayNotHasKey( 'Authorization', $captured['headers'] ?? array() );
+		$this->assertTrue( $captured['sslverify'], 'The certificate is validated, as the auth server would.' );
+		$this->assertSame( 'no-cache', $captured['headers']['Cache-Control'] ?? null, 'A cached answer could hide a fresh block.' );
+		$this->assertSame( 8 * KB_IN_BYTES, $captured['limit_response_size'] ?? null );
 	}
 
 	/**
@@ -393,5 +392,130 @@ class Test_Health_Check extends \WP_UnitTestCase {
 		$this->assertStringContainsString( 'HTTPS', $result['description'] );
 		$this->assertStringNotContainsString( 'security plugin', $result['description'] );
 		$this->assertFalse( $called, 'No request is made when the scheme already rules it out.' );
+	}
+
+	/**
+	 * Stub the loopback so that only the unverified retry succeeds.
+	 *
+	 * @param int $calls Receives the number of loopbacks made.
+	 */
+	private function stub_certificate_failure( int &$calls ): void {
+		$good = $this->good_metadata_response();
+
+		\add_filter(
+			'pre_http_request',
+			static function ( $pre, $args, $url ) use ( $good, &$calls ) {
+				if ( Client::client_id() !== $url ) {
+					return $pre;
+				}
+				++$calls;
+
+				return $args['sslverify']
+					? new \WP_Error( 'http_request_failed', 'cURL error 60: SSL certificate problem: self-signed certificate' )
+					: $good;
+			},
+			10,
+			3
+		);
+	}
+
+	/**
+	 * A document that is reachable but whose certificate cannot be
+	 * validated from the server is recommended, not critical, and says
+	 * what the validation error was. Exactly two requests are made.
+	 */
+	public function test_client_metadata_recommends_when_only_the_certificate_fails() {
+		$this->use_https_site();
+		$calls = 0;
+		$this->stub_certificate_failure( $calls );
+
+		$result = Health_Check::test_client_metadata();
+
+		$this->assertSame( 'recommended', $result['status'] );
+		$this->assertStringContainsString( 'certificate', $result['label'] );
+		$this->assertStringContainsString( 'self-signed certificate', $result['description'] );
+		$this->assertSame( 2, $calls, 'The verified fetch, then one unverified retry.' );
+	}
+
+	/**
+	 * The retry is only for transport errors. An error status is the same
+	 * with or without validation, so it is reported at once.
+	 */
+	public function test_client_metadata_does_not_retry_an_error_status() {
+		$this->use_https_site();
+		$calls = 0;
+		\add_filter(
+			'pre_http_request',
+			static function ( $pre, $args, $url ) use ( &$calls ) {
+				if ( Client::client_id() !== $url ) {
+					return $pre;
+				}
+				++$calls;
+
+				return array(
+					'response' => array(
+						'code'    => 403,
+						'message' => 'Forbidden',
+					),
+					'body'     => '',
+				);
+			},
+			10,
+			3
+		);
+
+		$this->assertSame( 'critical', Health_Check::test_client_metadata()['status'] );
+		$this->assertSame( 1, $calls );
+	}
+
+	/**
+	 * A reason phrase from a misbehaving proxy is capped like the body.
+	 */
+	public function test_client_metadata_caps_a_runaway_reason_phrase() {
+		$this->use_https_site();
+		$this->stub_loopback(
+			array(
+				'response' => array(
+					'code'    => 503,
+					'message' => \str_repeat( 'x', 2000 ),
+				),
+				'body'     => '',
+			)
+		);
+
+		$result = Health_Check::test_client_metadata();
+
+		$this->assertStringNotContainsString( \str_repeat( 'x', 300 ), $result['description'] );
+	}
+
+	/**
+	 * Behind a TLS-terminating proxy the admin request itself arrives
+	 * over http (`is_ssl()` is false) while the site is configured as
+	 * https. The guard reads the configured scheme, not the request, so
+	 * the loopback is still made.
+	 */
+	public function test_client_metadata_checks_the_configured_scheme_not_the_request() {
+		$this->use_https_site();
+		unset( $_SERVER['HTTPS'] );
+		$this->assertFalse( \is_ssl(), 'Precondition: the request is plain http.' );
+
+		$calls = 0;
+		$good  = $this->good_metadata_response();
+		\add_filter(
+			'pre_http_request',
+			static function ( $pre, $args, $url ) use ( $good, &$calls ) {
+				if ( Client::client_id() !== $url ) {
+					return $pre;
+				}
+				++$calls;
+
+				return $good;
+			},
+			10,
+			3
+		);
+
+		$this->assertSame( 'good', Health_Check::test_client_metadata()['status'] );
+		$this->assertSame( 1, $calls, 'The configured https scheme lets the check run.' );
 	}
 }

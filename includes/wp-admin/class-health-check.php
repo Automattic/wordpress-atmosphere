@@ -19,6 +19,7 @@ namespace Atmosphere\WP_Admin;
 \defined( 'ABSPATH' ) || exit;
 
 use Atmosphere\OAuth\Client;
+use Atmosphere\Rest\Admin\Health_Check_Controller;
 use Atmosphere\OAuth\Encryption;
 use function Atmosphere\get_did;
 use function Atmosphere\get_identity;
@@ -31,6 +32,7 @@ use function Atmosphere\is_connected;
 use function Atmosphere\is_operator_disconnected;
 use function Atmosphere\reauth_reason_lead;
 use function Atmosphere\settings_url;
+use function Atmosphere\truncate_text;
 
 /**
  * Health check class.
@@ -44,6 +46,8 @@ class Health_Check {
 	 *
 	 * The connection test only reads options — no HTTP — so it cannot
 	 * slow the Site Health screen down or flake on network conditions.
+	 * The one test that does make a request is registered as async for
+	 * the same reason.
 	 *
 	 * @param array $tests Site Health tests.
 	 * @return array
@@ -54,9 +58,19 @@ class Health_Check {
 			'test'  => array( self::class, 'test_connection' ),
 		);
 
-		$tests['direct']['atmosphere_test_client_metadata'] = array(
-			'label' => \__( 'ATmosphere Bluesky Reachability Test', 'atmosphere' ),
-			'test'  => array( self::class, 'test_client_metadata' ),
+		/*
+		 * Asynchronous, like every core test that makes an HTTP request,
+		 * so the loopback never holds up the Site Health screen. The
+		 * driver route sits in core's namespace; the controller says why.
+		 * The cron run keeps only the pass/fail counters, not the
+		 * description that makes this test useful, so it is skipped.
+		 */
+		$tests['async']['atmosphere_test_client_metadata'] = array(
+			'label'             => \__( 'ATmosphere Bluesky Reachability Test', 'atmosphere' ),
+			'test'              => \rest_url( Health_Check_Controller::ROUTE_NAMESPACE . Health_Check_Controller::CLIENT_METADATA_ROUTE ),
+			'has_rest'          => true,
+			'async_direct_test' => array( self::class, 'test_client_metadata' ),
+			'skip_cron'         => true,
 		);
 
 		return $tests;
@@ -145,14 +159,20 @@ class Health_Check {
 	 * the REST API to an allow list is the usual cause, and core's own
 	 * REST test does not catch it because it only fetches `wp/v2`.
 	 *
-	 * Direct rather than async on purpose: an async Site Health test is
-	 * driven through a REST route, so it could not run in exactly the
-	 * situation it exists to report. One loopback with a short timeout,
-	 * on the Site Health screen only.
+	 * Runs asynchronously, driven by {@see Health_Check_Controller}, so
+	 * the loopback never blocks the Site Health screen. The driver route
+	 * is in core's namespace so that a REST allow list does not stop the
+	 * test itself from running.
 	 *
 	 * Unlike core's loopback, this one sends no cookies and no HTTP auth
 	 * credentials. The auth server has none either, so the request has
-	 * to look the way its request does.
+	 * to look the way its request does. For the same reason the
+	 * certificate is validated first: the auth server validates it too,
+	 * so a site whose certificate cannot be validated must not pass. Only
+	 * when validation is the sole thing in the way is the fetch retried
+	 * with core's loopback setting, and reported as recommended rather
+	 * than critical, since split-horizon setups can fail validation from
+	 * the server itself while being perfectly valid from outside.
 	 *
 	 * @since unreleased
 	 *
@@ -195,19 +215,52 @@ class Health_Check {
 			return $result;
 		}
 
-		$response = \wp_remote_get(
-			$url,
-			array(
-				'timeout'   => 5,
-				/** This filter is documented in wp-includes/class-wp-http-streams.php */
-				'sslverify' => \apply_filters( 'https_local_ssl_verify', false, $url ),
-			)
+		$args = array(
+			'timeout'             => 10, // Same as core's own REST loopback; async, so nothing waits on it.
+			// The endpoint advertises a five minute public cache; a cached
+			// answer would hide a block that was just added, or just lifted.
+			'headers'             => array( 'Cache-Control' => 'no-cache' ),
+			// The excerpt shows 200 characters; there is no reason to buffer
+			// a whole error page to find them.
+			'limit_response_size' => 8 * KB_IN_BYTES,
 		);
 
-		$problem = self::client_metadata_problem( $response, $url );
+		$response = \wp_remote_get( $url, $args + array( 'sslverify' => true ) );
+		$problem  = self::client_metadata_problem( $response, $url );
 
 		if ( '' === $problem ) {
 			return $result;
+		}
+
+		/*
+		 * A transport error with validation on may be nothing but the
+		 * certificate. The retry differs in that one setting only, so if
+		 * it succeeds, validation was the whole problem.
+		 */
+		if ( \is_wp_error( $response ) ) {
+			$retry = \wp_remote_get(
+				$url,
+				/** This filter is documented in wp-includes/class-wp-http-streams.php */
+				$args + array( 'sslverify' => \apply_filters( 'https_local_ssl_verify', false, $url ) )
+			);
+
+			if ( '' === self::client_metadata_problem( $retry, $url ) ) {
+				$result['status']         = 'recommended';
+				$result['badge']['color'] = 'orange';
+				$result['label']          = \__( 'ATmosphere could not validate this site\'s certificate', 'atmosphere' );
+				$result['description']    = \sprintf(
+					'<p>%1$s</p><p>%2$s</p><p><code>%3$s</code></p>',
+					\sprintf(
+						/* translators: %s: the client metadata URL. */
+						\esc_html__( 'When you connect, Bluesky fetches %s from this site and checks its certificate. From this server the certificate could not be validated. If it is valid for visitors, Bluesky will accept it and you can ignore this.', 'atmosphere' ),
+						'<code>' . \esc_html( $url ) . '</code>'
+					),
+					\esc_html__( 'The validation error was:', 'atmosphere' ),
+					\esc_html( $problem )
+				);
+
+				return $result;
+			}
 		}
 
 		$result['status']         = 'critical';
@@ -237,7 +290,7 @@ class Health_Check {
 	 * @param string          $url      The client metadata URL that was fetched.
 	 * @return string Human-readable problem, empty when the response is what the auth server needs.
 	 */
-	private static function client_metadata_problem( $response, string $url ): string {
+	private static function client_metadata_problem( array|\WP_Error $response, string $url ): string {
 		if ( \is_wp_error( $response ) ) {
 			return \sprintf( '(%1$s) %2$s', $response->get_error_code(), $response->get_error_message() );
 		}
@@ -249,7 +302,7 @@ class Health_Check {
 			return \sprintf(
 				'(%1$d) %2$s %3$s',
 				$status,
-				\wp_remote_retrieve_response_message( $response ),
+				self::body_excerpt( (string) \wp_remote_retrieve_response_message( $response ) ),
 				self::body_excerpt( $body )
 			);
 		}
@@ -266,13 +319,22 @@ class Health_Check {
 	/**
 	 * The start of a response body, enough to recognise an error page.
 	 *
+	 * Core's REST test shows only the status line. This one shows a bit
+	 * of the body on purpose: a REST restricting plugin's block page
+	 * names itself there, and Site Health output is what people paste
+	 * into support threads, so that is where the cause has to be legible.
+	 * The audience is users who can install plugins, who can read the
+	 * page directly anyway.
+	 *
+	 * @since unreleased
+	 *
 	 * @param string $body Raw body.
 	 * @return string
 	 */
 	private static function body_excerpt( string $body ): string {
-		$text = \trim( \preg_replace( '/\s+/', ' ', \wp_strip_all_tags( $body ) ) );
+		$text = \trim( (string) \preg_replace( '/\s+/', ' ', \wp_strip_all_tags( $body ) ) );
 
-		return \mb_strlen( $text ) > 200 ? \mb_substr( $text, 0, 200 ) . '…' : $text;
+		return truncate_text( $text, 200, '…' );
 	}
 
 	/**
