@@ -34,12 +34,11 @@ class Test_Post_List extends \WP_UnitTestCase {
 	 * Reset user and filter state between tests.
 	 */
 	public function tear_down(): void {
-		\wp_set_current_user( 0 );
-		\remove_all_filters( 'atmosphere_should_publish_bluesky_post' );
-		\remove_all_filters( 'atmosphere_should_auto_publish' );
-		\remove_all_filters( 'atmosphere_appview_host' );
+		/*
+		 * Only post type supports need undoing by hand. The parent restores
+		 * hooks wholesale, rolls back options, and resets the current user.
+		 */
 		\remove_post_type_support( 'page', 'atmosphere' );
-		\delete_option( 'atmosphere_auto_publish' );
 
 		parent::tear_down();
 	}
@@ -54,6 +53,47 @@ class Test_Post_List extends \WP_UnitTestCase {
 		return self::factory()->post->create_and_get(
 			\array_merge( array( 'post_status' => 'publish' ), $args )
 		);
+	}
+
+	/**
+	 * A published post that already has a Bluesky record.
+	 *
+	 * @return \WP_Post
+	 */
+	private function shared_post(): \WP_Post {
+		$post = $this->published_post();
+		\update_post_meta( $post->ID, Post::META_URI, 'at://did:plc:abc123/app.bsky.feed.post/rkey789' );
+
+		return $post;
+	}
+
+	/**
+	 * A colleague's published post, with a different author signed in.
+	 *
+	 * @return \WP_Post
+	 */
+	private function other_authors_post(): \WP_Post {
+		$owner = self::factory()->user->create( array( 'role' => 'author' ) );
+		$post  = $this->published_post( array( 'post_author' => $owner ) );
+
+		\wp_set_current_user( self::factory()->user->create( array( 'role' => 'author' ) ) );
+
+		return $post;
+	}
+
+	/**
+	 * Run the share handler and return the `wp_die()` message.
+	 *
+	 * @return string
+	 */
+	private function share_dies(): string {
+		try {
+			Post_List::handle_share();
+		} catch ( \WPDieException $e ) {
+			return $e->getMessage();
+		}
+
+		$this->fail( 'Expected wp_die() to stop the request.' );
 	}
 
 	/**
@@ -102,10 +142,6 @@ class Test_Post_List extends \WP_UnitTestCase {
 	 * so there is no craftable path to share.
 	 */
 	public function test_register_skips_surfaces_when_auto_publish_is_off() {
-		\remove_all_filters( 'post_row_actions' );
-		\remove_all_filters( 'page_row_actions' );
-		\remove_all_filters( 'manage_post_posts_columns' );
-		\remove_all_actions( 'admin_post_' . Post_List::ACTION );
 		\add_filter( 'atmosphere_should_auto_publish', '__return_false' );
 
 		Post_List::register();
@@ -122,12 +158,6 @@ class Test_Post_List extends \WP_UnitTestCase {
 	 * registration itself, and the handler.
 	 */
 	public function test_register_wires_every_surface_when_auto_publish_is_on() {
-		\remove_all_filters( 'post_row_actions' );
-		\remove_all_filters( 'page_row_actions' );
-		\remove_all_filters( 'manage_post_posts_columns' );
-		\remove_all_actions( 'manage_post_posts_custom_column' );
-		\remove_all_actions( 'admin_post_' . Post_List::ACTION );
-
 		Post_List::register();
 
 		$this->assertNotFalse( \has_filter( 'post_row_actions', array( Post_List::class, 'add_row_action' ) ) );
@@ -141,7 +171,6 @@ class Test_Post_List extends \WP_UnitTestCase {
 	 * The stored option, not just the filter, switches the surface off.
 	 */
 	public function test_register_respects_the_stored_auto_publish_option() {
-		\remove_all_filters( 'post_row_actions' );
 		\update_option( 'atmosphere_auto_publish', '0' );
 
 		Post_List::register();
@@ -164,8 +193,7 @@ class Test_Post_List extends \WP_UnitTestCase {
 	 */
 	public function test_render_column_ignores_other_columns() {
 		$this->become_admin();
-		$post = $this->published_post();
-		\update_post_meta( $post->ID, Post::META_URI, 'at://did:plc:abc123/app.bsky.feed.post/rkey789' );
+		$post = $this->shared_post();
 
 		$this->assertSame( '', $this->render( $post->ID, 'title' ) );
 	}
@@ -175,8 +203,7 @@ class Test_Post_List extends \WP_UnitTestCase {
 	 */
 	public function test_render_column_links_shared_post() {
 		$this->become_admin();
-		$post = $this->published_post();
-		\update_post_meta( $post->ID, Post::META_URI, 'at://did:plc:abc123/app.bsky.feed.post/rkey789' );
+		$post = $this->shared_post();
 
 		$output = $this->render( $post->ID );
 
@@ -190,8 +217,7 @@ class Test_Post_List extends \WP_UnitTestCase {
 	 */
 	public function test_render_column_honours_appview_host_filter() {
 		$this->become_admin();
-		$post = $this->published_post();
-		\update_post_meta( $post->ID, Post::META_URI, 'at://did:plc:abc123/app.bsky.feed.post/rkey789' );
+		$post = $this->shared_post();
 
 		\add_filter( 'atmosphere_appview_host', static fn () => 'deer.social' );
 
@@ -284,8 +310,7 @@ class Test_Post_List extends \WP_UnitTestCase {
 	 */
 	public function test_render_column_prefers_the_link_over_a_stale_error() {
 		$this->become_admin();
-		$post = $this->published_post();
-		\update_post_meta( $post->ID, Post::META_URI, 'at://did:plc:abc123/app.bsky.feed.post/rkey789' );
+		$post = $this->shared_post();
 		$this->store_error( $post->ID, 'The PDS said no.' );
 
 		$output = $this->render( $post->ID );
@@ -300,11 +325,8 @@ class Test_Post_List extends \WP_UnitTestCase {
 	 * has to gate on `edit_post` for that specific post.
 	 */
 	public function test_render_column_hides_state_from_other_authors() {
-		$owner = self::factory()->user->create( array( 'role' => 'author' ) );
-		$post  = $this->published_post( array( 'post_author' => $owner ) );
+		$post = $this->other_authors_post();
 		$this->store_error( $post->ID, 'The PDS said no.' );
-
-		\wp_set_current_user( self::factory()->user->create( array( 'role' => 'author' ) ) );
 
 		$output = $this->render( $post->ID );
 
@@ -459,15 +481,7 @@ class Test_Post_List extends \WP_UnitTestCase {
 
 		$_GET['post'] = $post->ID;
 
-		try {
-			Post_List::handle_share();
-			$this->fail( 'Expected wp_die() for an unauthorized share.' );
-		} catch ( \WPDieException $e ) {
-			$this->assertStringContainsString( 'Unauthorized', $e->getMessage() );
-		} finally {
-			unset( $_GET['post'] );
-		}
-
+		$this->assertStringContainsString( 'Unauthorized', $this->share_dies() );
 		$this->assertFalse( \wp_next_scheduled( 'atmosphere_publish_post', array( $post->ID ) ) );
 	}
 
@@ -479,14 +493,7 @@ class Test_Post_List extends \WP_UnitTestCase {
 
 		$_GET['post'] = 99999999;
 
-		try {
-			Post_List::handle_share();
-			$this->fail( 'Expected wp_die() for an unknown post.' );
-		} catch ( \WPDieException $e ) {
-			$this->assertStringContainsString( 'Unauthorized', $e->getMessage() );
-		} finally {
-			unset( $_GET['post'] );
-		}
+		$this->assertStringContainsString( 'Unauthorized', $this->share_dies() );
 	}
 
 	/**
@@ -499,14 +506,7 @@ class Test_Post_List extends \WP_UnitTestCase {
 		$_GET['post']                 = $post->ID;
 		$_REQUEST['atmosphere_nonce'] = 'not-a-real-nonce';
 
-		try {
-			Post_List::handle_share();
-			$this->fail( 'Expected the nonce check to stop the request.' );
-		} catch ( \WPDieException $e ) {
-			$this->assertNotEmpty( $e->getMessage() );
-		} finally {
-			unset( $_GET['post'], $_REQUEST['atmosphere_nonce'] );
-		}
+		$this->assertNotEmpty( $this->share_dies() );
 
 		$this->assertFalse( \wp_next_scheduled( 'atmosphere_publish_post', array( $post->ID ) ) );
 	}
@@ -532,14 +532,7 @@ class Test_Post_List extends \WP_UnitTestCase {
 			}
 		);
 
-		try {
-			Post_List::handle_share();
-			$this->fail( 'Expected the redirect to be intercepted.' );
-		} catch ( \WPDieException $e ) {
-			$this->assertSame( 'redirect_intercepted', $e->getMessage() );
-		} finally {
-			unset( $_GET['post'], $_REQUEST['atmosphere_nonce'] );
-		}
+		$this->assertSame( 'redirect_intercepted', $this->share_dies() );
 
 		$this->assertIsString( $captured );
 		$this->assertStringContainsString( 'post_type=page', $captured, 'Pages redirect to the Pages screen.' );

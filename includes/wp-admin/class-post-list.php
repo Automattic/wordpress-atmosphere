@@ -10,11 +10,11 @@ namespace Atmosphere\WP_Admin;
 \defined( 'ABSPATH' ) || exit;
 
 use Atmosphere\Atmosphere;
-use Atmosphere\Transformer\Post;
 use function Atmosphere\get_supported_post_types;
 use function Atmosphere\is_auto_publish_enabled;
 use function Atmosphere\is_bluesky_post_enabled;
 use function Atmosphere\is_post_publishable;
+use function Atmosphere\post_share_url;
 
 /**
  * Adds a Bluesky column and a share action to the posts list tables.
@@ -52,26 +52,13 @@ class Post_List {
 	public const ACTION = 'atmosphere_share_now';
 
 	/**
-	 * A share worker was queued.
+	 * Outcomes of a share request, each with its own notice.
 	 *
 	 * @var string
 	 */
-	public const RESULT_QUEUED = 'queued';
-
-	/**
-	 * An attempt was already pending, so nothing new was queued.
-	 *
-	 * @var string
-	 */
+	public const RESULT_QUEUED    = 'queued';
 	public const RESULT_DUPLICATE = 'duplicate';
-
-	/**
-	 * The post may not be shared (capability, visibility, or the
-	 * Bluesky companion being switched off for it).
-	 *
-	 * @var string
-	 */
-	public const RESULT_REFUSED = 'refused';
+	public const RESULT_REFUSED   = 'refused';
 
 	/**
 	 * Query arg carrying the result back to the list screen.
@@ -142,11 +129,6 @@ class Post_List {
 			return;
 		}
 
-		$post = \get_post( $post_id );
-		if ( ! $post instanceof \WP_Post ) {
-			return;
-		}
-
 		/*
 		 * The list table shows other authors' rows to anyone who can
 		 * edit posts, so the per-post check that guards the row action
@@ -162,7 +144,7 @@ class Post_List {
 			return;
 		}
 
-		$url = self::shared_url( $post );
+		$url = post_share_url( $post_id );
 		if ( '' !== $url ) {
 			\printf(
 				'<a href="%1$s" target="_blank" rel="noopener noreferrer">%2$s</a>',
@@ -175,20 +157,12 @@ class Post_List {
 
 		$error = Atmosphere::get_publish_error( $post_id );
 		if ( null !== $error && '' !== $error['message'] ) {
-			\printf(
-				'<span class="atmosphere-share-failed">%s</span>',
-				\esc_html( $error['message'] )
-			);
+			echo \esc_html( $error['message'] );
 
 			return;
 		}
 
-		/*
-		 * Nothing to say. A site can carry years of posts from before
-		 * the plugin was installed, and a column of "not shared" on
-		 * every one of them is noise, so the visible cell stays an em
-		 * dash and the wording is left to assistive tech.
-		 */
+		// Quiet by design: see the note on the unauthorized branch above.
 		\printf(
 			'<span aria-hidden="true">&mdash;</span><span class="screen-reader-text">%s</span>',
 			\esc_html__( 'Not shared to Bluesky', 'atmosphere' )
@@ -209,6 +183,15 @@ class Post_List {
 	 * @return array
 	 */
 	public static function add_row_action( array $actions, \WP_Post $post ): array {
+		/*
+		 * These two filters have no per-post-type variant, so they fire on
+		 * every list table in wp-admin. Bail on the post type before
+		 * can_share() walks the whole supported-types resolution per row.
+		 */
+		if ( ! \in_array( $post->post_type, get_supported_post_types(), true ) ) {
+			return $actions;
+		}
+
 		if ( ! self::can_share( $post ) ) {
 			return $actions;
 		}
@@ -270,14 +253,9 @@ class Post_List {
 			return self::RESULT_REFUSED;
 		}
 
-		$args = array( $post->ID );
-		if ( \wp_next_scheduled( 'atmosphere_publish_post', $args ) ) {
-			return self::RESULT_DUPLICATE;
-		}
-
-		return false === \wp_schedule_single_event( \time(), 'atmosphere_publish_post', $args )
-			? self::RESULT_DUPLICATE
-			: self::RESULT_QUEUED;
+		return Atmosphere::queue_post_share( $post->ID )
+			? self::RESULT_QUEUED
+			: self::RESULT_DUPLICATE;
 	}
 
 	/**
@@ -290,11 +268,7 @@ class Post_List {
 		$post    = \get_post( $post_id );
 
 		if ( ! $post instanceof \WP_Post || ! \current_user_can( 'edit_post', $post_id ) ) {
-			\wp_die(
-				\esc_html__( 'Unauthorized.', 'atmosphere' ),
-				\esc_html__( 'Unauthorized.', 'atmosphere' ),
-				array( 'response' => 403 )
-			);
+			\wp_die( \esc_html__( 'Unauthorized.', 'atmosphere' ), '', array( 'response' => 403 ) );
 		}
 
 		\check_admin_referer( self::ACTION . '_' . $post_id, 'atmosphere_nonce' );
@@ -315,7 +289,7 @@ class Post_List {
 	 * @since unreleased
 	 */
 	public static function maybe_render_share_notice(): void {
-		$screen = \function_exists( '\get_current_screen' ) ? \get_current_screen() : null;
+		$screen = \function_exists( 'get_current_screen' ) ? \get_current_screen() : null;
 		if ( ! $screen || 'edit' !== $screen->base ) {
 			return;
 		}
@@ -323,32 +297,21 @@ class Post_List {
 		// phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Read-only notice keyed off a redirect we issued; nothing from the request is rendered.
 		$result = isset( $_GET[ self::NOTICE_ARG ] ) ? \sanitize_key( \wp_unslash( $_GET[ self::NOTICE_ARG ] ) ) : '';
 
-		$messages = array(
+		$message = match ( $result ) {
 			self::RESULT_QUEUED    => \__( 'Sharing to Bluesky in the background. Reload in a moment to see the result.', 'atmosphere' ),
 			self::RESULT_DUPLICATE => \__( 'This post is already queued for sharing.', 'atmosphere' ),
 			self::RESULT_REFUSED   => \__( 'This post cannot be shared to Bluesky right now.', 'atmosphere' ),
-		);
+			default                => '',
+		};
 
-		if ( ! isset( $messages[ $result ] ) ) {
+		if ( '' === $message ) {
 			return;
 		}
 
 		\printf(
 			'<div class="notice notice-info is-dismissible"><p>%s</p></div>',
-			\esc_html( $messages[ $result ] )
+			\esc_html( $message )
 		);
-	}
-
-	/**
-	 * The appview URL for a post's Bluesky record, or '' when unshared.
-	 *
-	 * @param \WP_Post $post Post to look up.
-	 * @return string
-	 */
-	private static function shared_url( \WP_Post $post ): string {
-		$uri = (string) \get_post_meta( $post->ID, Post::META_URI, true );
-
-		return '' === $uri ? '' : Atmosphere::bsky_web_url_from_uri( $uri );
 	}
 
 	/**

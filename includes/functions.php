@@ -10,6 +10,7 @@ namespace Atmosphere;
 \defined( 'ABSPATH' ) || exit;
 
 use Atmosphere\OAuth\Client;
+use Atmosphere\Transformer\Post;
 
 /**
  * Parse an AT-URI into components.
@@ -99,6 +100,56 @@ function appview_url( string $path, array $context = array() ): string {
 	 * @param array  $context Available parts: type, did, handle, rkey, tag.
 	 */
 	return \apply_filters( 'atmosphere_appview_url', $url, $path, $context );
+}
+
+/**
+ * Build the appview web URL for one of our own Bluesky post records.
+ *
+ * `at://<did>/app.bsky.feed.post/<rkey>` becomes
+ * `https://<appview-host>/profile/<did>/post/<rkey>`. The appview resolves the
+ * DID form, so no handle lookup is needed. Lives here rather than on a surface
+ * so every caller inherits the same strictness and the same
+ * {@see appview_url()} host and route filters.
+ *
+ * @since unreleased
+ *
+ * @param string $uri AT-URI of a Bluesky post record.
+ * @return string Web URL, or '' when the URI is not one of our post records.
+ */
+function post_web_url( string $uri ): string {
+	$parts = parse_at_uri( $uri );
+
+	if ( false === $parts || 'app.bsky.feed.post' !== $parts['collection'] ) {
+		return '';
+	}
+
+	return \esc_url_raw(
+		appview_url(
+			'profile/' . $parts['did'] . '/post/' . $parts['rkey'],
+			array(
+				'type' => 'post',
+				'did'  => $parts['did'],
+				'rkey' => $parts['rkey'],
+			)
+		)
+	);
+}
+
+/**
+ * The appview web URL for a post's Bluesky record.
+ *
+ * Shared by the editor panel's `atmosphere_url` REST field and the posts-list
+ * column, so both link to the same place and agree on what "not shared" means.
+ *
+ * @since unreleased
+ *
+ * @param int $post_id Post ID.
+ * @return string Web URL, or '' until the post has a Bluesky record.
+ */
+function post_share_url( int $post_id ): string {
+	$uri = (string) \get_post_meta( $post_id, Post::META_URI, true );
+
+	return '' === $uri ? '' : post_web_url( $uri );
 }
 
 /**
