@@ -118,15 +118,15 @@ class Block_Editor {
 		 * used to end up contradicting each other.
 		 */
 		return array(
-			'previewPath'       => Pre_Publish_Controller::full_route(),
-			'disabledMetaKey'   => ATMOSPHERE_META_DISABLED,
-			'customTextMetaKey' => ATMOSPHERE_META_CUSTOM_TEXT,
-			'replyRestrictionMetaKey' => Threadgate::META_RESTRICTION,
+			'previewPath'              => Pre_Publish_Controller::full_route(),
+			'disabledMetaKey'          => ATMOSPHERE_META_DISABLED,
+			'customTextMetaKey'        => ATMOSPHERE_META_CUSTOM_TEXT,
+			'replyRestrictionMetaKey'  => Threadgate::META_RESTRICTION,
 			'threadgateNeedsReconnect' => threadgate_needs_reconnect(),
-			'settingsUrl' => settings_url(),
-			'reconnectUrl'      => reconnect_url(),
-			'canManage'         => $can_manage,
-			'shareStatus'       => share_status(),
+			'settingsUrl'              => settings_url(),
+			'reconnectUrl'             => reconnect_url(),
+			'canManage'                => $can_manage,
+			'shareStatus'              => share_status(),
 		);
 	}
 }
