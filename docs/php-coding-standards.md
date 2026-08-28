@@ -205,6 +205,7 @@ use function Atmosphere\is_connected;
 \apply_filters( 'atmosphere_transform_comment',     $record, $comment );
 \apply_filters( 'atmosphere_transform_document',    $record, $post );
 \apply_filters( 'atmosphere_transform_publication', $record );
+\apply_filters( 'atmosphere_transform_threadgate',  $record, $post );
 ```
 
 **Content / composition filters:**
@@ -226,7 +227,7 @@ use function Atmosphere\is_connected;
 \apply_filters( 'atmosphere_syncable_post_types',         array( 'post' ) );
 \apply_filters( 'atmosphere_connection_only_mode',        false ); // Return true to embed ATmosphere purely as a connection layer: auto cross-posting, reaction/reply import, comment publishing, and the settings screen all default off.
 \apply_filters( 'atmosphere_should_auto_publish',         $bool ); // Feature switch for automatic post cross-posting; runs after the stored setting and connection-only mode, final say.
-\apply_filters( 'atmosphere_should_publish_bluesky_post', true ); // Return false to write the site.standard.document record only, no app.bsky.feed.post companion; pure filter (no connection-only pass), forward-only.
+\apply_filters( 'atmosphere_should_publish_bluesky_post', true, $post ); // Return false to write the site.standard.document record only, no app.bsky.feed.post companion; `$post` is the post being published, so the answer can be per post. Pure filter (no connection-only pass), forward-only.
 \apply_filters( 'atmosphere_should_publish_comment',      $bool, $comment );
 \apply_filters( 'atmosphere_should_publish_comments',     $bool ); // Feature switch for publishing WP comments to Bluesky; runs after the stored setting and connection-only mode, final say. NOT the per-comment `_comment` filter above.
 \apply_filters( 'atmosphere_should_sync_reactions',       $bool ); // Feature switch for importing Bluesky likes/reposts; runs after the stored setting and connection-only mode, final say.
@@ -260,6 +261,7 @@ use function Atmosphere\is_connected;
 ```php
 \apply_filters( 'atmosphere_pre_apply_writes', null, $writes );                    // Short-circuit / observe an applyWrites batch.
 \apply_filters( 'atmosphere_pre_upload_blob', null, $file_path, $mime_type );      // Short-circuit / observe a blob upload.
+\apply_filters( 'atmosphere_pre_get_record', null, $collection, $rkey );           // Short-circuit / observe a getRecord read.
 ```
 
 ## Documentation Standards

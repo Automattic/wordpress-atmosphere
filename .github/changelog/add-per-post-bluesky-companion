@@ -1,0 +1,4 @@
+Significance: minor
+Type: added
+
+Compatible plugins can now decide per post whether it is also shared to Bluesky.

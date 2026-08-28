@@ -48,6 +48,11 @@ class Test_Client_Metadata_Filter extends WP_UnitTestCase {
 		$this->assertSame( Client::scopes(), $data['scope'] );
 		$this->assertStringNotContainsString( 'transition:generic', $data['scope'] );
 		$this->assertStringContainsString( 'repo:app.bsky.feed.post', $data['scope'] );
+		$this->assertStringContainsString(
+			'repo:app.bsky.feed.threadgate',
+			$data['scope'],
+			'Threadgates are their own record, so writing them needs its own scope.'
+		);
 		$this->assertStringContainsString( 'repo:site.standard.document', $data['scope'] );
 		$this->assertStringContainsString( 'repo:site.standard.publication', $data['scope'] );
 		$this->assertStringContainsString( 'blob:image/*', $data['scope'] );
