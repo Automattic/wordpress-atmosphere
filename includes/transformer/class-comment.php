@@ -183,7 +183,7 @@ class Comment extends Base {
 		 */
 		$current_did = get_did();
 		$stored_did  = (string) \get_comment_meta( $comment_id, self::META_DID, true );
-		if ( $stored_did !== $current_did ) {
+		if ( '' !== $current_did && $stored_did !== $current_did ) {
 			\update_comment_meta( $comment_id, self::META_DID, $current_did );
 		}
 
