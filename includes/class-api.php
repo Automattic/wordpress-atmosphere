@@ -273,7 +273,16 @@ class API {
 
 		if ( ! is_success_status( $status ) ) {
 			$msg = self::error_message( $body, \__( 'PDS request failed.', 'atmosphere' ) );
-			return new \WP_Error( 'atmosphere_pds', $msg, array( 'status' => $status ) );
+			return new \WP_Error(
+				'atmosphere_pds',
+				$msg,
+				array(
+					'status' => $status,
+					// The AT Protocol error name (e.g. `RecordNotFound`) so callers
+					// can tell an absent record from a transport/auth failure.
+					'error'  => (string) ( $body['error'] ?? '' ),
+				)
+			);
 		}
 
 		return \is_array( $body ) ? $body : array();
@@ -603,6 +612,30 @@ class API {
 	 * @return array|\WP_Error
 	 */
 	public static function get_record( string $collection, string $rkey ): array|\WP_Error {
+		/**
+		 * Short-circuits a getRecord read before the HTTP layer.
+		 *
+		 * Mirrors `atmosphere_pre_apply_writes`: return an array (the getRecord
+		 * response) or a `WP_Error` to bypass the network; return null to run
+		 * the real request. Used by the Publisher test fixture.
+		 *
+		 * @since unreleased
+		 *
+		 * @param array|\WP_Error|null $short_circuit Canned response, or null to proceed.
+		 * @param string               $collection    Collection NSID.
+		 * @param string               $rkey          Record key.
+		 */
+		$short_circuit = \apply_filters( 'atmosphere_pre_get_record', null, $collection, $rkey );
+		if ( null !== $short_circuit ) {
+			if ( ! \is_array( $short_circuit ) && ! \is_wp_error( $short_circuit ) ) {
+				return new \WP_Error(
+					'atmosphere_invalid_pre_get_record_return',
+					\__( 'atmosphere_pre_get_record must return null, an array, or a WP_Error.', 'atmosphere' )
+				);
+			}
+			return $short_circuit;
+		}
+
 		return self::get(
 			'/xrpc/com.atproto.repo.getRecord',
 			array(

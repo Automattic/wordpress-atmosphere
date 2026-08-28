@@ -205,6 +205,7 @@ use function Atmosphere\is_connected;
 \apply_filters( 'atmosphere_transform_comment',     $record, $comment );
 \apply_filters( 'atmosphere_transform_document',    $record, $post );
 \apply_filters( 'atmosphere_transform_publication', $record );
+\apply_filters( 'atmosphere_transform_threadgate',  $record, $post );
 ```
 
 **Content / composition filters:**
@@ -260,6 +261,7 @@ use function Atmosphere\is_connected;
 ```php
 \apply_filters( 'atmosphere_pre_apply_writes', null, $writes );                    // Short-circuit / observe an applyWrites batch.
 \apply_filters( 'atmosphere_pre_upload_blob', null, $file_path, $mime_type );      // Short-circuit / observe a blob upload.
+\apply_filters( 'atmosphere_pre_get_record', null, $collection, $rkey );           // Short-circuit / observe a getRecord read.
 ```
 
 ## Documentation Standards

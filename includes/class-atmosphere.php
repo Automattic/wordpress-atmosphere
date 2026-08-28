@@ -20,6 +20,7 @@ use Atmosphere\Transformer\Document;
 use Atmosphere\Transformer\Post;
 use Atmosphere\Transformer\Preview;
 use Atmosphere\Transformer\Publication;
+use Atmosphere\Transformer\Threadgate;
 use Atmosphere\Integrations\Load;
 use Atmosphere\Rest\Admin\Connection_Controller;
 use Atmosphere\Rest\Admin\Pre_Publish_Controller;
@@ -1495,11 +1496,18 @@ class Atmosphere {
 			? \array_column( Publisher::collect_published_comment_tids( $post_id ), 'tid' )
 			: array();
 
+		// A written threadgate shares the root post's rkey. Capture it now
+		// while the meta still exists so the async delete can remove it after
+		// the post row is gone.
+		$threadgate_tid = ( ! empty( $bsky_tids ) && Threadgate::is_written( $post_id ) )
+			? $bsky_tids[0]
+			: '';
+
 		if ( ! empty( $bsky_tids ) || '' !== $doc_tid || ! empty( $comment_tids ) ) {
 			\wp_schedule_single_event(
 				\time(),
 				'atmosphere_delete_records',
-				array( $bsky_tids, $doc_tid, $comment_tids )
+				array( $bsky_tids, $doc_tid, $comment_tids, $threadgate_tid )
 			);
 		}
 	}
@@ -1863,7 +1871,7 @@ class Atmosphere {
 	 * @param string    $meta_key Meta key that changed.
 	 */
 	public function on_share_meta_changed( $meta_id, $post_id, $meta_key ): void {
-		if ( ! \in_array( $meta_key, array( ATMOSPHERE_META_DISABLED, ATMOSPHERE_META_CUSTOM_TEXT ), true ) ) {
+		if ( ! \in_array( $meta_key, array( ATMOSPHERE_META_DISABLED, ATMOSPHERE_META_CUSTOM_TEXT, Threadgate::META_RESTRICTION ), true ) ) {
 			return;
 		}
 
@@ -1917,6 +1925,30 @@ class Atmosphere {
 					'default'           => '',
 					'show_in_rest'      => true,
 					'sanitize_callback' => 'sanitize_textarea_field',
+					'auth_callback'     => $auth_callback,
+				)
+			);
+
+			\register_post_meta(
+				$post_type,
+				Threadgate::META_RESTRICTION,
+				array(
+					'type'              => 'array',
+					'single'            => true,
+					'default'           => array(),
+					'show_in_rest'      => array(
+						'schema' => array(
+							'type'  => 'array',
+							'items' => array(
+								'type' => 'string',
+								'enum' => \array_merge(
+									array( Threadgate::AUDIENCE_NOBODY ),
+									\array_keys( Threadgate::audience_rules() )
+								),
+							),
+						),
+					),
+					'sanitize_callback' => array( Threadgate::class, 'sanitize_restriction' ),
 					'auth_callback'     => $auth_callback,
 				)
 			);
@@ -2167,13 +2199,15 @@ class Atmosphere {
 
 		\add_action(
 			'atmosphere_delete_records',
-			static function ( $bsky_tids, string $doc_tid, $comment_tids = array() ): void {
+			static function ( $bsky_tids, string $doc_tid, $comment_tids = array(), string $threadgate_tid = '' ): void {
 				/*
 				 * delete_post_by_tids() drops the comment TIDs itself when
-				 * comment publishing is disabled at execution time.
+				 * comment publishing is disabled at execution time. The
+				 * threadgate arg defaults so events queued before the arg
+				 * existed still run.
 				 */
 				$comment_tids = \is_array( $comment_tids ) ? $comment_tids : array();
-				$result       = Publisher::delete_post_by_tids( $bsky_tids, $doc_tid, $comment_tids );
+				$result       = Publisher::delete_post_by_tids( $bsky_tids, $doc_tid, $comment_tids, $threadgate_tid );
 
 				if ( \is_wp_error( $result ) ) {
 					/*
@@ -2195,7 +2229,7 @@ class Atmosphere {
 				}
 			},
 			10,
-			3
+			4
 		);
 
 		/*
