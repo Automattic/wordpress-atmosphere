@@ -443,7 +443,7 @@ function get_identity(): array {
 		'pds_endpoint' => (string) ( $conn['pds_endpoint'] ?? '' ),
 	);
 
-	\update_option( 'atmosphere_identity', $identity, true );
+	set_identity( $identity );
 
 	return $identity;
 }
@@ -458,6 +458,53 @@ function get_identity(): array {
  */
 function has_identity(): bool {
 	return ! empty( get_identity()['did'] );
+}
+
+/**
+ * Persist the AT Protocol identity (DID, handle, PDS endpoint).
+ *
+ * Replaces the stored identity outright. It is not a partial update: a key
+ * you leave out is stored as an empty string, so passing only `handle` clears
+ * the DID, which takes `has_identity()` false and stops
+ * `/.well-known/atproto-did` answering. Read {@see get_identity()} and pass
+ * the full array back if you mean to change one field.
+ *
+ * The canonical write surface for `atmosphere_identity`, mirroring the
+ * read helpers ({@see get_identity()} and friends). A consumer that writes
+ * identity from outside the OAuth token exchange — a recovery or
+ * escape-hatch flow — should call this rather than `update_option()`
+ * directly, so the option's shape and its autoload flag (which
+ * {@see get_identity()}'s lazy migration also relies on) live in one place.
+ *
+ * @since unreleased
+ *
+ * @param array $identity Identity to store. Only `did`, `handle`, and
+ *                        `pds_endpoint` are persisted; a missing or
+ *                        non-scalar key is stored as an empty string and
+ *                        any other keys are dropped.
+ * @return bool False both when the write fails and when the stored value was
+ *              already identical, per `update_option()`. Not a success flag.
+ */
+function set_identity( array $identity ): bool {
+	/*
+	 * Scalar guard: `(string)` on an array warns and stores the literal
+	 * "Array", which `has_identity()` would then treat as a live identity
+	 * and the well-known endpoint would serve. No first-party caller can
+	 * do that, but this helper is documented for third parties.
+	 */
+	$field = static function ( $value ): string {
+		return \is_scalar( $value ) ? (string) $value : '';
+	};
+
+	return \update_option(
+		'atmosphere_identity',
+		array(
+			'did'          => $field( $identity['did'] ?? '' ),
+			'handle'       => $field( $identity['handle'] ?? '' ),
+			'pds_endpoint' => $field( $identity['pds_endpoint'] ?? '' ),
+		),
+		true
+	);
 }
 
 /**

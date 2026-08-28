@@ -10,6 +10,8 @@ namespace Atmosphere\Tests;
 use function Atmosphere\parse_at_uri;
 use function Atmosphere\build_at_uri;
 use function Atmosphere\appview_url;
+use function Atmosphere\get_identity;
+use function Atmosphere\set_identity;
 use function Atmosphere\sanitize_text;
 use function Atmosphere\truncate_text;
 use function Atmosphere\truncate_graphemes;
@@ -1091,6 +1093,81 @@ class Test_Functions extends \WP_UnitTestCase {
 		\add_filter( 'atmosphere_should_publish_bluesky_post', '__return_false' );
 		$this->assertFalse( is_bluesky_post_enabled( $post ) );
 		\remove_filter( 'atmosphere_should_publish_bluesky_post', '__return_false' );
+	}
+
+	/**
+	 * `set_identity()` persists the canonical shape so `get_identity()`
+	 * reads it back, keeping the option's structure in one place.
+	 *
+	 * @group atmosphere
+	 */
+	public function test_set_identity_round_trips() {
+		\delete_option( 'atmosphere_identity' );
+
+		$this->assertTrue(
+			set_identity(
+				array(
+					'did'          => 'did:plc:abc123',
+					'handle'       => 'me.example.com',
+					'pds_endpoint' => 'https://pds.example.com',
+					'extra'        => 'dropped',
+				)
+			)
+		);
+
+		$this->assertSame(
+			array(
+				'did'          => 'did:plc:abc123',
+				'handle'       => 'me.example.com',
+				'pds_endpoint' => 'https://pds.example.com',
+			),
+			get_identity(),
+			'Only the three canonical fields are stored, and get_identity() reads them back.'
+		);
+
+		\delete_option( 'atmosphere_identity' );
+	}
+
+	/**
+	 * A non-scalar value must not become the literal "Array", which
+	 * `has_identity()` would treat as a live identity and the well-known
+	 * endpoint would then serve.
+	 */
+	public function test_set_identity_drops_non_scalar_values() {
+		set_identity(
+			array(
+				'did'          => array( 'nested' => 'value' ),
+				'handle'       => 'example.com',
+				'pds_endpoint' => 'https://pds.example.com',
+			)
+		);
+
+		$stored = \get_option( 'atmosphere_identity' );
+
+		$this->assertSame( '', $stored['did'] );
+		$this->assertStringNotContainsString( 'Array', (string) $stored['did'] );
+	}
+
+	/**
+	 * The helper replaces rather than merges. Pinned because the failure is
+	 * silent and expensive: a partial call clears the DID, which takes
+	 * `has_identity()` false and stops the well-known endpoint answering.
+	 */
+	public function test_set_identity_replaces_rather_than_merges() {
+		set_identity(
+			array(
+				'did'          => 'did:plc:test123',
+				'handle'       => 'old.example.com',
+				'pds_endpoint' => 'https://pds.example.com',
+			)
+		);
+
+		set_identity( array( 'handle' => 'new.example.com' ) );
+
+		$stored = \get_option( 'atmosphere_identity' );
+
+		$this->assertSame( 'new.example.com', $stored['handle'] );
+		$this->assertSame( '', $stored['did'] );
 	}
 
 	/**

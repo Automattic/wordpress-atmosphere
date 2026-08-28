@@ -662,8 +662,13 @@ class Facet {
 			 *
 			 * @param bool     $fallback Whether to fall back to `did:web:<handle>`. Default false.
 			 * @param string   $handle   The handle that failed to resolve.
-			 * @param \WP_Error $error    The resolver error (its code distinguishes a
-			 *                            definitive miss from a transient network failure).
+			 * @param \WP_Error $error    The resolver error. Its code distinguishes a
+			 *                            definitive miss (`atmosphere_resolve_handle`:
+			 *                            the host answered, but advertises no DID) from a
+			 *                            transient failure (`http_request_failed` for a
+			 *                            connection-level error, `atmosphere_upstream_error`
+			 *                            or `atmosphere_upstream_rate_limited` for a non-2xx
+			 *                            from the handle's host).
 			 */
 			$fallback = \apply_filters( 'atmosphere_mention_didweb_fallback', false, $handle, $did );
 
