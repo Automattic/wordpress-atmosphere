@@ -119,7 +119,19 @@ function appview_url( string $path, array $context = array() ): string {
 function post_web_url( string $uri ): string {
 	$parts = parse_at_uri( $uri );
 
-	if ( false === $parts || 'app.bsky.feed.post' !== $parts['collection'] ) {
+	/*
+	 * `parse_at_uri()` only splits; it accepts an empty segment and ignores
+	 * anything after the third. Rebuilding the URI from the parts and
+	 * requiring it to match is what rejects both, so a trailing slash or a
+	 * stray extra segment never becomes a half-built link.
+	 */
+	if (
+		false === $parts
+		|| 'app.bsky.feed.post' !== $parts['collection']
+		|| "at://{$parts['did']}/{$parts['collection']}/{$parts['rkey']}" !== $uri
+		|| '' === $parts['did']
+		|| '' === $parts['rkey']
+	) {
 		return '';
 	}
 
