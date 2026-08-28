@@ -150,39 +150,49 @@ class Post_List {
 		/*
 		 * The list table shows other authors' rows to anyone who can
 		 * edit posts, so the per-post check that guards the row action
-		 * has to guard the cell too. The em dash is rendered either way
-		 * so the column never becomes an oracle for "this post has
-		 * Bluesky state".
+		 * has to guard the cell too. The output is the bare em dash,
+		 * identical for every post regardless of its state, so the
+		 * column never becomes an oracle. It carries no screen-reader
+		 * label either: "not shared" would be a claim we have not
+		 * checked and may well be false.
 		 */
-		if ( \current_user_can( 'edit_post', $post_id ) ) {
-			$url = self::shared_url( $post );
-			if ( '' !== $url ) {
-				\printf(
-					'<a href="%1$s" target="_blank" rel="noopener noreferrer">%2$s</a>',
-					\esc_url( $url ),
-					\esc_html__( 'View post', 'atmosphere' )
-				);
+		if ( ! \current_user_can( 'edit_post', $post_id ) ) {
+			echo '<span aria-hidden="true">&mdash;</span>';
 
-				return;
-			}
+			return;
+		}
 
-			$error = Atmosphere::get_publish_error( $post_id );
-			if ( null !== $error && '' !== $error['message'] ) {
-				\printf(
-					'<span class="atmosphere-share-failed">%s</span>',
-					\esc_html( $error['message'] )
-				);
+		$url = self::shared_url( $post );
+		if ( '' !== $url ) {
+			\printf(
+				'<a href="%1$s" target="_blank" rel="noopener noreferrer">%2$s</a>',
+				\esc_url( $url ),
+				\esc_html__( 'View post', 'atmosphere' )
+			);
 
-				return;
-			}
+			return;
+		}
+
+		$error = Atmosphere::get_publish_error( $post_id );
+		if ( null !== $error && '' !== $error['message'] ) {
+			\printf(
+				'<span class="atmosphere-share-failed">%s</span>',
+				\esc_html( $error['message'] )
+			);
+
+			return;
 		}
 
 		/*
 		 * Nothing to say. A site can carry years of posts from before
 		 * the plugin was installed, and a column of "not shared" on
-		 * every one of them is noise, not information.
+		 * every one of them is noise, so the visible cell stays an em
+		 * dash and the wording is left to assistive tech.
 		 */
-		echo '<span aria-hidden="true">&mdash;</span>';
+		\printf(
+			'<span aria-hidden="true">&mdash;</span><span class="screen-reader-text">%s</span>',
+			\esc_html__( 'Not shared to Bluesky', 'atmosphere' )
+		);
 	}
 
 	/**

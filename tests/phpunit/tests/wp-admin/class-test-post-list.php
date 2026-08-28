@@ -22,7 +22,6 @@
 
 namespace Atmosphere\Tests\WP_Admin;
 
-use Atmosphere\Atmosphere;
 use Atmosphere\Transformer\Post;
 use Atmosphere\WP_Admin\Post_List;
 
@@ -227,6 +226,11 @@ class Test_Post_List extends \WP_UnitTestCase {
 
 		$this->assertStringNotContainsString( '<a ', $output );
 		$this->assertStringContainsString( '&mdash;', $output );
+		$this->assertStringContainsString(
+			'Not shared to Bluesky',
+			$output,
+			'The em dash is aria-hidden, so the state needs a screen-reader label.'
+		);
 	}
 
 	/**
@@ -306,12 +310,17 @@ class Test_Post_List extends \WP_UnitTestCase {
 
 		$this->assertStringNotContainsString( 'The PDS said no.', $output );
 		$this->assertStringContainsString( '&mdash;', $output, 'The cell still renders, so it is not an oracle.' );
+		$this->assertStringNotContainsString(
+			'Not shared to Bluesky',
+			$output,
+			'We have not checked, so the cell must not claim the post is unshared.'
+		);
 	}
 
 	/**
 	 * The row action is offered for a post the user can edit.
 	 */
-	public function test_row_action_offered_to_editor() {
+	public function test_row_action_offered_to_user_who_can_edit_the_post() {
 		$this->become_admin();
 		$post = $this->published_post();
 
