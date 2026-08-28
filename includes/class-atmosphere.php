@@ -190,10 +190,14 @@ class Atmosphere {
 		 * directly on the pull filters (no context gate, no `init`
 		 * indirection): they only fire on Site Health surfaces — the
 		 * screen, the weekly scheduled check, WP-CLI — so the class is
-		 * autoloaded only there and every other request just stores two
-		 * callables.
+		 * autoloaded only there and every other request just stores three
+		 * callables. That is also why the ajax action is spelled out
+		 * instead of read from `Health_Check::REACHABILITY_ACTION`: a
+		 * constant fetch autoloads the class, `::class` does not. The
+		 * registration test pins the literal to the constant.
 		 */
 		\add_filter( 'site_status_tests', array( Health_Check::class, 'add_tests' ) );
+		\add_action( 'wp_ajax_health-check-atmosphere-reachability', array( Health_Check::class, 'ajax_client_metadata' ) );
 		\add_filter( 'debug_information', array( Health_Check::class, 'debug_information' ) );
 
 		/*
