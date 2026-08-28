@@ -481,6 +481,43 @@ class Test_API extends \WP_UnitTestCase {
 	}
 
 	/**
+	 * A malformed `atmosphere_pre_get_record` return (scalar / object) is
+	 * coerced into a WP_Error rather than fataling against the
+	 * `array|WP_Error` return type. Mirrors `atmosphere_pre_apply_writes`.
+	 */
+	public function test_get_record_pre_filter_rejects_invalid_return() {
+		$invalid = static function () {
+			return false;
+		};
+		\add_filter( 'atmosphere_pre_get_record', $invalid, 10, 0 );
+
+		$result = API::get_record( 'app.bsky.feed.threadgate', 'some-rkey' );
+
+		\remove_filter( 'atmosphere_pre_get_record', $invalid, 10 );
+
+		$this->assertWPError( $result );
+		$this->assertSame( 'atmosphere_invalid_pre_get_record_return', $result->get_error_code() );
+	}
+
+	/**
+	 * A well-formed array return from `atmosphere_pre_get_record`
+	 * short-circuits the read and is returned verbatim.
+	 */
+	public function test_get_record_pre_filter_short_circuits_with_array() {
+		$record  = array( 'value' => array( '$type' => 'app.bsky.feed.threadgate' ) );
+		$shorter = static function () use ( $record ) {
+			return $record;
+		};
+		\add_filter( 'atmosphere_pre_get_record', $shorter, 10, 0 );
+
+		$result = API::get_record( 'app.bsky.feed.threadgate', 'some-rkey' );
+
+		\remove_filter( 'atmosphere_pre_get_record', $shorter, 10 );
+
+		$this->assertSame( $record, $result );
+	}
+
+	/**
 	 * A well-formed array return from `atmosphere_pre_upload_blob`
 	 * short-circuits the upload and is returned verbatim.
 	 */

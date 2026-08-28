@@ -27,6 +27,14 @@ export const CUSTOM_TEXT_META_KEY =
 	options.customTextMetaKey || 'atmosphere_custom_text';
 
 /**
+ * Post meta key for the per-post Bluesky reply restriction.
+ *
+ * @type {string}
+ */
+export const REPLY_RESTRICTION_META_KEY =
+	options.replyRestrictionMetaKey || 'atmosphere_reply_restriction';
+
+/**
  * REST path for the pre-publish preview endpoint.
  *
  * @type {string}
@@ -50,3 +58,13 @@ export const SETTINGS_URL =
  * @type {boolean}
  */
 export const CAN_MANAGE = !! options.canManage;
+
+/**
+ * Whether the Bluesky connection predates the reply-restriction scope.
+ *
+ * True means a restriction set in the editor is skipped at publish time
+ * until the site reconnects, so the panel says so next to the control.
+ *
+ * @type {boolean}
+ */
+export const THREADGATE_NEEDS_RECONNECT = !! options.threadgateNeedsReconnect;

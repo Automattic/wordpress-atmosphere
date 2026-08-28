@@ -31,6 +31,7 @@ use function Atmosphere\is_connected;
 use function Atmosphere\is_operator_disconnected;
 use function Atmosphere\reauth_reason_lead;
 use function Atmosphere\settings_url;
+use function Atmosphere\threadgate_needs_reconnect;
 
 /**
  * Health check class.
@@ -52,6 +53,11 @@ class Health_Check {
 		$tests['direct']['atmosphere_test_connection'] = array(
 			'label' => \__( 'ATmosphere Bluesky Connection Test', 'atmosphere' ),
 			'test'  => array( self::class, 'test_connection' ),
+		);
+
+		$tests['direct']['atmosphere_test_threadgate_scope'] = array(
+			'label' => \__( 'ATmosphere Bluesky Reply Restrictions Test', 'atmosphere' ),
+			'test'  => array( self::class, 'test_threadgate_scope' ),
 		);
 
 		return $tests;
@@ -126,6 +132,54 @@ class Health_Check {
 		$result['badge']['color'] = 'red';
 		$result['label']          = \__( 'ATmosphere needs to be reconnected to Bluesky', 'atmosphere' );
 		$result['description']    = self::reauth_description();
+
+		return $result;
+	}
+
+	/**
+	 * Reply-restrictions scope test.
+	 *
+	 * Reply restrictions were added after the first connections were made,
+	 * and they need a scope those connections never asked for. This is the
+	 * one place a site admin who never opens the editor would find out.
+	 * Recommended, not critical: posts still publish, only the restriction
+	 * is skipped.
+	 *
+	 * @since unreleased
+	 *
+	 * @return array Site Health test result.
+	 */
+	public static function test_threadgate_scope(): array {
+		$result = array(
+			'label'       => \__( 'ATmosphere can restrict who replies on Bluesky', 'atmosphere' ),
+			'status'      => 'good',
+			'badge'       => array(
+				'label' => \__( 'ATmosphere', 'atmosphere' ),
+				'color' => 'green',
+			),
+			'description' => \sprintf(
+				'<p>%s</p>',
+				\__( 'Your Bluesky connection allows ATmosphere to set who can reply to a shared post.', 'atmosphere' )
+			),
+			'actions'     => '',
+			'test'        => 'atmosphere_test_threadgate_scope',
+		);
+
+		if ( ! threadgate_needs_reconnect() ) {
+			return $result;
+		}
+
+		$result['status']      = 'recommended';
+		$result['label']       = \__( 'ATmosphere needs a reconnect to restrict replies on Bluesky', 'atmosphere' );
+		$result['description'] = \sprintf(
+			'<p>%s</p>',
+			\__( 'This site connected to Bluesky before reply restrictions were available. Posts still share as usual, but any reply restriction you set is skipped until you reconnect your account.', 'atmosphere' )
+		);
+		$result['actions']     = \sprintf(
+			'<p><a href="%s">%s</a></p>',
+			\esc_url( settings_url() ),
+			\esc_html__( 'Reconnect on the ATmosphere settings page', 'atmosphere' )
+		);
 
 		return $result;
 	}
