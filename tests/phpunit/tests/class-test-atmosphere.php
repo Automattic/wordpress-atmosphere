@@ -1666,7 +1666,7 @@ class Test_Atmosphere extends WP_UnitTestCase {
 		$this->assertNotFalse(
 			\wp_next_scheduled(
 				'atmosphere_delete_records',
-				array( array( 'bsky-tid-root' ), 'doc-tid-root', array(), 'bsky-tid-root' )
+				array( array( 'bsky-tid-root' ), 'doc-tid-root', array(), 'bsky-tid-root', '', '' )
 			),
 			'Expected the threadgate root rkey threaded into the delete event.'
 		);
