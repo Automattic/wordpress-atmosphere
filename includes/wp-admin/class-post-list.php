@@ -146,10 +146,13 @@ class Post_List {
 
 		$url = post_share_url( $post_id );
 		if ( '' !== $url ) {
+			// Same affordance core gives its own new-tab links: announced to
+			// screen readers, and marked with the external icon for everyone.
 			\printf(
-				'<a href="%1$s" target="_blank" rel="noopener noreferrer">%2$s</a>',
+				'<a href="%1$s" target="_blank" rel="noopener noreferrer">%2$s<span class="screen-reader-text"> %3$s</span><span aria-hidden="true" class="dashicons dashicons-external"></span></a>',
 				\esc_url( $url ),
-				\esc_html__( 'View post', 'atmosphere' )
+				\esc_html__( 'View post', 'atmosphere' ),
+				\esc_html__( '(opens in a new tab)', 'atmosphere' )
 			);
 
 			return;

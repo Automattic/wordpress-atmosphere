@@ -209,6 +209,9 @@ class Test_Post_List extends \WP_UnitTestCase {
 
 		$this->assertStringContainsString( 'bsky.app/profile/did:plc:abc123/post/rkey789', $output );
 		$this->assertStringContainsString( '<a ', $output );
+		$this->assertStringContainsString( 'target="_blank"', $output );
+		$this->assertStringContainsString( '(opens in a new tab)', $output, 'A new-tab link announces itself to screen readers.' );
+		$this->assertStringContainsString( 'dashicons-external', $output );
 	}
 
 	/**
