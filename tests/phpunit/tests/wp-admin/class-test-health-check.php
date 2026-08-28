@@ -78,6 +78,7 @@ class Test_Health_Check extends \WP_UnitTestCase {
 		);
 
 		$this->assertArrayHasKey( 'atmosphere_test_connection', $tests['direct'] );
+		$this->assertArrayHasKey( 'atmosphere_test_threadgate_scope', $tests['direct'] );
 		$this->assertArrayNotHasKey( 'atmosphere_test_client_metadata', $tests['direct'], 'A test that makes a request must not block the screen.' );
 
 		$async = $tests['async']['atmosphere_test_client_metadata'];
@@ -615,5 +616,38 @@ class Test_Health_Check extends \WP_UnitTestCase {
 		$json = \json_decode( $this->run_ajax_handler(), true );
 
 		$this->assertFalse( $json['success'] );
+	}
+
+	/**
+	 * A connection granted before the threadgate scope existed is
+	 * flagged as recommended, with a reconnect link. Posts still publish,
+	 * so it must not be critical.
+	 */
+	public function test_threadgate_scope_recommends_reconnect_when_missing() {
+		$this->seed_connection( array( 'scope' => 'atproto repo:app.bsky.feed.post' ) );
+
+		$result = Health_Check::test_threadgate_scope();
+
+		$this->assertSame( 'recommended', $result['status'] );
+		$this->assertStringContainsString( 'reconnect', $result['label'] );
+		$this->assertStringContainsString( 'options-general.php?page=atmosphere', $result['actions'] );
+	}
+
+	/**
+	 * A grant that includes the scope passes.
+	 */
+	public function test_threadgate_scope_passes_when_granted() {
+		$this->seed_connection( array( 'scope' => Client::scopes() ) );
+
+		$this->assertSame( 'good', Health_Check::test_threadgate_scope()['status'] );
+	}
+
+	/**
+	 * An unknown grant is not reported as a problem.
+	 */
+	public function test_threadgate_scope_passes_when_unknown() {
+		$this->seed_connection();
+
+		$this->assertSame( 'good', Health_Check::test_threadgate_scope()['status'] );
 	}
 }
