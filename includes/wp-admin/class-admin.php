@@ -27,6 +27,7 @@ use function Atmosphere\is_publication_sync_enabled;
 use function Atmosphere\needs_reauth;
 use function Atmosphere\reauth_reason_lead;
 use function Atmosphere\settings_url;
+use function Atmosphere\threadgate_needs_reconnect;
 
 /**
  * Admin class.
@@ -59,6 +60,7 @@ class Admin {
 		\add_action( 'admin_enqueue_scripts', array( self::class, 'enqueue_assets' ) );
 		\add_action( 'admin_notices', array( self::class, 'maybe_render_reauth_notice' ) );
 		\add_action( 'admin_notices', array( self::class, 'maybe_render_oauth_notice' ) );
+		\add_action( 'admin_notices', array( self::class, 'maybe_render_threadgate_scope_notice' ) );
 		\add_action( 'load-settings_page_atmosphere', array( self::class, 'maybe_warn_missing_post_types' ) );
 
 		\add_action( 'admin_post_atmosphere_disconnect', array( self::class, 'handle_disconnect' ) );
@@ -547,6 +549,36 @@ class Admin {
 
 		\wp_safe_redirect( settings_url() );
 		exit;
+	}
+
+	/**
+	 * Nudge toward a reconnect when reply restrictions cannot be written.
+	 *
+	 * Settings page only, unlike the reauth notice: nothing is broken
+	 * site-wide, so it does not earn a place on every screen. The admin
+	 * who can reconnect is the one on this page.
+	 *
+	 * @since unreleased
+	 */
+	public static function maybe_render_threadgate_scope_notice(): void {
+		if ( ! \current_user_can( 'manage_options' ) ) {
+			return;
+		}
+
+		$screen = \function_exists( 'get_current_screen' ) ? \get_current_screen() : null;
+		if ( ! $screen || 'settings_page_atmosphere' !== $screen->id ) {
+			return;
+		}
+
+		if ( ! threadgate_needs_reconnect() ) {
+			return;
+		}
+
+		\printf(
+			'<div class="notice notice-info"><p><strong>%1$s</strong> %2$s</p></div>',
+			\esc_html__( 'Reply restrictions need a reconnect.', 'atmosphere' ),
+			\esc_html__( 'This site connected to Bluesky before reply restrictions were available. Posts still share as usual. Reconnect your account below to turn restrictions on.', 'atmosphere' )
+		);
 	}
 
 	/**

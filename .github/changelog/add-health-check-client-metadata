@@ -1,0 +1,4 @@
+Significance: minor
+Type: added
+
+Add a Site Health check that tells you when Bluesky cannot reach your site, which is why connecting silently fails when a security plugin limits the REST API.

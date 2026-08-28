@@ -18,6 +18,7 @@ use Atmosphere\Reaction_Sync;
 use Atmosphere\Transformer\Comment;
 use Atmosphere\Transformer\Document;
 use Atmosphere\Transformer\Post;
+use Atmosphere\Transformer\Threadgate;
 
 /**
  * Atmosphere tests.
@@ -301,6 +302,25 @@ class Test_Atmosphere extends WP_UnitTestCase {
 		$this->assertNotFalse(
 			\wp_next_scheduled( 'atmosphere_update_post', array( $post->ID ) ),
 			'Changing the custom Bluesky text must schedule a reconcile.'
+		);
+	}
+
+	/**
+	 * Changing the reply restriction schedules a reconcile so the gate is
+	 * synced even on a meta-only save.
+	 */
+	public function test_reply_restriction_change_schedules_reconcile() {
+		$post = self::factory()->post->create_and_get( array( 'post_status' => 'publish' ) );
+		\wp_clear_scheduled_hook( 'atmosphere_update_post', array( $post->ID ) );
+
+		\update_post_meta( $post->ID, Post::META_TID, 'bsky-tid-123' );
+		\update_post_meta( $post->ID, Threadgate::META_RESTRICTION, array( Threadgate::AUDIENCE_FOLLOWING ) );
+
+		$this->atmosphere->on_share_meta_changed( 0, $post->ID, Threadgate::META_RESTRICTION );
+
+		$this->assertNotFalse(
+			\wp_next_scheduled( 'atmosphere_update_post', array( $post->ID ) ),
+			'Changing the reply restriction must schedule a reconcile.'
 		);
 	}
 
@@ -1577,6 +1597,7 @@ class Test_Atmosphere extends WP_UnitTestCase {
 			array( 'bsky-tid-a', 'bsky-tid-b' ),
 			'',
 			'',
+			'',
 		);
 
 		$this->assertNotFalse(
@@ -1604,7 +1625,7 @@ class Test_Atmosphere extends WP_UnitTestCase {
 		$this->assertNotFalse(
 			\wp_next_scheduled(
 				'atmosphere_delete_records',
-				array( array( 'bsky-tid-root' ), 'doc-tid-root', array(), '', '' )
+				array( array( 'bsky-tid-root' ), 'doc-tid-root', array(), '', '', '' )
 			),
 			'Post cleanup should be queued without the comment-reply TID.'
 		);
@@ -1624,9 +1645,30 @@ class Test_Atmosphere extends WP_UnitTestCase {
 		$this->assertNotFalse(
 			\wp_next_scheduled(
 				'atmosphere_delete_records',
-				array( array( 'bsky-tid-root' ), 'doc-tid-root', array(), '', '' )
+				array( array( 'bsky-tid-root' ), 'doc-tid-root', array(), '', '', '' )
 			),
 			'Expected atmosphere_delete_records with empty comment list when the post has no replies.'
+		);
+	}
+
+	/**
+	 * A gated post carries its threadgate's root rkey into the async delete
+	 * so the gate is removed after the post row is gone.
+	 */
+	public function test_on_before_delete_threads_threadgate_tid() {
+		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		\update_post_meta( $post_id, Post::META_TID, 'bsky-tid-root' );
+		\update_post_meta( $post_id, Document::META_TID, 'doc-tid-root' );
+		\update_post_meta( $post_id, Threadgate::META_WRITTEN, '1' );
+
+		$this->atmosphere->on_before_delete( $post_id );
+
+		$this->assertNotFalse(
+			\wp_next_scheduled(
+				'atmosphere_delete_records',
+				array( array( 'bsky-tid-root' ), 'doc-tid-root', array(), 'bsky-tid-root' )
+			),
+			'Expected the threadgate root rkey threaded into the delete event.'
 		);
 	}
 
@@ -1678,7 +1720,7 @@ class Test_Atmosphere extends WP_UnitTestCase {
 		$this->assertNotFalse(
 			\wp_next_scheduled(
 				'atmosphere_delete_records',
-				array( array( 'bsky-tid-123' ), 'doc-tid-456', array(), '', '' )
+				array( array( 'bsky-tid-123' ), 'doc-tid-456', array(), '', '', '' )
 			),
 			'Permanent delete must schedule remote cleanup even when the post type is no longer in the syncable allowlist.'
 		);
@@ -3665,6 +3707,105 @@ class Test_Atmosphere extends WP_UnitTestCase {
 
 		$this->assertNotFalse( $next, 'Expected the update worker to schedule a retry after a transient PDS error.' );
 		$this->assertSame( '1', \get_post_meta( $post->ID, '_atmosphere_publish_retries', true ) );
+	}
+
+	/**
+	 * Short-circuit applyWrites with a rate-limit rejection.
+	 *
+	 * @param int $retry_after Seconds until the rate-limit window resets.
+	 */
+	private function force_apply_writes_rate_limited( int $retry_after ): void {
+		\add_filter(
+			'atmosphere_pre_apply_writes',
+			static fn() => new \WP_Error(
+				'atmosphere_rate_limited',
+				'Rate Limit Exceeded',
+				array(
+					'status'      => 429,
+					'reset'       => \time() + $retry_after,
+					'retry_after' => $retry_after,
+				)
+			)
+		);
+	}
+
+	/**
+	 * Publish a post against a rate-limited PDS and report when the
+	 * retry was scheduled for.
+	 *
+	 * WP-Cron unschedules an event before running its callback; the two
+	 * clears mirror that, so the creation-time event does not mask the
+	 * retry the worker schedules.
+	 *
+	 * @param int $retry_after Seconds until the rate-limit window resets.
+	 * @return int|false Timestamp of the scheduled retry, or false when
+	 *                   none was scheduled.
+	 */
+	private function rate_limited_retry_time( int $retry_after ) {
+		$post = self::factory()->post->create_and_get( array( 'post_status' => 'publish' ) );
+
+		\wp_clear_scheduled_hook( 'atmosphere_publish_post', array( $post->ID ) );
+		\wp_clear_scheduled_hook( 'atmosphere_update_post', array( $post->ID ) );
+
+		$this->force_apply_writes_rate_limited( $retry_after );
+
+		\do_action( 'atmosphere_publish_post', $post->ID );
+
+		return \wp_next_scheduled( 'atmosphere_publish_post', array( $post->ID ) );
+	}
+
+	/**
+	 * A rate-limited publish waits for the window the PDS reported.
+	 *
+	 * Retrying on the ladder's own first rung would spend a rung on a
+	 * request that is guaranteed to come back with the same 429.
+	 */
+	public function test_publish_worker_waits_for_the_rate_limit_window() {
+		$next = $this->rate_limited_retry_time( 20 * MINUTE_IN_SECONDS );
+
+		$this->assertNotFalse( $next, 'A rate-limited publish is transient and must still be retried.' );
+		$this->assertGreaterThan(
+			\time() + 15 * MINUTE_IN_SECONDS,
+			$next,
+			'The retry must wait for the reported window, not the one-minute first rung.'
+		);
+	}
+
+	/**
+	 * A wildly out-of-range reset cannot park a queued publish weeks
+	 * out. Past a day the header has effectively disabled the ladder,
+	 * and we do not control that header.
+	 */
+	public function test_rate_limit_retry_delay_is_capped_at_a_day() {
+		$next = $this->rate_limited_retry_time( WEEK_IN_SECONDS );
+
+		$this->assertNotFalse( $next );
+		$this->assertLessThanOrEqual( \time() + DAY_IN_SECONDS + 5, $next );
+	}
+
+	/**
+	 * The cap applies to the PDS-supplied wait, never to the ladder's
+	 * own step: a site that filters in a longer ladder must not get a
+	 * *shorter* wait just because the failure happened to be a 429.
+	 */
+	public function test_rate_limit_retry_delay_never_shortens_the_ladder() {
+		$ladder = function () {
+			return array( 6 * HOUR_IN_SECONDS );
+		};
+
+		\add_filter( 'atmosphere_publish_retry_delays', $ladder );
+
+		/* A short window; the ladder's own six hours has to win. */
+		$next = $this->rate_limited_retry_time( 5 * MINUTE_IN_SECONDS );
+
+		\remove_filter( 'atmosphere_publish_retry_delays', $ladder );
+
+		$this->assertNotFalse( $next );
+		$this->assertGreaterThan(
+			\time() + 5 * HOUR_IN_SECONDS,
+			$next,
+			'A 429 must not clamp a filtered ladder step down to the cap.'
+		);
 	}
 
 	/**

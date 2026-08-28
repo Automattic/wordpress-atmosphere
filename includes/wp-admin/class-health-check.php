@@ -31,6 +31,8 @@ use function Atmosphere\is_connected;
 use function Atmosphere\is_operator_disconnected;
 use function Atmosphere\reauth_reason_lead;
 use function Atmosphere\settings_url;
+use function Atmosphere\threadgate_needs_reconnect;
+use function Atmosphere\truncate_text;
 
 /**
  * Health check class.
@@ -40,10 +42,34 @@ use function Atmosphere\settings_url;
 class Health_Check {
 
 	/**
+	 * Async test identifier for the reachability test.
+	 *
+	 * Core turns this into the admin-ajax action by prefixing
+	 * `health-check-` and replacing the first underscore with a hyphen,
+	 * so it must carry exactly one underscore.
+	 *
+	 * @since unreleased
+	 *
+	 * @var string
+	 */
+	public const REACHABILITY_TEST = 'atmosphere_reachability';
+
+	/**
+	 * The admin-ajax action core calls for {@see self::REACHABILITY_TEST}.
+	 *
+	 * @since unreleased
+	 *
+	 * @var string
+	 */
+	public const REACHABILITY_ACTION = 'health-check-atmosphere-reachability';
+
+	/**
 	 * Register the direct (non-async) status tests.
 	 *
 	 * The connection test only reads options — no HTTP — so it cannot
 	 * slow the Site Health screen down or flake on network conditions.
+	 * The one test that does make a request is registered as async for
+	 * the same reason.
 	 *
 	 * @param array $tests Site Health tests.
 	 * @return array
@@ -52,6 +78,28 @@ class Health_Check {
 		$tests['direct']['atmosphere_test_connection'] = array(
 			'label' => \__( 'ATmosphere Bluesky Connection Test', 'atmosphere' ),
 			'test'  => array( self::class, 'test_connection' ),
+		);
+
+		/*
+		 * Asynchronous, like every core test that makes an HTTP request,
+		 * so the loopback never holds up the Site Health screen. Driven
+		 * over admin-ajax rather than REST on purpose: the test exists to
+		 * catch plugins that restrict the REST API, and a REST-driven test
+		 * could not run under exactly that restriction. Core still supports
+		 * the admin-ajax form (it is the default when `has_rest` is unset).
+		 * The cron run keeps only the pass/fail counters, not the
+		 * description that makes this test useful, so it is skipped.
+		 */
+		$tests['async']['atmosphere_test_client_metadata'] = array(
+			'label'             => \__( 'ATmosphere Bluesky Reachability Test', 'atmosphere' ),
+			'test'              => self::REACHABILITY_TEST,
+			'async_direct_test' => array( self::class, 'test_client_metadata' ),
+			'skip_cron'         => true,
+		);
+
+		$tests['direct']['atmosphere_test_threadgate_scope'] = array(
+			'label' => \__( 'ATmosphere Bluesky Reply Restrictions Test', 'atmosphere' ),
+			'test'  => array( self::class, 'test_threadgate_scope' ),
 		);
 
 		return $tests;
@@ -126,6 +174,259 @@ class Health_Check {
 		$result['badge']['color'] = 'red';
 		$result['label']          = \__( 'ATmosphere needs to be reconnected to Bluesky', 'atmosphere' );
 		$result['description']    = self::reauth_description();
+
+		return $result;
+	}
+
+	/**
+	 * Serve the reachability test to the Site Health screen.
+	 *
+	 * Same nonce and capability core used for its own admin-ajax tests.
+	 * The screen reads `response.data`, hence `wp_send_json_success()`.
+	 *
+	 * @since unreleased
+	 */
+	public static function ajax_client_metadata(): void {
+		\check_ajax_referer( 'health-check-site-status' );
+
+		if ( ! \current_user_can( 'view_site_health_checks' ) ) {
+			\wp_send_json_error( null, 403 );
+		}
+
+		\wp_send_json_success( self::test_client_metadata() );
+	}
+
+	/**
+	 * Client-metadata reachability test.
+	 *
+	 * The OAuth `client_id` is a URL on this site, and the auth server
+	 * fetches it while the user connects. If that fetch fails, connecting
+	 * cannot work, and the only symptom is the auth server's own error
+	 * text, which reads like a Bluesky problem. A plugin that restricts
+	 * the REST API to an allow list is the usual cause, and core's own
+	 * REST test does not catch it because it only fetches `wp/v2`.
+	 *
+	 * Runs asynchronously over admin-ajax ({@see self::ajax_client_metadata()}),
+	 * so the loopback never blocks the Site Health screen, and a REST
+	 * restriction cannot stop the test itself from running.
+	 *
+	 * Unlike core's loopback, this one sends no cookies and no HTTP auth
+	 * credentials. The auth server has none either, so the request has
+	 * to look the way its request does. For the same reason the
+	 * certificate is validated first: the auth server validates it too,
+	 * so a site whose certificate cannot be validated must not pass. Only
+	 * when validation is the sole thing in the way is the fetch retried
+	 * with core's loopback setting, and reported as recommended rather
+	 * than critical, since split-horizon setups can fail validation from
+	 * the server itself while being perfectly valid from outside.
+	 *
+	 * @since unreleased
+	 *
+	 * @return array Site Health test result.
+	 */
+	public static function test_client_metadata(): array {
+		$url = Client::client_id();
+
+		$result = array(
+			'label'       => \__( 'Bluesky can reach ATmosphere on this site', 'atmosphere' ),
+			'status'      => 'good',
+			'badge'       => array(
+				'label' => \__( 'ATmosphere', 'atmosphere' ),
+				'color' => 'green',
+			),
+			'description' => \sprintf(
+				'<p>%s</p>',
+				\__( 'When you connect, Bluesky reads a small file from this site to identify it. That file is available.', 'atmosphere' )
+			),
+			'actions'     => '',
+			'test'        => 'atmosphere_test_client_metadata',
+		);
+
+		/*
+		 * Bluesky only accepts an https client_id, so `client_id()` forces
+		 * that scheme. On a site served over plain http the auth server
+		 * cannot fetch it, and neither could this loopback. Say that,
+		 * rather than reporting a connection error against a URL that
+		 * was never going to answer.
+		 */
+		if ( 'https' !== \wp_parse_url( \home_url(), \PHP_URL_SCHEME ) ) {
+			$result['status']         = 'critical';
+			$result['badge']['color'] = 'red';
+			$result['label']          = \__( 'Bluesky cannot reach ATmosphere on this site', 'atmosphere' );
+			$result['description']    = \sprintf(
+				'<p>%s</p>',
+				\esc_html__( 'Bluesky requires your site to use HTTPS before it can connect. Once your site is served over HTTPS, connect again.', 'atmosphere' )
+			);
+
+			return $result;
+		}
+
+		$args = array(
+			'timeout'             => 10, // Same as core's own REST loopback; async, so nothing waits on it.
+			// The endpoint advertises a five minute public cache; a cached
+			// answer would hide a block that was just added, or just lifted.
+			'headers'             => array( 'Cache-Control' => 'no-cache' ),
+			// The excerpt shows 200 characters; there is no reason to buffer
+			// a whole error page to find them.
+			'limit_response_size' => 8 * KB_IN_BYTES,
+		);
+
+		$response = \wp_remote_get( $url, $args + array( 'sslverify' => true ) );
+		$problem  = self::client_metadata_problem( $response, $url );
+
+		if ( '' === $problem ) {
+			return $result;
+		}
+
+		/*
+		 * A transport error with validation on may be nothing but the
+		 * certificate. The retry differs in that one setting only, so if
+		 * it succeeds, validation was the whole problem.
+		 */
+		if ( \is_wp_error( $response ) ) {
+			$retry = \wp_remote_get(
+				$url,
+				/** This filter is documented in wp-includes/class-wp-http-streams.php */
+				$args + array( 'sslverify' => \apply_filters( 'https_local_ssl_verify', false, $url ) )
+			);
+
+			if ( '' === self::client_metadata_problem( $retry, $url ) ) {
+				$result['status']         = 'recommended';
+				$result['badge']['color'] = 'orange';
+				$result['label']          = \__( 'ATmosphere could not validate this site\'s certificate', 'atmosphere' );
+				$result['description']    = \sprintf(
+					'<p>%1$s</p><p>%2$s</p><p><code>%3$s</code></p>',
+					\sprintf(
+						/* translators: %s: the client metadata URL. */
+						\esc_html__( 'When you connect, Bluesky fetches %s from this site and checks its certificate. From this server the certificate could not be validated. If it is valid for visitors, Bluesky will accept it and you can ignore this.', 'atmosphere' ),
+						'<code>' . \esc_html( $url ) . '</code>'
+					),
+					\esc_html__( 'The validation error was:', 'atmosphere' ),
+					\esc_html( $problem )
+				);
+
+				return $result;
+			}
+		}
+
+		$result['status']         = 'critical';
+		$result['badge']['color'] = 'red';
+		$result['label']          = \__( 'Bluesky cannot reach ATmosphere on this site', 'atmosphere' );
+		$result['description']    = \sprintf(
+			'<p>%1$s</p><p>%2$s</p><p><code>%3$s</code></p><p>%4$s</p>',
+			\sprintf(
+				/* translators: %s: the client metadata URL. */
+				\esc_html__( 'When you connect, Bluesky fetches %s from this site to identify it. That request fails, so connecting cannot work.', 'atmosphere' ),
+				'<code>' . \esc_html( $url ) . '</code>'
+			),
+			\esc_html__( 'If a security plugin limits which plugins may use the REST API, allow ATmosphere. The response was:', 'atmosphere' ),
+			\esc_html( $problem ),
+			\esc_html__( 'Posts you have already shared are not affected.', 'atmosphere' )
+		);
+
+		return $result;
+	}
+
+	/**
+	 * Describe what is wrong with a client-metadata response, or '' when nothing is.
+	 *
+	 * @since unreleased
+	 *
+	 * @param array|\WP_Error $response Result of the loopback request.
+	 * @param string          $url      The client metadata URL that was fetched.
+	 * @return string Human-readable problem, empty when the response is what the auth server needs.
+	 */
+	private static function client_metadata_problem( array|\WP_Error $response, string $url ): string {
+		if ( \is_wp_error( $response ) ) {
+			return \sprintf( '(%1$s) %2$s', $response->get_error_code(), $response->get_error_message() );
+		}
+
+		$status = (int) \wp_remote_retrieve_response_code( $response );
+		$body   = (string) \wp_remote_retrieve_body( $response );
+
+		if ( 200 !== $status ) {
+			return \sprintf(
+				'(%1$d) %2$s %3$s',
+				$status,
+				self::body_excerpt( (string) \wp_remote_retrieve_response_message( $response ) ),
+				self::body_excerpt( $body )
+			);
+		}
+
+		$json = \json_decode( $body, true );
+
+		if ( ! \is_array( $json ) || ( $json['client_id'] ?? '' ) !== $url ) {
+			return \sprintf( '(200) %s', self::body_excerpt( $body ) );
+		}
+
+		return '';
+	}
+
+	/**
+	 * The start of a response body, enough to recognise an error page.
+	 *
+	 * Core's REST test shows only the status line. This one shows a bit
+	 * of the body on purpose: a REST restricting plugin's block page
+	 * names itself there, and Site Health output is what people paste
+	 * into support threads, so that is where the cause has to be legible.
+	 * The audience is users who can install plugins, who can read the
+	 * page directly anyway.
+	 *
+	 * @since unreleased
+	 *
+	 * @param string $body Raw body.
+	 * @return string
+	 */
+	private static function body_excerpt( string $body ): string {
+		$text = \trim( (string) \preg_replace( '/\s+/', ' ', \wp_strip_all_tags( $body ) ) );
+
+		return truncate_text( $text, 200, '…' );
+	}
+
+	/**
+	 * Reply-restrictions scope test.
+	 *
+	 * Reply restrictions were added after the first connections were made,
+	 * and they need a scope those connections never asked for. This is the
+	 * one place a site admin who never opens the editor would find out.
+	 * Recommended, not critical: posts still publish, only the restriction
+	 * is skipped.
+	 *
+	 * @since unreleased
+	 *
+	 * @return array Site Health test result.
+	 */
+	public static function test_threadgate_scope(): array {
+		$result = array(
+			'label'       => \__( 'ATmosphere can restrict who replies on Bluesky', 'atmosphere' ),
+			'status'      => 'good',
+			'badge'       => array(
+				'label' => \__( 'ATmosphere', 'atmosphere' ),
+				'color' => 'green',
+			),
+			'description' => \sprintf(
+				'<p>%s</p>',
+				\__( 'Your Bluesky connection allows ATmosphere to set who can reply to a shared post.', 'atmosphere' )
+			),
+			'actions'     => '',
+			'test'        => 'atmosphere_test_threadgate_scope',
+		);
+
+		if ( ! threadgate_needs_reconnect() ) {
+			return $result;
+		}
+
+		$result['status']      = 'recommended';
+		$result['label']       = \__( 'ATmosphere needs a reconnect to restrict replies on Bluesky', 'atmosphere' );
+		$result['description'] = \sprintf(
+			'<p>%s</p>',
+			\__( 'This site connected to Bluesky before reply restrictions were available. Posts still share as usual, but any reply restriction you set is skipped until you reconnect your account.', 'atmosphere' )
+		);
+		$result['actions']     = \sprintf(
+			'<p><a href="%s">%s</a></p>',
+			\esc_url( settings_url() ),
+			\esc_html__( 'Reconnect on the ATmosphere settings page', 'atmosphere' )
+		);
 
 		return $result;
 	}

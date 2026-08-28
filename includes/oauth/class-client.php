@@ -34,6 +34,18 @@ class Client {
 	 *
 	 * @var string[]
 	 */
+	/**
+	 * Scope that lets the plugin write reply restrictions.
+	 *
+	 * Named so the surfaces that check for it and the list that requests
+	 * it cannot drift apart.
+	 *
+	 * @since unreleased
+	 *
+	 * @var string
+	 */
+	public const THREADGATE_SCOPE = 'repo:app.bsky.feed.threadgate';
+
 	private const SCOPES = array(
 
 		/*
@@ -50,6 +62,15 @@ class Client {
 		 * `repo` permissions: https://atproto.com/specs/permission#repo.
 		 */
 		'repo:app.bsky.feed.post',
+
+		/*
+		 * Write the reply restrictions a post can carry. The threadgate is
+		 * a separate record from the post it gates, so writing the post
+		 * does not imply permission to write this one.
+		 *
+		 * `repo` permissions: https://atproto.com/specs/permission#repo.
+		 */
+		self::THREADGATE_SCOPE,
 
 		/*
 		 * Write one Standard.site document record per synced WordPress post.
@@ -166,7 +187,18 @@ class Client {
 	 * @return string
 	 */
 	public static function client_id(): string {
-		return \rest_url( 'atmosphere/v1/client-metadata' );
+		/*
+		 * Force the `https` scheme, mirroring redirect_uri(). AT Protocol
+		 * requires the client_id to be an https URL. rest_url() inherits its
+		 * scheme from the request context, so on a site behind a
+		 * TLS-terminating proxy a CLI/cron request (where is_ssl() is false)
+		 * yields an http client_id — which the auth server rejects as
+		 * "Invalid client ID" during the pre-publish token refresh, even
+		 * though the browser-side authorize used https and succeeded.
+		 * Forcing the scheme keeps the client_id stable across contexts and
+		 * matches the value advertised in the client metadata document.
+		 */
+		return \set_url_scheme( \rest_url( 'atmosphere/v1/client-metadata' ), 'https' );
 	}
 
 	/**
@@ -672,6 +704,14 @@ class Client {
 			'key_fingerprint'     => Encryption::key_fingerprint(),
 			'expires_at'          => \time() + ( $data['expires_in'] ?? 3600 ),
 			'needs_reauth'        => false,
+
+			/*
+			 * What the server actually granted, when it says. Read back
+			 * by `connection_scopes()` so a feature that needs a scope
+			 * added after this site connected can tell, rather than
+			 * failing the write.
+			 */
+			'scope'               => (string) ( $data['scope'] ?? '' ),
 		);
 
 		/*
@@ -1001,6 +1041,16 @@ class Client {
 		 * so the current fingerprint is the right one for this row.
 		 */
 		$current['key_fingerprint'] = Encryption::key_fingerprint();
+
+		/*
+		 * Same opportunistic backfill for the granted scope: rows
+		 * connected before it was stored pick it up on their next
+		 * refresh, so a scope gap becomes visible within the hour
+		 * without anyone reconnecting just to find out.
+		 */
+		if ( ! empty( $data['scope'] ) ) {
+			$current['scope'] = (string) $data['scope'];
+		}
 
 		if ( ! empty( $data['refresh_token'] ) ) {
 			$current['refresh_token'] = Encryption::encrypt( $data['refresh_token'] );
