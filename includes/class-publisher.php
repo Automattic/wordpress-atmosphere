@@ -1020,6 +1020,62 @@ class Publisher {
 	}
 
 	/**
+	 * Error-data key carrying the failure that triggered a rollback.
+	 *
+	 * @since unreleased
+	 *
+	 * @var string
+	 */
+	private const ERROR_KEY_ORIGINAL = 'original_error';
+
+	/**
+	 * Error-data key carrying the failure the rollback itself hit.
+	 *
+	 * @since unreleased
+	 *
+	 * @var string
+	 */
+	private const ERROR_KEY_ROLLBACK = 'rollback_error';
+
+	/**
+	 * Unwrap the failures a Publisher error was built from.
+	 *
+	 * `atmosphere_thread_rollback_failed` is the one error the Publisher
+	 * nests inside another (see {@see Publisher::rollback_thread()}),
+	 * and a caller that classifies failures has to be able to see
+	 * through it: a rate limit that lands on a thread reply reaches the
+	 * caller wrapped in a rollback failure rather than as itself. The
+	 * keys live here, next to the method that writes them, so a rename
+	 * cannot silently break a consumer.
+	 *
+	 * An ordinary unwrapped failure returns an empty array, so a caller
+	 * can classify the error itself and then walk this without
+	 * special-casing the shape.
+	 *
+	 * @since unreleased
+	 *
+	 * @param \WP_Error $error Failure returned by the Publisher.
+	 * @return \WP_Error[] The nested failures, in declaration order.
+	 */
+	public static function underlying_errors( \WP_Error $error ): array {
+		$data = $error->get_error_data();
+
+		if ( ! \is_array( $data ) ) {
+			return array();
+		}
+
+		$nested = array();
+
+		foreach ( array( self::ERROR_KEY_ORIGINAL, self::ERROR_KEY_ROLLBACK ) as $key ) {
+			if ( ( $data[ $key ] ?? null ) instanceof \WP_Error ) {
+				$nested[] = $data[ $key ];
+			}
+		}
+
+		return $nested;
+	}
+
+	/**
 	 * Delete every already-written record in a partially-published thread.
 	 *
 	 * Posts are deleted tail-first so the root survives until last —
@@ -1098,9 +1154,9 @@ class Publisher {
 					$original_error->get_error_message()
 				),
 				array(
-					'original_error'  => $original_error,
-					'rollback_error'  => $rollback_result,
-					'partial_records' => $thread_records,
+					self::ERROR_KEY_ORIGINAL => $original_error,
+					self::ERROR_KEY_ROLLBACK => $rollback_result,
+					'partial_records'        => $thread_records,
 				)
 			);
 		}

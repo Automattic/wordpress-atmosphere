@@ -21,6 +21,62 @@ use Atmosphere\OAuth\DPoP;
 class API {
 
 	/**
+	 * Latest rate-limit snapshot the PDS reported.
+	 *
+	 * Shape: `[ 'limit' => ?int, 'remaining' => ?int, 'reset' => ?int ]`,
+	 * where `reset` is a Unix timestamp. Null until a response in this
+	 * process has carried the headers.
+	 *
+	 * Process-local on purpose. A long-running `wp atmosphere backfill`
+	 * wants to know what the last write cost it; an ordinary web request
+	 * does not, and persisting the reading would mean an option write on
+	 * every single PDS call.
+	 *
+	 * @since unreleased
+	 *
+	 * @var array|null
+	 */
+	private static ?array $last_rate_limit = null;
+
+	/**
+	 * Read the most recent rate-limit snapshot reported by the PDS.
+	 *
+	 * @since unreleased
+	 *
+	 * @return array|null Snapshot, or null when no response in this
+	 *                    process carried the `ratelimit-*` headers.
+	 */
+	public static function last_rate_limit(): ?array {
+		return self::$last_rate_limit;
+	}
+
+	/**
+	 * Error code minted for a PDS rate limit (HTTP 429).
+	 *
+	 * Declared next to the method that mints it so consumers classify a
+	 * failure through {@see API::is_rate_limit_error()} instead of
+	 * typing the string at every call site, the same convention
+	 * {@see Client::is_reconnect_error()} follows.
+	 *
+	 * @since unreleased
+	 *
+	 * @var string
+	 */
+	public const RATE_LIMITED = 'atmosphere_rate_limited';
+
+	/**
+	 * Whether a failure is a rate limit reported by the PDS.
+	 *
+	 * @since unreleased
+	 *
+	 * @param \WP_Error $error Failure to classify.
+	 * @return bool
+	 */
+	public static function is_rate_limit_error( \WP_Error $error ): bool {
+		return self::RATE_LIMITED === $error->get_error_code();
+	}
+
+	/**
 	 * Send a DPoP-authenticated request to the connected PDS.
 	 *
 	 * @param string      $method       HTTP method.
@@ -105,6 +161,8 @@ class API {
 		if ( ! \is_array( $body ) ) {
 			$body = array();
 		}
+
+		$rate_limit = self::capture_rate_limit( $response );
 
 		// Persist any nonce the server sends back.
 		$response_nonce = \wp_remote_retrieve_header( $response, 'dpop-nonce' );
@@ -195,8 +253,26 @@ class API {
 			return self::request( $method, $endpoint, $original_args, null, true );
 		}
 
+		/*
+		 * A 429 is not a generic PDS failure. It is temporary, the server
+		 * tells us exactly when it clears, and callers can do something
+		 * useful with that: the publish retry ladder can wait for the
+		 * window instead of guessing, and `wp atmosphere backfill` can
+		 * stop cleanly instead of grinding the rest of the queue into
+		 * identical 429s. So it gets its own error code, with the reset
+		 * time in the error data.
+		 *
+		 * Deliberately no sleeping here. This method also runs inside
+		 * ordinary web requests (an editor publish, a REST call), where
+		 * blocking the response for minutes is worse than failing fast.
+		 * Waiting is the caller's decision.
+		 */
+		if ( 429 === $status ) {
+			return self::rate_limited_error( $body, $rate_limit );
+		}
+
 		if ( ! is_success_status( $status ) ) {
-			$msg = $body['message'] ?? ( $body['error'] ?? \__( 'PDS request failed.', 'atmosphere' ) );
+			$msg = self::error_message( $body, \__( 'PDS request failed.', 'atmosphere' ) );
 			return new \WP_Error(
 				'atmosphere_pds',
 				$msg,
@@ -210,6 +286,134 @@ class API {
 		}
 
 		return \is_array( $body ) ? $body : array();
+	}
+
+	/**
+	 * Pull the human-readable failure text out of a PDS error body.
+	 *
+	 * The PDS uses `message` for the prose and `error` for the machine
+	 * name, but not every failure carries both, so the caller supplies
+	 * the wording for the case where neither is there.
+	 *
+	 * @since unreleased
+	 *
+	 * @param array  $body     Decoded response body.
+	 * @param string $fallback Message to use when the body says nothing.
+	 * @return string
+	 */
+	private static function error_message( array $body, string $fallback ): string {
+		return $body['message'] ?? ( $body['error'] ?? $fallback );
+	}
+
+	/**
+	 * Store the rate-limit headers from a PDS response.
+	 *
+	 * Every PDS response carries these, not just the 429s, so the
+	 * snapshot doubles as a "how much budget is left" reading that a
+	 * long backfill can pace itself against.
+	 *
+	 * A response without any of the headers leaves the previous reading
+	 * in place rather than clearing it: an intermediary that strips them
+	 * on one call should not erase what the last real answer told us.
+	 * The return value is still null in that case, so a caller reasoning
+	 * about *this* response cannot mistake a stale reading for a fresh
+	 * one.
+	 *
+	 * @since unreleased
+	 *
+	 * @param array $response Raw `wp_remote_*` response.
+	 * @return array|null Snapshot for this response, or null when it
+	 *                    carried no rate-limit headers.
+	 */
+	private static function capture_rate_limit( array $response ): ?array {
+		/*
+		 * `wp_remote_retrieve_header()` returns an array when a header
+		 * repeats, so each read is guarded by a type check rather than a
+		 * bare cast: `(int) array()` would be a fatal in PHP 8.
+		 */
+		$limit     = \wp_remote_retrieve_header( $response, 'ratelimit-limit' );
+		$remaining = \wp_remote_retrieve_header( $response, 'ratelimit-remaining' );
+		$reset     = \wp_remote_retrieve_header( $response, 'ratelimit-reset' );
+
+		$snapshot = array(
+			'limit'     => \is_numeric( $limit ) ? (int) $limit : null,
+			'remaining' => \is_numeric( $remaining ) ? (int) $remaining : null,
+			'reset'     => self::reset_timestamp( $reset ),
+		);
+
+		if ( null === $snapshot['limit'] && null === $snapshot['remaining'] && null === $snapshot['reset'] ) {
+			return null;
+		}
+
+		self::$last_rate_limit = $snapshot;
+
+		return $snapshot;
+	}
+
+	/**
+	 * Normalize a `ratelimit-reset` header into a Unix timestamp.
+	 *
+	 * Bluesky's PDS sends an absolute Unix timestamp. The IETF
+	 * RateLimit header draft allows delta-seconds instead, and a
+	 * self-hosted PDS sitting behind a different proxy may well send
+	 * that, so small values are read as "seconds from now". The cutoff
+	 * is arbitrary but safe in both directions: no plausible delta
+	 * reaches three decades in seconds, and no timestamp we care about
+	 * predates 2001.
+	 *
+	 * @since unreleased
+	 *
+	 * @param mixed $raw Raw header value.
+	 * @return int|null Unix timestamp, or null when unreadable.
+	 */
+	private static function reset_timestamp( $raw ): ?int {
+		if ( ! \is_numeric( $raw ) ) {
+			return null;
+		}
+
+		$value = (int) $raw;
+
+		if ( $value <= 0 ) {
+			return null;
+		}
+
+		return $value > 1000000000 ? $value : \time() + $value;
+	}
+
+	/**
+	 * Build the error returned for an HTTP 429 from the PDS.
+	 *
+	 * `retry_after` is the derived "wait this many seconds" value
+	 * callers actually want; `reset` is carried alongside it so a
+	 * message can name the wall-clock moment. When the PDS sends
+	 * neither, both are null and the caller falls back to its own
+	 * backoff — the error code alone is still the useful signal.
+	 *
+	 * Reads only the snapshot from the 429 itself, never the stored
+	 * one. Reporting an earlier request's reset time here would send a
+	 * caller back at a moment that has nothing to do with the window it
+	 * actually hit.
+	 *
+	 * @since unreleased
+	 *
+	 * @param array      $body     Decoded response body.
+	 * @param array|null $snapshot Rate-limit headers on this response.
+	 * @return \WP_Error
+	 */
+	private static function rate_limited_error( array $body, ?array $snapshot ): \WP_Error {
+		$reset = $snapshot['reset'] ?? null;
+
+		return new \WP_Error(
+			self::RATE_LIMITED,
+			self::error_message( $body, \__( 'The PDS rate limit was reached.', 'atmosphere' ) ),
+			array(
+				'status'      => 429,
+				'reset'       => $reset,
+				'retry_after' => null === $reset ? null : \max( 0, $reset - \time() ),
+				'limit'       => $snapshot['limit'] ?? null,
+				'remaining'   => $snapshot['remaining'] ?? null,
+			)
+		);
 	}
 
 	/**
