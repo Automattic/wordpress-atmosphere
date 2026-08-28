@@ -54,6 +54,11 @@ class Health_Check {
 			'test'  => array( self::class, 'test_connection' ),
 		);
 
+		$tests['direct']['atmosphere_test_client_metadata'] = array(
+			'label' => \__( 'ATmosphere Bluesky Reachability Test', 'atmosphere' ),
+			'test'  => array( self::class, 'test_client_metadata' ),
+		);
+
 		return $tests;
 	}
 
@@ -128,6 +133,146 @@ class Health_Check {
 		$result['description']    = self::reauth_description();
 
 		return $result;
+	}
+
+	/**
+	 * Client-metadata reachability test.
+	 *
+	 * The OAuth `client_id` is a URL on this site, and the auth server
+	 * fetches it while the user connects. If that fetch fails, connecting
+	 * cannot work, and the only symptom is the auth server's own error
+	 * text, which reads like a Bluesky problem. A plugin that restricts
+	 * the REST API to an allow list is the usual cause, and core's own
+	 * REST test does not catch it because it only fetches `wp/v2`.
+	 *
+	 * Direct rather than async on purpose: an async Site Health test is
+	 * driven through a REST route, so it could not run in exactly the
+	 * situation it exists to report. One loopback with a short timeout,
+	 * on the Site Health screen only.
+	 *
+	 * Unlike core's loopback, this one sends no cookies and no HTTP auth
+	 * credentials. The auth server has none either, so the request has
+	 * to look the way its request does.
+	 *
+	 * @since unreleased
+	 *
+	 * @return array Site Health test result.
+	 */
+	public static function test_client_metadata(): array {
+		$url = Client::client_id();
+
+		$result = array(
+			'label'       => \__( 'Bluesky can reach ATmosphere on this site', 'atmosphere' ),
+			'status'      => 'good',
+			'badge'       => array(
+				'label' => \__( 'ATmosphere', 'atmosphere' ),
+				'color' => 'green',
+			),
+			'description' => \sprintf(
+				'<p>%s</p>',
+				\__( 'When you connect, Bluesky reads a small file from this site to identify it. That file is available.', 'atmosphere' )
+			),
+			'actions'     => '',
+			'test'        => 'atmosphere_test_client_metadata',
+		);
+
+		/*
+		 * Bluesky only accepts an https client_id, so `client_id()` forces
+		 * that scheme. On a site served over plain http the auth server
+		 * cannot fetch it, and neither could this loopback. Say that,
+		 * rather than reporting a connection error against a URL that
+		 * was never going to answer.
+		 */
+		if ( 'https' !== \wp_parse_url( \home_url(), \PHP_URL_SCHEME ) ) {
+			$result['status']         = 'critical';
+			$result['badge']['color'] = 'red';
+			$result['label']          = \__( 'Bluesky cannot reach ATmosphere on this site', 'atmosphere' );
+			$result['description']    = \sprintf(
+				'<p>%s</p>',
+				\esc_html__( 'Bluesky requires your site to use HTTPS before it can connect. Once your site is served over HTTPS, connect again.', 'atmosphere' )
+			);
+
+			return $result;
+		}
+
+		$response = \wp_remote_get(
+			$url,
+			array(
+				'timeout'   => 5,
+				/** This filter is documented in wp-includes/class-wp-http-streams.php */
+				'sslverify' => \apply_filters( 'https_local_ssl_verify', false, $url ),
+			)
+		);
+
+		$problem = self::client_metadata_problem( $response, $url );
+
+		if ( '' === $problem ) {
+			return $result;
+		}
+
+		$result['status']         = 'critical';
+		$result['badge']['color'] = 'red';
+		$result['label']          = \__( 'Bluesky cannot reach ATmosphere on this site', 'atmosphere' );
+		$result['description']    = \sprintf(
+			'<p>%1$s</p><p>%2$s</p><p><code>%3$s</code></p><p>%4$s</p>',
+			\sprintf(
+				/* translators: %s: the client metadata URL. */
+				\esc_html__( 'When you connect, Bluesky fetches %s from this site to identify it. That request fails, so connecting cannot work.', 'atmosphere' ),
+				'<code>' . \esc_html( $url ) . '</code>'
+			),
+			\esc_html__( 'If a security plugin limits which plugins may use the REST API, allow ATmosphere. The response was:', 'atmosphere' ),
+			\esc_html( $problem ),
+			\esc_html__( 'Posts you have already shared are not affected.', 'atmosphere' )
+		);
+
+		return $result;
+	}
+
+	/**
+	 * Describe what is wrong with a client-metadata response, or '' when nothing is.
+	 *
+	 * @since unreleased
+	 *
+	 * @param array|\WP_Error $response Result of the loopback request.
+	 * @param string          $url      The client metadata URL that was fetched.
+	 * @return string Human-readable problem, empty when the response is what the auth server needs.
+	 */
+	private static function client_metadata_problem( $response, string $url ): string {
+		if ( \is_wp_error( $response ) ) {
+			return \sprintf( '(%1$s) %2$s', $response->get_error_code(), $response->get_error_message() );
+		}
+
+		$status = (int) \wp_remote_retrieve_response_code( $response );
+		$body   = (string) \wp_remote_retrieve_body( $response );
+
+		if ( 200 !== $status ) {
+			return \sprintf(
+				'(%1$d) %2$s %3$s',
+				$status,
+				\wp_remote_retrieve_response_message( $response ),
+				self::body_excerpt( $body )
+			);
+		}
+
+		$json = \json_decode( $body, true );
+
+		if ( ! \is_array( $json ) || ( $json['client_id'] ?? '' ) !== $url ) {
+			return \sprintf( '(200) %s', self::body_excerpt( $body ) );
+		}
+
+		return '';
+	}
+
+	/**
+	 * The start of a response body, enough to recognise an error page.
+	 *
+	 * @param string $body Raw body.
+	 * @return string
+	 */
+	private static function body_excerpt( string $body ): string {
+		$text = \trim( \preg_replace( '/\s+/', ' ', \wp_strip_all_tags( $body ) ) );
+
+		return \mb_strlen( $text ) > 200 ? \mb_substr( $text, 0, 200 ) . '…' : $text;
 	}
 
 	/**

@@ -78,6 +78,7 @@ class Test_Health_Check extends \WP_UnitTestCase {
 		);
 
 		$this->assertArrayHasKey( 'atmosphere_test_connection', $tests['direct'] );
+		$this->assertArrayHasKey( 'atmosphere_test_client_metadata', $tests['direct'] );
 	}
 
 	/**
@@ -223,5 +224,174 @@ class Test_Health_Check extends \WP_UnitTestCase {
 		$this->assertStringContainsString( 'post', $fields['post_types']['value'] );
 
 		\delete_option( 'atmosphere_support_post_types' );
+	}
+
+	/**
+	 * Serve the test site over https, so the reachability check gets past
+	 * its scheme guard and actually makes the loopback.
+	 */
+	private function use_https_site(): void {
+		\add_filter( 'pre_option_home', static fn () => 'https://example.org' );
+		\add_filter( 'pre_option_siteurl', static fn () => 'https://example.org' );
+	}
+
+	/**
+	 * Stub the loopback to the client metadata URL.
+	 *
+	 * @param mixed $response Array response or WP_Error to return.
+	 * @return array Captured request args, by reference via closure.
+	 */
+	private function stub_loopback( $response ): array {
+		$captured = array();
+
+		\add_filter(
+			'pre_http_request',
+			static function ( $pre, $args, $url ) use ( $response, &$captured ) {
+				if ( Client::client_id() !== $url ) {
+					return $pre;
+				}
+				$captured = $args;
+
+				return $response;
+			},
+			10,
+			3
+		);
+
+		return $captured;
+	}
+
+	/**
+	 * A well-formed metadata document that names this site.
+	 *
+	 * @return array HTTP API response array.
+	 */
+	private function good_metadata_response(): array {
+		return array(
+			'response' => array(
+				'code'    => 200,
+				'message' => 'OK',
+			),
+			'body'     => (string) \wp_json_encode( array( 'client_id' => Client::client_id() ) ),
+		);
+	}
+
+	/**
+	 * A reachable metadata document passes.
+	 */
+	public function test_client_metadata_passes_when_reachable() {
+		$this->use_https_site();
+		$this->stub_loopback( $this->good_metadata_response() );
+
+		$this->assertSame( 'good', Health_Check::test_client_metadata()['status'] );
+	}
+
+	/**
+	 * A REST block returns an error page, which is critical and shows
+	 * the status so the cause is recognisable.
+	 */
+	public function test_client_metadata_is_critical_on_error_status() {
+		$this->use_https_site();
+		$this->stub_loopback(
+			array(
+				'response' => array(
+					'code'    => 403,
+					'message' => 'Forbidden',
+				),
+				'body'     => '<html><body><h1>REST API disabled</h1></body></html>',
+			)
+		);
+
+		$result = Health_Check::test_client_metadata();
+
+		$this->assertSame( 'critical', $result['status'] );
+		$this->assertStringContainsString( '(403) Forbidden', $result['description'] );
+		$this->assertStringContainsString( 'REST API disabled', $result['description'], 'The body excerpt names the error page.' );
+		$this->assertStringNotContainsString( '<h1>', $result['description'], 'Body markup is stripped, not rendered.' );
+	}
+
+	/**
+	 * A transport failure is critical and carries the error.
+	 */
+	public function test_client_metadata_is_critical_on_transport_error() {
+		$this->use_https_site();
+		$this->stub_loopback( new \WP_Error( 'http_request_failed', 'cURL error 7: Failed to connect' ) );
+
+		$result = Health_Check::test_client_metadata();
+
+		$this->assertSame( 'critical', $result['status'] );
+		$this->assertStringContainsString( 'Failed to connect', $result['description'] );
+	}
+
+	/**
+	 * A 200 that is not our document (a caching plugin, a wrong site
+	 * behind the URL) is still a failure.
+	 */
+	public function test_client_metadata_is_critical_when_document_names_another_site() {
+		$this->use_https_site();
+		$this->stub_loopback(
+			array(
+				'response' => array(
+					'code'    => 200,
+					'message' => 'OK',
+				),
+				'body'     => (string) \wp_json_encode( array( 'client_id' => 'https://other.example/metadata' ) ),
+			)
+		);
+
+		$this->assertSame( 'critical', Health_Check::test_client_metadata()['status'] );
+	}
+
+	/**
+	 * The loopback must look like the auth server's request: no cookies
+	 * and no credentials, or a site behind HTTP auth would pass here and
+	 * still fail to connect.
+	 */
+	public function test_client_metadata_loopback_sends_no_credentials() {
+		$this->use_https_site();
+		$captured = array();
+		\add_filter(
+			'pre_http_request',
+			function ( $pre, $args, $url ) use ( &$captured ) {
+				if ( Client::client_id() !== $url ) {
+					return $pre;
+				}
+				$captured = $args;
+
+				return $this->good_metadata_response();
+			},
+			10,
+			3
+		);
+
+		Health_Check::test_client_metadata();
+
+		$this->assertNotEmpty( $captured, 'The loopback must have been made.' );
+		$this->assertEmpty( $captured['cookies'] ?? array() );
+		$this->assertArrayNotHasKey( 'Authorization', $captured['headers'] ?? array() );
+	}
+
+	/**
+	 * A plain-http site cannot be reached by Bluesky at all, and must be
+	 * told that rather than shown a failed request against an https URL
+	 * that was never going to answer. No loopback is made.
+	 */
+	public function test_client_metadata_explains_missing_https_without_a_loopback() {
+		$called = false;
+		\add_filter(
+			'pre_http_request',
+			static function ( $pre ) use ( &$called ) {
+				$called = true;
+
+				return $pre;
+			}
+		);
+
+		$result = Health_Check::test_client_metadata();
+
+		$this->assertSame( 'critical', $result['status'] );
+		$this->assertStringContainsString( 'HTTPS', $result['description'] );
+		$this->assertStringNotContainsString( 'security plugin', $result['description'] );
+		$this->assertFalse( $called, 'No request is made when the scheme already rules it out.' );
 	}
 }
