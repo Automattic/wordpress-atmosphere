@@ -26,8 +26,8 @@ use Atmosphere\Rest\Admin\Pre_Publish_Controller;
 use Atmosphere\Rest\Client_Metadata_Controller;
 use Atmosphere\Rest\Reactions_Controller;
 use Atmosphere\WP_Admin\Admin;
-use Atmosphere\WP_Admin\Post_List;
 use Atmosphere\WP_Admin\Health_Check;
+use Atmosphere\WP_Admin\Post_List;
 use Atmosphere\WP_Admin\Settings_Fields;
 
 /**
@@ -172,7 +172,7 @@ class Atmosphere {
 		 * available on non-admin requests.
 		 */
 		\add_action( 'init', array( Admin::class, 'register' ), 5 );
-		\add_action( 'init', array( Post_List::class, 'register' ), 5 );
+		\add_action( 'admin_init', array( Post_List::class, 'register' ) );
 
 		/*
 		 * Settings API option registration (`Options::init()`) and

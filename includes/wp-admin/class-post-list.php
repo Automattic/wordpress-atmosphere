@@ -27,6 +27,13 @@ use function Atmosphere\is_post_publishable;
  * was disconnected can be pushed after reconnecting. That was
  * previously only possible over WP-CLI, which sites on managed hosting
  * do not have.
+ *
+ * Both surfaces are per-post gated on `edit_post`. The posts list shows
+ * every author their colleagues' rows, so a column without that check
+ * would hand a contributor the PDS failure text stored on someone
+ * else's post.
+ *
+ * @since unreleased
  */
 class Post_List {
 
@@ -45,6 +52,28 @@ class Post_List {
 	public const ACTION = 'atmosphere_share_now';
 
 	/**
+	 * A share worker was queued.
+	 *
+	 * @var string
+	 */
+	public const RESULT_QUEUED = 'queued';
+
+	/**
+	 * An attempt was already pending, so nothing new was queued.
+	 *
+	 * @var string
+	 */
+	public const RESULT_DUPLICATE = 'duplicate';
+
+	/**
+	 * The post may not be shared (capability, visibility, or the
+	 * Bluesky companion being switched off for it).
+	 *
+	 * @var string
+	 */
+	public const RESULT_REFUSED = 'refused';
+
+	/**
 	 * Query arg carrying the result back to the list screen.
 	 *
 	 * @var string
@@ -54,10 +83,17 @@ class Post_List {
 	/**
 	 * Boot the list-table hooks.
 	 *
+	 * Registered on `admin_init` rather than `init`: every hook below is
+	 * admin-only, and `get_supported_post_types()` must be read after
+	 * post types have finished registering, otherwise a custom post type
+	 * that opts in on the default `init` priority never gets a column.
+	 *
 	 * Gated on `is_auto_publish_enabled()`: this is cross-posting UI, so
 	 * on a site that shares nothing it should be absent rather than
 	 * present and inert. That also removes it in connection-only mode,
 	 * where a host plugin owns the sharing surfaces.
+	 *
+	 * @since unreleased
 	 */
 	public static function register(): void {
 		if ( ! is_auto_publish_enabled() ) {
@@ -82,6 +118,8 @@ class Post_List {
 	 * Registering it as a real column means Screen Options can hide it
 	 * without any extra setting of ours.
 	 *
+	 * @since unreleased
+	 *
 	 * @param array $columns Existing columns.
 	 * @return array
 	 */
@@ -93,6 +131,8 @@ class Post_List {
 
 	/**
 	 * Render one cell.
+	 *
+	 * @since unreleased
 	 *
 	 * @param string $column  Column key being rendered.
 	 * @param int    $post_id Post ID for the row.
@@ -107,25 +147,34 @@ class Post_List {
 			return;
 		}
 
-		$url = self::shared_url( $post );
-		if ( '' !== $url ) {
-			\printf(
-				'<a href="%1$s" target="_blank" rel="noopener noreferrer">%2$s</a>',
-				\esc_url( $url ),
-				\esc_html__( 'View post', 'atmosphere' )
-			);
+		/*
+		 * The list table shows other authors' rows to anyone who can
+		 * edit posts, so the per-post check that guards the row action
+		 * has to guard the cell too. The em dash is rendered either way
+		 * so the column never becomes an oracle for "this post has
+		 * Bluesky state".
+		 */
+		if ( \current_user_can( 'edit_post', $post_id ) ) {
+			$url = self::shared_url( $post );
+			if ( '' !== $url ) {
+				\printf(
+					'<a href="%1$s" target="_blank" rel="noopener noreferrer">%2$s</a>',
+					\esc_url( $url ),
+					\esc_html__( 'View post', 'atmosphere' )
+				);
 
-			return;
-		}
+				return;
+			}
 
-		$error = Atmosphere::get_publish_error( $post_id );
-		if ( null !== $error && '' !== $error['message'] ) {
-			\printf(
-				'<span class="atmosphere-share-failed">%s</span>',
-				\esc_html( $error['message'] )
-			);
+			$error = Atmosphere::get_publish_error( $post_id );
+			if ( null !== $error && '' !== $error['message'] ) {
+				\printf(
+					'<span class="atmosphere-share-failed">%s</span>',
+					\esc_html( $error['message'] )
+				);
 
-			return;
+				return;
+			}
 		}
 
 		/*
@@ -142,6 +191,8 @@ class Post_List {
 	 * The label names the destination on purpose: several plugins add
 	 * sharing actions to this list, and a bare "Share now" would not say
 	 * where the post is going.
+	 *
+	 * @since unreleased
 	 *
 	 * @param array    $actions Existing row actions.
 	 * @param \WP_Post $post    Post for the row.
@@ -164,16 +215,24 @@ class Post_List {
 	/**
 	 * Whether the current user can share this post to Bluesky right now.
 	 *
+	 * `is_auto_publish_enabled()` is re-checked here and not only at
+	 * registration so the gate is enforced where the side effect is: a
+	 * filter added later than the registration hook would otherwise be
+	 * honoured by every other lane but not by this one.
+	 *
 	 * `is_bluesky_post_enabled()` is checked per post rather than once at
 	 * registration because it is a pure filter with no site-wide option
 	 * behind it: a site can publish documents only for some posts and
 	 * keep the Bluesky companion for others.
 	 *
+	 * @since unreleased
+	 *
 	 * @param \WP_Post $post Post to test.
 	 * @return bool
 	 */
 	public static function can_share( \WP_Post $post ): bool {
-		return \current_user_can( 'edit_post', $post->ID )
+		return is_auto_publish_enabled()
+			&& \current_user_can( 'edit_post', $post->ID )
 			&& is_post_publishable( $post )
 			&& is_bluesky_post_enabled( $post );
 	}
@@ -185,41 +244,55 @@ class Post_List {
 	 * directly: that worker already re-checks visibility, picks between a
 	 * first publish and an update, logs failures, and schedules retries.
 	 *
+	 * The `wp_next_scheduled()` check is load-bearing beyond the
+	 * duplicate protection core does for identical events within ten
+	 * minutes: a failed attempt is retried on a ladder that reaches
+	 * fifteen minutes and beyond, and a second worker must not be queued
+	 * alongside a retry that is still pending.
+	 *
+	 * @since unreleased
+	 *
 	 * @param \WP_Post $post Post to share.
-	 * @return bool True when a worker was queued, false when refused or already queued.
+	 * @return string One of the `RESULT_*` constants.
 	 */
-	public static function share_post( \WP_Post $post ): bool {
+	public static function share_post( \WP_Post $post ): string {
 		if ( ! self::can_share( $post ) ) {
-			return false;
+			return self::RESULT_REFUSED;
 		}
 
 		$args = array( $post->ID );
 		if ( \wp_next_scheduled( 'atmosphere_publish_post', $args ) ) {
-			return false;
+			return self::RESULT_DUPLICATE;
 		}
 
-		return false !== \wp_schedule_single_event( \time(), 'atmosphere_publish_post', $args );
+		return false === \wp_schedule_single_event( \time(), 'atmosphere_publish_post', $args )
+			? self::RESULT_DUPLICATE
+			: self::RESULT_QUEUED;
 	}
 
 	/**
 	 * Handle the row-action request.
+	 *
+	 * @since unreleased
 	 */
 	public static function handle_share(): void {
 		$post_id = isset( $_GET['post'] ) ? (int) $_GET['post'] : 0;
 		$post    = \get_post( $post_id );
 
 		if ( ! $post instanceof \WP_Post || ! \current_user_can( 'edit_post', $post_id ) ) {
-			\wp_die( \esc_html__( 'Unauthorized.', 'atmosphere' ) );
+			\wp_die(
+				\esc_html__( 'Unauthorized.', 'atmosphere' ),
+				\esc_html__( 'Unauthorized.', 'atmosphere' ),
+				array( 'response' => 403 )
+			);
 		}
 
 		\check_admin_referer( self::ACTION . '_' . $post_id, 'atmosphere_nonce' );
 
-		$queued = self::share_post( $post );
-
 		\wp_safe_redirect(
 			\add_query_arg(
 				self::NOTICE_ARG,
-				$queued ? 'queued' : 'skipped',
+				self::share_post( $post ),
 				self::list_url( $post )
 			)
 		);
@@ -228,22 +301,31 @@ class Post_List {
 
 	/**
 	 * Tell the user what happened after a share request.
+	 *
+	 * @since unreleased
 	 */
 	public static function maybe_render_share_notice(): void {
-		// phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Read-only notice keyed off a redirect we issued.
-		$result = isset( $_GET[ self::NOTICE_ARG ] ) ? \sanitize_key( \wp_unslash( $_GET[ self::NOTICE_ARG ] ) ) : '';
-
-		if ( 'queued' !== $result && 'skipped' !== $result ) {
+		$screen = \function_exists( '\get_current_screen' ) ? \get_current_screen() : null;
+		if ( ! $screen || 'edit' !== $screen->base ) {
 			return;
 		}
 
-		$message = 'queued' === $result
-			? \__( 'Sharing to Bluesky in the background. Reload in a moment to see the result.', 'atmosphere' )
-			: \__( 'This post is already queued for sharing.', 'atmosphere' );
+		// phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Read-only notice keyed off a redirect we issued; nothing from the request is rendered.
+		$result = isset( $_GET[ self::NOTICE_ARG ] ) ? \sanitize_key( \wp_unslash( $_GET[ self::NOTICE_ARG ] ) ) : '';
+
+		$messages = array(
+			self::RESULT_QUEUED    => \__( 'Sharing to Bluesky in the background. Reload in a moment to see the result.', 'atmosphere' ),
+			self::RESULT_DUPLICATE => \__( 'This post is already queued for sharing.', 'atmosphere' ),
+			self::RESULT_REFUSED   => \__( 'This post cannot be shared to Bluesky right now.', 'atmosphere' ),
+		);
+
+		if ( ! isset( $messages[ $result ] ) ) {
+			return;
+		}
 
 		\printf(
 			'<div class="notice notice-info is-dismissible"><p>%s</p></div>',
-			\esc_html( $message )
+			\esc_html( $messages[ $result ] )
 		);
 	}
 
