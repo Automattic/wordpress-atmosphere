@@ -15,7 +15,10 @@ namespace Atmosphere;
 \defined( 'ABSPATH' ) || exit;
 
 use Atmosphere\Rest\Admin\Pre_Publish_Controller;
+use Atmosphere\Transformer\Threadgate;
 use function Atmosphere\share_status;
+use function Atmosphere\settings_url;
+use function Atmosphere\threadgate_needs_reconnect;
 use function Atmosphere\reconnect_url;
 
 /**
@@ -98,7 +101,7 @@ class Block_Editor {
 	 * Keeps the REST route and the share-toggle meta key defined once on the
 	 * PHP side so the JS never hardcodes (and drifts from) them.
 	 *
-	 * @return array{previewPath: string, disabledMetaKey: string, customTextMetaKey: string, reconnectUrl: string, canManage: bool, shareStatus: array}
+	 * @return array{previewPath: string, disabledMetaKey: string, customTextMetaKey: string, replyRestrictionMetaKey: string, threadgateNeedsReconnect: bool, settingsUrl: string, reconnectUrl: string, canManage: bool, shareStatus: array}
 	 */
 	private static function script_data(): array {
 		/*
@@ -118,6 +121,9 @@ class Block_Editor {
 			'previewPath'       => Pre_Publish_Controller::full_route(),
 			'disabledMetaKey'   => ATMOSPHERE_META_DISABLED,
 			'customTextMetaKey' => ATMOSPHERE_META_CUSTOM_TEXT,
+			'replyRestrictionMetaKey' => Threadgate::META_RESTRICTION,
+			'threadgateNeedsReconnect' => threadgate_needs_reconnect(),
+			'settingsUrl' => settings_url(),
 			'reconnectUrl'      => reconnect_url(),
 			'canManage'         => $can_manage,
 			'shareStatus'       => share_status(),

@@ -16,6 +16,8 @@ import { registerPlugin } from '@wordpress/plugins';
 import {
 	ToggleControl,
 	TextareaControl,
+	SelectControl,
+	CheckboxControl,
 	ExternalLink,
 	Notice,
 	BaseControl,
@@ -23,6 +25,7 @@ import {
 	Path,
 } from '@wordpress/components';
 import { useSelect } from '@wordpress/data';
+import { useState, useEffect } from '@wordpress/element';
 import { useEntityProp } from '@wordpress/core-data';
 import { __ } from '@wordpress/i18n';
 import {
@@ -31,8 +34,21 @@ import {
 	RECONNECT_URL,
 	CAN_MANAGE,
 	SHARE_STATUS,
+	REPLY_RESTRICTION_META_KEY,
+	SETTINGS_URL,
+	THREADGATE_NEEDS_RECONNECT,
 } from '../config';
-import { isSharingEnabled, shareHelpText, panelMessage } from './utils';
+import {
+	isSharingEnabled,
+	shareHelpText,
+	panelMessage,
+	readReplyRestriction,
+	getReplyMode,
+	getReplyAudiences,
+	buildRestrictionForMode,
+	toggleReplyAudience,
+	REPLY_AUDIENCE,
+} from './utils';
 import { ReconnectAction } from '../shared/reconnect-notice';
 
 /**
@@ -118,12 +134,47 @@ const EditorPlugin = () => {
 
 	const [ meta, setMeta ] = useEntityProp( 'postType', postType, 'meta' );
 
+	const storedMode = getReplyMode( readReplyRestriction( meta ) );
+	const [ replyMode, setReplyMode ] = useState( storedMode );
+
+	/* Re-sync when the stored value implies a different mode — loading a
+	   post, or an external change — but never clobber a freshly chosen
+	   "Specific people" (stored empty until a box is ticked) by snapping it
+	   back to Everybody. */
+	useEffect( () => {
+		if (
+			storedMode !== replyMode &&
+			! ( 'custom' === replyMode && 'everybody' === storedMode )
+		) {
+			setReplyMode( storedMode );
+		}
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [ storedMode ] );
+
 	// Don't show when editing reusable/synced blocks.
 	if ( 'wp_block' === postType ) {
 		return null;
 	}
 
 	const enabled = isSharingEnabled( meta );
+
+	const restriction = readReplyRestriction( meta );
+	const replyAudiences = getReplyAudiences( restriction );
+
+	const setRestriction = ( value ) =>
+		setMeta( { ...meta, [ REPLY_RESTRICTION_META_KEY ]: value } );
+
+	const onReplyModeChange = ( mode ) => {
+		setReplyMode( mode );
+		setRestriction( buildRestrictionForMode( mode, replyAudiences ) );
+	};
+
+	// Audience checkboxes shown under "Specific people", as [ token, label ].
+	const replyAudienceOptions = [
+		[ REPLY_AUDIENCE.MENTIONED, __( 'People you mention', 'atmosphere' ) ],
+		[ REPLY_AUDIENCE.FOLLOWING, __( 'People you follow', 'atmosphere' ) ],
+		[ REPLY_AUDIENCE.FOLLOWER, __( 'Your followers', 'atmosphere' ) ],
+	];
 	const message = panelMessage( SHARE_STATUS, {
 		enabled,
 		hasRecord,
@@ -294,6 +345,86 @@ const EditorPlugin = () => {
 					) }
 				/>
 			) }
+
+			{ enabled && (
+				<SelectControl
+					label={ __( 'Who can reply on Bluesky', 'atmosphere' ) }
+					value={ replyMode }
+					options={ [
+						{
+							label: __( 'Everybody', 'atmosphere' ),
+							value: 'everybody',
+						},
+						{
+							label: __( 'Nobody', 'atmosphere' ),
+							value: 'nobody',
+						},
+						{
+							label: __( 'Specific people', 'atmosphere' ),
+							value: 'custom',
+						},
+					] }
+					onChange={ onReplyModeChange }
+					help={ __(
+						'Choose who is allowed to reply to this post on Bluesky.',
+						'atmosphere'
+					) }
+				/>
+			) }
+
+			{ enabled &&
+				THREADGATE_NEEDS_RECONNECT &&
+				replyMode !== 'everybody' && (
+					<Notice status="warning" isDismissible={ false }>
+						{ CAN_MANAGE ? (
+							<>
+								{ __(
+									'This restriction is skipped until the site reconnects to Bluesky. The post still shares as usual.',
+									'atmosphere'
+								) }{ ' ' }
+								<a href={ SETTINGS_URL }>
+									{ __(
+										'Reconnect on the settings page.',
+										'atmosphere'
+									) }
+								</a>
+							</>
+						) : (
+							__(
+								'This restriction is skipped until an administrator reconnects the site to Bluesky. The post still shares as usual.',
+								'atmosphere'
+							)
+						) }
+					</Notice>
+				) }
+
+			{ enabled &&
+				'custom' === replyMode &&
+				replyAudienceOptions.map( ( [ token, label ] ) => (
+					<CheckboxControl
+						key={ token }
+						label={ label }
+						checked={ replyAudiences.includes( token ) }
+						onChange={ ( on ) =>
+							setRestriction(
+								toggleReplyAudience( restriction, token, on )
+							)
+						}
+					/>
+				) ) }
+
+			{ /* Empty "Specific people" serializes to an open post, so say so
+			     rather than let the dropdown imply a restriction is in place. */ }
+			{ enabled &&
+				'custom' === replyMode &&
+				0 === replyAudiences.length && (
+					<Notice status="warning" isDismissible={ false }>
+						{ __(
+							'No one selected yet, so everyone can reply. Pick at least one group to limit replies.',
+							'atmosphere'
+						) }
+					</Notice>
+				) }
 
 			{ /* A fact, not a message, so it always comes last and renders
 			     whether or not sharing is on for this post: the record is up

@@ -76,3 +76,29 @@ export const SHARE_STATUS = options.shareStatus || {
 	can_share: true,
 	sharing_enabled: true,
 };
+
+/**
+ * URL of the ATmosphere settings page, for reconnect prompts.
+ *
+ * @type {string}
+ */
+export const SETTINGS_URL =
+	options.settingsUrl || 'options-general.php?page=atmosphere';
+
+/**
+ * Whether the Bluesky connection predates the reply-restriction scope.
+ *
+ * True means a restriction set in the editor is skipped at publish time
+ * until the site reconnects, so the panel says so next to the control.
+ *
+ * @type {boolean}
+ */
+export const THREADGATE_NEEDS_RECONNECT = !! options.threadgateNeedsReconnect;
+
+/**
+ * Post meta key for the per-post Bluesky reply restriction.
+ *
+ * @type {string}
+ */
+export const REPLY_RESTRICTION_META_KEY =
+	options.replyRestrictionMetaKey || 'atmosphere_reply_restriction';
