@@ -1,4 +1,0 @@
-Significance: patch
-Type: fixed
-
-Fix sharing to Bluesky failing with an "Invalid client ID" error on sites served through a reverse proxy or CDN.

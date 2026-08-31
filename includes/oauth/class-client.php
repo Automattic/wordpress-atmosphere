@@ -41,7 +41,7 @@ class Client {
 	 * Named so the surfaces that check for it and the list that requests
 	 * it cannot drift apart.
 	 *
-	 * @since unreleased
+	 * @since 2.2.0
 	 *
 	 * @var string
 	 */

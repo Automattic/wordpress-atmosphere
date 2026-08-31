@@ -524,7 +524,7 @@ class Backfill_Command extends \WP_CLI_Command {
 	 * zero. A publish-to-the-internet command must refuse to run on a
 	 * value it had to guess at.
 	 *
-	 * @since unreleased
+	 * @since 2.2.0
 	 *
 	 * @param array  $assoc_args Flag arguments.
 	 * @param string $flag       Flag name, without the leading dashes.
@@ -574,7 +574,7 @@ class Backfill_Command extends \WP_CLI_Command {
 	 * of the queue is just as rate-limited either way, hence the walk
 	 * through the wrapped failures.
 	 *
-	 * @since unreleased
+	 * @since 2.2.0
 	 *
 	 * @param \WP_Error $error Failure returned by the Publisher.
 	 * @return string|null Message to warn with, or null to keep going.
@@ -596,7 +596,7 @@ class Backfill_Command extends \WP_CLI_Command {
 	/**
 	 * A publish failure plus whatever failures it wraps.
 	 *
-	 * @since unreleased
+	 * @since 2.2.0
 	 *
 	 * @param \WP_Error $error Failure returned by the Publisher.
 	 * @return \WP_Error[] The failure itself first, then its causes.
@@ -614,7 +614,7 @@ class Backfill_Command extends \WP_CLI_Command {
 	 * after it would sleep for nothing. A failed thread rollback keeps
 	 * its status one level down, hence the walk.
 	 *
-	 * @since unreleased
+	 * @since 2.2.0
 	 *
 	 * @param \WP_Error $error Failure returned by the Publisher.
 	 * @return bool
@@ -639,7 +639,7 @@ class Backfill_Command extends \WP_CLI_Command {
 	 * missing or unreadable the error carries no reset and the message
 	 * drops that sentence instead of guessing at a number.
 	 *
-	 * @since unreleased
+	 * @since 2.2.0
 	 *
 	 * @param \WP_Error $error Rate-limit error from the publisher.
 	 * @return string

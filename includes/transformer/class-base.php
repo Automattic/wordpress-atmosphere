@@ -199,7 +199,7 @@ abstract class Base {
 	 * `atmosphere_record_tags` runs, so a filter cannot push a record
 	 * past what the lexicons accept.
 	 *
-	 * @since unreleased
+	 * @since 2.2.0
 	 *
 	 * @var int
 	 */
@@ -257,7 +257,7 @@ abstract class Base {
 		 * tag names rather than picking from existing terms should keep
 		 * them short itself.
 		 *
-		 * @since unreleased
+		 * @since 2.2.0
 		 *
 		 * @param string[] $tags Tag names collected from the post's tags and categories.
 		 * @param \WP_Post $post WordPress post.

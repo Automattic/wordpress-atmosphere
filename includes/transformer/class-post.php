@@ -1408,7 +1408,7 @@ class Post extends Base {
 	/**
 	 * Force, or stop forcing, blob re-upload on subsequent uploads.
 	 *
-	 * @since unreleased
+	 * @since 2.2.0
 	 *
 	 * @param bool $force Whether to bypass the blob-ref cache.
 	 * @return void

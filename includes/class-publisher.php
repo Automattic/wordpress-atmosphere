@@ -405,7 +405,7 @@ class Publisher {
 	 * bsky-oriented paths (reaction/reply sync, in-place thread updates) stay
 	 * inert for this post.
 	 *
-	 * @since unreleased
+	 * @since 2.2.0
 	 *
 	 * @param \WP_Post $post          WordPress post.
 	 * @param bool     $original_time Reserve the document rkey from the post's original publish date rather than "now".
@@ -434,7 +434,7 @@ class Publisher {
 	 * `Document::*` meta — no `Post::*` meta — so downstream bsky-oriented paths
 	 * (reaction/reply sync, in-place thread updates) stay inert for this post.
 	 *
-	 * @since unreleased
+	 * @since 2.2.0
 	 *
 	 * @param \WP_Post $post WordPress post.
 	 * @param string   $op   applyWrites op — `create` or `update`.
@@ -487,7 +487,7 @@ class Publisher {
 	 * unmoved (`written => null`), so a transient error can neither clobber
 	 * moderation state nor desync the marker.
 	 *
-	 * @since unreleased
+	 * @since 2.2.0
 	 *
 	 * @param \WP_Post $post      WordPress post.
 	 * @param string   $rkey      The post's root rkey, shared by the threadgate.
@@ -608,7 +608,7 @@ class Publisher {
 	/**
 	 * Read the live threadgate record for merging.
 	 *
-	 * @since unreleased
+	 * @since 2.2.0
 	 *
 	 * @param string $rkey Root rkey shared by the threadgate.
 	 * @return array|null|false The record `value` when present, null when the
@@ -639,7 +639,7 @@ class Publisher {
 	 * `hiddenReplies` and any field a newer lexicon adds — survive the write.
 	 * The record's original `createdAt` is kept when it already has one.
 	 *
-	 * @since unreleased
+	 * @since 2.2.0
 	 *
 	 * @param array|null $current The live record value, or null to build fresh.
 	 * @param \WP_Post   $post    WordPress post.
@@ -664,7 +664,7 @@ class Publisher {
 	/**
 	 * Build an `applyWrites` create/update entry for a threadgate.
 	 *
-	 * @since unreleased
+	 * @since 2.2.0
 	 *
 	 * @param string $op    applyWrites op — `create` or `update`.
 	 * @param string $rkey  Root rkey shared by the threadgate.
@@ -683,7 +683,7 @@ class Publisher {
 	/**
 	 * Build the `applyWrites#delete` entry for a threadgate at `$rkey`.
 	 *
-	 * @since unreleased
+	 * @since 2.2.0
 	 *
 	 * @param string $rkey The post's root rkey, shared by the threadgate.
 	 * @return array applyWrites#delete entry.
@@ -703,7 +703,7 @@ class Publisher {
 	 * the records it gated. Returns nothing when no gate is live or the root
 	 * rkey is unknown.
 	 *
-	 * @since unreleased
+	 * @since 2.2.0
 	 *
 	 * @param \WP_Post $post   WordPress post.
 	 * @param array[]  $stored Stored bsky records (root first).
@@ -725,7 +725,7 @@ class Publisher {
 	 * in-flight write cannot desync the marker from what was actually sent
 	 * (see the in-flight-state rule in the code-style docs).
 	 *
-	 * @since unreleased
+	 * @since 2.2.0
 	 *
 	 * @param int  $post_id WordPress post ID.
 	 * @param bool $written Whether the submitted batch leaves a gate live.
@@ -1036,7 +1036,7 @@ class Publisher {
 	/**
 	 * Error-data key carrying the failure that triggered a rollback.
 	 *
-	 * @since unreleased
+	 * @since 2.2.0
 	 *
 	 * @var string
 	 */
@@ -1045,7 +1045,7 @@ class Publisher {
 	/**
 	 * Error-data key carrying the failure the rollback itself hit.
 	 *
-	 * @since unreleased
+	 * @since 2.2.0
 	 *
 	 * @var string
 	 */
@@ -1066,7 +1066,7 @@ class Publisher {
 	 * can classify the error itself and then walk this without
 	 * special-casing the shape.
 	 *
-	 * @since unreleased
+	 * @since 2.2.0
 	 *
 	 * @param \WP_Error $error Failure returned by the Publisher.
 	 * @return \WP_Error[] The nested failures, in declaration order.
@@ -1465,7 +1465,7 @@ class Publisher {
 	 * the one the stored URI already points at, so it surfaces an
 	 * `atmosphere_missing_tid` error instead — again mirroring {@see self::update_post()}.
 	 *
-	 * @since unreleased
+	 * @since 2.2.0
 	 *
 	 * @param \WP_Post $post WordPress post.
 	 * @return array|\WP_Error applyWrites response or error.

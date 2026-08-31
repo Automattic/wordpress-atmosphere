@@ -837,7 +837,7 @@ class Atmosphere {
 		 * account, so `at:author` would attribute every post on a
 		 * multi-author site to whoever connected it.
 		 *
-		 * @since unreleased
+		 * @since 2.2.0
 		 *
 		 * @param array<string, string[]> $tags Tag name => list of AT-URIs.
 		 */
@@ -2084,7 +2084,7 @@ class Atmosphere {
 	 * and beyond, and a second worker must not be queued alongside a retry
 	 * that is still pending.
 	 *
-	 * @since unreleased
+	 * @since 2.2.0
 	 *
 	 * @param int $post_id Post to share.
 	 * @return bool True when a worker was queued, false when one was already pending.
@@ -2113,7 +2113,7 @@ class Atmosphere {
 	 * is suppressed on the same condition: the surface would otherwise say
 	 * "update the post to try again" and "reconnect your account" at once.
 	 *
-	 * @since unreleased
+	 * @since 2.2.0
 	 *
 	 * @param int $post_id Post ID.
 	 * @return array|null Failure details, or null when the last attempt succeeded.
@@ -2694,7 +2694,7 @@ class Atmosphere {
 	 * publish weeks into the future; it must never shorten the ladder's
 	 * own step, which is why it applies to the header value alone.
 	 *
-	 * @since unreleased
+	 * @since 2.2.0
 	 *
 	 * @param int       $delay Ladder delay for this attempt, in seconds.
 	 * @param \WP_Error $error The failure being retried.
