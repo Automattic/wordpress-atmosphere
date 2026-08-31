@@ -28,6 +28,7 @@ use Atmosphere\Rest\Client_Metadata_Controller;
 use Atmosphere\Rest\Reactions_Controller;
 use Atmosphere\WP_Admin\Admin;
 use Atmosphere\WP_Admin\Health_Check;
+use Atmosphere\WP_Admin\Post_List;
 use Atmosphere\WP_Admin\Settings_Fields;
 
 /**
@@ -172,6 +173,7 @@ class Atmosphere {
 		 * available on non-admin requests.
 		 */
 		\add_action( 'init', array( Admin::class, 'register' ), 5 );
+		\add_action( 'admin_init', array( Post_List::class, 'register' ) );
 
 		/*
 		 * Settings API option registration (`Options::init()`) and
@@ -1974,11 +1976,7 @@ class Atmosphere {
 				$post_type,
 				'atmosphere_url',
 				array(
-					'get_callback'    => static function ( $post_arr ) {
-						$uri = (string) \get_post_meta( (int) $post_arr['id'], Post::META_URI, true );
-
-						return '' === $uri ? '' : self::bsky_web_url_from_uri( $uri );
-					},
+					'get_callback'    => static fn ( $post_arr ) => post_share_url( (int) $post_arr['id'] ),
 					'update_callback' => null,
 					'schema'          => array(
 						'type'        => 'string',
@@ -1992,38 +1990,7 @@ class Atmosphere {
 				$post_type,
 				'atmosphere_publish_error',
 				array(
-					'get_callback'    => static function ( $post_arr ) {
-						$error = \get_post_meta( (int) $post_arr['id'], self::META_LAST_PUBLISH_ERROR, true );
-
-						if ( ! \is_array( $error ) || empty( $error['code'] ) ) {
-							return null;
-						}
-
-						$reconnect_class = Client::is_reconnect_error( (string) $error['code'] );
-						$needs_reconnect = $reconnect_class && ! is_connected();
-
-						/*
-						 * The stored code says whether the failure was
-						 * reconnect-class; the live connection check drops
-						 * the flag once the operator has reconnected, so a
-						 * stale per-post error can't keep claiming the site
-						 * is disconnected. The stored message of a
-						 * reconnect-class failure is that same claim in
-						 * prose ("Reconnect your Bluesky account …"), so it
-						 * is suppressed on the same condition — the panel
-						 * would otherwise say "update the post to try
-						 * again" and "reconnect your account" at once.
-						 */
-						return array(
-							'code'            => (string) $error['code'],
-							'message'         => $reconnect_class && ! $needs_reconnect
-								? ''
-								: (string) ( $error['message'] ?? '' ),
-							'retrying'        => ! empty( $error['retrying'] ),
-							'needs_reconnect' => $needs_reconnect,
-							'time'            => (int) ( $error['time'] ?? 0 ),
-						);
-					},
+					'get_callback'    => static fn ( $post_arr ) => self::get_publish_error( (int) $post_arr['id'] ),
 					'update_callback' => null,
 					'schema'          => array(
 						'type'        => array( 'object', 'null' ),
@@ -2058,32 +2025,74 @@ class Atmosphere {
 	}
 
 	/**
-	 * Build the appview web URL for one of our own post AT-URIs.
+	 * Queue a share of one post through the standard publish worker.
 	 *
-	 * `at://<did>/app.bsky.feed.post/<rkey>` →
-	 * `https://<appview-host>/profile/<did>/post/<rkey>`. The appview resolves
-	 * the DID form, so no handle lookup is needed. The host defaults to
-	 * `bsky.app` and is filterable via `atmosphere_appview_host`.
+	 * Owns the hook name, the argument shape, and the duplicate rule, so a
+	 * caller does not have to know any of them. The worker itself decides
+	 * between a first publish and an update, re-checks visibility at fire
+	 * time, logs failures and schedules retries.
 	 *
-	 * @param string $uri AT-URI from `Post::META_URI`.
-	 * @return string Web URL, or '' when the URI shape is unexpected.
+	 * The `wp_next_scheduled()` check is load-bearing beyond the duplicate
+	 * protection core gives for identical events within ten minutes: a
+	 * failed attempt is retried on a ladder that reaches fifteen minutes
+	 * and beyond, and a second worker must not be queued alongside a retry
+	 * that is still pending.
+	 *
+	 * @since unreleased
+	 *
+	 * @param int $post_id Post to share.
+	 * @return bool True when a worker was queued, false when one was already pending.
 	 */
-	private static function bsky_web_url_from_uri( string $uri ): string {
-		if ( ! \preg_match( '#^at://(?P<did>[^/]+)/app\.bsky\.feed\.post/(?P<rkey>[^/]+)$#', $uri, $matches ) ) {
-			return '';
+	public static function queue_post_share( int $post_id ): bool {
+		$args = array( $post_id );
+
+		if ( \wp_next_scheduled( 'atmosphere_publish_post', $args ) ) {
+			return false;
 		}
 
-		return \esc_url_raw(
-			appview_url(
-				'profile/' . $matches['did'] . '/post/' . $matches['rkey'],
-				array(
-					'type' => 'post',
-					'did'  => $matches['did'],
-					'rkey' => $matches['rkey'],
-				)
-			)
+		return (bool) \wp_schedule_single_event( \time(), 'atmosphere_publish_post', $args );
+	}
+
+	/**
+	 * Shape the stored publish failure for display.
+	 *
+	 * Shared by the editor panel's `atmosphere_publish_error` REST field
+	 * and the posts-list column, so both describe a failure the same way.
+	 *
+	 * The stored code says whether the failure was reconnect-class; the
+	 * live connection check drops the flag once the operator has
+	 * reconnected, so a stale per-post error can't keep claiming the site
+	 * is disconnected. The stored message of a reconnect-class failure is
+	 * that same claim in prose ("Reconnect your Bluesky account …"), so it
+	 * is suppressed on the same condition: the surface would otherwise say
+	 * "update the post to try again" and "reconnect your account" at once.
+	 *
+	 * @since unreleased
+	 *
+	 * @param int $post_id Post ID.
+	 * @return array|null Failure details, or null when the last attempt succeeded.
+	 */
+	public static function get_publish_error( int $post_id ): ?array {
+		$error = \get_post_meta( $post_id, self::META_LAST_PUBLISH_ERROR, true );
+
+		if ( ! \is_array( $error ) || empty( $error['code'] ) ) {
+			return null;
+		}
+
+		$reconnect_class = Client::is_reconnect_error( (string) $error['code'] );
+		$needs_reconnect = $reconnect_class && ! is_connected();
+
+		return array(
+			'code'            => (string) $error['code'],
+			'message'         => $reconnect_class && ! $needs_reconnect
+				? ''
+				: (string) ( $error['message'] ?? '' ),
+			'retrying'        => ! empty( $error['retrying'] ),
+			'needs_reconnect' => $needs_reconnect,
+			'time'            => (int) ( $error['time'] ?? 0 ),
 		);
 	}
+
 
 	/**
 	 * Register async action hooks (called by WP-Cron).
