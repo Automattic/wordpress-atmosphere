@@ -23,6 +23,8 @@ use WP_REST_Server;
 use function Atmosphere\is_auto_publish_enabled;
 use function Atmosphere\is_connected;
 use function Atmosphere\is_supported_post_type;
+use function Atmosphere\needs_reauth;
+use function Atmosphere\share_status;
 
 /**
  * Pre-publish preview controller.
@@ -263,15 +265,24 @@ class Pre_Publish_Controller extends \WP_REST_Controller {
 
 		return \rest_ensure_response(
 			array(
-				'will_publish'  => $decision['will_publish'],
-				'reason'        => $decision['reason'],
-				'is_short_form' => $projection['is_short_form'],
-				'strategy'      => $projection['strategy'],
-				'limit'         => $projection['limit'],
-				'records'       => $projection['records'],
+				'will_publish'    => $decision['will_publish'],
+
+				/*
+				 * Only the reconnect branch sets this, covering both an
+				 * expired session and a deliberate disconnect, so every
+				 * other "will not publish" reason defaults to false and
+				 * stays an info-level note in the panel.
+				 */
+				'needs_reconnect' => $decision['needs_reconnect'] ?? false,
+				'reason'          => $decision['reason'],
+				'is_short_form'   => $projection['is_short_form'],
+				'strategy'        => $projection['strategy'],
+				'limit'           => $projection['limit'],
+				'records'         => $projection['records'],
 			)
 		);
 	}
+
 
 	/**
 	 * Decide whether the post will be shared to Bluesky, with a
@@ -287,29 +298,30 @@ class Pre_Publish_Controller extends \WP_REST_Controller {
 	 * @param string  $status   The intended post status (e.g. 'publish', 'private').
 	 * @param string  $password The intended post password ('' when not protected).
 	 * @param bool    $disabled Whether sharing is switched off for this post.
-	 * @return array{will_publish: bool, reason: ?string}
+	 * @return array{will_publish: bool, reason: ?string, needs_reconnect?: bool}
 	 */
 	private function publish_decision( WP_Post $post, string $status, string $password, bool $disabled ): array {
-		if ( ! is_connected() ) {
-			return array(
-				'will_publish' => false,
-				'reason'       => \__( 'Your site isn’t connected to Bluesky yet.', 'atmosphere' ),
-			);
-		}
+		/*
+		 * Checked first, ahead of the per-post toggle and the connection
+		 * state. Automatic sharing being off decides the answer on its own:
+		 * the per-post toggle only records a preference for `backfill` in
+		 * that state, and reconnecting would not change whether this post
+		 * publishes either, so both would be pointing at something that
+		 * cannot alter the outcome.
+		 */
+		$site = share_status();
 
-		if ( ! is_auto_publish_enabled() ) {
-			// Attribute the off state to "another plugin" whenever something
-			// external forces it off despite the user's saved preference being
-			// on — connection-only mode OR the `atmosphere_should_auto_publish`
-			// filter. Only blame settings when the stored option is itself off,
-			// so the editor never tells the author "turned off in settings" while
-			// their checkbox is checked.
-			$stored_on = '1' === (string) \get_option( 'atmosphere_auto_publish', '1' );
+		if ( ! $site['sharing_enabled'] ) {
+			/*
+			 * `reason`, not `message`: this panel was asked a direct question
+			 * about a post, so it always answers, including in the state where
+			 * the document panel deliberately says nothing because a host
+			 * plugin owns the sharing experience. Same sentence either way,
+			 * decided in {@see \Atmosphere\share_status()}.
+			 */
 			return array(
 				'will_publish' => false,
-				'reason'       => $stored_on
-					? \__( 'Automatic publishing to Bluesky is turned off by another plugin on this site.', 'atmosphere' )
-					: \__( 'Automatic publishing to Bluesky is turned off in settings.', 'atmosphere' ),
+				'reason'       => $site['reason'],
 			);
 		}
 
@@ -338,6 +350,45 @@ class Pre_Publish_Controller extends \WP_REST_Controller {
 			return array(
 				'will_publish' => false,
 				'reason'       => \__( 'Private posts aren’t shared to Bluesky.', 'atmosphere' ),
+			);
+		}
+
+		if ( ! is_connected() ) {
+			/*
+			 * `is_connected()` is false for both a dead session and a site
+			 * that never connected. Only the first is fixable by an admin,
+			 * so it gets its own copy and lifts the panel's notice from
+			 * info to warning.
+			 */
+			if ( needs_reauth() ) {
+				/*
+				 * The cause sentence is shared with the document panel via
+				 * {@see \Atmosphere\share_status()}, so a
+				 * `key_changed` (or any other recorded) cause reads
+				 * identically on both surfaces, including the
+				 * operator-disconnect swap. The consequence sentence is
+				 * this panel's own.
+				 *
+				 * `needs_reconnect` tracks whether a cause sentence is
+				 * actually shown, not just whether the connection is dead:
+				 * a non-admin reading a suppressed operator-disconnect gets
+				 * `false`, matching the document panel showing no banner
+				 * for the same reader.
+				 */
+				$lead   = $site['reason'];
+				$tail   = \__( 'This post will not be shared until your site is reconnected.', 'atmosphere' );
+				$reason = '' !== $lead ? $lead . ' ' . $tail : $tail;
+
+				return array(
+					'will_publish'    => false,
+					'needs_reconnect' => '' !== $lead,
+					'reason'          => $reason,
+				);
+			}
+
+			return array(
+				'will_publish' => false,
+				'reason'       => \__( 'Your site isn’t connected to Bluesky yet.', 'atmosphere' ),
 			);
 		}
 

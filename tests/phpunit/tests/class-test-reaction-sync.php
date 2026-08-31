@@ -37,6 +37,7 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 		\remove_all_filters( 'atmosphere_should_sync_replies' );
 		\remove_all_filters( 'pre_http_request' );
 		\remove_all_filters( 'atmosphere_reply_backfill_batch_size' );
+		\delete_transient( 'atmosphere_profile_' . \md5( 'did:plc:mallory' ) );
 
 		if ( \post_type_exists( 'atmos_hidden_cpt' ) ) {
 			\unregister_post_type( 'atmos_hidden_cpt' );
@@ -837,6 +838,72 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 	}
 
 	/**
+	 * An imported reply's text must not reach `comment_content` as live
+	 * markup. The only gate on it is `wp_kses_post()` — the *post*
+	 * allowlist — which passes `style` and `<img src>` straight through,
+	 * so a reply can otherwise lay a fixed-position overlay over the page
+	 * and beacon every visitor's IP to a host of the author's choosing.
+	 */
+	public function test_process_reply_escapes_markup_in_reply_text() {
+		$post_id  = self::factory()->post->create();
+		$post_uri = 'at://did:plc:me/app.bsky.feed.post/defacepost';
+
+		\update_post_meta( $post_id, BskyPost::META_URI, $post_uri );
+
+		$profile_key = 'atmosphere_profile_' . \md5( 'did:plc:mallory' );
+
+		\set_transient(
+			$profile_key,
+			array(
+				'name'   => 'Mallory',
+				'handle' => 'mallory.test',
+			),
+			\HOUR_IN_SECONDS
+		);
+
+		$payload = '<span style="position:fixed;top:0;left:0;width:100vw;height:100vh;background:#000;z-index:99999">SITE DEFACED</span><img src="https://tracker.example/pixel.gif">';
+
+		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_reply' );
+
+		try {
+			$comment_id = $method->invoke(
+				null,
+				array(
+					'uri'    => 'at://did:plc:mallory/app.bsky.feed.post/defacereply',
+					'cid'    => 'bafyreideface',
+					'record' => array(
+						'text'      => $payload,
+						'createdAt' => '2026-08-21T12:00:00.000Z',
+						'reply'     => array(
+							'parent' => array( 'uri' => $post_uri ),
+							'root'   => array( 'uri' => $post_uri ),
+						),
+					),
+					'author' => array(
+						'did'    => 'did:plc:mallory',
+						'handle' => 'mallory.test',
+					),
+				)
+			);
+		} finally {
+			\delete_transient( $profile_key );
+		}
+
+		$this->assertIsInt( $comment_id );
+
+		$stored = \get_comment( $comment_id )->comment_content;
+
+		// No live element survives: the style and the beacon are inert text.
+		$this->assertStringNotContainsString( '<span', $stored );
+		$this->assertStringNotContainsString( '<img', $stored );
+		$this->assertStringContainsString( '&lt;span style=', $stored );
+
+		// Nothing is dropped either — the reply still reads as written.
+		$this->assertStringContainsString( 'SITE DEFACED', $stored );
+		$this->assertSame( $payload, \html_entity_decode( $stored, \ENT_QUOTES, 'UTF-8' ) );
+	}
+
+	/**
 	 * Test that process_reply drops a reply when get_comment() returns
 	 * null for the resolved parent comment ID (race: comment deleted
 	 * between the meta lookup and the get_comment call). The previous
@@ -1588,6 +1655,73 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 			'me.example.com',
 			\get_comment( $comment_id )->comment_author_url,
 			'The author link must fall back to the stored identity handle.'
+		);
+	}
+
+	/**
+	 * A getProfile call that succeeds but hands back an empty handle falls
+	 * back the same way a failed one does — otherwise our own imported
+	 * reactions carry a link to an empty profile path.
+	 */
+	public function test_process_own_record_falls_back_to_identity_handle_when_profile_handle_is_empty() {
+		\update_option( 'atmosphere_connection', array( 'did' => 'did:plc:me' ), false );
+		\update_option(
+			'atmosphere_identity',
+			array(
+				'did'    => 'did:plc:me',
+				'handle' => 'me.example.com',
+			),
+			false
+		);
+
+		/*
+		 * A cached profile short-circuits the API call, so resolve_author()
+		 * returns a populated array whose handle is still empty.
+		 */
+		\set_transient(
+			'atmosphere_profile_' . \md5( 'did:plc:me' ),
+			array(
+				'name'   => '',
+				'handle' => '',
+				'avatar' => '',
+			),
+			\HOUR_IN_SECONDS
+		);
+
+		$post_id  = self::factory()->post->create();
+		$post_uri = 'at://did:plc:me/app.bsky.feed.post/emptyownhandlepost';
+		\update_post_meta( $post_id, BskyPost::META_URI, $post_uri );
+
+		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_own_record' );
+
+		try {
+			$comment_id = $method->invoke(
+				null,
+				array(
+					'uri'   => 'at://did:plc:me/app.bsky.feed.like/emptyownhandlelike',
+					'cid'   => 'bafyemptyownhandlelike',
+					'value' => array(
+						'$type'     => 'app.bsky.feed.like',
+						'createdAt' => '2026-04-20T14:00:00.000Z',
+						'subject'   => array(
+							'uri' => $post_uri,
+							'cid' => 'bafymypost',
+						),
+					),
+				),
+				'like'
+			);
+		} finally {
+			\delete_transient( 'atmosphere_profile_' . \md5( 'did:plc:me' ) );
+			\delete_option( 'atmosphere_connection' );
+			\delete_option( 'atmosphere_identity' );
+		}
+
+		$this->assertIsInt( $comment_id );
+		$this->assertSame(
+			'https://bsky.app/profile/me.example.com',
+			\get_comment( $comment_id )->comment_author_url,
+			'An empty handle on our own profile must not produce a dead profile link.'
 		);
 	}
 
@@ -3060,6 +3194,363 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 			'',
 			$requested_url,
 			'sync() must still poll on a regular site with both toggles off, so the off period stays skipped-for-good rather than replayed on re-enable.'
+		);
+	}
+
+	/**
+	 * Build a minimal reply notification aimed at a cross-posted post.
+	 *
+	 * @param string $post_uri  AT-URI of the local post being replied to.
+	 * @param string $reply_uri AT-URI of the reply itself.
+	 * @param array  $author    Author block for the notification payload.
+	 * @return array
+	 */
+	private function reply_notification( string $post_uri, string $reply_uri, array $author ): array {
+		return array(
+			'uri'    => $reply_uri,
+			'cid'    => 'bafyreixss',
+			'record' => array(
+				'text'      => 'Nice post.',
+				'createdAt' => '2026-08-21T12:00:00.000Z',
+				'reply'     => array(
+					'parent' => array( 'uri' => $post_uri ),
+					'root'   => array( 'uri' => $post_uri ),
+				),
+			),
+			'author' => $author,
+		);
+	}
+
+	/**
+	 * Remote profile fields are attacker-controlled: anyone with an account
+	 * on the network can set their own `displayName`. resolve_author() must
+	 * strip markup before the value is cached or handed to
+	 * insert_reaction().
+	 */
+	public function test_resolve_author_sanitizes_remote_profile_fields() {
+		$did      = 'did:plc:mallory';
+		$dpop_jwk = DPoP::generate_key();
+
+		\update_option(
+			'atmosphere_connection',
+			array(
+				'access_token'   => Encryption::encrypt( 'test-access-token' ),
+				'refresh_token'  => Encryption::encrypt( 'test-refresh-token' ),
+				'dpop_jwk'       => Encryption::encrypt( (string) \wp_json_encode( $dpop_jwk ) ),
+				'did'            => 'did:plc:me',
+				'pds_endpoint'   => 'https://pds.example.com',
+				'token_endpoint' => 'https://auth.example.com/oauth/token',
+				'expires_at'     => \time() + 3600,
+				'needs_reauth'   => false,
+			)
+		);
+
+		$http = static function ( $response, $args, $url ) {
+			if ( false === \strpos( $url, 'app.bsky.actor.getProfile' ) ) {
+				return $response;
+			}
+
+			return array(
+				'response' => array( 'code' => 200 ),
+				'headers'  => new \WpOrg\Requests\Utility\CaseInsensitiveDictionary( array() ),
+				'body'     => (string) \wp_json_encode(
+					array(
+						'did'         => 'did:plc:mallory',
+						'handle'      => 'mallory.test',
+						'displayName' => '<img src=x onerror=alert(document.domain)>Mallory',
+						'avatar'      => 'javascript:alert(document.domain)',
+					)
+				),
+			);
+		};
+
+		\add_filter( 'pre_http_request', $http, 10, 3 );
+
+		try {
+			$method  = new \ReflectionMethod( Reaction_Sync::class, 'resolve_author' );
+			$profile = $method->invoke( null, $did );
+		} finally {
+			\remove_filter( 'pre_http_request', $http, 10 );
+		}
+
+		$this->assertSame( 'Mallory', $profile['name'] );
+		$this->assertSame( 'mallory.test', $profile['handle'] );
+		$this->assertSame( '', $profile['avatar'], 'A javascript: avatar URL must not survive esc_url_raw().' );
+
+		$this->assertSame(
+			$profile,
+			\get_transient( 'atmosphere_profile_' . \md5( $did ) ),
+			'The cached profile must hold the sanitized values, not the raw getProfile response.'
+		);
+	}
+
+	/**
+	 * The sink sanitizes too, not just the boundary: `comment_author` is
+	 * written with wp_insert_comment(), which runs none of the
+	 * `pre_comment_*` filters, and core's get_comment_author_link()
+	 * interpolates the stored column into an <a> with no escaping — on the
+	 * front end via Walker_Comment and in the wp-admin Dashboard "Activity"
+	 * widget, which renders comments still held for moderation.
+	 *
+	 * A profile cached before the boundary sanitizer existed still has to be
+	 * neutralised on the way into wp_comments.
+	 */
+	public function test_process_reply_stores_sanitized_comment_author() {
+		$post_id  = self::factory()->post->create();
+		$post_uri = 'at://did:plc:me/app.bsky.feed.post/xsspost';
+
+		\update_post_meta( $post_id, BskyPost::META_URI, $post_uri );
+
+		\set_transient(
+			'atmosphere_profile_' . \md5( 'did:plc:mallory' ),
+			array(
+				'name'   => '<img src=x onerror=alert(document.domain)>Mallory',
+				'handle' => 'mallory.test',
+			),
+			\HOUR_IN_SECONDS
+		);
+
+		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_reply' );
+
+		$comment_id = $method->invoke(
+			null,
+			$this->reply_notification(
+				$post_uri,
+				'at://did:plc:mallory/app.bsky.feed.post/xssreply',
+				array(
+					'did'    => 'did:plc:mallory',
+					'handle' => 'mallory.test',
+				)
+			)
+		);
+
+		$this->assertIsInt( $comment_id );
+
+		$comment = \get_comment( $comment_id );
+
+		$this->assertSame( 'Mallory', $comment->comment_author );
+		$this->assertStringNotContainsString( '<', $comment->comment_author );
+	}
+
+	/**
+	 * A display name made up entirely of markup sanitizes down to an empty
+	 * string. Store the handle rather than a nameless author, which core
+	 * would render as "Anonymous".
+	 */
+	public function test_process_reply_falls_back_to_handle_when_display_name_is_all_markup() {
+		$post_id  = self::factory()->post->create();
+		$post_uri = 'at://did:plc:me/app.bsky.feed.post/fallbackpost';
+
+		\update_post_meta( $post_id, BskyPost::META_URI, $post_uri );
+
+		\set_transient(
+			'atmosphere_profile_' . \md5( 'did:plc:mallory' ),
+			array(
+				'name'   => '<script>alert(document.domain)</script>',
+				'handle' => 'mallory.test',
+			),
+			\HOUR_IN_SECONDS
+		);
+
+		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_reply' );
+
+		$comment_id = $method->invoke(
+			null,
+			$this->reply_notification(
+				$post_uri,
+				'at://did:plc:mallory/app.bsky.feed.post/fallbackreply',
+				array(
+					'did'    => 'did:plc:mallory',
+					'handle' => 'mallory.test',
+				)
+			)
+		);
+
+		$this->assertSame( 'mallory.test', \get_comment( $comment_id )->comment_author );
+	}
+
+	/**
+	 * When profile resolution fails the author name falls back to the handle
+	 * carried on the notification payload, which is just as untrusted as the
+	 * getProfile response and must be sanitized on that path too.
+	 */
+	public function test_process_reply_sanitizes_handle_from_notification_payload() {
+		$post_id  = self::factory()->post->create();
+		$post_uri = 'at://did:plc:me/app.bsky.feed.post/payloadpost';
+
+		\update_post_meta( $post_id, BskyPost::META_URI, $post_uri );
+
+		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_reply' );
+
+		/*
+		 * No cached profile and no connection, so resolve_author() bails
+		 * without a network call and the payload handle is all we have.
+		 */
+		$comment_id = $method->invoke(
+			null,
+			$this->reply_notification(
+				$post_uri,
+				'at://did:plc:mallory/app.bsky.feed.post/payloadreply',
+				array(
+					'did'    => 'did:plc:mallory',
+					'handle' => '<img src=x onerror=alert(document.domain)>mallory.test',
+				)
+			)
+		);
+
+		$this->assertSame( 'mallory.test', \get_comment( $comment_id )->comment_author );
+	}
+
+	/**
+	 * An ordinary display name containing `&` must be stored HTML-encoded,
+	 * the way core's own comment pipeline stores it. The column is read
+	 * unescaped by the XML feed templates, so a raw `&` makes
+	 * /comments/feed/ non-well-formed for every consumer.
+	 */
+	public function test_process_reply_stores_author_name_encoded_like_core() {
+		$post_id  = self::factory()->post->create();
+		$post_uri = 'at://did:plc:me/app.bsky.feed.post/ampersandpost';
+
+		\update_post_meta( $post_id, BskyPost::META_URI, $post_uri );
+
+		\set_transient(
+			'atmosphere_profile_' . \md5( 'did:plc:mallory' ),
+			array(
+				'name'   => 'Rock & Roll',
+				'handle' => 'mallory.test',
+			),
+			\HOUR_IN_SECONDS
+		);
+
+		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_reply' );
+
+		$comment_id = $method->invoke(
+			null,
+			$this->reply_notification(
+				$post_uri,
+				'at://did:plc:mallory/app.bsky.feed.post/ampersandreply',
+				array(
+					'did'    => 'did:plc:mallory',
+					'handle' => 'mallory.test',
+				)
+			)
+		);
+
+		$stored = \get_comment( $comment_id )->comment_author;
+
+		$this->assertSame( 'Rock &amp; Roll', $stored );
+		$this->assertSame(
+			\_wp_specialchars( 'Rock & Roll' ),
+			$stored,
+			'Imported names must use the same storage format as core.'
+		);
+	}
+
+	/**
+	 * The stored name has to survive the XML feed templates, which drop it
+	 * into element content and a CDATA section with no escaping of their
+	 * own. `]]>` is the deliberate-abuse version of the `&` case above.
+	 */
+	public function test_process_reply_stores_feed_safe_author_name() {
+		$post_id  = self::factory()->post->create();
+		$post_uri = 'at://did:plc:me/app.bsky.feed.post/cdatapost';
+
+		\update_post_meta( $post_id, BskyPost::META_URI, $post_uri );
+
+		\set_transient(
+			'atmosphere_profile_' . \md5( 'did:plc:mallory' ),
+			array(
+				'name'   => ']]> pwned & <broken',
+				'handle' => 'mallory.test',
+			),
+			\HOUR_IN_SECONDS
+		);
+
+		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_reply' );
+
+		$comment_id = $method->invoke(
+			null,
+			$this->reply_notification(
+				$post_uri,
+				'at://did:plc:mallory/app.bsky.feed.post/cdatareply',
+				array(
+					'did'    => 'did:plc:mallory',
+					'handle' => 'mallory.test',
+				)
+			)
+		);
+
+		$stored = \get_comment( $comment_id )->comment_author;
+
+		$this->assertStringNotContainsString( ']]>', $stored );
+
+		// Both shapes the comment feed templates use must stay well-formed.
+		$element = '<?xml version="1.0" encoding="UTF-8"?><t>' . $stored . '</t>';
+		$cdata   = '<?xml version="1.0" encoding="UTF-8"?><t><![CDATA[' . $stored . ']]></t>';
+
+		foreach ( array(
+			'element content' => $element,
+			'CDATA'           => $cdata,
+		) as $shape => $xml ) {
+			$previous = \libxml_use_internal_errors( true );
+			\libxml_clear_errors();
+			$parsed = \simplexml_load_string( $xml );
+			$errors = \libxml_get_errors();
+			\libxml_clear_errors();
+			\libxml_use_internal_errors( $previous );
+
+			$this->assertNotFalse(
+				$parsed,
+				\sprintf(
+					'Stored author name must be well-formed in %s: %s',
+					$shape,
+					$errors ? \trim( $errors[0]->message ) : ''
+				)
+			);
+		}
+	}
+
+	/**
+	 * An empty handle on the resolved profile has to fall through to the
+	 * notification payload. `??` does not do that, since resolve_author()
+	 * always sets the key.
+	 */
+	public function test_process_reply_falls_back_to_payload_handle_when_profile_handle_is_empty() {
+		$post_id  = self::factory()->post->create();
+		$post_uri = 'at://did:plc:me/app.bsky.feed.post/emptyhandlepost';
+
+		\update_post_meta( $post_id, BskyPost::META_URI, $post_uri );
+
+		\set_transient(
+			'atmosphere_profile_' . \md5( 'did:plc:mallory' ),
+			array(
+				'name'   => '',
+				'handle' => '',
+			),
+			\HOUR_IN_SECONDS
+		);
+
+		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_reply' );
+
+		$comment_id = $method->invoke(
+			null,
+			$this->reply_notification(
+				$post_uri,
+				'at://did:plc:mallory/app.bsky.feed.post/emptyhandlereply',
+				array(
+					'did'    => 'did:plc:mallory',
+					'handle' => 'mallory.test',
+				)
+			)
+		);
+
+		$comment = \get_comment( $comment_id );
+
+		$this->assertSame( 'mallory.test', $comment->comment_author );
+		$this->assertSame(
+			'https://bsky.app/profile/mallory.test',
+			$comment->comment_author_url,
+			'An empty profile handle must not produce a dead profile link.'
 		);
 	}
 }
