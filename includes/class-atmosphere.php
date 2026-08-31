@@ -28,6 +28,7 @@ use Atmosphere\Rest\Client_Metadata_Controller;
 use Atmosphere\Rest\Reactions_Controller;
 use Atmosphere\WP_Admin\Admin;
 use Atmosphere\WP_Admin\Health_Check;
+use Atmosphere\WP_Admin\Post_List;
 use Atmosphere\WP_Admin\Settings_Fields;
 
 /**
@@ -172,6 +173,8 @@ class Atmosphere {
 		 * available on non-admin requests.
 		 */
 		\add_action( 'init', array( Admin::class, 'register' ), 5 );
+		\add_action( 'init', array( Icons::class, 'register' ) );
+		\add_action( 'admin_init', array( Post_List::class, 'register' ) );
 
 		/*
 		 * Settings API option registration (`Options::init()`) and
@@ -1498,6 +1501,17 @@ class Atmosphere {
 			? \array_column( Publisher::collect_published_comment_tids( $post_id ), 'tid' )
 			: array();
 
+		/*
+		 * Capture the DIDs the records were minted under while the meta
+		 * still exists. By the time the cron fires the post row and its
+		 * meta are gone, so delete_post_by_tids() cannot look them up
+		 * itself; passing them through lets it refuse to delete against a
+		 * repo the records never lived in (disconnect + reconnect-to-a-new
+		 * account).
+		 */
+		$bsky_origin_did = (string) \get_post_meta( $post_id, Transformer\Post::META_DID, true );
+		$doc_origin_did  = (string) \get_post_meta( $post_id, Transformer\Document::META_DID, true );
+
 		// A written threadgate shares the root post's rkey. Capture it now
 		// while the meta still exists so the async delete can remove it after
 		// the post row is gone.
@@ -1509,7 +1523,7 @@ class Atmosphere {
 			\wp_schedule_single_event(
 				\time(),
 				'atmosphere_delete_records',
-				array( $bsky_tids, $doc_tid, $comment_tids, $threadgate_tid )
+				array( $bsky_tids, $doc_tid, $comment_tids, $threadgate_tid, $bsky_origin_did, $doc_origin_did )
 			);
 		}
 	}
@@ -1613,8 +1627,15 @@ class Atmosphere {
 			return;
 		}
 
+		/*
+		 * Capture the DID the reply was minted under before the row and
+		 * its meta are removed, so the async worker can refuse to delete
+		 * against a repo the record never lived in.
+		 */
+		$origin_did = (string) \get_comment_meta( $comment_id, Comment::META_DID, true );
+
 		$tid  = (string) $tid;
-		$args = array( $tid );
+		$args = array( $tid, $origin_did );
 
 		if ( \wp_next_scheduled( 'atmosphere_delete_comment_record', $args ) ) {
 			return;
@@ -1966,7 +1987,16 @@ class Atmosphere {
 	 * `atmosphere_publish_error` carries the most recent share failure
 	 * (null when the last attempt succeeded) so the panel can tell the
 	 * author a share failed instead of the failure vanishing into a
-	 * WP_DEBUG-gated log line. Both are edit-context only.
+	 * WP_DEBUG-gated log line.
+	 * `atmosphere_has_record` answers "is there anything out there to
+	 * delete", which is what the removal warning needs. It is deliberately
+	 * not derived from `atmosphere_url`: that carries a Bluesky web URL
+	 * built from `Post::META_URI` alone, so a document-only site (one
+	 * filtering `atmosphere_should_publish_bluesky_post` false) never has
+	 * one, while `delete_post()` still removes its `Document::META_URI`
+	 * record. Backing the flag with the same `has_post_records()` the
+	 * cleanup path calls keeps the warning and the deletion keyed off one
+	 * fact. All three are edit-context only.
 	 */
 	public function register_share_status_field(): void {
 		foreach ( get_supported_post_types() as $post_type ) {
@@ -1974,11 +2004,7 @@ class Atmosphere {
 				$post_type,
 				'atmosphere_url',
 				array(
-					'get_callback'    => static function ( $post_arr ) {
-						$uri = (string) \get_post_meta( (int) $post_arr['id'], Post::META_URI, true );
-
-						return '' === $uri ? '' : self::bsky_web_url_from_uri( $uri );
-					},
+					'get_callback'    => static fn ( $post_arr ) => post_share_url( (int) $post_arr['id'] ),
 					'update_callback' => null,
 					'schema'          => array(
 						'type'        => 'string',
@@ -1990,40 +2016,27 @@ class Atmosphere {
 
 			\register_rest_field(
 				$post_type,
-				'atmosphere_publish_error',
+				'atmosphere_has_record',
 				array(
 					'get_callback'    => static function ( $post_arr ) {
-						$error = \get_post_meta( (int) $post_arr['id'], self::META_LAST_PUBLISH_ERROR, true );
+						$post = \get_post( (int) $post_arr['id'] );
 
-						if ( ! \is_array( $error ) || empty( $error['code'] ) ) {
-							return null;
-						}
-
-						$reconnect_class = Client::is_reconnect_error( (string) $error['code'] );
-						$needs_reconnect = $reconnect_class && ! is_connected();
-
-						/*
-						 * The stored code says whether the failure was
-						 * reconnect-class; the live connection check drops
-						 * the flag once the operator has reconnected, so a
-						 * stale per-post error can't keep claiming the site
-						 * is disconnected. The stored message of a
-						 * reconnect-class failure is that same claim in
-						 * prose ("Reconnect your Bluesky account …"), so it
-						 * is suppressed on the same condition — the panel
-						 * would otherwise say "update the post to try
-						 * again" and "reconnect your account" at once.
-						 */
-						return array(
-							'code'            => (string) $error['code'],
-							'message'         => $reconnect_class && ! $needs_reconnect
-								? ''
-								: (string) ( $error['message'] ?? '' ),
-							'retrying'        => ! empty( $error['retrying'] ),
-							'needs_reconnect' => $needs_reconnect,
-							'time'            => (int) ( $error['time'] ?? 0 ),
-						);
+						return $post instanceof \WP_Post && self::has_post_records( $post );
 					},
+					'update_callback' => null,
+					'schema'          => array(
+						'type'        => 'boolean',
+						'description' => \__( 'Whether this post has records on the PDS that a cleanup would remove.', 'atmosphere' ),
+						'context'     => array( 'edit' ),
+					),
+				)
+			);
+
+			\register_rest_field(
+				$post_type,
+				'atmosphere_publish_error',
+				array(
+					'get_callback'    => static fn ( $post_arr ) => self::get_publish_error( (int) $post_arr['id'] ),
 					'update_callback' => null,
 					'schema'          => array(
 						'type'        => array( 'object', 'null' ),
@@ -2058,32 +2071,74 @@ class Atmosphere {
 	}
 
 	/**
-	 * Build the appview web URL for one of our own post AT-URIs.
+	 * Queue a share of one post through the standard publish worker.
 	 *
-	 * `at://<did>/app.bsky.feed.post/<rkey>` →
-	 * `https://<appview-host>/profile/<did>/post/<rkey>`. The appview resolves
-	 * the DID form, so no handle lookup is needed. The host defaults to
-	 * `bsky.app` and is filterable via `atmosphere_appview_host`.
+	 * Owns the hook name, the argument shape, and the duplicate rule, so a
+	 * caller does not have to know any of them. The worker itself decides
+	 * between a first publish and an update, re-checks visibility at fire
+	 * time, logs failures and schedules retries.
 	 *
-	 * @param string $uri AT-URI from `Post::META_URI`.
-	 * @return string Web URL, or '' when the URI shape is unexpected.
+	 * The `wp_next_scheduled()` check is load-bearing beyond the duplicate
+	 * protection core gives for identical events within ten minutes: a
+	 * failed attempt is retried on a ladder that reaches fifteen minutes
+	 * and beyond, and a second worker must not be queued alongside a retry
+	 * that is still pending.
+	 *
+	 * @since unreleased
+	 *
+	 * @param int $post_id Post to share.
+	 * @return bool True when a worker was queued, false when one was already pending.
 	 */
-	private static function bsky_web_url_from_uri( string $uri ): string {
-		if ( ! \preg_match( '#^at://(?P<did>[^/]+)/app\.bsky\.feed\.post/(?P<rkey>[^/]+)$#', $uri, $matches ) ) {
-			return '';
+	public static function queue_post_share( int $post_id ): bool {
+		$args = array( $post_id );
+
+		if ( \wp_next_scheduled( 'atmosphere_publish_post', $args ) ) {
+			return false;
 		}
 
-		return \esc_url_raw(
-			appview_url(
-				'profile/' . $matches['did'] . '/post/' . $matches['rkey'],
-				array(
-					'type' => 'post',
-					'did'  => $matches['did'],
-					'rkey' => $matches['rkey'],
-				)
-			)
+		return (bool) \wp_schedule_single_event( \time(), 'atmosphere_publish_post', $args );
+	}
+
+	/**
+	 * Shape the stored publish failure for display.
+	 *
+	 * Shared by the editor panel's `atmosphere_publish_error` REST field
+	 * and the posts-list column, so both describe a failure the same way.
+	 *
+	 * The stored code says whether the failure was reconnect-class; the
+	 * live connection check drops the flag once the operator has
+	 * reconnected, so a stale per-post error can't keep claiming the site
+	 * is disconnected. The stored message of a reconnect-class failure is
+	 * that same claim in prose ("Reconnect your Bluesky account …"), so it
+	 * is suppressed on the same condition: the surface would otherwise say
+	 * "update the post to try again" and "reconnect your account" at once.
+	 *
+	 * @since unreleased
+	 *
+	 * @param int $post_id Post ID.
+	 * @return array|null Failure details, or null when the last attempt succeeded.
+	 */
+	public static function get_publish_error( int $post_id ): ?array {
+		$error = \get_post_meta( $post_id, self::META_LAST_PUBLISH_ERROR, true );
+
+		if ( ! \is_array( $error ) || empty( $error['code'] ) ) {
+			return null;
+		}
+
+		$reconnect_class = Client::is_reconnect_error( (string) $error['code'] );
+		$needs_reconnect = $reconnect_class && ! is_connected();
+
+		return array(
+			'code'            => (string) $error['code'],
+			'message'         => $reconnect_class && ! $needs_reconnect
+				? ''
+				: (string) ( $error['message'] ?? '' ),
+			'retrying'        => ! empty( $error['retrying'] ),
+			'needs_reconnect' => $needs_reconnect,
+			'time'            => (int) ( $error['time'] ?? 0 ),
 		);
 	}
+
 
 	/**
 	 * Register async action hooks (called by WP-Cron).
@@ -2194,15 +2249,18 @@ class Atmosphere {
 
 		\add_action(
 			'atmosphere_delete_records',
-			static function ( $bsky_tids, string $doc_tid, $comment_tids = array(), string $threadgate_tid = '' ): void {
+			static function ( $bsky_tids, string $doc_tid, $comment_tids = array(), string $threadgate_tid = '', string $bsky_origin_did = '', string $doc_origin_did = '' ): void {
 				/*
 				 * delete_post_by_tids() drops the comment TIDs itself when
 				 * comment publishing is disabled at execution time. The
-				 * threadgate arg defaults so events queued before the arg
-				 * existed still run.
+				 * trailing args all default so an event queued before they
+				 * existed still fires cleanly: no threadgate to remove, and
+				 * the wrong-repo-delete guard disabled for that record. The
+				 * threadgate arg comes first because it shipped first; the
+				 * positions of already-queued events must not move.
 				 */
 				$comment_tids = \is_array( $comment_tids ) ? $comment_tids : array();
-				$result       = Publisher::delete_post_by_tids( $bsky_tids, $doc_tid, $comment_tids, $threadgate_tid );
+				$result       = Publisher::delete_post_by_tids( $bsky_tids, $doc_tid, $comment_tids, $threadgate_tid, $bsky_origin_did, $doc_origin_did );
 
 				if ( \is_wp_error( $result ) ) {
 					/*
@@ -2224,7 +2282,7 @@ class Atmosphere {
 				}
 			},
 			10,
-			4
+			6
 		);
 
 		/*
@@ -2320,12 +2378,12 @@ class Atmosphere {
 
 		\add_action(
 			'atmosphere_delete_comment_record',
-			static function ( string $tid ): void {
+			static function ( string $tid, string $origin_did = '' ): void {
 				if ( ! is_comment_publishing_enabled() || '' === $tid ) {
 					return;
 				}
 
-				$result = Publisher::delete_comment_by_tid( $tid );
+				$result = Publisher::delete_comment_by_tid( $tid, $origin_did );
 
 				if ( \is_wp_error( $result ) ) {
 					// Worst-case path: the WP comment row is already gone,
@@ -2342,7 +2400,7 @@ class Atmosphere {
 				}
 			},
 			10,
-			1
+			2
 		);
 	}
 
@@ -2792,17 +2850,17 @@ class Atmosphere {
 		}
 
 		$tid = (string) \get_comment_meta( $comment_id, Comment::META_TID, true );
+		// Capture the origin DID before clearing meta so the TID-only
+		// cleanup event can guard against a wrong-repo delete.
+		$origin_did = (string) \get_comment_meta( $comment_id, Comment::META_DID, true );
 
-		\delete_comment_meta( $comment_id, Comment::META_TID );
-		\delete_comment_meta( $comment_id, Comment::META_URI );
-		\delete_comment_meta( $comment_id, Comment::META_CID );
-		\delete_comment_meta( $comment_id, Reaction_Sync::META_SOURCE_ID );
+		Publisher::clear_comment_record_meta( $comment_id );
 
 		if ( '' === $tid ) {
 			return;
 		}
 
-		$args = array( $tid );
+		$args = array( $tid, $origin_did );
 
 		if ( \wp_next_scheduled( 'atmosphere_delete_comment_record', $args ) ) {
 			return;

@@ -312,7 +312,7 @@ class Handle {
 		$identity = get_identity();
 		if ( ! empty( $identity['did'] ) ) {
 			$identity['handle'] = $handle;
-			\update_option( 'atmosphere_identity', $identity, true );
+			set_identity( $identity );
 		}
 	}
 

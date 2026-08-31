@@ -1871,18 +1871,15 @@ class Publisher {
 		 */
 		$bsky_origin_did = (string) \get_post_meta( $post->ID, Post::META_DID, true );
 		$doc_origin_did  = (string) \get_post_meta( $post->ID, Document::META_DID, true );
-		$current_did     = get_did();
 
-		$bsky_skip = '' !== $bsky_origin_did && '' !== $current_did && $bsky_origin_did !== $current_did;
-		$doc_skip  = '' !== $doc_origin_did && '' !== $current_did && $doc_origin_did !== $current_did;
+		$bsky_skip = self::record_is_foreign( $bsky_origin_did );
+		$doc_skip  = self::record_is_foreign( $doc_origin_did );
 
 		if ( ( $bsky_skip && ! empty( $stored ) ) || ( $doc_skip && $doc_tid ) ) {
-			return new \WP_Error(
-				'atmosphere_did_mismatch',
-				\__( 'Cannot delete records that were created under a different connected account.', 'atmosphere' ),
+			return self::did_mismatch_error(
 				array(
 					'post_id'         => $post->ID,
-					'current_did'     => $current_did,
+					'current_did'     => get_did(),
 					'bsky_origin_did' => $bsky_origin_did,
 					'doc_origin_did'  => $doc_origin_did,
 				)
@@ -1959,10 +1956,7 @@ class Publisher {
 		if ( null !== $outcome['comments'] ) {
 			// Clean up comment meta for every reply we just deleted.
 			foreach ( $comment_tids as $comment_tid ) {
-				\delete_comment_meta( $comment_tid['comment_id'], Comment::META_TID );
-				\delete_comment_meta( $comment_tid['comment_id'], Comment::META_URI );
-				\delete_comment_meta( $comment_tid['comment_id'], Comment::META_CID );
-				\delete_comment_meta( $comment_tid['comment_id'], Reaction_Sync::META_SOURCE_ID );
+				self::clear_comment_record_meta( $comment_tid['comment_id'] );
 			}
 		}
 
@@ -2041,13 +2035,21 @@ class Publisher {
 	 * cleanup is left entirely to the caller (`on_before_delete`). When
 	 * comment publishing is disabled, comment-reply TIDs are ignored.
 	 *
-	 * @param string|string[] $bsky_tids      Bluesky post TID or array of TIDs (may be empty).
-	 * @param string          $doc_tid        Document TID (may be empty).
-	 * @param string[]        $comment_tids   Comment reply TIDs to delete in a separate batch.
-	 * @param string          $threadgate_tid Root rkey of a written threadgate (empty when none).
+	 * The post's meta is already gone by the time this runs, so the origin
+	 * DIDs captured at delete time are passed in explicitly to drive the
+	 * same wrong-repo-delete guard {@see self::delete_post()} applies. An
+	 * empty origin (event queued before the guard shipped, or records
+	 * predating DID provenance) disables the guard for that record class.
+	 *
+	 * @param string|string[] $bsky_tids       Bluesky post TID or array of TIDs (may be empty).
+	 * @param string          $doc_tid         Document TID (may be empty).
+	 * @param string[]        $comment_tids    Comment reply TIDs to delete in a separate batch.
+	 * @param string          $threadgate_tid  Root rkey of a written threadgate (empty when none).
+	 * @param string          $bsky_origin_did DID the Bluesky records were minted under (may be empty).
+	 * @param string          $doc_origin_did  DID the document record was minted under (may be empty).
 	 * @return array|\WP_Error
 	 */
-	public static function delete_post_by_tids( $bsky_tids, string $doc_tid, array $comment_tids = array(), string $threadgate_tid = '' ): array|\WP_Error {
+	public static function delete_post_by_tids( $bsky_tids, string $doc_tid, array $comment_tids = array(), string $threadgate_tid = '', string $bsky_origin_did = '', string $doc_origin_did = '' ): array|\WP_Error {
 		if ( \is_string( $bsky_tids ) ) {
 			$bsky_tids = '' === $bsky_tids ? array() : array( $bsky_tids );
 		} elseif ( ! \is_array( $bsky_tids ) ) {
@@ -2073,6 +2075,24 @@ class Publisher {
 
 		if ( empty( $bsky_tids ) && ! $doc_tid && empty( $comment_tids ) ) {
 			return new \WP_Error( 'atmosphere_not_published', \__( 'No TIDs provided.', 'atmosphere' ) );
+		}
+
+		/*
+		 * Same wrong-repo-delete guard as delete_post(), but driven by the
+		 * origin DIDs captured before the post row was removed. Bailing
+		 * before any write aborts the whole cascade (root + document +
+		 * comment replies), matching delete_post()'s all-or-nothing
+		 * behaviour on a foreign account.
+		 */
+		if ( ( self::record_is_foreign( $bsky_origin_did ) && ! empty( $bsky_tids ) )
+			|| ( self::record_is_foreign( $doc_origin_did ) && '' !== $doc_tid ) ) {
+			return self::did_mismatch_error(
+				array(
+					'current_did'     => get_did(),
+					'bsky_origin_did' => $bsky_origin_did,
+					'doc_origin_did'  => $doc_origin_did,
+				)
+			);
 		}
 
 		$root_writes = array();
@@ -2492,6 +2512,23 @@ class Publisher {
 			return new \WP_Error( 'atmosphere_missing_tid', \__( 'Comment URI exists but TID is missing.', 'atmosphere' ) );
 		}
 
+		/*
+		 * Refuse to delete a reply that was minted under a different
+		 * account (disconnect + reconnect-to-a-new-DID). Issuing the
+		 * delete against the current repo would no-op remotely while
+		 * clearing local meta, orphaning the reply on the old PDS.
+		 */
+		$origin_did = (string) \get_comment_meta( $comment_id, Comment::META_DID, true );
+		if ( self::record_is_foreign( $origin_did ) ) {
+			return self::did_mismatch_error(
+				array(
+					'comment_id'  => $comment_id,
+					'current_did' => get_did(),
+					'origin_did'  => $origin_did,
+				)
+			);
+		}
+
 		$writes = array(
 			array(
 				'$type'      => 'com.atproto.repo.applyWrites#delete',
@@ -2506,10 +2543,7 @@ class Publisher {
 			return $result;
 		}
 
-		\delete_comment_meta( $comment_id, Comment::META_TID );
-		\delete_comment_meta( $comment_id, Comment::META_URI );
-		\delete_comment_meta( $comment_id, Comment::META_CID );
-		\delete_comment_meta( $comment_id, Reaction_Sync::META_SOURCE_ID );
+		self::clear_comment_record_meta( $comment_id );
 
 		return $result;
 	}
@@ -2518,18 +2552,32 @@ class Publisher {
 	 * Delete a bsky comment reply by TID, without needing the comment row.
 	 *
 	 * Used when a comment is permanently deleted and its meta is no
-	 * longer reachable at the point the cron fires.
+	 * longer reachable at the point the cron fires. The origin DID is
+	 * captured before the row is removed and passed in explicitly to drive
+	 * the wrong-repo-delete guard; an empty origin (event queued before the
+	 * guard shipped, or a reply predating DID provenance) disables it.
 	 *
-	 * @param string $tid Comment record TID.
+	 * @param string $tid        Comment record TID.
+	 * @param string $origin_did DID the reply was minted under (may be empty).
 	 * @return array|\WP_Error
 	 */
-	public static function delete_comment_by_tid( string $tid ): array|\WP_Error {
+	public static function delete_comment_by_tid( string $tid, string $origin_did = '' ): array|\WP_Error {
 		if ( ! is_comment_publishing_enabled() ) {
 			return self::comment_publishing_disabled_error();
 		}
 
 		if ( '' === $tid ) {
 			return new \WP_Error( 'atmosphere_not_published', \__( 'No TID provided.', 'atmosphere' ) );
+		}
+
+		if ( self::record_is_foreign( $origin_did ) ) {
+			return self::did_mismatch_error(
+				array(
+					'tid'         => $tid,
+					'current_did' => get_did(),
+					'origin_did'  => $origin_did,
+				)
+			);
 		}
 
 		$writes = array(
@@ -2553,6 +2601,65 @@ class Publisher {
 			'atmosphere_comment_publishing_disabled',
 			\__( 'Comment publishing to Bluesky is disabled.', 'atmosphere' )
 		);
+	}
+
+	/**
+	 * Whether a stored record's origin DID belongs to a different account
+	 * than the one currently connected.
+	 *
+	 * `applyWrites#delete` always targets the currently-connected repo, so
+	 * deleting a record minted under a previous DID (disconnect +
+	 * reconnect-to-a-different-account, atproto account migration) would
+	 * silently no-op while leaving the original orphaned on the old PDS.
+	 * Callers use this to bail with an operator-visible error instead. An
+	 * empty origin (records predating DID provenance, or an already-queued
+	 * cron event from before this guard shipped) or an empty current DID
+	 * (not connected) disables the check so legitimate cleanups are never
+	 * blocked on missing information.
+	 *
+	 * @param string $origin_did DID the record was minted under.
+	 * @return bool
+	 */
+	private static function record_is_foreign( string $origin_did ): bool {
+		$current_did = get_did();
+
+		return '' !== $origin_did && '' !== $current_did && $origin_did !== $current_did;
+	}
+
+	/**
+	 * Build the standard error for a refused wrong-repo delete.
+	 *
+	 * Shared by every delete path that applies {@see self::record_is_foreign()}
+	 * so the error code, translated message, and shape stay identical. The
+	 * `$data` payload varies per call site (post/comment identifiers and the
+	 * relevant origin DIDs) for the operator breadcrumb.
+	 *
+	 * @param array $data Context for the error (identifiers, origin/current DIDs).
+	 * @return \WP_Error
+	 */
+	private static function did_mismatch_error( array $data ): \WP_Error {
+		return new \WP_Error(
+			'atmosphere_did_mismatch',
+			\__( 'Cannot delete records that were created under a different connected account.', 'atmosphere' ),
+			$data
+		);
+	}
+
+	/**
+	 * Delete every AT Protocol record meta key from a comment.
+	 *
+	 * Single definition of the comment record-meta key set so a new key
+	 * (like `Comment::META_DID`) is added in one place instead of the
+	 * several cleanup sites that clear a fully-deleted reply.
+	 *
+	 * @param int $comment_id Comment ID.
+	 */
+	public static function clear_comment_record_meta( int $comment_id ): void {
+		\delete_comment_meta( $comment_id, Comment::META_TID );
+		\delete_comment_meta( $comment_id, Comment::META_URI );
+		\delete_comment_meta( $comment_id, Comment::META_CID );
+		\delete_comment_meta( $comment_id, Comment::META_DID );
+		\delete_comment_meta( $comment_id, Reaction_Sync::META_SOURCE_ID );
 	}
 
 	/**
