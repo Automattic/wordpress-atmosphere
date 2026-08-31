@@ -80,7 +80,7 @@ class Test_Icons extends \WP_UnitTestCase {
 			);
 		}
 
-		$svg = \wp_get_icon( Icons::COLLECTION . '/bluesky-black', array( 'size' => 32 ) );
+		$svg = \wp_get_icon( Icons::COLLECTION . '/bluesky', array( 'size' => 32 ) );
 		$this->assertStringContainsString( '<svg', $svg );
 		$this->assertStringContainsString( 'width="32"', $svg );
 		// The tag processor lowercases attribute names when it rewrites the markup.
@@ -99,7 +99,7 @@ class Test_Icons extends \WP_UnitTestCase {
 		Icons::register();
 		Icons::register();
 
-		$this->assertTrue( \WP_Icons_Registry::get_instance()->is_registered( Icons::COLLECTION . '/atmosphere-black' ) );
+		$this->assertTrue( \WP_Icons_Registry::get_instance()->is_registered( Icons::COLLECTION . '/atmosphere' ) );
 	}
 
 	/**

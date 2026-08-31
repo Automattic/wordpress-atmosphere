@@ -14,7 +14,8 @@ namespace Atmosphere;
  *
  * WordPress 7.1 introduced a site-wide icon library that the Icon block
  * and `wp_get_icon()` read from. The plugin contributes the ATmosphere
- * mark and the Bluesky butterfly, each in black and white, so a site can
+ * mark and the Bluesky butterfly, monochrome so the block's own color
+ * tools apply, and a site can
  * use them in its own content, a "find me on Bluesky" section for
  * example.
  *
@@ -62,7 +63,7 @@ class Icons {
 			self::COLLECTION,
 			array(
 				'label'       => \__( 'ATmosphere', 'atmosphere' ),
-				'description' => \__( 'The ATmosphere and Bluesky icons, in black and white.', 'atmosphere' ),
+				'description' => \__( 'The ATmosphere and Bluesky icons.', 'atmosphere' ),
 			)
 		);
 
@@ -86,10 +87,8 @@ class Icons {
 	 */
 	public static function icons(): array {
 		return array(
-			'atmosphere-black' => \__( 'ATmosphere', 'atmosphere' ),
-			'atmosphere-white' => \__( 'ATmosphere (white)', 'atmosphere' ),
-			'bluesky-black'    => \__( 'Bluesky', 'atmosphere' ),
-			'bluesky-white'    => \__( 'Bluesky (white)', 'atmosphere' ),
+			'atmosphere' => \__( 'ATmosphere', 'atmosphere' ),
+			'bluesky'    => \__( 'Bluesky', 'atmosphere' ),
 		);
 	}
 }
