@@ -626,7 +626,11 @@ class Health_Check {
 			\__( '%1$s (last failure %2$s ago: %3$s)', 'atmosphere' ),
 			$success,
 			\human_time_diff( (int) $status['last_failure'], \time() ),
-			(string) ( $status['last_error'] ?? \__( 'unknown', 'atmosphere' ) )
+			'' !== (string) ( $status['last_error'] ?? '' )
+				? (string) $status['last_error']
+				// A markup-only server code sanitizes to '', which `??`
+				// alone would render as a dangling colon.
+				: \__( 'unknown', 'atmosphere' )
 		);
 	}
 

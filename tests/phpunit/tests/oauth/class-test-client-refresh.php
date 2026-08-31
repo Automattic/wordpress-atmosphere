@@ -881,15 +881,16 @@ class Test_Client_Refresh extends WP_UnitTestCase {
 	}
 
 	/**
-	 * A corrupted row must degrade member by member: bad timestamps and
-	 * a non-string error are dropped so no reader can fatal or render a
-	 * 1970 delta, while intact members survive.
+	 * A corrupted row must degrade member by member: non-numeric or
+	 * non-positive timestamps and a non-string error are dropped so no
+	 * reader can fatal or render a 1970 delta, while intact members
+	 * survive.
 	 */
 	public function test_refresh_status_drops_corrupted_members() {
 		\update_option(
 			Client::REFRESH_STATUS_OPTION,
 			array(
-				'last_success' => 'soon',
+				'last_success' => '-1',
 				'last_failure' => \time(),
 				'last_error'   => array( 'nested' ),
 			)
