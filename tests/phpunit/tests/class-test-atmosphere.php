@@ -3484,6 +3484,41 @@ class Test_Atmosphere extends WP_UnitTestCase {
 	}
 
 	/**
+	 * The `atmosphere_has_record` REST field answers "is there anything out
+	 * there to delete", which is what the editor's removal warning needs.
+	 * It follows `has_post_records()`, so it is true for the AT-URI case the
+	 * View link also covers.
+	 */
+	public function test_atmosphere_has_record_rest_field_follows_the_post_uri() {
+		\wp_set_current_user( self::factory()->user->create( array( 'role' => 'administrator' ) ) );
+
+		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
+
+		$this->assertFalse( $this->rest_get_has_record( $post_id ) );
+
+		\update_post_meta( $post_id, Post::META_URI, 'at://did:plc:abc123/app.bsky.feed.post/3kabc' );
+
+		$this->assertTrue( $this->rest_get_has_record( $post_id ) );
+	}
+
+	/**
+	 * The reason the field exists rather than reusing `atmosphere_url`: a
+	 * document-only site (one filtering `atmosphere_should_publish_bluesky_post`
+	 * false) never gets a Bluesky URI, so the URL stays empty while
+	 * `delete_post()` would still remove the document record.
+	 */
+	public function test_atmosphere_has_record_rest_field_covers_a_document_only_post() {
+		\wp_set_current_user( self::factory()->user->create( array( 'role' => 'administrator' ) ) );
+
+		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
+
+		\update_post_meta( $post_id, Document::META_URI, 'at://did:plc:abc123/site.standard.document/3kdoc' );
+
+		$this->assertSame( '', $this->rest_get_atmosphere_url( $post_id ) );
+		$this->assertTrue( $this->rest_get_has_record( $post_id ) );
+	}
+
+	/**
 	 * Fetch a post's `atmosphere_url` REST field in the edit context.
 	 *
 	 * @param int $post_id Post ID.
@@ -3494,6 +3529,19 @@ class Test_Atmosphere extends WP_UnitTestCase {
 		$request->set_param( 'context', 'edit' );
 
 		return (string) ( \rest_do_request( $request )->get_data()['atmosphere_url'] ?? '' );
+	}
+
+	/**
+	 * Fetch a post's `atmosphere_has_record` REST field in the edit context.
+	 *
+	 * @param int $post_id Post ID.
+	 * @return bool
+	 */
+	private function rest_get_has_record( int $post_id ): bool {
+		$request = new \WP_REST_Request( 'GET', '/wp/v2/posts/' . $post_id );
+		$request->set_param( 'context', 'edit' );
+
+		return (bool) ( \rest_do_request( $request )->get_data()['atmosphere_has_record'] ?? false );
 	}
 
 	/**
