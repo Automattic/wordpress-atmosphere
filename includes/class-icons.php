@@ -24,9 +24,10 @@ namespace Atmosphere;
  * check, the same shape as the Connectors integration. On older
  * WordPress nothing is registered and nothing is loaded.
  *
- * The SVG files deliberately contain nothing but `<svg>` and `<path>`
- * with a `fill` on the path: the library's sanitizer strips everything
- * else, so anything fancier would arrive broken.
+ * The library's sanitizer only keeps `<svg>`, `<path>` and `<polygon>`
+ * elements and strips `stroke`, so shipped SVGs must stay within that
+ * allow-list; ours use `<svg>` and `<path>`, monochrome, with the fill
+ * inherited so the Icon block's color tools apply.
  *
  * @since unreleased
  */
