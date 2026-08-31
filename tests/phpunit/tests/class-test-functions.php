@@ -24,6 +24,7 @@ use function Atmosphere\grapheme_length;
 use function Atmosphere\to_iso8601;
 use function Atmosphere\is_post_publishable;
 use function Atmosphere\get_publishable_content;
+use function Atmosphere\flush_publishable_content_cache;
 use function Atmosphere\is_sharing_enabled;
 use function Atmosphere\is_connection_only_mode;
 use function Atmosphere\is_auto_publish_enabled;
@@ -449,6 +450,39 @@ class Test_Functions extends \WP_UnitTestCase {
 			$this->assertSame( 'Public.', get_publishable_content( $post ) );
 		} finally {
 			\remove_all_filters( 'atmosphere_publishable_content' );
+		}
+	}
+
+	/**
+	 * The result is memoized per request, and `flush_publishable_content_cache()`
+	 * clears that memo so the next read recomputes.
+	 */
+	public function test_flush_publishable_content_cache_forces_recompute() {
+		$post = self::factory()->post->create_and_get(
+			array( 'post_content' => 'Body.' )
+		);
+
+		$calls = 0;
+		\add_filter(
+			'atmosphere_publishable_content',
+			static function ( $content ) use ( &$calls ) {
+				++$calls;
+				return $content;
+			},
+			10
+		);
+
+		try {
+			get_publishable_content( $post );
+			get_publishable_content( $post );
+			$this->assertSame( 1, $calls, 'the second read is served from the memo' );
+
+			flush_publishable_content_cache();
+			get_publishable_content( $post );
+			$this->assertSame( 2, $calls, 'a read after the flush recomputes' );
+		} finally {
+			\remove_all_filters( 'atmosphere_publishable_content' );
+			flush_publishable_content_cache();
 		}
 	}
 

@@ -265,12 +265,15 @@ class Pre_Publish_Controller extends \WP_REST_Controller {
 
 		/*
 		 * Project against the *unsaved* custom text so the preview tracks
-		 * the textarea as the author types. Only override when the param is
-		 * actually present: an older/cached editor that doesn't send it must
-		 * fall back to the saved meta, not be forced to the default
-		 * composition by a cast-from-missing empty string.
+		 * the textarea as the author types. Only override when the request
+		 * carries non-empty text: the param registers a `''` default, and
+		 * `has_param()` counts defaults once the request is dispatched, so it
+		 * is true even for an older/cached editor that never sent the field.
+		 * Treating blank as "not provided" falls back to the saved meta rather
+		 * than forcing the default composition with a cast-from-missing empty
+		 * string.
 		 */
-		if ( $request->has_param( 'customText' ) ) {
+		if ( '' !== (string) $request['customText'] ) {
 			$transformer->set_custom_text_override( (string) $request['customText'] );
 		}
 

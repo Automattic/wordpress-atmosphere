@@ -1173,8 +1173,11 @@ function get_publishable_content( \WP_Post $post ): string {
 	 * post's content for the life of that run and undo it. Evict the oldest
 	 * entry once the cap is reached — the transform path only ever reads back
 	 * the post it is working on.
+	 *
+	 * Held by reference so {@see flush_publishable_content_cache()} can clear it
+	 * (mirroring the content parser's block-cache flush).
 	 */
-	static $cache = array();
+	$cache = &publishable_content_cache();
 
 	$key = $post->ID . ':' . \md5( (string) $post->post_content );
 
@@ -1223,6 +1226,38 @@ function get_publishable_content( \WP_Post $post ): string {
 	$cache[ $key ] = $content;
 
 	return $content;
+}
+
+/**
+ * The in-process memo backing {@see get_publishable_content()}.
+ *
+ * Returned by reference so both the memoizing reader and
+ * {@see flush_publishable_content_cache()} operate on the same array.
+ *
+ * @return array<string,string> The memo, by reference.
+ */
+function &publishable_content_cache(): array {
+	static $cache = array();
+
+	return $cache;
+}
+
+/**
+ * Clear the {@see get_publishable_content()} memo.
+ *
+ * The memo is a per-request in-process cache keyed on the post content plus any
+ * state integrations fold in via `atmosphere_publishable_content_cache_key`.
+ * Flushing forces a full recompute for callers that change a gating input the
+ * key does not capture mid-request, and gives tests a reset akin to the content
+ * parser's `flush_block_cache()`.
+ *
+ * @since unreleased
+ *
+ * @return void
+ */
+function flush_publishable_content_cache(): void {
+	$cache = &publishable_content_cache();
+	$cache = array();
 }
 
 /**

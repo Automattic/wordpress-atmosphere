@@ -110,20 +110,29 @@ class Jetpack {
 		\add_action( 'atmosphere_post_projection', array( self::class, 'clear_access_override' ) );
 
 		// The publishable-content memo keys on post ID + content hash, but our
-		// output also turns on the unsaved access override, which never touches
-		// the stored content. Fold it into the key so an overridden preview does
-		// not share — or mask — the saved post's slot.
+		// output also turns on the access level, which lives in meta (or an
+		// unsaved preview override) and never touches the stored content. Fold it
+		// into the key so each gating decision gets its own slot.
 		\add_filter( 'atmosphere_publishable_content_cache_key', array( self::class, 'vary_cache_key' ), 10, 2 );
 	}
 
 	/**
 	 * Capture the unsaved access level for the duration of a preview projection.
 	 *
+	 * Only overrides when the request carries a non-empty `accessLevel`. The
+	 * param registers a `''` default, and `WP_REST_Request::has_param()` counts
+	 * defaults once the request is dispatched, so `has_param()` is true on every
+	 * request — including one that never sent the level (an older cached editor
+	 * build, or a post type whose access meta the editor does not expose). A
+	 * blank override would read as "everybody" and make the preview claim a
+	 * saved-gated post is public, then publish only a teaser. Treating blank as
+	 * "not provided" falls back to the saved access level, which fails closed.
+	 *
 	 * @param \WP_Post $post    The projected draft (keeps the real post ID).
 	 * @param mixed    $request The REST request driving the preview.
 	 */
 	public static function set_access_override( \WP_Post $post, $request ): void {
-		if ( $request instanceof \WP_REST_Request && $request->has_param( 'accessLevel' ) ) {
+		if ( $request instanceof \WP_REST_Request && '' !== (string) $request['accessLevel'] ) {
 			self::$access_override[ $post->ID ] = (string) $request['accessLevel'];
 		}
 	}
@@ -138,24 +147,28 @@ class Jetpack {
 	}
 
 	/**
-	 * Fold the unsaved access override into the publishable-content memo key.
+	 * Fold the post's access level into the publishable-content memo key.
 	 *
-	 * During a preview projection the projected post keeps its real ID and
-	 * often its saved content, yet {@see self::$access_override} can flip the
-	 * gating decision without changing a byte of `post_content`. Left out of the
-	 * key, the overridden result would share the saved post's cache slot. Only
-	 * appends while an override is set, so it is inert outside a projection.
+	 * The default key covers only the stored content, but our output also turns
+	 * on the whole-post access level, which lives in meta (or, during a preview,
+	 * in an unsaved override) and never touches `post_content`. Left out of the
+	 * key, two different gating decisions for the same post + content would share
+	 * a cache slot: an unsaved override would mask the saved post, and changing
+	 * the saved access level mid-request would return the earlier, more
+	 * permissive answer. Appends the effective level — the override when a
+	 * preview set one, otherwise the stored meta — so each decision gets its own
+	 * slot.
 	 *
 	 * @param string   $key  The default cache key (post ID + content hash).
 	 * @param \WP_Post $post The post being published.
-	 * @return string The key, varied by the access override when one is set.
+	 * @return string The key, varied by the effective access level.
 	 */
 	public static function vary_cache_key( string $key, \WP_Post $post ): string {
-		if ( isset( self::$access_override[ $post->ID ] ) ) {
-			$key .= ':access=' . self::$access_override[ $post->ID ];
-		}
+		$level = isset( self::$access_override[ $post->ID ] )
+			? self::$access_override[ $post->ID ]
+			: (string) \get_post_meta( $post->ID, self::ACCESS_META, true );
 
-		return $key;
+		return $key . ':access=' . $level;
 	}
 
 	/**
@@ -250,6 +263,15 @@ class Jetpack {
 	 * subscribe form. Remembering its priority so
 	 * {@see self::restore_paywall_filter()} can put it back exactly as it was.
 	 * Depth-counted so nested renders suspend once and restore once.
+	 *
+	 * Known limitation: the suspension is global for its duration. If the body
+	 * we render itself runs `the_content` for a *different* post — a query-loop
+	 * or shortcode that renders another post inline — that post loses its gate
+	 * too, and its gated body could surface in the record. The paywall keys off
+	 * the global post, which is not reliably set in the logged-out WP-Cron
+	 * render, so scoping the suspension to our post alone is not dependable here.
+	 * The exposure is narrow (our public body must inline-render another, gated,
+	 * post), so we accept it rather than risk the primary suspension.
 	 */
 	public static function suspend_paywall_filter(): void {
 		if ( 0 === self::$suspend_depth ) {

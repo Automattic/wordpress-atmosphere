@@ -1159,10 +1159,15 @@ class Post extends Base {
 	 * instead of shipping a bare, contextless featured image. A split (partly
 	 * gated) post keeps a public portion, so it is not "body gated" here.
 	 *
+	 * Both sides trim before comparing: a post whose stored content is only
+	 * whitespace is genuinely empty, not gated, so it must keep the plain
+	 * short-form path (e.g. a bare featured image) rather than be mistaken for
+	 * a fully gated body and pushed to the link card.
+	 *
 	 * @return bool
 	 */
 	private function is_body_gated(): bool {
-		return '' !== (string) $this->object->post_content
+		return '' !== \trim( (string) $this->object->post_content )
 			&& '' === \trim( get_publishable_content( $this->object ) );
 	}
 

@@ -504,6 +504,49 @@ class Test_Jetpack extends \WP_UnitTestCase {
 	}
 
 	/**
+	 * A blank `accessLevel` must NOT override the saved gate. A dispatched
+	 * request fills the param with its registered `''` default, so
+	 * `has_param( 'accessLevel' )` is true even when the client never sent a
+	 * level (an older cached editor, or a post type whose access meta the editor
+	 * does not expose). Overriding with that blank value would read as
+	 * "everybody" and make a saved paid post preview as public, then publish
+	 * only a teaser. Treating blank as "not provided" falls back to the saved
+	 * access level and fails closed.
+	 */
+	public function test_preview_projection_ignores_blank_access_level_override() {
+		$request = new \WP_REST_Request( 'POST', '/' );
+		// Simulate the dispatched default: the client sent nothing, so the param
+		// resolves to its '' default.
+		$request->set_param( 'accessLevel', '' );
+
+		$post = self::factory()->post->create_and_get( array( 'post_content' => 'Saved paid body.' ) );
+		\update_post_meta( $post->ID, '_jetpack_newsletter_access', 'subscribers' );
+
+		\do_action( 'atmosphere_pre_projection', $post, $request );
+		$this->assertSame( '', get_publishable_content( $post ), 'blank access level falls back to the saved gated meta' );
+		\do_action( 'atmosphere_post_projection', $post );
+	}
+
+	/**
+	 * Gating a post mid-process must not return the cached, more permissive
+	 * answer. The publishable-content memo keys on post ID + content hash, but
+	 * the output also turns on the stored access level, so the integration folds
+	 * that level into the key. Without it, the public body memoized before the
+	 * change would be served back after it.
+	 */
+	public function test_memo_reflects_in_process_access_level_change() {
+		$post = self::factory()->post->create_and_get( array( 'post_content' => 'Body that can be gated.' ) );
+		\update_post_meta( $post->ID, '_jetpack_newsletter_access', 'everybody' );
+
+		// Public: the full body federates and is memoized.
+		$this->assertSame( 'Body that can be gated.', get_publishable_content( $post ) );
+
+		// Gate the same post in the same process.
+		\update_post_meta( $post->ID, '_jetpack_newsletter_access', 'subscribers' );
+		$this->assertSame( '', get_publishable_content( $post ), 'gating mid-process must not return the cached public body' );
+	}
+
+	/**
 	 * The integration registers on WordPress.com Simple, where the membership
 	 * blocks ship via jetpack-mu-wpcom without JETPACK__VERSION ever being
 	 * defined. Keying registration off Jetpack's constant alone left gated
