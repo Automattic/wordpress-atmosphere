@@ -613,7 +613,7 @@ class Health_Check {
 			$success = \sprintf(
 				/* translators: %s: human-readable time difference, e.g. "2 hours". */
 				\__( '%s ago', 'atmosphere' ),
-				\human_time_diff( (int) $status['last_success'] )
+				\human_time_diff( (int) $status['last_success'], \time() )
 			);
 		}
 
@@ -625,7 +625,7 @@ class Health_Check {
 			/* translators: 1: when the last renewal succeeded, 2: how long ago the last one failed, 3: the error reported. */
 			\__( '%1$s (last failure %2$s ago: %3$s)', 'atmosphere' ),
 			$success,
-			\human_time_diff( (int) $status['last_failure'] ),
+			\human_time_diff( (int) $status['last_failure'], \time() ),
 			(string) ( $status['last_error'] ?? \__( 'unknown', 'atmosphere' ) )
 		);
 	}

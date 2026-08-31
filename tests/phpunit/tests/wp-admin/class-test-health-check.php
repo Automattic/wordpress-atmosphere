@@ -671,6 +671,13 @@ class Test_Health_Check extends \WP_UnitTestCase {
 	 */
 	public function test_debug_information_reports_last_renewal() {
 		$this->seed_connection();
+
+		/*
+		 * A non-UTC site offset: the stamps are UTC epoch seconds, so a
+		 * renderer that lets human_time_diff() default to the site-local
+		 * baseline skews every delta by the offset and fails here.
+		 */
+		\update_option( 'gmt_offset', 5 );
 		\update_option(
 			Client::REFRESH_STATUS_OPTION,
 			array( 'last_success' => \time() - 2 * HOUR_IN_SECONDS )
@@ -689,6 +696,13 @@ class Test_Health_Check extends \WP_UnitTestCase {
 	 */
 	public function test_debug_information_reports_last_failure_and_error() {
 		$this->seed_connection();
+
+		/*
+		 * A non-UTC site offset: the stamps are UTC epoch seconds, so a
+		 * renderer that lets human_time_diff() default to the site-local
+		 * baseline skews every delta by the offset and fails here.
+		 */
+		\update_option( 'gmt_offset', 5 );
 		\update_option(
 			Client::REFRESH_STATUS_OPTION,
 			array(
