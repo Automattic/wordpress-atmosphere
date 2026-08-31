@@ -172,6 +172,7 @@ class Atmosphere {
 		 * available on non-admin requests.
 		 */
 		\add_action( 'init', array( Admin::class, 'register' ), 5 );
+		\add_action( 'init', array( Icons::class, 'register' ) );
 
 		/*
 		 * Settings API option registration (`Options::init()`) and
