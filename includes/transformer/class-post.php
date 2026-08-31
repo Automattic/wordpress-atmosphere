@@ -1961,7 +1961,7 @@ class Post extends Base {
 			\_doing_it_wrong(
 				__METHOD__,
 				\esc_html__( 'atmosphere_post_embed must return an array or null; falling back to the unfiltered embed.', 'atmosphere' ),
-				'unreleased'
+				'1.1.0'
 			);
 			return $embed;
 		}
@@ -1981,7 +1981,7 @@ class Post extends Base {
 			\_doing_it_wrong(
 				__METHOD__,
 				\esc_html__( 'atmosphere_post_embed must return an embed array with a non-empty $type string, or null; falling back to the unfiltered embed.', 'atmosphere' ),
-				'unreleased'
+				'1.1.0'
 			);
 			return $embed;
 		}
