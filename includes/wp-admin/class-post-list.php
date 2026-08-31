@@ -33,7 +33,7 @@ use function Atmosphere\post_share_url;
  * would hand a contributor the PDS failure text stored on someone
  * else's post.
  *
- * @since unreleased
+ * @since 2.2.0
  */
 class Post_List {
 
@@ -80,7 +80,7 @@ class Post_List {
 	 * present and inert. That also removes it in connection-only mode,
 	 * where a host plugin owns the sharing surfaces.
 	 *
-	 * @since unreleased
+	 * @since 2.2.0
 	 */
 	public static function register(): void {
 		if ( ! is_auto_publish_enabled() ) {
@@ -105,7 +105,7 @@ class Post_List {
 	 * Registering it as a real column means Screen Options can hide it
 	 * without any extra setting of ours.
 	 *
-	 * @since unreleased
+	 * @since 2.2.0
 	 *
 	 * @param array $columns Existing columns.
 	 * @return array
@@ -119,7 +119,7 @@ class Post_List {
 	/**
 	 * Render one cell.
 	 *
-	 * @since unreleased
+	 * @since 2.2.0
 	 *
 	 * @param string $column  Column key being rendered.
 	 * @param int    $post_id Post ID for the row.
@@ -179,7 +179,7 @@ class Post_List {
 	 * sharing actions to this list, and a bare "Share now" would not say
 	 * where the post is going.
 	 *
-	 * @since unreleased
+	 * @since 2.2.0
 	 *
 	 * @param array    $actions Existing row actions.
 	 * @param \WP_Post $post    Post for the row.
@@ -221,7 +221,7 @@ class Post_List {
 	 * behind it: a site can publish documents only for some posts and
 	 * keep the Bluesky companion for others.
 	 *
-	 * @since unreleased
+	 * @since 2.2.0
 	 *
 	 * @param \WP_Post $post Post to test.
 	 * @return bool
@@ -246,7 +246,7 @@ class Post_List {
 	 * fifteen minutes and beyond, and a second worker must not be queued
 	 * alongside a retry that is still pending.
 	 *
-	 * @since unreleased
+	 * @since 2.2.0
 	 *
 	 * @param \WP_Post $post Post to share.
 	 * @return string One of the `RESULT_*` constants.
@@ -264,7 +264,7 @@ class Post_List {
 	/**
 	 * Handle the row-action request.
 	 *
-	 * @since unreleased
+	 * @since 2.2.0
 	 */
 	public static function handle_share(): void {
 		$post_id = isset( $_GET['post'] ) ? (int) $_GET['post'] : 0;
@@ -289,7 +289,7 @@ class Post_List {
 	/**
 	 * Tell the user what happened after a share request.
 	 *
-	 * @since unreleased
+	 * @since 2.2.0
 	 */
 	public static function maybe_render_share_notice(): void {
 		$screen = \function_exists( 'get_current_screen' ) ? \get_current_screen() : null;

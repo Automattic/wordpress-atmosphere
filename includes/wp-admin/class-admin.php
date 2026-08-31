@@ -560,7 +560,7 @@ class Admin {
 	 * site-wide, so it does not earn a place on every screen. The admin
 	 * who can reconnect is the one on this page.
 	 *
-	 * @since unreleased
+	 * @since 2.2.0
 	 */
 	public static function maybe_render_threadgate_scope_notice(): void {
 		if ( ! \current_user_can( 'manage_options' ) ) {

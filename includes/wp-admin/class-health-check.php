@@ -49,7 +49,7 @@ class Health_Check {
 	 * `health-check-` and replacing the first underscore with a hyphen,
 	 * so it must carry exactly one underscore.
 	 *
-	 * @since unreleased
+	 * @since 2.2.0
 	 *
 	 * @var string
 	 */
@@ -58,7 +58,7 @@ class Health_Check {
 	/**
 	 * The admin-ajax action core calls for {@see self::REACHABILITY_TEST}.
 	 *
-	 * @since unreleased
+	 * @since 2.2.0
 	 *
 	 * @var string
 	 */
@@ -195,7 +195,7 @@ class Health_Check {
 	 * Same nonce and capability core used for its own admin-ajax tests.
 	 * The screen reads `response.data`, hence `wp_send_json_success()`.
 	 *
-	 * @since unreleased
+	 * @since 2.2.0
 	 */
 	public static function ajax_client_metadata(): void {
 		\check_ajax_referer( 'health-check-site-status' );
@@ -231,7 +231,7 @@ class Health_Check {
 	 * than critical, since split-horizon setups can fail validation from
 	 * the server itself while being perfectly valid from outside.
 	 *
-	 * @since unreleased
+	 * @since 2.2.0
 	 *
 	 * @return array Site Health test result.
 	 */
@@ -341,7 +341,7 @@ class Health_Check {
 	/**
 	 * Describe what is wrong with a client-metadata response, or '' when nothing is.
 	 *
-	 * @since unreleased
+	 * @since 2.2.0
 	 *
 	 * @param array|\WP_Error $response Result of the loopback request.
 	 * @param string          $url      The client metadata URL that was fetched.
@@ -383,7 +383,7 @@ class Health_Check {
 	 * The audience is users who can install plugins, who can read the
 	 * page directly anyway.
 	 *
-	 * @since unreleased
+	 * @since 2.2.0
 	 *
 	 * @param string $body Raw body.
 	 * @return string
@@ -403,7 +403,7 @@ class Health_Check {
 	 * Recommended, not critical: posts still publish, only the restriction
 	 * is skipped.
 	 *
-	 * @since unreleased
+	 * @since 2.2.0
 	 *
 	 * @return array Site Health test result.
 	 */

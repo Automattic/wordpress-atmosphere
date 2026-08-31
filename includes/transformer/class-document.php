@@ -269,7 +269,7 @@ class Document extends Base {
 			\_doing_it_wrong(
 				__METHOD__,
 				\esc_html__( 'atmosphere_document_contributors must return an array of contributor objects; omitting the contributors field.', 'atmosphere' ),
-				'unreleased'
+				'2.0.0'
 			);
 			return null;
 		}
@@ -280,7 +280,7 @@ class Document extends Base {
 				\_doing_it_wrong(
 					__METHOD__,
 					\esc_html__( 'Document contributors must include a non-empty DID string; omitting the contributors field.', 'atmosphere' ),
-					'unreleased'
+					'2.0.0'
 				);
 				return null;
 			}
@@ -384,7 +384,7 @@ class Document extends Base {
 			\_doing_it_wrong(
 				__METHOD__,
 				\esc_html__( 'atmosphere_document_content must return an array; falling back to the parser output.', 'atmosphere' ),
-				'unreleased'
+				'1.2.0'
 			);
 			return $content;
 		}
@@ -409,7 +409,7 @@ class Document extends Base {
 				$fallback_to_parser
 					? \esc_html__( 'Content parsers must return a non-empty $type field; falling back to the parser output.', 'atmosphere' )
 					: \esc_html__( 'Content parsers must return a non-empty $type field; omitting the content field.', 'atmosphere' ),
-				'unreleased'
+				'1.2.0'
 			);
 			return null;
 		}
@@ -420,7 +420,7 @@ class Document extends Base {
 				$fallback_to_parser
 					? \esc_html__( 'Content parsers must return a $type field matching get_type(); falling back to the parser output.', 'atmosphere' )
 					: \esc_html__( 'Content parsers must return a $type field matching get_type(); omitting the content field.', 'atmosphere' ),
-				'unreleased'
+				'1.2.0'
 			);
 			return null;
 		}

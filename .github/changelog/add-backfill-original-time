@@ -1,4 +1,0 @@
-Significance: minor
-Type: added
-
-The backfill command can now preserve each post's original publish date so historical posts appear in the right chronological order in Bluesky and standard.site readers.

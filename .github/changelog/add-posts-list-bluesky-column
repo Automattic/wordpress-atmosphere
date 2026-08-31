@@ -1,4 +1,0 @@
-Significance: minor
-Type: added
-
-Add a Bluesky column to the posts list showing whether a post was shared, with a link to it, plus a "Share to Bluesky" action to share a post that did not make it the first time.

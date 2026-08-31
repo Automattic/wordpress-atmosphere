@@ -112,7 +112,7 @@ function appview_url( string $path, array $context = array() ): string {
  * so every caller inherits the same strictness and the same
  * {@see appview_url()} host and route filters.
  *
- * @since unreleased
+ * @since 2.2.0
  *
  * @param string $uri AT-URI of a Bluesky post record.
  * @return string Web URL, or '' when the URI is not one of our post records.
@@ -154,7 +154,7 @@ function post_web_url( string $uri ): string {
  * Shared by the editor panel's `atmosphere_url` REST field and the posts-list
  * column, so both link to the same place and agree on what "not shared" means.
  *
- * @since unreleased
+ * @since 2.2.0
  *
  * @param int $post_id Post ID.
  * @return string Web URL, or '' until the post has a Bluesky record.
@@ -204,7 +204,7 @@ function appview_base_url( string $base ): string {
 		\_doing_it_wrong(
 			__FUNCTION__,
 			\esc_html__( 'atmosphere_appview_host must return a host (optionally with a scheme and path prefix); falling back to bsky.app.', 'atmosphere' ),
-			'unreleased'
+			'2.0.0'
 		);
 		return 'https://bsky.app';
 	}
@@ -540,7 +540,7 @@ function has_identity(): bool {
  * directly, so the option's shape and its autoload flag (which
  * {@see get_identity()}'s lazy migration also relies on) live in one place.
  *
- * @since unreleased
+ * @since 2.2.0
  *
  * @param array $identity Identity to store. Only `did`, `handle`, and
  *                        `pds_endpoint` are persisted; a missing or
@@ -666,7 +666,7 @@ function needs_reauth(): bool {
  * refreshed since, or the server did not say. Callers must treat null as
  * "no information", not as "nothing granted".
  *
- * @since unreleased
+ * @since 2.2.0
  *
  * @return string[]|null Granted scope tokens, or null when unknown.
  */
@@ -689,7 +689,7 @@ function connection_scopes(): ?array {
  * through the normal publish error. Hiding a working feature on every
  * pre-existing install would be worse than the occasional failed write.
  *
- * @since unreleased
+ * @since 2.2.0
  *
  * @return bool
  */
@@ -782,7 +782,7 @@ function reauth_reason_lead(): string {
  * cause, a non-admin gets nothing at all: that is a state the administrator
  * chose, not a problem for every author to worry about.
  *
- * @since unreleased
+ * @since 2.2.0
  *
  * @return string Translated, unescaped sentence. Empty when no reconnect is needed.
  */
@@ -839,7 +839,7 @@ function reauth_lead_for_current_user(): string {
  * where the panel stays quiet but "will this post be shared" still needs an
  * answer.
  *
- * @since unreleased
+ * @since 2.2.0
  *
  * @return array{state: string, message: string, reason: string, severity: string, action: bool, can_share: bool, sharing_enabled: bool}
  */
@@ -932,7 +932,7 @@ function settings_url(): string {
  * page is hidden (connection-only mode) and the Connectors API is available,
  * or nowhere when neither exists.
  *
- * @since unreleased
+ * @since 2.2.0
  *
  * @return string Unescaped admin URL, or '' when there is no reconnect destination.
  */
@@ -954,7 +954,7 @@ function reconnect_url(): string {
 	 * text, which is what happens by default when there is no screen to
 	 * link to.
 	 *
-	 * @since unreleased
+	 * @since 2.2.0
 	 *
 	 * @param string $url Admin URL to reconnect at, or '' when there is none.
 	 */
@@ -1516,7 +1516,7 @@ function is_publication_sync_enabled(): bool {
  *
  * The post is passed to the filter so a callback can answer per post.
  *
- * @since unreleased
+ * @since 2.2.0
  *
  * @param \WP_Post $post The post being published.
  * @return bool True when the Bluesky companion post should be published. Default true.
@@ -1529,7 +1529,7 @@ function is_bluesky_post_enabled( \WP_Post $post ): bool {
 	 * Return false to publish documents only. Forward-only: it does not remove
 	 * Bluesky posts published before it was enabled.
 	 *
-	 * @since unreleased
+	 * @since 2.2.0
 	 *
 	 * @param bool     $enabled Whether to publish the Bluesky companion post. Default true.
 	 * @param \WP_Post $post    The post being published.

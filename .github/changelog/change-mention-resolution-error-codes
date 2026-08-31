@@ -1,4 +1,0 @@
-Significance: patch
-Type: changed
-
-Mention resolution now tells a temporarily unreachable handle host apart from a handle that has no verification set up.

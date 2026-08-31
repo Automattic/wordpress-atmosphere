@@ -201,7 +201,7 @@ abstract class Base {
 	 * `atmosphere_record_tags` runs, so a filter cannot push a record
 	 * past what the lexicons accept.
 	 *
-	 * @since unreleased
+	 * @since 2.2.0
 	 *
 	 * @var int
 	 */
@@ -259,7 +259,7 @@ abstract class Base {
 		 * tag names rather than picking from existing terms should keep
 		 * them short itself.
 		 *
-		 * @since unreleased
+		 * @since 2.2.0
 		 *
 		 * @param string[] $tags Tag names collected from the post's tags and categories.
 		 * @param \WP_Post $post WordPress post.
@@ -270,7 +270,7 @@ abstract class Base {
 			\_doing_it_wrong(
 				__METHOD__,
 				\esc_html__( 'atmosphere_record_tags must return an array; falling back to the unfiltered tags.', 'atmosphere' ),
-				'unreleased'
+				'2.2.0'
 			);
 			$filtered = $tags;
 		}
@@ -440,7 +440,7 @@ abstract class Base {
 		}
 
 		if ( ! \is_array( $value ) || empty( $value['$type'] ) || ! \is_string( $value['$type'] ) ) {
-			\_doing_it_wrong( \esc_html( $method ), \esc_html( $message ), 'unreleased' );
+			\_doing_it_wrong( \esc_html( $method ), \esc_html( $message ), '2.0.0' );
 			return null;
 		}
 
@@ -468,7 +468,7 @@ abstract class Base {
 			\_doing_it_wrong(
 				\esc_html( $method ),
 				\esc_html__( 'Self-label filters must return a com.atproto.label.defs#selfLabels object with a values array; omitting the labels field.', 'atmosphere' ),
-				'unreleased'
+				'2.0.0'
 			);
 			return null;
 		}
@@ -478,7 +478,7 @@ abstract class Base {
 				\_doing_it_wrong(
 					\esc_html( $method ),
 					\esc_html__( 'Self-label values must be arrays with a non-empty string val field; omitting the labels field.', 'atmosphere' ),
-					'unreleased'
+					'2.0.0'
 				);
 				return null;
 			}

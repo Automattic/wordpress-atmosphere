@@ -1,4 +1,0 @@
-Significance: minor
-Type: added
-
-Add a way for sites to change the tags and keywords sent to Bluesky and standard.site, so leftover terms from an import stay out of the records.

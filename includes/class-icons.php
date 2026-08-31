@@ -29,7 +29,7 @@ namespace Atmosphere;
  * allow-list; ours use `<svg>` and `<path>`, monochrome, with the fill
  * inherited so the Icon block's color tools apply.
  *
- * @since unreleased
+ * @since 2.2.0
  */
 class Icons {
 
@@ -45,7 +45,7 @@ class Icons {
 	 *
 	 * Hooked on `init`, where core registers its own collections.
 	 *
-	 * @since unreleased
+	 * @since 2.2.0
 	 */
 	public static function register(): void {
 		if ( ! \function_exists( 'wp_register_icon_collection' ) ) {
@@ -82,7 +82,7 @@ class Icons {
 	/**
 	 * The icons the plugin ships, as file name => label.
 	 *
-	 * @since unreleased
+	 * @since 2.2.0
 	 *
 	 * @return array<string, string>
 	 */
