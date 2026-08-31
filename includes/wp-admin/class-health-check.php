@@ -30,6 +30,7 @@ use function Atmosphere\is_auto_publish_enabled;
 use function Atmosphere\is_connected;
 use function Atmosphere\is_operator_disconnected;
 use function Atmosphere\reauth_reason_lead;
+use function Atmosphere\reconnect_url;
 use function Atmosphere\settings_url;
 use function Atmosphere\threadgate_needs_reconnect;
 use function Atmosphere\truncate_text;
@@ -142,18 +143,28 @@ class Health_Check {
 			return $result;
 		}
 
-		$result['actions'] = \sprintf(
-			'<p><a href="%s">%s</a></p>',
-			\esc_url( settings_url() ),
-			\esc_html__( 'Open the ATmosphere settings page', 'atmosphere' )
-		);
+		/*
+		 * Routed through the shared resolver rather than hardcoding the
+		 * settings page: in connection-only mode that page is hidden, and
+		 * the resolver falls back to the Connectors screen (or, with
+		 * neither available, an empty string — no action link to show).
+		 */
+		$reconnect_url = reconnect_url();
+
+		if ( '' !== $reconnect_url ) {
+			$result['actions'] = \sprintf(
+				'<p><a href="%s">%s</a></p>',
+				\esc_url( $reconnect_url ),
+				\esc_html__( 'Manage your Bluesky connection', 'atmosphere' )
+			);
+		}
 
 		if ( 'never_connected' === $state ) {
 			$result['status']      = 'recommended';
 			$result['label']       = \__( 'ATmosphere is not connected to Bluesky yet', 'atmosphere' );
 			$result['description'] = \sprintf(
 				'<p>%s</p>',
-				\__( 'Connect a Bluesky account on the settings page to start sharing posts and comments.', 'atmosphere' )
+				\__( 'Connect a Bluesky account to start sharing posts and comments.', 'atmosphere' )
 			);
 
 			return $result;
@@ -466,13 +477,17 @@ class Health_Check {
 	 */
 	private static function reauth_description(): string {
 		/*
-		 * The cause sentence is shared with the admin reconnect notice
-		 * via `reauth_reason_lead()`; only the action tail is owned here.
+		 * The cause sentence comes from `reauth_reason_lead()`, shared with
+		 * the admin notice and both editor surfaces (those three read it
+		 * through `reauth_lead_for_current_user()`, which drops the cause
+		 * for a reader who cannot reconnect; this screen needs
+		 * `view_site_health_checks`, so it always shows it). Only the action
+		 * tail is owned here.
 		 */
 		$description = \sprintf(
 			'<p>%s %s</p>',
 			reauth_reason_lead(),
-			\__( 'Reconnect your Bluesky account on the settings page to resume sharing.', 'atmosphere' )
+			\__( 'Reconnect your Bluesky account to resume sharing.', 'atmosphere' )
 		);
 
 		if ( Client::REAUTH_REASON_KEY_CHANGED !== get_reauth_reason() ) {

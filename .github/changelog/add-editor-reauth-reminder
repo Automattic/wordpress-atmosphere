@@ -1,0 +1,4 @@
+Significance: minor
+Type: added
+
+The post editor now tells you when your Bluesky connection has expired so you can reconnect before publishing, and warns you in the editor before saving a change that removes a post from Bluesky.

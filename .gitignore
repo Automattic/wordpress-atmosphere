@@ -10,3 +10,6 @@ package-lock.json
 .idea/
 .vscode/
 .DS_Store
+
+# Local UI screenshots, not part of the plugin.
+/.screenshots/

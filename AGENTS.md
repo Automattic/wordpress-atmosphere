@@ -21,7 +21,7 @@ includes/
 ├── oauth/                      # OAuth flow (Client, DPoP, Encryption, Resolver, Nonce).
 ├── rest/                       # REST controllers (public + admin-only under rest/admin/).
 ├── transformer/                # AT Protocol record transformers (Post, Document, Publication, Comment, Facet, TID).
-└── wp-admin/                   # Admin UI (settings page, sidebar panel).
+└── wp-admin/                   # Admin UI (settings page, sidebar panel, posts-list column).
 integrations/                   # Plugin-specific content-parser integrations (stubs).
 templates/                      # PHP template files.
 assets/                         # CSS, JS, and images.
@@ -109,6 +109,7 @@ Test files live in `tests/phpunit/tests/` mirroring `includes/` structure. Files
 - **Registration & card.** Registers an `atmosphere` connector on `wp_connectors_init` with `authentication.method => 'none'` (core only auto-renders a UI for `api_key` connectors) and ships a script module (`src/connectors-card/`) that renders the connect/disconnect card. The card drives the flow through `Atmosphere\Rest\Admin\Connection_Controller` (authorize/disconnect), reusing the OAuth `Client`.
 - **Two screen URLs.** Core's top-level `options-connectors.php` (`Connectors::SCREEN`) vs. the Gutenberg plugin's Settings submenu (`options-general.php?page=options-connectors-wp-admin`). Both matched via the shared `Connectors::SCREEN_SLUG` marker: `Connectors::is_connectors_screen()` gates the card enqueue; `Connectors::screen_url()` resolves the OAuth return destination.
 - **Return destination is server-side only.** The card sets a boolean `atmosphere_oauth_from_connectors` transient — no URL crosses the wire. `Admin::handle_oauth_callback()` derives the destination from `screen_url()` (which reads the registered admin `$submenu`), so nothing external can steer the `wp_safe_redirect()`.
+- **Reconnect destination.** Every reconnect prompt (the admin notice, both editor surfaces, Site Health) resolves through `Atmosphere\reconnect_url()`: the settings page while visible, else the Connectors screen when one exists, else nothing. The `atmosphere_reconnect_url` filter runs last, so a host plugin with its own connect UI can redirect all four at once; returning `''` drops the link and leaves plain text.
 - **Handle typeahead.** The card's handle field uses the `atmosphere_handle_typeahead_url` filter (default `public.api.bsky.app`; `''` disables). Shared with the plugin's own Settings connect field via `Atmosphere\handle_typeahead_url()` and `src/shared/handle-typeahead.js`.
 
 **Icon library** — Progressive-enhancement registration with the WordPress 7.1 icon library. `Atmosphere\Icons` (`includes/class-icons.php`), gated on `function_exists( 'wp_register_icon_collection' )` (same shape as Connectors; the plugin's floor is 6.5). Registers the `atmosphere` collection with the ATmosphere mark and the Bluesky butterfly, monochrome, from `assets/svg/`. Those SVGs MUST stay within the library sanitizer's allow-list (`svg`/`path`/`polygon` elements only, no `stroke`); a test pins that property, so redraw assets accordingly.
