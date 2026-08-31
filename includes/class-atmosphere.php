@@ -1501,6 +1501,17 @@ class Atmosphere {
 			? \array_column( Publisher::collect_published_comment_tids( $post_id ), 'tid' )
 			: array();
 
+		/*
+		 * Capture the DIDs the records were minted under while the meta
+		 * still exists. By the time the cron fires the post row and its
+		 * meta are gone, so delete_post_by_tids() cannot look them up
+		 * itself; passing them through lets it refuse to delete against a
+		 * repo the records never lived in (disconnect + reconnect-to-a-new
+		 * account).
+		 */
+		$bsky_origin_did = (string) \get_post_meta( $post_id, Transformer\Post::META_DID, true );
+		$doc_origin_did  = (string) \get_post_meta( $post_id, Transformer\Document::META_DID, true );
+
 		// A written threadgate shares the root post's rkey. Capture it now
 		// while the meta still exists so the async delete can remove it after
 		// the post row is gone.
@@ -1512,7 +1523,7 @@ class Atmosphere {
 			\wp_schedule_single_event(
 				\time(),
 				'atmosphere_delete_records',
-				array( $bsky_tids, $doc_tid, $comment_tids, $threadgate_tid )
+				array( $bsky_tids, $doc_tid, $comment_tids, $threadgate_tid, $bsky_origin_did, $doc_origin_did )
 			);
 		}
 	}
@@ -1616,8 +1627,15 @@ class Atmosphere {
 			return;
 		}
 
+		/*
+		 * Capture the DID the reply was minted under before the row and
+		 * its meta are removed, so the async worker can refuse to delete
+		 * against a repo the record never lived in.
+		 */
+		$origin_did = (string) \get_comment_meta( $comment_id, Comment::META_DID, true );
+
 		$tid  = (string) $tid;
-		$args = array( $tid );
+		$args = array( $tid, $origin_did );
 
 		if ( \wp_next_scheduled( 'atmosphere_delete_comment_record', $args ) ) {
 			return;
@@ -2231,15 +2249,18 @@ class Atmosphere {
 
 		\add_action(
 			'atmosphere_delete_records',
-			static function ( $bsky_tids, string $doc_tid, $comment_tids = array(), string $threadgate_tid = '' ): void {
+			static function ( $bsky_tids, string $doc_tid, $comment_tids = array(), string $threadgate_tid = '', string $bsky_origin_did = '', string $doc_origin_did = '' ): void {
 				/*
 				 * delete_post_by_tids() drops the comment TIDs itself when
 				 * comment publishing is disabled at execution time. The
-				 * threadgate arg defaults so events queued before the arg
-				 * existed still run.
+				 * trailing args all default so an event queued before they
+				 * existed still fires cleanly: no threadgate to remove, and
+				 * the wrong-repo-delete guard disabled for that record. The
+				 * threadgate arg comes first because it shipped first; the
+				 * positions of already-queued events must not move.
 				 */
 				$comment_tids = \is_array( $comment_tids ) ? $comment_tids : array();
-				$result       = Publisher::delete_post_by_tids( $bsky_tids, $doc_tid, $comment_tids, $threadgate_tid );
+				$result       = Publisher::delete_post_by_tids( $bsky_tids, $doc_tid, $comment_tids, $threadgate_tid, $bsky_origin_did, $doc_origin_did );
 
 				if ( \is_wp_error( $result ) ) {
 					/*
@@ -2261,7 +2282,7 @@ class Atmosphere {
 				}
 			},
 			10,
-			4
+			6
 		);
 
 		/*
@@ -2357,12 +2378,12 @@ class Atmosphere {
 
 		\add_action(
 			'atmosphere_delete_comment_record',
-			static function ( string $tid ): void {
+			static function ( string $tid, string $origin_did = '' ): void {
 				if ( ! is_comment_publishing_enabled() || '' === $tid ) {
 					return;
 				}
 
-				$result = Publisher::delete_comment_by_tid( $tid );
+				$result = Publisher::delete_comment_by_tid( $tid, $origin_did );
 
 				if ( \is_wp_error( $result ) ) {
 					// Worst-case path: the WP comment row is already gone,
@@ -2379,7 +2400,7 @@ class Atmosphere {
 				}
 			},
 			10,
-			1
+			2
 		);
 	}
 
@@ -2829,17 +2850,17 @@ class Atmosphere {
 		}
 
 		$tid = (string) \get_comment_meta( $comment_id, Comment::META_TID, true );
+		// Capture the origin DID before clearing meta so the TID-only
+		// cleanup event can guard against a wrong-repo delete.
+		$origin_did = (string) \get_comment_meta( $comment_id, Comment::META_DID, true );
 
-		\delete_comment_meta( $comment_id, Comment::META_TID );
-		\delete_comment_meta( $comment_id, Comment::META_URI );
-		\delete_comment_meta( $comment_id, Comment::META_CID );
-		\delete_comment_meta( $comment_id, Reaction_Sync::META_SOURCE_ID );
+		Publisher::clear_comment_record_meta( $comment_id );
 
 		if ( '' === $tid ) {
 			return;
 		}
 
-		$args = array( $tid );
+		$args = array( $tid, $origin_did );
 
 		if ( \wp_next_scheduled( 'atmosphere_delete_comment_record', $args ) ) {
 			return;

@@ -291,6 +291,33 @@ class Test_Comment extends WP_UnitTestCase {
 	}
 
 	/**
+	 * The rkey persists the connected DID as provenance so the comment
+	 * cleanup paths can later refuse a wrong-repo delete. Refreshed to the
+	 * current account even when a TID already exists from a prior one.
+	 *
+	 * @covers ::get_rkey
+	 */
+	public function test_get_rkey_persists_origin_did() {
+		\update_option( 'atmosphere_identity', array( 'did' => 'did:plc:me' ) );
+
+		$comment_id = self::factory()->comment->create(
+			array(
+				'comment_post_ID' => $this->post_id,
+				'user_id'         => 1,
+			)
+		);
+		// Stale TID from a previous account; DID provenance must still refresh.
+		\update_comment_meta( $comment_id, Comment::META_TID, 'oldtid' );
+		\update_comment_meta( $comment_id, Comment::META_DID, 'did:plc:previous' );
+
+		( new Comment( \get_comment( $comment_id ) ) )->get_rkey();
+
+		$this->assertSame( 'did:plc:me', \get_comment_meta( $comment_id, Comment::META_DID, true ) );
+
+		\delete_option( 'atmosphere_identity' );
+	}
+
+	/**
 	 * The atmosphere_transform_comment filter can mutate the record.
 	 *
 	 * @covers ::transform
