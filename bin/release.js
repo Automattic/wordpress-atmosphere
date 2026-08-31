@@ -243,7 +243,9 @@ async function createRelease() {
 	// Prompt for and update the upgrade notice section in readme.txt
 	await updateReadmeWithUpgradeNotice( version );
 
-	const phpFiles = execWithOutput( 'find . -name "*.php"' ).split( '\n' );
+	const phpFiles = execWithOutput(
+		'find . -name "*.php" -not -path "./vendor/*" -not -path "./node_modules/*"'
+	).split( '\n' );
 
 	phpFiles.forEach( ( filePath ) => {
 		updateVersionInFile( filePath, version, [
@@ -255,20 +257,37 @@ async function createRelease() {
 				search: /@deprecated unreleased/gi,
 				replace: `@deprecated ${ version }`,
 			},
+			/*
+			 * Version arguments to _doing_it_wrong(), the _deprecated_*()
+			 * family, and the *_deprecated hook helpers.
+			 *
+			 * These match on the literal's argument position rather than on
+			 * the name of the function it belongs to. Matching by name meant
+			 * anchoring to `.*?`, which never crosses a newline, so a call
+			 * wrapped across several lines kept its placeholder. That is the
+			 * common style here, and it silently shipped `unreleased` in
+			 * every release up to 2.2.0.
+			 */
 			{
-				search: /(?<=_deprecated_(?:function|class|constructor|file|argument|hook)\s*\(\s*.*?,\s*')unreleased(?=')/gi,
-				replace: ( match ) => match.replace( /unreleased/i, version ),
-			},
-			{
-				search: /(?<=_doing_it_wrong\s*\(\s*.*?,\s*'.*?',\s*')unreleased(?=')/gi,
-				replace: ( match ) => match.replace( /unreleased/i, version ),
-			},
-			{
-				search: /(?<=\b(?:apply_filters_deprecated|do_action_deprecated)\s*\(\s*'.*?'\s*,\s*array\s*\(.*?\)\s*,\s*')unreleased(?=['"],\s*['"])/gi,
-				replace: ( match ) => match.replace( /unreleased/i, version ),
+				search: /(?<=[(,]\s*)'unreleased'(?=\s*[,)])/gi,
+				replace: `'${ version }'`,
 			},
 		] );
 	} );
+
+	/*
+	 * The rewrite above is best-effort, so report anything still carrying the
+	 * placeholder instead of letting it reach a tag unnoticed.
+	 */
+	const leftovers = execWithOutput(
+		'grep -rnE "\'unreleased\'|@(since|deprecated) unreleased" --include="*.php" . --exclude-dir=vendor --exclude-dir=node_modules || true'
+	);
+
+	if ( leftovers ) {
+		console.warn( `\nWarning: \`unreleased\` is still present after the ${ version } rewrite:` );
+		console.warn( leftovers );
+		console.warn( 'Stamp each one with the release that added it before merging the release PR.\n' );
+	}
 
 	// Stage and commit changes
 	exec( 'git add .' );

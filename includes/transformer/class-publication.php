@@ -192,7 +192,7 @@ class Publication extends Base {
 			\_doing_it_wrong(
 				__METHOD__,
 				\esc_html__( 'atmosphere_publication_show_in_discover must return true, false, or null; omitting the preferences field.', 'atmosphere' ),
-				'unreleased'
+				'2.0.0'
 			);
 		}
 
@@ -310,7 +310,7 @@ class Publication extends Base {
 			\_doing_it_wrong(
 				__METHOD__,
 				\esc_html__( 'atmosphere_publication_basic_theme must return an array or null; falling back to the unfiltered basicTheme value.', 'atmosphere' ),
-				'unreleased'
+				'2.1.0'
 			);
 
 			return $basic_theme;

@@ -431,7 +431,7 @@ abstract class Base {
 		}
 
 		if ( ! \is_array( $value ) || empty( $value['$type'] ) || ! \is_string( $value['$type'] ) ) {
-			\_doing_it_wrong( \esc_html( $method ), \esc_html( $message ), 'unreleased' );
+			\_doing_it_wrong( \esc_html( $method ), \esc_html( $message ), '2.0.0' );
 			return null;
 		}
 
@@ -459,7 +459,7 @@ abstract class Base {
 			\_doing_it_wrong(
 				\esc_html( $method ),
 				\esc_html__( 'Self-label filters must return a com.atproto.label.defs#selfLabels object with a values array; omitting the labels field.', 'atmosphere' ),
-				'unreleased'
+				'2.0.0'
 			);
 			return null;
 		}
@@ -469,7 +469,7 @@ abstract class Base {
 				\_doing_it_wrong(
 					\esc_html( $method ),
 					\esc_html__( 'Self-label values must be arrays with a non-empty string val field; omitting the labels field.', 'atmosphere' ),
-					'unreleased'
+					'2.0.0'
 				);
 				return null;
 			}
