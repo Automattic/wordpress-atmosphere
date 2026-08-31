@@ -1,0 +1,4 @@
+Significance: patch
+Type: security
+
+Strip HTML from the display names of Bluesky accounts whose replies, likes, and reposts are imported as comments, and keep names containing an ampersand from breaking the comment feeds.
