@@ -152,7 +152,7 @@ class Resolver {
 	 * branches on it today; the improvement users actually see is the
 	 * message. Returns null for a 2xx response so the caller parses.
 	 *
-	 * @since unreleased
+	 * @since 2.2.0
 	 *
 	 * @param array  $response `wp_remote_*` response array.
 	 * @param string $label    Human label for the fetched resource.
