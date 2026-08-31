@@ -22,7 +22,7 @@
 		"dealerdirect/phpcodesniffer-composer-installer": "^1.0.0",
 		"sirbrillig/phpcs-variable-analysis": "^3.0",
 		"phpcsstandards/phpcsextra": "^1.1.0",
-		"automattic/jetpack-changelogger": "^6.0"
+		"automattic/jetpack-changelogger": "^7.0"
 	},
 	"autoload": {},
 	"scripts": {
