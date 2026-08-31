@@ -843,11 +843,8 @@ class Client {
 		$conn = \get_option( 'atmosphere_connection', array() );
 
 		if ( empty( $conn['refresh_token'] ) ) {
-			/*
-			 * Recorded so a malformed connection row does not read as a
-			 * renewal that never ran: this one is fixed by reconnecting,
-			 * not by looking at WP-Cron.
-			 */
+			// Recorded so a malformed row does not read as a renewal that
+			// never ran — the rationale lives on REFRESH_STATUS_OPTION.
 			self::record_refresh_failure( 'atmosphere_no_refresh' );
 
 			return new \WP_Error( 'atmosphere_no_refresh', \__( 'No refresh token available.', 'atmosphere' ) );
@@ -880,6 +877,10 @@ class Client {
 			$conn = \get_option( 'atmosphere_connection', array() );
 
 			if ( empty( $conn['refresh_token'] ) ) {
+				// Same story as the pre-lock check above; the recorder's
+				// own guard drops it when the row is simply gone.
+				self::record_refresh_failure( 'atmosphere_no_refresh' );
+
 				return new \WP_Error( 'atmosphere_no_refresh', \__( 'No refresh token available.', 'atmosphere' ) );
 			}
 
@@ -899,13 +900,8 @@ class Client {
 	 * @return true|\WP_Error
 	 */
 	private static function refresh_locked( array $conn ): true|\WP_Error {
-		/*
-		 * Local failures are recorded too. A key rotation makes every
-		 * hourly run fail right here, before a request is even built —
-		 * without a record the panel would report "never renewed",
-		 * which reads as "the worker is not running" and sends the
-		 * operator after the wrong problem.
-		 */
+		// Local failures are recorded too: a key rotation fails every run
+		// right here, before a request is even built.
 		$refresh_token = self::decrypt_field( $conn, 'refresh_token' );
 		if ( \is_wp_error( $refresh_token ) ) {
 			self::record_refresh_failure( $refresh_token->get_error_code(), $conn );
@@ -1110,11 +1106,7 @@ class Client {
 		 */
 		$current = \get_option( 'atmosphere_connection', array() );
 
-		if ( ! \is_array( $current )
-			|| empty( $current['refresh_token'] )
-			|| ! isset( $conn['refresh_token'] )
-			|| ! \hash_equals( (string) $conn['refresh_token'], (string) $current['refresh_token'] )
-		) {
+		if ( ! \is_array( $current ) || ! self::connection_row_matches( $conn, $current, 'refresh_token' ) ) {
 			return new \WP_Error(
 				'atmosphere_disconnected_mid_refresh',
 				\__( 'Connection changed while the refresh was in-flight; new tokens were discarded.', 'atmosphere' )
@@ -1281,26 +1273,60 @@ class Client {
 	}
 
 	/**
+	 * Whether the stored row still holds the ciphertext the caller read,
+	 * i.e. no disconnect or reconnect landed mid-flight. Libsodium
+	 * re-encrypts with a fresh nonce on every write, so any change to
+	 * the row at all fails the comparison.
+	 *
+	 * @since unreleased
+	 *
+	 * @param array  $conn    Connection as read by the caller.
+	 * @param array  $current Connection as stored now.
+	 * @param string $field   Ciphertext field to compare.
+	 * @return bool
+	 */
+	private static function connection_row_matches( array $conn, array $current, string $field ): bool {
+		return ! empty( $conn[ $field ] )
+			&& ! empty( $current[ $field ] )
+			&& \hash_equals( (string) $conn[ $field ], (string) $current[ $field ] );
+	}
+
+	/**
+	 * The recorded refresh history, tolerating a corrupted row.
+	 *
+	 * @since unreleased
+	 *
+	 * @return array
+	 */
+	public static function refresh_status(): array {
+		$status = \get_option( self::REFRESH_STATUS_OPTION, array() );
+
+		return \is_array( $status ) ? $status : array();
+	}
+
+	/**
+	 * Merge fields into the refresh history.
+	 *
+	 * @since unreleased
+	 *
+	 * @param array $fields Fields to stamp.
+	 */
+	private static function update_refresh_status( array $fields ): void {
+		\update_option( self::REFRESH_STATUS_OPTION, \array_merge( self::refresh_status(), $fields ), false );
+	}
+
+	/**
 	 * Record that a refresh attempt succeeded.
+	 *
+	 * The previous failure is kept rather than cleared: a session that
+	 * recovers after one rejected attempt is a different story from one
+	 * that never failed, and the difference matters when reading a
+	 * support report weeks later.
 	 *
 	 * @since unreleased
 	 */
 	private static function record_refresh_success(): void {
-		$status = \get_option( self::REFRESH_STATUS_OPTION, array() );
-
-		if ( ! \is_array( $status ) ) {
-			$status = array();
-		}
-
-		$status['last_success'] = \time();
-
-		/*
-		 * The previous failure is kept rather than cleared: a session
-		 * that recovers after one rejected attempt is a different story
-		 * from one that never failed, and the difference matters when
-		 * reading a support report weeks later.
-		 */
-		\update_option( self::REFRESH_STATUS_OPTION, $status, false );
+		self::update_refresh_status( array( 'last_success' => \time() ) );
 	}
 
 	/**
@@ -1329,20 +1355,9 @@ class Client {
 			return;
 		}
 
-		if ( ! empty( $conn['refresh_token'] )
-			&& ( empty( $current['refresh_token'] )
-				|| ! \hash_equals( (string) $conn['refresh_token'], (string) $current['refresh_token'] ) )
-		) {
+		if ( ! empty( $conn['refresh_token'] ) && ! self::connection_row_matches( $conn, $current, 'refresh_token' ) ) {
 			return;
 		}
-
-		$status = \get_option( self::REFRESH_STATUS_OPTION, array() );
-
-		if ( ! \is_array( $status ) ) {
-			$status = array();
-		}
-
-		$status['last_failure'] = \time();
 
 		/*
 		 * The code comes from a remote server and is rendered into the
@@ -1351,9 +1366,12 @@ class Client {
 		 * short; anything longer is noise or an attempt to use the panel
 		 * as a canvas.
 		 */
-		$status['last_error'] = \substr( \sanitize_text_field( $error ), 0, 64 );
-
-		\update_option( self::REFRESH_STATUS_OPTION, $status, false );
+		self::update_refresh_status(
+			array(
+				'last_failure' => \time(),
+				'last_error'   => \substr( \sanitize_text_field( $error ), 0, 64 ),
+			)
+		);
 	}
 
 	/**
@@ -1384,16 +1402,9 @@ class Client {
 	 *                       explained with an earlier failure's cause.
 	 */
 	private static function mark_needs_reauth( array $conn, string $field, string $reason = '' ): void {
-		if ( empty( $conn[ $field ] ) ) {
-			return;
-		}
-
 		$current = \get_option( 'atmosphere_connection', array() );
 
-		if ( ! \is_array( $current )
-			|| empty( $current[ $field ] )
-			|| ! \hash_equals( (string) $conn[ $field ], (string) $current[ $field ] )
-		) {
+		if ( ! \is_array( $current ) || ! self::connection_row_matches( $conn, $current, $field ) ) {
 			return;
 		}
 

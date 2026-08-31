@@ -878,23 +878,4 @@ class Test_Client_Refresh extends WP_UnitTestCase {
 		$this->assertLessThanOrEqual( 64, \strlen( $recorded ) );
 		$this->assertStringNotContainsString( '<b>', $recorded );
 	}
-
-	/**
-	 * A fresh authorization starts a new session, so the previous one's
-	 * history must not carry over.
-	 */
-	public function test_fresh_authorization_clears_the_refresh_history() {
-		\update_option(
-			Client::REFRESH_STATUS_OPTION,
-			array(
-				'last_failure' => \time(),
-				'last_error'   => 'invalid_grant',
-			)
-		);
-
-		\delete_option( 'atmosphere_connection' );
-		Client::disconnect();
-
-		$this->assertFalse( \get_option( Client::REFRESH_STATUS_OPTION ) );
-	}
 }

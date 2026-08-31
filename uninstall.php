@@ -24,7 +24,6 @@ require_once __DIR__ . '/includes/functions.php';
 // Remove options.
 $atmosphere_options = array(
 	'atmosphere_connection',
-	'atmosphere_refresh_status',
 	'atmosphere_identity',
 	'atmosphere_publication_tid',
 	'atmosphere_publication_cid',
@@ -52,6 +51,9 @@ $atmosphere_options = array(
 	// Hardcoded here because `uninstall.php` runs before the plugin
 	// bootstrap is loaded, so the constant isn't available.
 	'_atmosphere_refresh_lock',
+	// Canonical value: `\Atmosphere\OAuth\Client::REFRESH_STATUS_OPTION`.
+	// Hardcoded for the same reason as `_atmosphere_refresh_lock`.
+	'atmosphere_refresh_status',
 	// Canonical value: `\Atmosphere\Reaction_Sync::LOCK_OPTION`.
 	// Hardcoded because the reaction-sync class is unavailable during uninstall.
 	'_atmosphere_reaction_sync_lock',

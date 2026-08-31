@@ -605,11 +605,7 @@ class Health_Check {
 	 * @return string
 	 */
 	private static function last_refresh_debug_value(): string {
-		$status = \get_option( Client::REFRESH_STATUS_OPTION, array() );
-
-		if ( ! \is_array( $status ) ) {
-			$status = array();
-		}
+		$status = Client::refresh_status();
 
 		if ( empty( $status['last_success'] ) ) {
 			$success = \__( 'never', 'atmosphere' );
