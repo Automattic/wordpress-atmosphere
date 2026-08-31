@@ -15,6 +15,7 @@ namespace Atmosphere\OAuth;
 use Atmosphere\Atmosphere;
 use function Atmosphere\clear_scheduled_hooks;
 use function Atmosphere\debug_log;
+use function Atmosphere\truncate_graphemes;
 use function Atmosphere\get_connection;
 use function Atmosphere\set_identity;
 use function Atmosphere\is_success_status;
@@ -843,8 +844,10 @@ class Client {
 		$conn = \get_option( 'atmosphere_connection', array() );
 
 		if ( empty( $conn['refresh_token'] ) ) {
-			// Recorded so a malformed row does not read as a renewal that
-			// never ran — the rationale lives on REFRESH_STATUS_OPTION.
+			/*
+			 * Recorded so a malformed row does not read as a renewal that
+			 * never ran; the rationale lives on REFRESH_STATUS_OPTION.
+			 */
 			self::record_refresh_failure( 'atmosphere_no_refresh' );
 
 			return new \WP_Error( 'atmosphere_no_refresh', \__( 'No refresh token available.', 'atmosphere' ) );
@@ -877,14 +880,44 @@ class Client {
 			$conn = \get_option( 'atmosphere_connection', array() );
 
 			if ( empty( $conn['refresh_token'] ) ) {
-				// Same story as the pre-lock check above; the recorder's
-				// own guard drops it when the row is simply gone.
-				self::record_refresh_failure( 'atmosphere_no_refresh' );
-
+				/*
+				 * Deliberately not recorded: the token can only have
+				 * vanished between the two reads through a disconnect,
+				 * and the recorder's guard drops that write anyway.
+				 */
 				return new \WP_Error( 'atmosphere_no_refresh', \__( 'No refresh token available.', 'atmosphere' ) );
 			}
 
-			return self::refresh_locked( $conn );
+			$result = self::refresh_locked( $conn );
+
+			if ( true === $result ) {
+				/*
+				 * Stamped only after `refresh_locked()` put the tokens on
+				 * disk, so the timestamp always means a real renewal. A
+				 * long gap on a still-connected site is the signal that
+				 * the refresh worker stopped running.
+				 */
+				self::record_refresh_success();
+
+				return true;
+			}
+
+			/*
+			 * One recording site for every way the locked routine can
+			 * fail, so a future early return cannot silently skip the
+			 * history. The server's own code rides in the error data
+			 * when it differs from the WP_Error code.
+			 */
+			$data = $result->get_error_data();
+
+			self::record_refresh_failure(
+				\is_array( $data ) && ! empty( $data['refresh_error'] )
+					? (string) $data['refresh_error']
+					: (string) $result->get_error_code(),
+				$conn
+			);
+
+			return $result;
 		} finally {
 			self::unlock();
 		}
@@ -900,19 +933,13 @@ class Client {
 	 * @return true|\WP_Error
 	 */
 	private static function refresh_locked( array $conn ): true|\WP_Error {
-		// Local failures are recorded too: a key rotation fails every run
-		// right here, before a request is even built.
 		$refresh_token = self::decrypt_field( $conn, 'refresh_token' );
 		if ( \is_wp_error( $refresh_token ) ) {
-			self::record_refresh_failure( $refresh_token->get_error_code(), $conn );
-
 			return $refresh_token;
 		}
 
 		$dpop_jwk_json = self::decrypt_field( $conn, 'dpop_jwk' );
 		if ( \is_wp_error( $dpop_jwk_json ) ) {
-			self::record_refresh_failure( $dpop_jwk_json->get_error_code(), $conn );
-
 			return $dpop_jwk_json;
 		}
 
@@ -921,8 +948,6 @@ class Client {
 
 		$dpop_proof = DPoP::create_proof( $dpop_jwk, 'POST', $token_endpoint );
 		if ( false === $dpop_proof ) {
-			self::record_refresh_failure( 'atmosphere_dpop', $conn );
-
 			return new \WP_Error( 'atmosphere_dpop', \__( 'Failed to create DPoP proof for refresh.', 'atmosphere' ) );
 		}
 
@@ -954,8 +979,6 @@ class Client {
 			 * outside, and it is otherwise indistinguishable from a
 			 * worker that never ran.
 			 */
-			self::record_refresh_failure( $response->get_error_code(), $conn );
-
 			return $response;
 		}
 
@@ -994,8 +1017,6 @@ class Client {
 			);
 
 			if ( \is_wp_error( $response ) ) {
-				self::record_refresh_failure( $response->get_error_code(), $conn );
-
 				return $response;
 			}
 
@@ -1019,17 +1040,6 @@ class Client {
 		}
 
 		if ( ! is_success_status( $status ) || empty( $data['access_token'] ) ) {
-			$msg = $data['error_description'] ?? ( $data['error'] ?? '' );
-
-			/*
-			 * Same untrusted-body reasoning as `$error` below: neither
-			 * member is guaranteed to be a string, and this one reaches
-			 * a `WP_Error` message and a `sprintf()`.
-			 */
-			if ( ! \is_string( $msg ) || '' === $msg ) {
-				$msg = \__( 'Token refresh failed.', 'atmosphere' );
-			}
-
 			/*
 			 * Only mark the connection as needing reauth for permanent
 			 * errors where the refresh token has been consumed or revoked.
@@ -1048,39 +1058,39 @@ class Client {
 
 			/*
 			 * The auth server is whatever the admin's handle resolved to,
-			 * so its body shape is not ours to trust: an `error` member
-			 * that arrives as an object or a number must not reach a
-			 * `string` parameter, where PHP would raise an uncatchable
-			 * TypeError and turn a graceful failure into a fatal on the
-			 * cron and inline-publish paths.
+			 * so its body shape is not ours to trust: a member that
+			 * arrives as an object or a number must not reach a `string`
+			 * parameter, where PHP would raise an uncatchable TypeError
+			 * and turn a graceful failure into a fatal on the cron and
+			 * inline-publish paths.
 			 */
 			$error = $data['error'] ?? '';
 			$error = \is_string( $error ) ? $error : '';
+
+			$msg = $data['error_description'] ?? ( '' !== $error ? $error : '' );
+			if ( ! \is_string( $msg ) || '' === $msg ) {
+				$msg = \__( 'Token refresh failed.', 'atmosphere' );
+			}
 
 			if ( \in_array( $error, array( 'invalid_grant', 'invalid_client', 'unauthorized_client' ), true ) ) {
 				self::mark_needs_reauth( $conn, 'refresh_token' );
 			}
 
 			/*
-			 * Record and log the server's own error code. `needs_reauth`
-			 * says a reconnect is required but not why, and the three
-			 * permanent codes above mean very different things: a
-			 * consumed or replayed token, a client the auth server no
-			 * longer recognises, or a client barred from this grant.
-			 * Without this, every report of "it disconnected again"
-			 * starts from zero.
+			 * The server's own code is carried for the recorder in
+			 * `refresh()`: `needs_reauth` says a reconnect is required
+			 * but not why, and the three permanent codes above mean
+			 * very different things. Without it, every report of "it
+			 * disconnected again" starts from zero.
 			 */
-			self::record_refresh_failure( '' !== $error ? $error : 'http_' . $status, $conn );
-
-			debug_log(
-				\sprintf(
-					'token refresh failed (status %1$d): %2$s',
-					$status,
-					'' !== $error ? $error : $msg
+			return new \WP_Error(
+				'atmosphere_refresh',
+				$msg,
+				array(
+					'status'        => $status,
+					'refresh_error' => '' !== $error ? $error : 'http_' . $status,
 				)
 			);
-
-			return new \WP_Error( 'atmosphere_refresh', $msg, array( 'status' => $status ) );
 		}
 
 		/*
@@ -1140,14 +1150,6 @@ class Client {
 		}
 
 		\update_option( 'atmosphere_connection', $current, false );
-
-		/*
-		 * Stamped after the token write, so the timestamp only ever
-		 * means "credentials on disk were renewed at this moment". A
-		 * long gap since this stamp on a still-connected site is the
-		 * signal that the refresh worker stopped running.
-		 */
-		self::record_refresh_success();
 
 		return true;
 	}
@@ -1348,8 +1350,7 @@ class Client {
 		 * Writing the dead session's failure afterwards would resurrect
 		 * the row and date-stamp a brand-new connection with the old
 		 * account's error. Same ciphertext comparison the token write
-		 * uses: libsodium re-encrypts with a fresh nonce, so any change
-		 * to the row at all fails the check.
+		 * uses — see {@see self::connection_row_matches()}.
 		 */
 		if ( ! \is_array( $current ) || empty( $current ) ) {
 			return;
@@ -1366,10 +1367,12 @@ class Client {
 		 * short; anything longer is noise or an attempt to use the panel
 		 * as a canvas.
 		 */
+		debug_log( 'token refresh failed: ' . $error );
+
 		self::update_refresh_status(
 			array(
 				'last_failure' => \time(),
-				'last_error'   => \substr( \sanitize_text_field( $error ), 0, 64 ),
+				'last_error'   => truncate_graphemes( \sanitize_text_field( $error ), 64 ),
 			)
 		);
 	}

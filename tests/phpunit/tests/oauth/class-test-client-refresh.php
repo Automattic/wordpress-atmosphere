@@ -813,7 +813,6 @@ class Test_Client_Refresh extends WP_UnitTestCase {
 		$status = \get_option( Client::REFRESH_STATUS_OPTION );
 
 		$this->assertNotEmpty( $status['last_error'] );
-		$this->assertNotSame( '', $status['last_error'] );
 	}
 
 	/**
