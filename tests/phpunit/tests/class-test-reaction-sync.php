@@ -838,6 +838,72 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 	}
 
 	/**
+	 * An imported reply's text must not reach `comment_content` as live
+	 * markup. The only gate on it is `wp_kses_post()` — the *post*
+	 * allowlist — which passes `style` and `<img src>` straight through,
+	 * so a reply can otherwise lay a fixed-position overlay over the page
+	 * and beacon every visitor's IP to a host of the author's choosing.
+	 */
+	public function test_process_reply_escapes_markup_in_reply_text() {
+		$post_id  = self::factory()->post->create();
+		$post_uri = 'at://did:plc:me/app.bsky.feed.post/defacepost';
+
+		\update_post_meta( $post_id, BskyPost::META_URI, $post_uri );
+
+		$profile_key = 'atmosphere_profile_' . \md5( 'did:plc:mallory' );
+
+		\set_transient(
+			$profile_key,
+			array(
+				'name'   => 'Mallory',
+				'handle' => 'mallory.test',
+			),
+			\HOUR_IN_SECONDS
+		);
+
+		$payload = '<span style="position:fixed;top:0;left:0;width:100vw;height:100vh;background:#000;z-index:99999">SITE DEFACED</span><img src="https://tracker.example/pixel.gif">';
+
+		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_reply' );
+
+		try {
+			$comment_id = $method->invoke(
+				null,
+				array(
+					'uri'    => 'at://did:plc:mallory/app.bsky.feed.post/defacereply',
+					'cid'    => 'bafyreideface',
+					'record' => array(
+						'text'      => $payload,
+						'createdAt' => '2026-08-21T12:00:00.000Z',
+						'reply'     => array(
+							'parent' => array( 'uri' => $post_uri ),
+							'root'   => array( 'uri' => $post_uri ),
+						),
+					),
+					'author' => array(
+						'did'    => 'did:plc:mallory',
+						'handle' => 'mallory.test',
+					),
+				)
+			);
+		} finally {
+			\delete_transient( $profile_key );
+		}
+
+		$this->assertIsInt( $comment_id );
+
+		$stored = \get_comment( $comment_id )->comment_content;
+
+		// No live element survives: the style and the beacon are inert text.
+		$this->assertStringNotContainsString( '<span', $stored );
+		$this->assertStringNotContainsString( '<img', $stored );
+		$this->assertStringContainsString( '&lt;span style=', $stored );
+
+		// Nothing is dropped either — the reply still reads as written.
+		$this->assertStringContainsString( 'SITE DEFACED', $stored );
+		$this->assertSame( $payload, \html_entity_decode( $stored, \ENT_QUOTES, 'UTF-8' ) );
+	}
+
+	/**
 	 * Test that process_reply drops a reply when get_comment() returns
 	 * null for the resolved parent comment ID (race: comment deleted
 	 * between the meta lookup and the get_comment call). The previous
