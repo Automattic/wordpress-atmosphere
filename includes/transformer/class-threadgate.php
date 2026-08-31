@@ -193,7 +193,7 @@ class Threadgate extends Base {
 			\_doing_it_wrong(
 				__METHOD__,
 				\esc_html__( 'atmosphere_transform_threadgate must return an array; falling back to the unfiltered record.', 'atmosphere' ),
-				'unreleased'
+				'2.2.0'
 			);
 			return $record;
 		}

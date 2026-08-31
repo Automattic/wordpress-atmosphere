@@ -204,7 +204,7 @@ function appview_base_url( string $base ): string {
 		\_doing_it_wrong(
 			__FUNCTION__,
 			\esc_html__( 'atmosphere_appview_host must return a host (optionally with a scheme and path prefix); falling back to bsky.app.', 'atmosphere' ),
-			'unreleased'
+			'2.0.0'
 		);
 		return 'https://bsky.app';
 	}

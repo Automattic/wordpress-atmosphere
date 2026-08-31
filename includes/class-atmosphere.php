@@ -847,7 +847,7 @@ class Atmosphere {
 			\_doing_it_wrong(
 				__METHOD__,
 				\esc_html__( 'The atmosphere_at_tags filter must return an array keyed by tag name.', 'atmosphere' ),
-				'unreleased'
+				'2.2.0'
 			);
 			return;
 		}
@@ -886,7 +886,7 @@ class Atmosphere {
 			\_doing_it_wrong(
 				__METHOD__,
 				\esc_html__( 'The atmosphere_at_tags filter produced entries that were not non-empty strings; those were skipped.', 'atmosphere' ),
-				'unreleased'
+				'2.2.0'
 			);
 		}
 	}
