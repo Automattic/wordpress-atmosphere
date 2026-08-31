@@ -902,7 +902,7 @@ class Client {
 				 * long gap on a still-connected site is the signal that
 				 * the refresh worker stopped running.
 				 */
-				self::record_refresh_success();
+				self::record_refresh_success( $conn );
 
 				return true;
 			}
@@ -1093,7 +1093,9 @@ class Client {
 				$msg,
 				array(
 					'status'        => $status,
-					'refresh_error' => '' !== $error ? $error : 'http_' . $status,
+					'refresh_error' => '' !== $error
+						? $error
+						: ( \is_numeric( $status ) && (int) $status > 0 ? 'http_' . (int) $status : 'atmosphere_refresh' ),
 				)
 			);
 		}
@@ -1312,7 +1314,27 @@ class Client {
 	public static function refresh_status(): array {
 		$status = \get_option( self::REFRESH_STATUS_OPTION, array() );
 
-		return \is_array( $status ) ? $status : array();
+		if ( ! \is_array( $status ) ) {
+			return array();
+		}
+
+		/*
+		 * Member types are enforced here too, so every reader inherits
+		 * the corruption tolerance: a non-numeric timestamp would render
+		 * as a 1970 delta and a non-string error would fatal the Site
+		 * Health screen, the one place a broken site's admin is sent.
+		 */
+		foreach ( array( 'last_success', 'last_failure' ) as $key ) {
+			if ( isset( $status[ $key ] ) && ! \is_numeric( $status[ $key ] ) ) {
+				unset( $status[ $key ] );
+			}
+		}
+
+		if ( isset( $status['last_error'] ) && ! \is_string( $status['last_error'] ) ) {
+			unset( $status['last_error'] );
+		}
+
+		return $status;
 	}
 
 	/**
@@ -1335,8 +1357,27 @@ class Client {
 	 * support report weeks later.
 	 *
 	 * @since unreleased
+	 *
+	 * @param array $conn Connection as read at lock-acquisition time; its
+	 *                    DID identifies the session the stamp belongs to.
 	 */
-	private static function record_refresh_success(): void {
+	private static function record_refresh_success( array $conn ): void {
+		$current = \get_option( 'atmosphere_connection', array() );
+
+		/*
+		 * Same dead-session protection the failure recorder has, adapted:
+		 * a successful refresh has just rewritten the token ciphertext,
+		 * so the stable DID is what still identifies the session. A
+		 * disconnect or a reconnect to another account between the token
+		 * write and this stamp must not resurrect the history the
+		 * operator's action just cleared, or misdate the new account.
+		 */
+		if ( ! \is_array( $current ) || empty( $current )
+			|| (string) ( $current['did'] ?? '' ) !== (string) ( $conn['did'] ?? '' )
+		) {
+			return;
+		}
+
 		self::update_refresh_status( array( 'last_success' => \time() ) );
 	}
 
@@ -1386,12 +1427,14 @@ class Client {
 		 * short; anything longer is noise or an attempt to use the panel
 		 * as a canvas.
 		 */
+		$error = truncate_graphemes( \sanitize_text_field( $error ), 64 );
+
 		debug_log( 'token refresh failed: ' . $error );
 
 		self::update_refresh_status(
 			array(
 				'last_failure' => \time(),
-				'last_error'   => truncate_graphemes( \sanitize_text_field( $error ), 64 ),
+				'last_error'   => $error,
 			)
 		);
 	}

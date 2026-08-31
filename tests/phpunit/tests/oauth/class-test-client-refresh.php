@@ -879,4 +879,26 @@ class Test_Client_Refresh extends WP_UnitTestCase {
 		$this->assertLessThanOrEqual( 64, \strlen( $recorded ) );
 		$this->assertStringNotContainsString( '<b>', $recorded );
 	}
+
+	/**
+	 * A corrupted row must degrade member by member: bad timestamps and
+	 * a non-string error are dropped so no reader can fatal or render a
+	 * 1970 delta, while intact members survive.
+	 */
+	public function test_refresh_status_drops_corrupted_members() {
+		\update_option(
+			Client::REFRESH_STATUS_OPTION,
+			array(
+				'last_success' => 'soon',
+				'last_failure' => \time(),
+				'last_error'   => array( 'nested' ),
+			)
+		);
+
+		$status = Client::refresh_status();
+
+		$this->assertArrayNotHasKey( 'last_success', $status );
+		$this->assertArrayNotHasKey( 'last_error', $status );
+		$this->assertArrayHasKey( 'last_failure', $status );
+	}
 }
