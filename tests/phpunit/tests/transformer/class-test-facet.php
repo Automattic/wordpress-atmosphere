@@ -521,11 +521,125 @@ class Test_Facet extends WP_UnitTestCase {
 	}
 
 	/**
-	 * Text with no facets must come back byte-for-byte identical.
+	 * Plain text with no facets comes back unchanged.
 	 */
-	public function test_apply_without_facets_is_identity() {
+	public function test_apply_without_facets_leaves_plain_text_alone() {
 		$text = 'Plain reply, no links here.';
 		$this->assertSame( $text, Facet::apply( $text, array() ) );
+	}
+
+	/**
+	 * A record's `text` is plain text per the Lexicon, so markup in it is
+	 * content, not markup. The facet-less path has to escape it: the result
+	 * is only gated by `wp_kses_post()` downstream, which is the *post*
+	 * allowlist and passes `style` and `<img src>` straight through.
+	 */
+	public function test_apply_without_facets_escapes_markup() {
+		$text = '<span style="position:fixed">DEFACED</span><img src="https://tracker.example/p.gif">';
+
+		$result = Facet::apply( $text, array() );
+
+		$this->assertStringNotContainsString( '<span', $result );
+		$this->assertStringNotContainsString( '<img', $result );
+		$this->assertStringContainsString( '&lt;span style=', $result );
+		$this->assertSame( $text, \html_entity_decode( $result, \ENT_QUOTES, 'UTF-8' ) );
+	}
+
+	/**
+	 * The slices *between* facets need the same escaping the facet-covered
+	 * slice already gets, while the generated anchor survives intact.
+	 */
+	public function test_apply_escapes_text_between_facets() {
+		$text   = '<b>bad</b> https://example.com tail<i>';
+		$facets = array(
+			array(
+				'index'    => array(
+					'byteStart' => 11,
+					'byteEnd'   => 30,
+				),
+				'features' => array(
+					array(
+						'$type' => 'app.bsky.richtext.facet#link',
+						'uri'   => 'https://example.com',
+					),
+				),
+			),
+		);
+
+		$result = Facet::apply( $text, $facets );
+
+		// Leading slice, before the facet.
+		$this->assertStringContainsString( '&lt;b&gt;bad&lt;/b&gt;', $result );
+		// Trailing slice, after the facet.
+		$this->assertStringContainsString( 'tail&lt;i&gt;', $result );
+		// No raw markup anywhere from the record text.
+		$this->assertStringNotContainsString( '<b>', $result );
+		$this->assertStringNotContainsString( '<i>', $result );
+		// The anchor we generate is still there.
+		$this->assertStringContainsString( 'href="https://example.com"', $result );
+	}
+
+	/**
+	 * Facet offsets are the reply author's to choose, and nothing says they
+	 * have to line up with the text's character boundaries. A range that cuts
+	 * a multi-byte character in half hands `esc_html()` a slice that isn't
+	 * valid UTF-8, and `wp_check_invalid_utf8()` answers that with an empty
+	 * string — so the neighbouring text would vanish on import while the
+	 * reply still reads in full on Bluesky. Drop the facet, keep the text.
+	 *
+	 * @dataProvider data_apply_character_splitting_facets
+	 *
+	 * @param int $byte_start Start offset of the malformed facet.
+	 * @param int $byte_end   End offset of the malformed facet.
+	 */
+	public function test_apply_skips_facet_splitting_a_character( int $byte_start, int $byte_end ) {
+		// The `é` occupies bytes 1 and 2; the URL runs from byte 7 to byte 26.
+		$text = 'héllo https://example.com';
+
+		$facets = array(
+			array(
+				'index'    => array(
+					'byteStart' => $byte_start,
+					'byteEnd'   => $byte_end,
+				),
+				'features' => array(
+					array(
+						'$type' => 'app.bsky.richtext.facet#link',
+						'uri'   => 'https://malicious.example',
+					),
+				),
+			),
+			array(
+				'index'    => array(
+					'byteStart' => 7,
+					'byteEnd'   => 26,
+				),
+				'features' => array(
+					array(
+						'$type' => 'app.bsky.richtext.facet#link',
+						'uri'   => 'https://example.com',
+					),
+				),
+			),
+		);
+
+		$this->assertSame(
+			'héllo <a href="https://example.com">https://example.com</a>',
+			Facet::apply( $text, $facets ),
+			'A facet range splitting a character must be dropped without taking any of the text with it.'
+		);
+	}
+
+	/**
+	 * Facet ranges that split the `é` in `héllo`, at either end.
+	 *
+	 * @return array<string,array{int,int}>
+	 */
+	public function data_apply_character_splitting_facets(): array {
+		return array(
+			'byteStart mid-character' => array( 2, 3 ),
+			'byteEnd mid-character'   => array( 0, 2 ),
+		);
 	}
 
 	/**

@@ -1,0 +1,4 @@
+Significance: patch
+Type: security
+
+Treat the text of imported Bluesky replies as plain text, so markup in a reply can no longer alter the look of your site.
