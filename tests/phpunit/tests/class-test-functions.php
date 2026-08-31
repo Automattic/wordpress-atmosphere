@@ -12,8 +12,11 @@ use function Atmosphere\reconnect_url;
 use function Atmosphere\share_status;
 use function Atmosphere\reauth_reason_lead;
 use function Atmosphere\parse_at_uri;
+use function Atmosphere\post_web_url;
 use function Atmosphere\build_at_uri;
 use function Atmosphere\appview_url;
+use function Atmosphere\get_identity;
+use function Atmosphere\set_identity;
 use function Atmosphere\sanitize_text;
 use function Atmosphere\truncate_text;
 use function Atmosphere\truncate_graphemes;
@@ -46,6 +49,45 @@ class Test_Functions extends \WP_UnitTestCase {
 		$this->assertSame( 'did:plc:abc123', $result['did'] );
 		$this->assertSame( 'app.bsky.feed.post', $result['collection'] );
 		$this->assertSame( '3k2la7b2zoq2s', $result['rkey'] );
+	}
+
+	/**
+	 * A well-formed post URI becomes a profile/post link.
+	 */
+	public function test_post_web_url_builds_the_appview_link() {
+		$this->assertSame(
+			'https://bsky.app/profile/did:plc:abc123/post/3k2la7',
+			post_web_url( 'at://did:plc:abc123/app.bsky.feed.post/3k2la7' )
+		);
+	}
+
+	/**
+	 * Anything that is not exactly one of our post URIs yields no link at
+	 * all, never a half-built one. `parse_at_uri()` alone would accept an
+	 * empty rkey and ignore a trailing segment.
+	 *
+	 * @dataProvider malformed_post_uris
+	 *
+	 * @param string $uri The URI to reject.
+	 */
+	public function test_post_web_url_rejects_malformed_uris( string $uri ) {
+		$this->assertSame( '', post_web_url( $uri ) );
+	}
+
+	/**
+	 * URIs that must not produce a link.
+	 *
+	 * @return array<string, array{string}>
+	 */
+	public function malformed_post_uris(): array {
+		return array(
+			'empty rkey (trailing slash)' => array( 'at://did:plc:abc123/app.bsky.feed.post/' ),
+			'empty did'                   => array( 'at:///app.bsky.feed.post/3k2la7' ),
+			'extra trailing segment'      => array( 'at://did:plc:abc123/app.bsky.feed.post/3k2la7/extra' ),
+			'document collection'         => array( 'at://did:plc:abc123/site.standard.document/3k2la7' ),
+			'not an at uri'               => array( 'https://bsky.app/profile/did:plc:abc123/post/3k2la7' ),
+			'empty string'                => array( '' ),
+		);
 	}
 
 	/**
@@ -1097,6 +1139,81 @@ class Test_Functions extends \WP_UnitTestCase {
 		\add_filter( 'atmosphere_should_publish_bluesky_post', '__return_false' );
 		$this->assertFalse( is_bluesky_post_enabled( $post ) );
 		\remove_filter( 'atmosphere_should_publish_bluesky_post', '__return_false' );
+	}
+
+	/**
+	 * `set_identity()` persists the canonical shape so `get_identity()`
+	 * reads it back, keeping the option's structure in one place.
+	 *
+	 * @group atmosphere
+	 */
+	public function test_set_identity_round_trips() {
+		\delete_option( 'atmosphere_identity' );
+
+		$this->assertTrue(
+			set_identity(
+				array(
+					'did'          => 'did:plc:abc123',
+					'handle'       => 'me.example.com',
+					'pds_endpoint' => 'https://pds.example.com',
+					'extra'        => 'dropped',
+				)
+			)
+		);
+
+		$this->assertSame(
+			array(
+				'did'          => 'did:plc:abc123',
+				'handle'       => 'me.example.com',
+				'pds_endpoint' => 'https://pds.example.com',
+			),
+			get_identity(),
+			'Only the three canonical fields are stored, and get_identity() reads them back.'
+		);
+
+		\delete_option( 'atmosphere_identity' );
+	}
+
+	/**
+	 * A non-scalar value must not become the literal "Array", which
+	 * `has_identity()` would treat as a live identity and the well-known
+	 * endpoint would then serve.
+	 */
+	public function test_set_identity_drops_non_scalar_values() {
+		set_identity(
+			array(
+				'did'          => array( 'nested' => 'value' ),
+				'handle'       => 'example.com',
+				'pds_endpoint' => 'https://pds.example.com',
+			)
+		);
+
+		$stored = \get_option( 'atmosphere_identity' );
+
+		$this->assertSame( '', $stored['did'] );
+		$this->assertStringNotContainsString( 'Array', (string) $stored['did'] );
+	}
+
+	/**
+	 * The helper replaces rather than merges. Pinned because the failure is
+	 * silent and expensive: a partial call clears the DID, which takes
+	 * `has_identity()` false and stops the well-known endpoint answering.
+	 */
+	public function test_set_identity_replaces_rather_than_merges() {
+		set_identity(
+			array(
+				'did'          => 'did:plc:test123',
+				'handle'       => 'old.example.com',
+				'pds_endpoint' => 'https://pds.example.com',
+			)
+		);
+
+		set_identity( array( 'handle' => 'new.example.com' ) );
+
+		$stored = \get_option( 'atmosphere_identity' );
+
+		$this->assertSame( 'new.example.com', $stored['handle'] );
+		$this->assertSame( '', $stored['did'] );
 	}
 
 	/**

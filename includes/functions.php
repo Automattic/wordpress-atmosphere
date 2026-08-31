@@ -10,6 +10,7 @@ namespace Atmosphere;
 \defined( 'ABSPATH' ) || exit;
 
 use Atmosphere\OAuth\Client;
+use Atmosphere\Transformer\Post;
 use Atmosphere\WP_Admin\Admin;
 
 /**
@@ -100,6 +101,68 @@ function appview_url( string $path, array $context = array() ): string {
 	 * @param array  $context Available parts: type, did, handle, rkey, tag.
 	 */
 	return \apply_filters( 'atmosphere_appview_url', $url, $path, $context );
+}
+
+/**
+ * Build the appview web URL for one of our own Bluesky post records.
+ *
+ * `at://<did>/app.bsky.feed.post/<rkey>` becomes
+ * `https://<appview-host>/profile/<did>/post/<rkey>`. The appview resolves the
+ * DID form, so no handle lookup is needed. Lives here rather than on a surface
+ * so every caller inherits the same strictness and the same
+ * {@see appview_url()} host and route filters.
+ *
+ * @since unreleased
+ *
+ * @param string $uri AT-URI of a Bluesky post record.
+ * @return string Web URL, or '' when the URI is not one of our post records.
+ */
+function post_web_url( string $uri ): string {
+	$parts = parse_at_uri( $uri );
+
+	/*
+	 * `parse_at_uri()` only splits; it accepts an empty segment and ignores
+	 * anything after the third. Rebuilding the URI from the parts and
+	 * requiring it to match is what rejects both, so a trailing slash or a
+	 * stray extra segment never becomes a half-built link.
+	 */
+	if (
+		false === $parts
+		|| 'app.bsky.feed.post' !== $parts['collection']
+		|| "at://{$parts['did']}/{$parts['collection']}/{$parts['rkey']}" !== $uri
+		|| '' === $parts['did']
+		|| '' === $parts['rkey']
+	) {
+		return '';
+	}
+
+	return \esc_url_raw(
+		appview_url(
+			'profile/' . $parts['did'] . '/post/' . $parts['rkey'],
+			array(
+				'type' => 'post',
+				'did'  => $parts['did'],
+				'rkey' => $parts['rkey'],
+			)
+		)
+	);
+}
+
+/**
+ * The appview web URL for a post's Bluesky record.
+ *
+ * Shared by the editor panel's `atmosphere_url` REST field and the posts-list
+ * column, so both link to the same place and agree on what "not shared" means.
+ *
+ * @since unreleased
+ *
+ * @param int $post_id Post ID.
+ * @return string Web URL, or '' until the post has a Bluesky record.
+ */
+function post_share_url( int $post_id ): string {
+	$uri = (string) \get_post_meta( $post_id, Post::META_URI, true );
+
+	return '' === $uri ? '' : post_web_url( $uri );
 }
 
 /**
@@ -444,7 +507,7 @@ function get_identity(): array {
 		'pds_endpoint' => (string) ( $conn['pds_endpoint'] ?? '' ),
 	);
 
-	\update_option( 'atmosphere_identity', $identity, true );
+	set_identity( $identity );
 
 	return $identity;
 }
@@ -459,6 +522,53 @@ function get_identity(): array {
  */
 function has_identity(): bool {
 	return ! empty( get_identity()['did'] );
+}
+
+/**
+ * Persist the AT Protocol identity (DID, handle, PDS endpoint).
+ *
+ * Replaces the stored identity outright. It is not a partial update: a key
+ * you leave out is stored as an empty string, so passing only `handle` clears
+ * the DID, which takes `has_identity()` false and stops
+ * `/.well-known/atproto-did` answering. Read {@see get_identity()} and pass
+ * the full array back if you mean to change one field.
+ *
+ * The canonical write surface for `atmosphere_identity`, mirroring the
+ * read helpers ({@see get_identity()} and friends). A consumer that writes
+ * identity from outside the OAuth token exchange — a recovery or
+ * escape-hatch flow — should call this rather than `update_option()`
+ * directly, so the option's shape and its autoload flag (which
+ * {@see get_identity()}'s lazy migration also relies on) live in one place.
+ *
+ * @since unreleased
+ *
+ * @param array $identity Identity to store. Only `did`, `handle`, and
+ *                        `pds_endpoint` are persisted; a missing or
+ *                        non-scalar key is stored as an empty string and
+ *                        any other keys are dropped.
+ * @return bool False both when the write fails and when the stored value was
+ *              already identical, per `update_option()`. Not a success flag.
+ */
+function set_identity( array $identity ): bool {
+	/*
+	 * Scalar guard: `(string)` on an array warns and stores the literal
+	 * "Array", which `has_identity()` would then treat as a live identity
+	 * and the well-known endpoint would serve. No first-party caller can
+	 * do that, but this helper is documented for third parties.
+	 */
+	$field = static function ( $value ): string {
+		return \is_scalar( $value ) ? (string) $value : '';
+	};
+
+	return \update_option(
+		'atmosphere_identity',
+		array(
+			'did'          => $field( $identity['did'] ?? '' ),
+			'handle'       => $field( $identity['handle'] ?? '' ),
+			'pds_endpoint' => $field( $identity['pds_endpoint'] ?? '' ),
+		),
+		true
+	);
 }
 
 /**

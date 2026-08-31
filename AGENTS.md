@@ -21,7 +21,7 @@ includes/
 ├── oauth/                      # OAuth flow (Client, DPoP, Encryption, Resolver, Nonce).
 ├── rest/                       # REST controllers (public + admin-only under rest/admin/).
 ├── transformer/                # AT Protocol record transformers (Post, Document, Publication, Comment, Facet, TID).
-└── wp-admin/                   # Admin UI (settings page, sidebar panel).
+└── wp-admin/                   # Admin UI (settings page, sidebar panel, posts-list column).
 integrations/                   # Plugin-specific content-parser integrations (stubs).
 templates/                      # PHP template files.
 assets/                         # CSS, JS, and images.
