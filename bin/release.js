@@ -3,6 +3,7 @@
 const { execSync } = require( 'child_process' );
 const readline = require( 'readline' );
 const fs = require( 'fs' );
+const { phpVersionPatterns, LEFTOVER_MARKER_GREP } = require( './version-patterns' );
 
 const rl = readline.createInterface( {
 	input: process.stdin,
@@ -248,31 +249,7 @@ async function createRelease() {
 	).split( '\n' );
 
 	phpFiles.forEach( ( filePath ) => {
-		updateVersionInFile( filePath, version, [
-			{
-				search: /@since unreleased/gi,
-				replace: `@since ${ version }`,
-			},
-			{
-				search: /@deprecated unreleased/gi,
-				replace: `@deprecated ${ version }`,
-			},
-			/*
-			 * Version arguments to _doing_it_wrong(), the _deprecated_*()
-			 * family, and the *_deprecated hook helpers.
-			 *
-			 * These match on the literal's argument position rather than on
-			 * the name of the function it belongs to. Matching by name meant
-			 * anchoring to `.*?`, which never crosses a newline, so a call
-			 * wrapped across several lines kept its placeholder. That is the
-			 * common style here, and it silently shipped `unreleased` in
-			 * every release up to 2.2.0.
-			 */
-			{
-				search: /(?<=[(,]\s*)'unreleased'(?=\s*[,)])/gi,
-				replace: `'${ version }'`,
-			},
-		] );
+		updateVersionInFile( filePath, version, phpVersionPatterns( version ) );
 	} );
 
 	/*
@@ -280,7 +257,7 @@ async function createRelease() {
 	 * placeholder instead of letting it reach a tag unnoticed.
 	 */
 	const leftovers = execWithOutput(
-		'grep -rnE "\'unreleased\'|@(since|deprecated) unreleased" --include="*.php" . --exclude-dir=vendor --exclude-dir=node_modules || true'
+		`grep -rnE "${ LEFTOVER_MARKER_GREP }" --include="*.php" . --exclude-dir=vendor --exclude-dir=node_modules || true`
 	);
 
 	if ( leftovers ) {
