@@ -10,6 +10,8 @@ namespace Atmosphere;
 \defined( 'ABSPATH' ) || exit;
 
 use Atmosphere\OAuth\Client;
+use Atmosphere\Transformer\Post;
+use Atmosphere\WP_Admin\Admin;
 
 /**
  * Parse an AT-URI into components.
@@ -99,6 +101,68 @@ function appview_url( string $path, array $context = array() ): string {
 	 * @param array  $context Available parts: type, did, handle, rkey, tag.
 	 */
 	return \apply_filters( 'atmosphere_appview_url', $url, $path, $context );
+}
+
+/**
+ * Build the appview web URL for one of our own Bluesky post records.
+ *
+ * `at://<did>/app.bsky.feed.post/<rkey>` becomes
+ * `https://<appview-host>/profile/<did>/post/<rkey>`. The appview resolves the
+ * DID form, so no handle lookup is needed. Lives here rather than on a surface
+ * so every caller inherits the same strictness and the same
+ * {@see appview_url()} host and route filters.
+ *
+ * @since 2.2.0
+ *
+ * @param string $uri AT-URI of a Bluesky post record.
+ * @return string Web URL, or '' when the URI is not one of our post records.
+ */
+function post_web_url( string $uri ): string {
+	$parts = parse_at_uri( $uri );
+
+	/*
+	 * `parse_at_uri()` only splits; it accepts an empty segment and ignores
+	 * anything after the third. Rebuilding the URI from the parts and
+	 * requiring it to match is what rejects both, so a trailing slash or a
+	 * stray extra segment never becomes a half-built link.
+	 */
+	if (
+		false === $parts
+		|| 'app.bsky.feed.post' !== $parts['collection']
+		|| "at://{$parts['did']}/{$parts['collection']}/{$parts['rkey']}" !== $uri
+		|| '' === $parts['did']
+		|| '' === $parts['rkey']
+	) {
+		return '';
+	}
+
+	return \esc_url_raw(
+		appview_url(
+			'profile/' . $parts['did'] . '/post/' . $parts['rkey'],
+			array(
+				'type' => 'post',
+				'did'  => $parts['did'],
+				'rkey' => $parts['rkey'],
+			)
+		)
+	);
+}
+
+/**
+ * The appview web URL for a post's Bluesky record.
+ *
+ * Shared by the editor panel's `atmosphere_url` REST field and the posts-list
+ * column, so both link to the same place and agree on what "not shared" means.
+ *
+ * @since 2.2.0
+ *
+ * @param int $post_id Post ID.
+ * @return string Web URL, or '' until the post has a Bluesky record.
+ */
+function post_share_url( int $post_id ): string {
+	$uri = (string) \get_post_meta( $post_id, Post::META_URI, true );
+
+	return '' === $uri ? '' : post_web_url( $uri );
 }
 
 /**
@@ -443,7 +507,7 @@ function get_identity(): array {
 		'pds_endpoint' => (string) ( $conn['pds_endpoint'] ?? '' ),
 	);
 
-	\update_option( 'atmosphere_identity', $identity, true );
+	set_identity( $identity );
 
 	return $identity;
 }
@@ -458,6 +522,53 @@ function get_identity(): array {
  */
 function has_identity(): bool {
 	return ! empty( get_identity()['did'] );
+}
+
+/**
+ * Persist the AT Protocol identity (DID, handle, PDS endpoint).
+ *
+ * Replaces the stored identity outright. It is not a partial update: a key
+ * you leave out is stored as an empty string, so passing only `handle` clears
+ * the DID, which takes `has_identity()` false and stops
+ * `/.well-known/atproto-did` answering. Read {@see get_identity()} and pass
+ * the full array back if you mean to change one field.
+ *
+ * The canonical write surface for `atmosphere_identity`, mirroring the
+ * read helpers ({@see get_identity()} and friends). A consumer that writes
+ * identity from outside the OAuth token exchange — a recovery or
+ * escape-hatch flow — should call this rather than `update_option()`
+ * directly, so the option's shape and its autoload flag (which
+ * {@see get_identity()}'s lazy migration also relies on) live in one place.
+ *
+ * @since 2.2.0
+ *
+ * @param array $identity Identity to store. Only `did`, `handle`, and
+ *                        `pds_endpoint` are persisted; a missing or
+ *                        non-scalar key is stored as an empty string and
+ *                        any other keys are dropped.
+ * @return bool False both when the write fails and when the stored value was
+ *              already identical, per `update_option()`. Not a success flag.
+ */
+function set_identity( array $identity ): bool {
+	/*
+	 * Scalar guard: `(string)` on an array warns and stores the literal
+	 * "Array", which `has_identity()` would then treat as a live identity
+	 * and the well-known endpoint would serve. No first-party caller can
+	 * do that, but this helper is documented for third parties.
+	 */
+	$field = static function ( $value ): string {
+		return \is_scalar( $value ) ? (string) $value : '';
+	};
+
+	return \update_option(
+		'atmosphere_identity',
+		array(
+			'did'          => $field( $identity['did'] ?? '' ),
+			'handle'       => $field( $identity['handle'] ?? '' ),
+			'pds_endpoint' => $field( $identity['pds_endpoint'] ?? '' ),
+		),
+		true
+	);
 }
 
 /**
@@ -555,7 +666,7 @@ function needs_reauth(): bool {
  * refreshed since, or the server did not say. Callers must treat null as
  * "no information", not as "nothing granted".
  *
- * @since unreleased
+ * @since 2.2.0
  *
  * @return string[]|null Granted scope tokens, or null when unknown.
  */
@@ -578,7 +689,7 @@ function connection_scopes(): ?array {
  * through the normal publish error. Hiding a working feature on every
  * pre-existing install would be worse than the occasional failed write.
  *
- * @since unreleased
+ * @since 2.2.0
  *
  * @return bool
  */
@@ -634,10 +745,12 @@ function get_reauth_reason(): string {
  * Lead sentence explaining why the connection needs a reconnect.
  *
  * Single source for the cause copy so every surface that reads the
- * `reauth_reason` marker — the admin reconnect notice and the Site
- * Health test — explains the same failure with the same words. Each
- * caller appends its own consequence/action tail; copy edits and
- * translations happen once, here.
+ * `reauth_reason` marker explains the same failure with the same words.
+ * Read by the Site Health test directly, and by the admin notice and both
+ * editor surfaces through {@see reauth_lead_for_current_user()}, which
+ * drops the cause for a reader who cannot act on it. Each caller appends
+ * its own consequence/action tail; copy edits and translations happen
+ * once, here.
  *
  * @since 2.1.0
  *
@@ -646,12 +759,154 @@ function get_reauth_reason(): string {
 function reauth_reason_lead(): string {
 	switch ( get_reauth_reason() ) {
 		case Client::REAUTH_REASON_KEY_CHANGED:
-			return \__( 'Your site’s security keys have changed — this can happen after a migration, or when a security plugin rotates them on a schedule — so ATmosphere can no longer read its saved Bluesky login.', 'atmosphere' );
+			return \__( 'Your site’s security keys have changed, so ATmosphere can no longer read its saved Bluesky login. This happens after a migration, or when a security plugin rotates them on a schedule.', 'atmosphere' );
 		case Client::REAUTH_REASON_DECRYPT_FAILED:
 			return \__( 'ATmosphere can no longer read its saved Bluesky login.', 'atmosphere' );
 		default:
 			return \__( 'Your Bluesky session has expired.', 'atmosphere' );
 	}
+}
+
+/**
+ * Cause sentence explaining why the connection needs a reconnect, addressed
+ * to the current user's capability.
+ *
+ * Single source for the editor's and the pre-publish panel's cause copy, so
+ * a `key_changed` cause (or any other recorded reason) reads identically on
+ * both surfaces. Reuses {@see reauth_reason_lead()} for the capability-aware
+ * detail; a user without `manage_options` gets a generic sentence instead,
+ * since the recorded causes (rotated security keys, site migrations) are
+ * noise for an author whose only move is to ask an admin. The same
+ * operator-disconnect swap applies: someone who clicked Disconnect must not
+ * be told their session expired. And when the operator's disconnect is the
+ * cause, a non-admin gets nothing at all: that is a state the administrator
+ * chose, not a problem for every author to worry about.
+ *
+ * @since 2.2.0
+ *
+ * @return string Translated, unescaped sentence. Empty when no reconnect is needed.
+ */
+function reauth_lead_for_current_user(): string {
+	if ( ! needs_reauth() ) {
+		return '';
+	}
+
+	$can_manage = \current_user_can( 'manage_options' );
+
+	if ( is_operator_disconnected() ) {
+		if ( ! $can_manage ) {
+			return '';
+		}
+
+		return \__( 'ATmosphere is disconnected from Bluesky.', 'atmosphere' );
+	}
+
+	if ( ! $can_manage ) {
+		return \__( 'Your site’s Bluesky connection needs attention.', 'atmosphere' );
+	}
+
+	return reauth_reason_lead();
+}
+
+/**
+ * The site-level answer to "can this site share right now, and if not, why".
+ *
+ * Single source for both editor surfaces. The document panel used to derive
+ * this in JavaScript from three separate flags while
+ * {@see \Atmosphere\Rest\Admin\Pre_Publish_Controller::publish_decision()}
+ * derived it again in PHP, so the two drifted and the panel could state the
+ * same fact twice, in two severities, or with its explanation suppressed.
+ *
+ * Precedence is the whole point:
+ *
+ *  - Sharing off outranks the connection. When ATmosphere is not the thing
+ *    publishing, the connection has no bearing on the post being edited.
+ *  - Sharing forced off from outside says nothing at all: a host plugin owns
+ *    that experience and the reader cannot act on the arrangement.
+ *
+ * `sharing_enabled` is the site's policy (is cross-posting switched on).
+ * `can_share` is whether a share could succeed right now, which a dead
+ * connection also breaks. They are separate because the toggle still records
+ * a preference while the connection is down, and `wp atmosphere backfill`
+ * reads that meta later. Neither hides the per-post controls: the panel
+ * renders them in every state and lets the help text explain what they mean.
+ *
+ * Two sentences come out of it, from the same decision. `message` is for an
+ * ambient surface like the document panel, which may say nothing at all when
+ * there is nothing the reader can act on. `reason` is for a surface that was
+ * asked a direct question, like the pre-publish panel, which always has to
+ * answer. They differ in exactly one state: sharing forced off from outside,
+ * where the panel stays quiet but "will this post be shared" still needs an
+ * answer.
+ *
+ * @since 2.2.0
+ *
+ * @return array{state: string, message: string, reason: string, severity: string, action: bool, can_share: bool, sharing_enabled: bool}
+ */
+function share_status(): array {
+	$ok = array(
+		'state'           => 'ok',
+		'message'         => '',
+		'reason'          => '',
+		'severity'        => 'info',
+		'action'          => false,
+		'can_share'       => true,
+		'sharing_enabled' => true,
+	);
+
+	if ( ! is_auto_publish_enabled() ) {
+		/*
+		 * Only the site owner's own choice is explained; anything external
+		 * forcing sharing off is not theirs to fix. Read the resolved
+		 * cause, not just the option: a site whose owner had already
+		 * switched sharing off before a host plugin took over is still a
+		 * host-plugin site, and the silence connection-only mode is owed
+		 * must not be defeated by a stale checkbox.
+		 */
+		$owner_turned_it_off = '1' !== (string) \get_option( 'atmosphere_auto_publish', '1' )
+			&& ! is_connection_only_mode();
+
+		$reason = $owner_turned_it_off
+			? \__( 'Automatic publishing to Bluesky is turned off in settings.', 'atmosphere' )
+			: \__( 'Automatic publishing to Bluesky is turned off by another plugin on this site.', 'atmosphere' );
+
+		return array(
+			'state'           => $owner_turned_it_off ? 'sharing_off' : 'sharing_off_external',
+			'message'         => $owner_turned_it_off ? $reason : '',
+			'reason'          => $reason,
+			'severity'        => 'info',
+			'action'          => false,
+			'can_share'       => false,
+			'sharing_enabled' => false,
+		);
+	}
+
+	$lead = reauth_lead_for_current_user();
+
+	if ( '' !== $lead ) {
+		return array(
+			'state'           => 'needs_reconnect',
+			'message'         => $lead,
+			'reason'          => $lead,
+			'severity'        => 'warning',
+			'action'          => true,
+			'can_share'       => false,
+			'sharing_enabled' => true,
+		);
+	}
+
+	/*
+	 * Nothing to show, but the site still cannot share, so the toggle's
+	 * help text hedges. Two states land here: a reconnect whose cause is
+	 * suppressed for this reader (a non-admin on an operator-initiated
+	 * disconnect), and a site that has simply never been connected, which
+	 * is a setup step rather than a problem worth a warning.
+	 */
+	if ( ! is_connected() ) {
+		$ok['can_share'] = false;
+	}
+
+	return $ok;
 }
 
 /**
@@ -666,6 +921,57 @@ function reauth_reason_lead(): string {
  */
 function settings_url(): string {
 	return \admin_url( 'options-general.php?page=atmosphere' );
+}
+
+/**
+ * Where reconnect prompts across the plugin should link.
+ *
+ * Single source for the three-way resolution every reconnect surface — the
+ * admin reauth notice and the editor's reconnect prompts — needs: the
+ * settings page while it's visible, the Connectors screen when the settings
+ * page is hidden (connection-only mode) and the Connectors API is available,
+ * or nowhere when neither exists.
+ *
+ * @since 2.2.0
+ *
+ * @return string Unescaped admin URL, or '' when there is no reconnect destination.
+ */
+function reconnect_url(): string {
+	if ( Admin::is_settings_page_visible() ) {
+		$url = settings_url();
+	} elseif ( \class_exists( 'WP_Connector_Registry' ) ) {
+		$url = Connectors::screen_url();
+	} else {
+		$url = '';
+	}
+
+	/**
+	 * Filters where every reconnect prompt sends the reader.
+	 *
+	 * Runs last, so a host plugin driving the connection itself can point
+	 * the admin notice, both editor surfaces, and Site Health at its own
+	 * screen. Returning '' drops the link and leaves the prompts as plain
+	 * text, which is what happens by default when there is no screen to
+	 * link to.
+	 *
+	 * @since 2.2.0
+	 *
+	 * @param string $url Admin URL to reconnect at, or '' when there is none.
+	 */
+	$url = (string) \apply_filters( 'atmosphere_reconnect_url', $url );
+
+	/*
+	 * Sanitized here rather than at each sink. The PHP surfaces already run
+	 * `esc_url()`, but `Block_Editor::script_data()` localizes this value raw
+	 * and `reconnect-notice.js` renders it as `<a href={ RECONNECT_URL }>`,
+	 * where react-dom only warns about a `javascript:` scheme in development
+	 * and emits the attribute anyway. A filter callback is trusted PHP, so
+	 * this is not a privilege boundary; it stops a host plugin piping an
+	 * option value straight through from becoming one. `sanitize_url()`
+	 * returns '' for a rejected scheme, which the existing empty-string
+	 * branches already degrade to plain text.
+	 */
+	return \sanitize_url( $url );
 }
 
 /**
@@ -1022,7 +1328,7 @@ function is_publication_sync_enabled(): bool {
  *
  * The post is passed to the filter so a callback can answer per post.
  *
- * @since unreleased
+ * @since 2.2.0
  *
  * @param \WP_Post $post The post being published.
  * @return bool True when the Bluesky companion post should be published. Default true.
@@ -1035,7 +1341,7 @@ function is_bluesky_post_enabled( \WP_Post $post ): bool {
 	 * Return false to publish documents only. Forward-only: it does not remove
 	 * Bluesky posts published before it was enabled.
 	 *
-	 * @since unreleased
+	 * @since 2.2.0
 	 *
 	 * @param bool     $enabled Whether to publish the Bluesky companion post. Default true.
 	 * @param \WP_Post $post    The post being published.

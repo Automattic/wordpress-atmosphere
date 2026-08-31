@@ -182,7 +182,7 @@ class Threadgate extends Base {
 		 * Filters that return a non-array fall back to the pre-filter
 		 * record.
 		 *
-		 * @since unreleased
+		 * @since 2.2.0
 		 *
 		 * @param array    $record Threadgate record.
 		 * @param \WP_Post $post   WordPress post.

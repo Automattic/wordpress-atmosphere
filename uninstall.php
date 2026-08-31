@@ -116,6 +116,7 @@ foreach ( $atmosphere_meta_keys as $atmosphere_key ) {
  */
 $atmosphere_comment_meta_keys = array(
 	'_atmosphere_bsky_tid',
+	'_atmosphere_bsky_did',
 	'_atmosphere_bsky_uri',
 	'_atmosphere_bsky_cid',
 	'_atmosphere_publish_attempts',

@@ -14,6 +14,7 @@
 
 namespace Atmosphere\Tests\WP_Admin;
 
+use Atmosphere\Connectors;
 use Atmosphere\OAuth\Client;
 use Atmosphere\OAuth\Encryption;
 use Atmosphere\WP_Admin\Health_Check;
@@ -702,5 +703,39 @@ class Test_Health_Check extends \WP_UnitTestCase {
 		$this->assertStringContainsString( '3 days ago', $value );
 		$this->assertStringContainsString( '1 hour', $value );
 		$this->assertStringContainsString( 'invalid_grant', $value );
+	}
+
+	/**
+	 * The reconnect action is routed through the shared `reconnect_url()`
+	 * resolver rather than a hardcoded settings-page link: while the settings
+	 * page is visible (the default), it still resolves there.
+	 */
+	public function test_reconnect_action_points_to_settings_page_by_default() {
+		$result = Health_Check::test_connection();
+
+		$this->assertStringContainsString( 'options-general.php?page=atmosphere', $result['actions'] );
+		$this->assertStringNotContainsString( 'settings page', $result['description'] );
+	}
+
+	/**
+	 * In connection-only mode the settings page is hidden, so the action must
+	 * not send an administrator there. It follows `reconnect_url()` instead:
+	 * the Connectors screen when one is registered, or no action link at all
+	 * when there is nowhere to send the reader — never a dead settings link.
+	 */
+	public function test_reconnect_action_follows_connection_only_mode() {
+		\add_filter( 'atmosphere_connection_only_mode', '__return_true' );
+
+		$result = Health_Check::test_connection();
+
+		if ( \class_exists( 'WP_Connector_Registry' ) ) {
+			$this->assertStringContainsString( Connectors::screen_url(), $result['actions'] );
+		} else {
+			$this->assertSame( '', $result['actions'] );
+		}
+
+		$this->assertStringNotContainsString( 'options-general.php?page=atmosphere', $result['actions'] );
+
+		\remove_all_filters( 'atmosphere_connection_only_mode' );
 	}
 }

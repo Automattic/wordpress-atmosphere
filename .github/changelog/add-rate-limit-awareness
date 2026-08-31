@@ -1,4 +1,0 @@
-Significance: minor
-Type: added
-
-Handle Bluesky rate limits when sharing: a share that hits the limit now waits for it to lift before retrying, and bulk syncs can be paced so they stay under it.

@@ -7,9 +7,16 @@
 
 namespace Atmosphere\Tests;
 
+use Atmosphere\OAuth\Client;
+use function Atmosphere\reconnect_url;
+use function Atmosphere\share_status;
+use function Atmosphere\reauth_reason_lead;
 use function Atmosphere\parse_at_uri;
+use function Atmosphere\post_web_url;
 use function Atmosphere\build_at_uri;
 use function Atmosphere\appview_url;
+use function Atmosphere\get_identity;
+use function Atmosphere\set_identity;
 use function Atmosphere\sanitize_text;
 use function Atmosphere\truncate_text;
 use function Atmosphere\truncate_graphemes;
@@ -25,6 +32,7 @@ use function Atmosphere\get_connection;
 use function Atmosphere\debug_log;
 use function Atmosphere\is_comment_publishing_enabled;
 use function Atmosphere\is_bluesky_post_enabled;
+use function Atmosphere\reauth_lead_for_current_user;
 
 /**
  * Function tests.
@@ -41,6 +49,45 @@ class Test_Functions extends \WP_UnitTestCase {
 		$this->assertSame( 'did:plc:abc123', $result['did'] );
 		$this->assertSame( 'app.bsky.feed.post', $result['collection'] );
 		$this->assertSame( '3k2la7b2zoq2s', $result['rkey'] );
+	}
+
+	/**
+	 * A well-formed post URI becomes a profile/post link.
+	 */
+	public function test_post_web_url_builds_the_appview_link() {
+		$this->assertSame(
+			'https://bsky.app/profile/did:plc:abc123/post/3k2la7',
+			post_web_url( 'at://did:plc:abc123/app.bsky.feed.post/3k2la7' )
+		);
+	}
+
+	/**
+	 * Anything that is not exactly one of our post URIs yields no link at
+	 * all, never a half-built one. `parse_at_uri()` alone would accept an
+	 * empty rkey and ignore a trailing segment.
+	 *
+	 * @dataProvider malformed_post_uris
+	 *
+	 * @param string $uri The URI to reject.
+	 */
+	public function test_post_web_url_rejects_malformed_uris( string $uri ) {
+		$this->assertSame( '', post_web_url( $uri ) );
+	}
+
+	/**
+	 * URIs that must not produce a link.
+	 *
+	 * @return array<string, array{string}>
+	 */
+	public function malformed_post_uris(): array {
+		return array(
+			'empty rkey (trailing slash)' => array( 'at://did:plc:abc123/app.bsky.feed.post/' ),
+			'empty did'                   => array( 'at:///app.bsky.feed.post/3k2la7' ),
+			'extra trailing segment'      => array( 'at://did:plc:abc123/app.bsky.feed.post/3k2la7/extra' ),
+			'document collection'         => array( 'at://did:plc:abc123/site.standard.document/3k2la7' ),
+			'not an at uri'               => array( 'https://bsky.app/profile/did:plc:abc123/post/3k2la7' ),
+			'empty string'                => array( '' ),
+		);
 	}
 
 	/**
@@ -931,6 +978,7 @@ class Test_Functions extends \WP_UnitTestCase {
 		\remove_all_filters( 'atmosphere_should_sync_reactions' );
 		\remove_all_filters( 'atmosphere_should_sync_replies' );
 		\remove_all_filters( 'atmosphere_should_publish_comments' );
+		\wp_set_current_user( 0 );
 
 		parent::tear_down();
 	}
@@ -1094,6 +1142,81 @@ class Test_Functions extends \WP_UnitTestCase {
 	}
 
 	/**
+	 * `set_identity()` persists the canonical shape so `get_identity()`
+	 * reads it back, keeping the option's structure in one place.
+	 *
+	 * @group atmosphere
+	 */
+	public function test_set_identity_round_trips() {
+		\delete_option( 'atmosphere_identity' );
+
+		$this->assertTrue(
+			set_identity(
+				array(
+					'did'          => 'did:plc:abc123',
+					'handle'       => 'me.example.com',
+					'pds_endpoint' => 'https://pds.example.com',
+					'extra'        => 'dropped',
+				)
+			)
+		);
+
+		$this->assertSame(
+			array(
+				'did'          => 'did:plc:abc123',
+				'handle'       => 'me.example.com',
+				'pds_endpoint' => 'https://pds.example.com',
+			),
+			get_identity(),
+			'Only the three canonical fields are stored, and get_identity() reads them back.'
+		);
+
+		\delete_option( 'atmosphere_identity' );
+	}
+
+	/**
+	 * A non-scalar value must not become the literal "Array", which
+	 * `has_identity()` would treat as a live identity and the well-known
+	 * endpoint would then serve.
+	 */
+	public function test_set_identity_drops_non_scalar_values() {
+		set_identity(
+			array(
+				'did'          => array( 'nested' => 'value' ),
+				'handle'       => 'example.com',
+				'pds_endpoint' => 'https://pds.example.com',
+			)
+		);
+
+		$stored = \get_option( 'atmosphere_identity' );
+
+		$this->assertSame( '', $stored['did'] );
+		$this->assertStringNotContainsString( 'Array', (string) $stored['did'] );
+	}
+
+	/**
+	 * The helper replaces rather than merges. Pinned because the failure is
+	 * silent and expensive: a partial call clears the DID, which takes
+	 * `has_identity()` false and stops the well-known endpoint answering.
+	 */
+	public function test_set_identity_replaces_rather_than_merges() {
+		set_identity(
+			array(
+				'did'          => 'did:plc:test123',
+				'handle'       => 'old.example.com',
+				'pds_endpoint' => 'https://pds.example.com',
+			)
+		);
+
+		set_identity( array( 'handle' => 'new.example.com' ) );
+
+		$stored = \get_option( 'atmosphere_identity' );
+
+		$this->assertSame( 'new.example.com', $stored['handle'] );
+		$this->assertSame( '', $stored['did'] );
+	}
+
+	/**
 	 * The filter receives the post being published, so a callback can answer
 	 * per post — here, gating on the post type.
 	 *
@@ -1116,5 +1239,291 @@ class Test_Functions extends \WP_UnitTestCase {
 		$this->assertFalse( is_bluesky_post_enabled( $page ), 'Pages are routed document-only.' );
 
 		\remove_all_filters( 'atmosphere_should_publish_bluesky_post' );
+	}
+
+	/**
+	 * A never-connected site (or one that doesn't need a reconnect) has
+	 * nothing to say.
+	 */
+	public function test_reauth_lead_for_current_user_empty_when_not_needed() {
+		\wp_set_current_user( self::factory()->user->create( array( 'role' => 'administrator' ) ) );
+		$this->assertSame( '', reauth_lead_for_current_user() );
+
+		\wp_set_current_user( self::factory()->user->create( array( 'role' => 'author' ) ) );
+		$this->assertSame( '', reauth_lead_for_current_user() );
+	}
+
+	/**
+	 * A user without `manage_options` gets a generic lead: the recorded
+	 * causes (rotated security keys, site migrations) are meaningless to
+	 * someone who cannot act on them.
+	 */
+	public function test_reauth_lead_for_current_user_generic_for_non_admin() {
+		\wp_set_current_user( self::factory()->user->create( array( 'role' => 'author' ) ) );
+		\update_option( 'atmosphere_identity', array( 'did' => 'did:plc:test123' ) );
+		\update_option(
+			'atmosphere_connection',
+			array(
+				'did'          => 'did:plc:test123',
+				'access_token' => 'test-token',
+				'needs_reauth' => true,
+			)
+		);
+
+		$this->assertSame(
+			'Your site’s Bluesky connection needs attention.',
+			reauth_lead_for_current_user()
+		);
+
+		\delete_option( 'atmosphere_connection' );
+		\delete_option( 'atmosphere_identity' );
+	}
+
+	/**
+	 * An administrator gets the recorded cause via `reauth_reason_lead()`.
+	 */
+	public function test_reauth_lead_for_current_user_reason_for_admin() {
+		\wp_set_current_user( self::factory()->user->create( array( 'role' => 'administrator' ) ) );
+		\update_option( 'atmosphere_identity', array( 'did' => 'did:plc:test123' ) );
+		\update_option(
+			'atmosphere_connection',
+			array(
+				'did'          => 'did:plc:test123',
+				'access_token' => 'test-token',
+				'needs_reauth' => true,
+			)
+		);
+
+		$this->assertSame(
+			'Your Bluesky session has expired.',
+			reauth_lead_for_current_user()
+		);
+
+		\delete_option( 'atmosphere_connection' );
+		\delete_option( 'atmosphere_identity' );
+	}
+
+	/**
+	 * An operator-initiated disconnect must not claim a session expired, even
+	 * for an administrator.
+	 */
+	public function test_reauth_lead_for_current_user_operator_disconnected() {
+		\wp_set_current_user( self::factory()->user->create( array( 'role' => 'administrator' ) ) );
+		\update_option( 'atmosphere_identity', array( 'did' => 'did:plc:test123' ) );
+		\delete_option( 'atmosphere_connection' );
+		\update_option( Client::DISCONNECTED_OPTION, true );
+
+		$this->assertSame(
+			'ATmosphere is disconnected from Bluesky.',
+			reauth_lead_for_current_user()
+		);
+
+		\delete_option( 'atmosphere_identity' );
+		\delete_option( Client::DISCONNECTED_OPTION );
+	}
+
+	/**
+	 * An operator-initiated disconnect is a state the administrator chose, not
+	 * a problem for every author to worry about: a non-admin gets no lead at
+	 * all for it (not even the generic "needs attention" sentence), matching
+	 * the suppression `Block_Editor::script_data()` relies on for the document
+	 * panel — without this, the pre-publish panel would still nag a
+	 * non-admin about a disconnect the administrator deliberately chose.
+	 */
+	public function test_reauth_lead_for_current_user_empty_for_non_admin_on_operator_disconnect() {
+		\wp_set_current_user( self::factory()->user->create( array( 'role' => 'author' ) ) );
+		\update_option( 'atmosphere_identity', array( 'did' => 'did:plc:test123' ) );
+		\delete_option( 'atmosphere_connection' );
+		\update_option( Client::DISCONNECTED_OPTION, true );
+
+		$this->assertSame( '', reauth_lead_for_current_user() );
+
+		\delete_option( 'atmosphere_identity' );
+		\delete_option( Client::DISCONNECTED_OPTION );
+	}
+
+	/**
+	 * A host plugin driving the connection itself can point every reconnect
+	 * prompt at its own screen, which is the whole reason the four surfaces
+	 * resolve through one helper.
+	 */
+	public function test_reconnect_url_is_filterable() {
+		\add_filter(
+			'atmosphere_reconnect_url',
+			static function () {
+				return 'https://example.com/host-plugin-connect';
+			}
+		);
+
+		$this->assertSame( 'https://example.com/host-plugin-connect', reconnect_url() );
+
+		\remove_all_filters( 'atmosphere_reconnect_url' );
+	}
+
+	/**
+	 * Returning an empty string drops the link and leaves the prompts as
+	 * plain text, the same as having no screen to link to.
+	 */
+	public function test_reconnect_url_filter_can_drop_the_link() {
+		\add_filter( 'atmosphere_reconnect_url', '__return_empty_string' );
+
+		$this->assertSame( '', reconnect_url() );
+
+		\remove_all_filters( 'atmosphere_reconnect_url' );
+	}
+
+	/**
+	 * The key-rotation cause is two sentences with no dashes: it renders in a
+	 * narrow sidebar column and in an admin notice.
+	 */
+	public function test_key_changed_cause_avoids_dashes() {
+		\update_option( 'atmosphere_identity', array( 'did' => 'did:plc:test123' ) );
+		\update_option(
+			'atmosphere_connection',
+			array(
+				'did'           => 'did:plc:test123',
+				'access_token'  => 'token',
+				'needs_reauth'  => true,
+				'reauth_reason' => Client::REAUTH_REASON_KEY_CHANGED,
+			)
+		);
+
+		$lead = reauth_reason_lead();
+
+		$this->assertStringContainsString( 'security keys have changed', $lead );
+		$this->assertStringNotContainsString( "\u{2014}", $lead );
+		$this->assertStringNotContainsString( "\u{2013}", $lead );
+	}
+
+	/**
+	 * The filter's return value reaches React as a raw `href`, because
+	 * `Block_Editor::script_data()` localizes it without escaping and
+	 * react-dom only warns about a `javascript:` scheme in development.
+	 * Sanitizing at the source covers every consumer at once.
+	 */
+	public function test_reconnect_url_filter_cannot_inject_a_script_scheme() {
+		\add_filter(
+			'atmosphere_reconnect_url',
+			static function () {
+				return 'javascript:alert(1)'; // phpcs:ignore WordPress.WP.EnqueuedResources
+			}
+		);
+
+		$this->assertSame( '', reconnect_url() );
+
+		\remove_all_filters( 'atmosphere_reconnect_url' );
+	}
+
+	/**
+	 * Sanitizing must not damage the ordinary case: an admin URL with a
+	 * query string survives intact.
+	 */
+	public function test_reconnect_url_filter_keeps_a_normal_admin_url() {
+		\add_filter(
+			'atmosphere_reconnect_url',
+			static function () {
+				return 'https://example.com/wp-admin/options-general.php?page=atmosphere&reconnect=1';
+			}
+		);
+
+		$this->assertSame(
+			'https://example.com/wp-admin/options-general.php?page=atmosphere&reconnect=1',
+			reconnect_url()
+		);
+
+		\remove_all_filters( 'atmosphere_reconnect_url' );
+	}
+
+	/**
+	 * `share_status()` decides the notice level and whether a reconnect link
+	 * renders on both editor surfaces, so `state`, `severity` and `action`
+	 * are load-bearing and were never asserted anywhere.
+	 */
+	public function test_share_status_is_quiet_and_shareable_when_healthy() {
+		$this->connect_site();
+
+		$status = share_status();
+
+		$this->assertSame( 'ok', $status['state'] );
+		$this->assertSame( '', $status['message'] );
+		$this->assertSame( 'info', $status['severity'] );
+		$this->assertFalse( $status['action'] );
+		$this->assertTrue( $status['can_share'] );
+		$this->assertTrue( $status['sharing_enabled'] );
+	}
+
+	/**
+	 * Sharing switched off by the site owner: the panel says so and points
+	 * at the setting, but there is nothing to reconnect.
+	 */
+	public function test_share_status_reports_sharing_off_without_an_action() {
+		$this->connect_site();
+		\update_option( 'atmosphere_auto_publish', '0' );
+
+		$status = share_status();
+
+		$this->assertSame( 'sharing_off', $status['state'] );
+		$this->assertNotSame( '', $status['message'] );
+		$this->assertFalse( $status['action'] );
+		$this->assertFalse( $status['can_share'] );
+		$this->assertFalse( $status['sharing_enabled'] );
+	}
+
+	/**
+	 * Sharing forced off from outside: `reason` still answers the direct
+	 * question the pre-publish panel asks, while `message` stays empty so
+	 * the ambient document panel keeps quiet.
+	 */
+	public function test_share_status_stays_silent_when_forced_off_externally() {
+		$this->connect_site();
+		\add_filter( 'atmosphere_should_auto_publish', '__return_false' );
+
+		$status = share_status();
+
+		$this->assertSame( 'sharing_off_external', $status['state'] );
+		$this->assertSame( '', $status['message'] );
+		$this->assertNotSame( '', $status['reason'] );
+		$this->assertFalse( $status['sharing_enabled'] );
+
+		\remove_all_filters( 'atmosphere_should_auto_publish' );
+	}
+
+	/**
+	 * A dead connection is a warning with a call to action, and it leaves
+	 * `sharing_enabled` true: site policy still says cross-post, so the
+	 * per-post toggle keeps recording a preference for when it recovers.
+	 */
+	public function test_share_status_asks_for_a_reconnect_without_disabling_sharing() {
+		$this->connect_site();
+		\update_option(
+			'atmosphere_connection',
+			array(
+				'did'          => 'did:plc:test123',
+				'access_token' => 'token',
+				'needs_reauth' => true,
+			)
+		);
+
+		$status = share_status();
+
+		$this->assertSame( 'needs_reconnect', $status['state'] );
+		$this->assertSame( 'warning', $status['severity'] );
+		$this->assertTrue( $status['action'] );
+		$this->assertFalse( $status['can_share'] );
+		$this->assertTrue( $status['sharing_enabled'] );
+	}
+
+	/**
+	 * Put the site in a connected, sharing-enabled state.
+	 */
+	private function connect_site(): void {
+		\update_option( 'atmosphere_identity', array( 'did' => 'did:plc:test123' ) );
+		\update_option(
+			'atmosphere_connection',
+			array(
+				'did'          => 'did:plc:test123',
+				'access_token' => 'token',
+			)
+		);
 	}
 }
