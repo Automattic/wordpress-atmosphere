@@ -16,6 +16,10 @@ namespace Atmosphere;
 
 use Atmosphere\Rest\Admin\Pre_Publish_Controller;
 use Atmosphere\Transformer\Threadgate;
+use function Atmosphere\share_status;
+use function Atmosphere\settings_url;
+use function Atmosphere\threadgate_needs_reconnect;
+use function Atmosphere\reconnect_url;
 
 /**
  * Block-editor integration.
@@ -46,8 +50,15 @@ class Block_Editor {
 			return;
 		}
 
+		/*
+		 * Built once and shared by both scripts. Recomputing per script
+		 * would run the whole share decision, the reconnect-URL resolution
+		 * and a capability check twice for an identical result.
+		 */
+		$data = self::script_data();
+
 		foreach ( self::SCRIPTS as $name ) {
-			self::enqueue_script( $name );
+			self::enqueue_script( $name, $data );
 		}
 	}
 
@@ -58,8 +69,9 @@ class Block_Editor {
 	 * loads from a source checkout that hasn't run `npm run build`.
 	 *
 	 * @param string $name The `build/<name>/` directory holding `plugin.js`.
+	 * @param array  $data Shared config to localize onto the script.
 	 */
-	private static function enqueue_script( string $name ): void {
+	private static function enqueue_script( string $name, array $data ): void {
 		$asset_file = ATMOSPHERE_PLUGIN_DIR . 'build/' . $name . '/plugin.asset.php';
 
 		if ( ! \file_exists( $asset_file ) ) {
@@ -80,7 +92,7 @@ class Block_Editor {
 		\wp_set_script_translations( $handle, 'atmosphere' );
 
 		// Single source of truth for values the JS shares with PHP.
-		\wp_localize_script( $handle, 'atmosphereEditor', self::script_data() );
+		\wp_localize_script( $handle, 'atmosphereEditor', $data );
 	}
 
 	/**
@@ -89,9 +101,22 @@ class Block_Editor {
 	 * Keeps the REST route and the share-toggle meta key defined once on the
 	 * PHP side so the JS never hardcodes (and drifts from) them.
 	 *
-	 * @return array{previewPath: string, disabledMetaKey: string, customTextMetaKey: string, replyRestrictionMetaKey: string, settingsUrl: string, canManage: bool}
+	 * @return array{previewPath: string, disabledMetaKey: string, customTextMetaKey: string, replyRestrictionMetaKey: string, threadgateNeedsReconnect: bool, settingsUrl: string, reconnectUrl: string, canManage: bool, shareStatus: array}
 	 */
 	private static function script_data(): array {
+		/*
+		 * The settings page needs `manage_options`; authors and
+		 * editors see the panel too, so reconnect prompts must not
+		 * link them into an authorization error.
+		 */
+		$can_manage = \current_user_can( 'manage_options' );
+
+		/*
+		 * One decision object rather than a set of loose flags. The panel
+		 * renders what {@see \Atmosphere\share_status()} decided instead of
+		 * re-deriving it in JavaScript, which is how the two editor surfaces
+		 * used to end up contradicting each other.
+		 */
 		return array(
 			'previewPath'              => Pre_Publish_Controller::full_route(),
 			'disabledMetaKey'          => ATMOSPHERE_META_DISABLED,
@@ -99,13 +124,9 @@ class Block_Editor {
 			'replyRestrictionMetaKey'  => Threadgate::META_RESTRICTION,
 			'threadgateNeedsReconnect' => threadgate_needs_reconnect(),
 			'settingsUrl'              => settings_url(),
-
-			/*
-			 * The settings page needs `manage_options`; authors and
-			 * editors see the panel too, so reconnect prompts must not
-			 * link them into an authorization error.
-			 */
-			'canManage'                => \current_user_can( 'manage_options' ),
+			'reconnectUrl'             => reconnect_url(),
+			'canManage'                => $can_manage,
+			'shareStatus'              => share_status(),
 		);
 	}
 }

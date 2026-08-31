@@ -1968,7 +1968,16 @@ class Atmosphere {
 	 * `atmosphere_publish_error` carries the most recent share failure
 	 * (null when the last attempt succeeded) so the panel can tell the
 	 * author a share failed instead of the failure vanishing into a
-	 * WP_DEBUG-gated log line. Both are edit-context only.
+	 * WP_DEBUG-gated log line.
+	 * `atmosphere_has_record` answers "is there anything out there to
+	 * delete", which is what the removal warning needs. It is deliberately
+	 * not derived from `atmosphere_url`: that carries a Bluesky web URL
+	 * built from `Post::META_URI` alone, so a document-only site (one
+	 * filtering `atmosphere_should_publish_bluesky_post` false) never has
+	 * one, while `delete_post()` still removes its `Document::META_URI`
+	 * record. Backing the flag with the same `has_post_records()` the
+	 * cleanup path calls keeps the warning and the deletion keyed off one
+	 * fact. All three are edit-context only.
 	 */
 	public function register_share_status_field(): void {
 		foreach ( get_supported_post_types() as $post_type ) {
@@ -1981,6 +1990,24 @@ class Atmosphere {
 					'schema'          => array(
 						'type'        => 'string',
 						'description' => \__( 'The Bluesky web URL for this post, empty until it is shared.', 'atmosphere' ),
+						'context'     => array( 'edit' ),
+					),
+				)
+			);
+
+			\register_rest_field(
+				$post_type,
+				'atmosphere_has_record',
+				array(
+					'get_callback'    => static function ( $post_arr ) {
+						$post = \get_post( (int) $post_arr['id'] );
+
+						return $post instanceof \WP_Post && self::has_post_records( $post );
+					},
+					'update_callback' => null,
+					'schema'          => array(
+						'type'        => 'boolean',
+						'description' => \__( 'Whether this post has records on the PDS that a cleanup would remove.', 'atmosphere' ),
 						'context'     => array( 'edit' ),
 					),
 				)
