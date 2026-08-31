@@ -848,7 +848,7 @@ class Client {
 			 * Recorded so a malformed row does not read as a renewal that
 			 * never ran; the rationale lives on REFRESH_STATUS_OPTION.
 			 */
-			self::record_refresh_failure( 'atmosphere_no_refresh' );
+			self::record_refresh_failure( 'atmosphere_no_refresh', $conn );
 
 			return new \WP_Error( 'atmosphere_no_refresh', \__( 'No refresh token available.', 'atmosphere' ) );
 		}
@@ -881,10 +881,15 @@ class Client {
 
 			if ( empty( $conn['refresh_token'] ) ) {
 				/*
-				 * Deliberately not recorded: the token can only have
-				 * vanished between the two reads through a disconnect,
-				 * and the recorder's guard drops that write anyway.
+				 * Recorded like the pre-lock twin; the recorder's
+				 * session check arbitrates. A reconnect can land a
+				 * token-less row here too (`handle_callback()` stores
+				 * an empty `refresh_token` when the token response
+				 * carries none), and that malformed row is exactly
+				 * what the history should show.
 				 */
+				self::record_refresh_failure( 'atmosphere_no_refresh', $conn );
+
 				return new \WP_Error( 'atmosphere_no_refresh', \__( 'No refresh token available.', 'atmosphere' ) );
 			}
 
@@ -1067,7 +1072,7 @@ class Client {
 			$error = $data['error'] ?? '';
 			$error = \is_string( $error ) ? $error : '';
 
-			$msg = $data['error_description'] ?? ( '' !== $error ? $error : '' );
+			$msg = $data['error_description'] ?? $error;
 			if ( ! \is_string( $msg ) || '' === $msg ) {
 				$msg = \__( 'Token refresh failed.', 'atmosphere' );
 			}
@@ -1277,8 +1282,12 @@ class Client {
 	/**
 	 * Whether the stored row still holds the ciphertext the caller read,
 	 * i.e. no disconnect or reconnect landed mid-flight. Libsodium
-	 * re-encrypts with a fresh nonce on every write, so any change to
-	 * the row at all fails the comparison.
+	 * re-encrypts with a fresh nonce on every write, so any
+	 * re-encryption of the compared field fails the comparison. Other
+	 * fields may change without failing it — the failure recording at
+	 * the `refresh()` boundary depends on that, because
+	 * `mark_needs_reauth()` rewrites the row (keeping the token
+	 * ciphertext) before the failure is recorded.
 	 *
 	 * @since unreleased
 	 *
@@ -1353,6 +1362,16 @@ class Client {
 		 * uses — see {@see self::connection_row_matches()}.
 		 */
 		if ( ! \is_array( $current ) || empty( $current ) ) {
+			return;
+		}
+
+		/*
+		 * Symmetric session check: exactly one side holding a token
+		 * means the session changed mid-flight and the failure belongs
+		 * to the dead one; both sides token-less is the same malformed
+		 * row the failure describes, so it is kept.
+		 */
+		if ( empty( $conn['refresh_token'] ) !== empty( $current['refresh_token'] ) ) {
 			return;
 		}
 

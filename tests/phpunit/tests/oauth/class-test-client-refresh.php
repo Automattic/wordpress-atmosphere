@@ -838,9 +838,11 @@ class Test_Client_Refresh extends WP_UnitTestCase {
 			'pre_http_request',
 			static function ( $response, $args, $url ) {
 				if ( false !== \strpos( $url, 'oauth/token' ) ) {
-					// Stand in for the operator reconnecting while this
-					// request was in flight: the row now holds another
-					// account's credentials.
+					/*
+					 * Stand in for the operator reconnecting while this
+					 * request was in flight: the row now holds another
+					 * account's credentials.
+					 */
 					$conn                  = \get_option( 'atmosphere_connection' );
 					$conn['refresh_token'] = Encryption::encrypt( 'a-different-accounts-token' );
 					\update_option( 'atmosphere_connection', $conn );
