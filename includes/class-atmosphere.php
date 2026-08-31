@@ -173,6 +173,7 @@ class Atmosphere {
 		 * available on non-admin requests.
 		 */
 		\add_action( 'init', array( Admin::class, 'register' ), 5 );
+		\add_action( 'init', array( Icons::class, 'register' ) );
 		\add_action( 'admin_init', array( Post_List::class, 'register' ) );
 
 		/*
