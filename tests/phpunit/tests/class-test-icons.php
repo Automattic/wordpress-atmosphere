@@ -12,6 +12,7 @@
  *
  * @package Atmosphere
  * @group atmosphere
+ * @group icons
  */
 
 namespace Atmosphere\Tests;
