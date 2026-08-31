@@ -268,7 +268,7 @@ abstract class Base {
 			\_doing_it_wrong(
 				__METHOD__,
 				\esc_html__( 'atmosphere_record_tags must return an array; falling back to the unfiltered tags.', 'atmosphere' ),
-				'unreleased'
+				'2.2.0'
 			);
 			$filtered = $tags;
 		}
