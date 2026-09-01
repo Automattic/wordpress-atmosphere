@@ -13,7 +13,7 @@ The plugin connects a WordPress site to the AT Protocol network as a client, not
 
 **Records written:**
 
-- `app.bsky.feed.post` — one companion post per shared WordPress post, optionally as a teaser thread; embeds via `app.bsky.embed.external`, `app.bsky.embed.images`, and `app.bsky.embed.record`
+- `app.bsky.feed.post` — one companion post per shared WordPress post, optionally as a teaser thread; embeds via `app.bsky.embed.external` (link cards) and `app.bsky.embed.images`; the `atmosphere_post_embed` filter can swap in other embed types
 - `app.bsky.feed.threadgate` — per-post reply restrictions, written in the same atomic batch as the post
 - `site.standard.document` — one document record per shared post
 - `site.standard.publication` — the site-level publication record, kept in sync automatically; theming via `site.standard.theme.basic`
@@ -42,8 +42,8 @@ repo:app.bsky.feed.threadgate
 repo:site.standard.document
 repo:site.standard.publication
 blob:image/*
-rpc:app.bsky.actor.getProfile?aud=did:web:api.bsky.app#bsky_appview
-rpc:app.bsky.notification.listNotifications?aud=did:web:api.bsky.app#bsky_appview
+rpc:app.bsky.actor.getProfile?aud=did:web:api.bsky.app%23bsky_appview
+rpc:app.bsky.notification.listNotifications?aud=did:web:api.bsky.app%23bsky_appview
 identity:handle
 include:site.standard.authFull
 ```
