@@ -4,7 +4,7 @@ Tags: at-protocol, bluesky, connector, atproto, crossposting
 Requires at least: 6.5
 Tested up to: 7.1
 Requires PHP: 8.2
-Stable tag: 2.1.0
+Stable tag: 2.2.0
 License: GPL-2.0-or-later
 License URI: https://spdx.org/licenses/GPL-2.0-or-later.html
 
@@ -103,6 +103,34 @@ Not at this time. ATmosphere is designed for a single WordPress site. On a Netwo
 
 == Changelog ==
 
+### 2.2.0 - 2026-08-31
+#### Security
+- Strip HTML from the display names of Bluesky accounts whose replies, likes, and reposts are imported as comments, and keep names containing an ampersand from breaking the comment feeds.
+- Treat the text of imported Bluesky replies as plain text, so markup in a reply can no longer alter the look of your site.
+
+#### Added
+- Add a Bluesky column to the posts list showing whether a post was shared, with a link to it, plus a "Share to Bluesky" action to share a post that did not make it the first time.
+- Add a Site Health check that tells you when Bluesky cannot reach your site, which is why connecting silently fails when a security plugin limits the REST API.
+- Add a way for sites to change the tags and keywords sent to Bluesky and standard.site, so leftover terms from an import stay out of the records.
+- Add the ATmosphere and Bluesky icons to the WordPress 7.1 icon library, so you can use them in the Icon block.
+- Allow sites to publish posts as standard.site documents without also posting to Bluesky.
+- Compatible plugins can now decide per post whether it is also shared to Bluesky.
+- Handle Bluesky rate limits when sharing: a share that hits the limit now waits for it to lift before retrying, and bulk syncs can be paced so they stay under it.
+- The backfill command can now preserve each post's original publish date so historical posts appear in the right chronological order in Bluesky and standard.site readers.
+- The post editor now tells you when your Bluesky connection has expired so you can reconnect before publishing, and warns you in the editor before saving a change that removes a post from Bluesky.
+- You can now choose who is allowed to reply to a post on Bluesky: everyone, no one, people you mention, people you follow, or your followers. Sites that connected to Bluesky before this update need to reconnect once to turn it on.
+- Your posts and home page now name the AT Protocol records they were published as, so other apps can tell which record a page came from.
+
+#### Changed
+- Mention resolution now tells a temporarily unreachable handle host apart from a handle that has no verification set up.
+
+#### Fixed
+- Fixed a case where deleting a post or comment after reconnecting to a different Bluesky account could quietly leave the original records stranded on the old account. Atmosphere now stops and reports the mismatch instead.
+- Fix sharing to Bluesky failing with an "Invalid client ID" error on sites served through a reverse proxy or CDN.
+- Posts with images no longer fail to share when a stored image reference is no longer available on the server; the images are automatically re-uploaded and the post is shared on a second attempt.
+- Show a clearer error when your own domain, Bluesky's directory, or a login server is temporarily unavailable, instead of reporting the account as invalid.
+- The Bluesky pre-publish preview now shows a clear message when it can't be generated — including a distinct one for permission errors — instead of failing without explanation.
+
 ### 2.1.0 - 2026-07-22
 #### Added
 - Add a connection-only mode so another plugin can reuse just the Bluesky connection: automatic cross-posting, likes and reposts, and reply importing all stay off, and the ATmosphere settings screen is hidden.
@@ -156,6 +184,7 @@ See full Changelog on [GitHub](https://github.com/Automattic/wordpress-atmospher
 
 == Upgrade Notice ==
 
-= 0.1.0 =
+= 2.2.0 =
 
-Initial release.
+This release adds reply restrictions for Bluesky posts — sites connected before this update need to reconnect once to enable them. It also hardens how imported Bluesky replies and display names are rendered on your site.
+

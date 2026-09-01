@@ -32,7 +32,7 @@ class API {
 	 * does not, and persisting the reading would mean an option write on
 	 * every single PDS call.
 	 *
-	 * @since unreleased
+	 * @since 2.2.0
 	 *
 	 * @var array|null
 	 */
@@ -41,7 +41,7 @@ class API {
 	/**
 	 * Read the most recent rate-limit snapshot reported by the PDS.
 	 *
-	 * @since unreleased
+	 * @since 2.2.0
 	 *
 	 * @return array|null Snapshot, or null when no response in this
 	 *                    process carried the `ratelimit-*` headers.
@@ -58,7 +58,7 @@ class API {
 	 * typing the string at every call site, the same convention
 	 * {@see Client::is_reconnect_error()} follows.
 	 *
-	 * @since unreleased
+	 * @since 2.2.0
 	 *
 	 * @var string
 	 */
@@ -67,7 +67,7 @@ class API {
 	/**
 	 * Whether a failure is a rate limit reported by the PDS.
 	 *
-	 * @since unreleased
+	 * @since 2.2.0
 	 *
 	 * @param \WP_Error $error Failure to classify.
 	 * @return bool
@@ -295,7 +295,7 @@ class API {
 	 * name, but not every failure carries both, so the caller supplies
 	 * the wording for the case where neither is there.
 	 *
-	 * @since unreleased
+	 * @since 2.2.0
 	 *
 	 * @param array  $body     Decoded response body.
 	 * @param string $fallback Message to use when the body says nothing.
@@ -319,7 +319,7 @@ class API {
 	 * about *this* response cannot mistake a stale reading for a fresh
 	 * one.
 	 *
-	 * @since unreleased
+	 * @since 2.2.0
 	 *
 	 * @param array $response Raw `wp_remote_*` response.
 	 * @return array|null Snapshot for this response, or null when it
@@ -361,7 +361,7 @@ class API {
 	 * reaches three decades in seconds, and no timestamp we care about
 	 * predates 2001.
 	 *
-	 * @since unreleased
+	 * @since 2.2.0
 	 *
 	 * @param mixed $raw Raw header value.
 	 * @return int|null Unix timestamp, or null when unreadable.
@@ -394,7 +394,7 @@ class API {
 	 * caller back at a moment that has nothing to do with the window it
 	 * actually hit.
 	 *
-	 * @since unreleased
+	 * @since 2.2.0
 	 *
 	 * @param array      $body     Decoded response body.
 	 * @param array|null $snapshot Rate-limit headers on this response.
@@ -619,7 +619,7 @@ class API {
 		 * response) or a `WP_Error` to bypass the network; return null to run
 		 * the real request. Used by the Publisher test fixture.
 		 *
-		 * @since unreleased
+		 * @since 2.2.0
 		 *
 		 * @param array|\WP_Error|null $short_circuit Canned response, or null to proceed.
 		 * @param string               $collection    Collection NSID.

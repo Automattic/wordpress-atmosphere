@@ -173,16 +173,65 @@ class Test_Reauth_Notice extends WP_UnitTestCase {
 	}
 
 	/**
-	 * Cap gate: a logged-out request must produce no output, even when
-	 * the underlying state would otherwise render the notice.
+	 * A reader who can publish but not reconnect still gets the notice: they
+	 * are the person hitting Publish into a dead connection. They are told
+	 * who can fix it instead of being handed a link to a screen they cannot
+	 * open.
 	 */
-	public function test_no_output_without_manage_options_cap(): void {
+	public function test_renders_for_a_reader_without_manage_options(): void {
+		\wp_set_current_user( self::factory()->user->create( array( 'role' => 'contributor' ) ) );
 		$this->seed_identity();
 		\update_option( Client::DISCONNECTED_OPTION, \time(), false );
 
 		$html = $this->capture_notice();
 
-		$this->assertSame( '', $html );
+		$this->assertStringContainsString( 'Ask an administrator to reconnect it.', $html );
+		$this->assertStringNotContainsString( '<a href', $html );
+	}
+
+	/**
+	 * A subscriber never publishes anything, so the notice is not theirs to
+	 * see. On a membership or WooCommerce site that is most of the logged-in
+	 * users, and telling every customer the site's Bluesky connection is
+	 * broken is noise they cannot act on.
+	 */
+	public function test_stays_hidden_from_a_reader_who_cannot_publish(): void {
+		\wp_set_current_user( self::factory()->user->create( array( 'role' => 'subscriber' ) ) );
+		$this->seed_identity();
+		\update_option( Client::DISCONNECTED_OPTION, \time(), false );
+
+		$this->assertSame( '', $this->capture_notice() );
+	}
+
+	/**
+	 * Same for a logged-out visitor, who cannot reach an admin screen at all.
+	 */
+	public function test_stays_hidden_from_a_logged_out_visitor(): void {
+		\wp_set_current_user( 0 );
+		$this->seed_identity();
+		\update_option( Client::DISCONNECTED_OPTION, \time(), false );
+
+		$this->assertSame( '', $this->capture_notice() );
+	}
+
+	/**
+	 * With both outgoing lanes already off, naming posts and comments would
+	 * be wrong: nothing was publishing anyway, and what breaks is whatever
+	 * else uses the connection.
+	 */
+	public function test_consequence_copy_follows_what_the_site_actually_uses(): void {
+		$this->seed_identity();
+		\update_option( 'atmosphere_auto_publish', '0' );
+		\update_option( 'atmosphere_publish_comments', '0' );
+		\wp_set_current_user( self::factory()->user->create( array( 'role' => 'administrator' ) ) );
+
+		$html = $this->capture_notice();
+
+		$this->assertStringContainsString( 'uses your Bluesky connection', $html );
+		$this->assertStringNotContainsString( 'New posts and comments', $html );
+
+		\delete_option( 'atmosphere_auto_publish' );
+		\delete_option( 'atmosphere_publish_comments' );
 	}
 
 	/**
@@ -224,6 +273,37 @@ class Test_Reauth_Notice extends WP_UnitTestCase {
 		$html = $this->capture_notice();
 
 		$this->assertSame( '', $html );
+	}
+
+	/**
+	 * The notice's lead now delegates to `reauth_lead_for_current_user()`
+	 * rather than hand-rolling the same operator-disconnect /
+	 * `reauth_reason_lead()` branch, so the two surfaces can't drift apart
+	 * again. Pins the rendered body to whatever the shared helper returns
+	 * for a key-rotation cause.
+	 */
+	public function test_notice_lead_matches_shared_reauth_lead_helper(): void {
+		$this->become_admin();
+		$this->seed_identity();
+		\update_option(
+			'atmosphere_connection',
+			array(
+				'did'           => 'did:plc:test',
+				'handle'        => 'example.com',
+				'access_token'  => '',
+				'needs_reauth'  => true,
+				'reauth_reason' => 'key_changed',
+			),
+			false
+		);
+
+		$html = $this->capture_notice();
+
+		$this->assertStringContainsString(
+			'Your site’s security keys have changed, so ATmosphere can no longer read its saved Bluesky login. This happens after a migration, or when a security plugin rotates them on a schedule.',
+			$html,
+			'The notice must render the key-rotation cause sentence verbatim, matching the shared reauth-lead helper.'
+		);
 	}
 
 	/**
