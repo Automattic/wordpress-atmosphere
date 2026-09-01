@@ -264,16 +264,16 @@ class Pre_Publish_Controller extends \WP_REST_Controller {
 		$transformer = new Post( $draft );
 
 		/*
-		 * Project against the *unsaved* custom text so the preview tracks
-		 * the textarea as the author types. Only override when the request
-		 * carries non-empty text: the param registers a `''` default, and
-		 * `has_param()` counts defaults once the request is dispatched, so it
-		 * is true even for an older/cached editor that never sent the field.
-		 * Treating blank as "not provided" falls back to the saved meta rather
-		 * than forcing the default composition with a cast-from-missing empty
-		 * string.
+		 * Project against the *unsaved* custom text so the preview tracks the
+		 * textarea as the author types — including when they clear it, which
+		 * must preview the default composition, not the stale saved meta. A
+		 * blank value is a real signal here, so "provided" is decided by the
+		 * key's presence in what the client actually sent (`has_param()`
+		 * cannot decide it: the param registers a `''` default and dispatch
+		 * fills it in, so it is true even for an older editor that never sent
+		 * the field). An absent key still falls back to the saved meta.
 		 */
-		if ( '' !== (string) $request['customText'] ) {
+		if ( self::request_provided( $request, 'customText' ) ) {
 			$transformer->set_custom_text_override( (string) $request['customText'] );
 		}
 
@@ -287,15 +287,20 @@ class Pre_Publish_Controller extends \WP_REST_Controller {
 		 * meta rather than the post row. Paired so the override never leaks past
 		 * this request, even if projection throws.
 		 */
-		\do_action( 'atmosphere_pre_projection', $draft, $request );
-
 		try {
+			\do_action( 'atmosphere_pre_projection', $draft, $request );
+
 			$projection = $transformer->project();
 		} finally {
+			/*
+			 * Both cleanups run even when a pre-projection callback or the
+			 * projection itself throws: the access override must not outlive
+			 * the request, and the HTTP kill-switch must not leave every
+			 * later wp_remote_*() call in this request failing.
+			 */
 			\do_action( 'atmosphere_post_projection', $draft, $request );
+			\remove_filter( 'pre_http_request', $block_http, 0 );
 		}
-
-		\remove_filter( 'pre_http_request', $block_http, 0 );
 
 		return \rest_ensure_response(
 			array(
@@ -317,6 +322,35 @@ class Pre_Publish_Controller extends \WP_REST_Controller {
 		);
 	}
 
+
+	/**
+	 * Whether the client actually sent a parameter with the request.
+	 *
+	 * `WP_REST_Request::has_param()` cannot answer this: once the request is
+	 * dispatched, params with a registered default resolve to that default
+	 * and count as present. Checking the raw JSON, POST, and query payloads
+	 * keeps a deliberately blank value (a cleared textarea) distinguishable
+	 * from a client that never sent the field at all.
+	 *
+	 * @param WP_REST_Request $request REST request.
+	 * @param string          $param   Parameter name.
+	 * @return bool True when the parameter key appears in the request payload.
+	 */
+	private static function request_provided( WP_REST_Request $request, string $param ): bool {
+		$sources = array(
+			$request->get_json_params(),
+			$request->get_body_params(),
+			$request->get_query_params(),
+		);
+
+		foreach ( $sources as $source ) {
+			if ( \is_array( $source ) && \array_key_exists( $param, $source ) ) {
+				return true;
+			}
+		}
+
+		return false;
+	}
 
 	/**
 	 * Decide whether the post will be shared to Bluesky, with a

@@ -608,15 +608,20 @@ class Post extends Base {
 				$link_facets = $short['facets'];
 
 				$embed = $this->build_images_embed();
-				if ( '' === $text && ( null === $embed || $this->is_body_gated() ) ) {
+				if ( $this->is_body_gated() || ( '' === $text && null === $embed ) ) {
 					/*
 					 * Fall back to the link-card composition when there is
-					 * nothing to publish natively — an empty body with no
-					 * images, or a body gated away entirely. In the gated case
-					 * build_images_embed() can still surface the (public)
-					 * featured image, but an image with no text and no link
-					 * home is not a useful share of a gated post; the link card
-					 * restores a title and a link back to the post.
+					 * nothing to publish natively — a fully gated body, or an
+					 * empty body with no images. The gated check is
+					 * unconditional: the rendered $text can be non-empty even
+					 * though the publishable body is '', because a the_content
+					 * appender (a sharing/CTA/related-posts filter) adds its
+					 * boilerplate regardless of input — text that must not
+					 * ship as the body of a gated post. build_images_embed()
+					 * can also still surface the (public) featured image, but
+					 * an image with no text and no link home is not a useful
+					 * share of a gated post; the link card restores a title
+					 * and a link back to the post.
 					 *
 					 * This is a link-card record, so flip $is_short to false (the
 					 * embed-filter strategy label and the

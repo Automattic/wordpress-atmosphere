@@ -31,8 +31,11 @@ import { strategyLabel, hasOverLimit, isAuthError } from './utils';
  *
  * Read straight from the editor so the preview tracks a subscriber/paid
  * visibility change before it is saved; the server only reads this from the
- * last save otherwise. Undefined (empty) when Jetpack is not active, which the
- * server treats as public.
+ * last save otherwise. When the meta key is registered but empty, the level is
+ * sent as an explicit 'everybody' so flipping a saved-gated post back to
+ * public previews as public. When the key is absent (Jetpack inactive, or a
+ * post type without the meta), no level is sent and the server falls back to
+ * the saved value, failing closed.
  *
  * @type {string}
  */
@@ -61,7 +64,10 @@ function PrePublishPanel() {
 	const [ meta ] = useEntityProp( 'postType', postType, 'meta' );
 	const disabled = !! ( meta && meta[ DISABLED_META_KEY ] );
 	const customText = ( meta && meta[ CUSTOM_TEXT_META_KEY ] ) || '';
-	const accessLevel = ( meta && meta[ JETPACK_ACCESS_META_KEY ] ) || '';
+	const accessLevel =
+		meta && JETPACK_ACCESS_META_KEY in meta
+			? meta[ JETPACK_ACCESS_META_KEY ] || 'everybody'
+			: undefined;
 
 	const [ preview, setPreview ] = useState( null );
 	const [ loading, setLoading ] = useState( true );

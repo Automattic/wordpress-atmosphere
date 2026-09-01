@@ -15,6 +15,7 @@ namespace Atmosphere\Content_Parser;
 
 use Atmosphere\Transformer\Post;
 use function Atmosphere\get_publishable_content;
+use function Atmosphere\publishable_content_cache_key;
 use function Atmosphere\render_publishable_content;
 use function Atmosphere\sanitize_text;
 use function Atmosphere\to_iso8601;
@@ -28,20 +29,27 @@ use function Atmosphere\truncate_graphemes;
 abstract class Parser_Base implements Content_Parser {
 
 	/**
-	 * Per-request cache of parsed block trees, keyed by post ID.
+	 * Per-request cache of parsed block trees, keyed by the
+	 * publishable-content cache key.
 	 *
 	 * `parse_blocks()` is not free and a parser commonly walks the tree
 	 * more than once (e.g. once to collect images, once to build the
-	 * record), so memoize it for the life of the request.
+	 * record), so memoize it for the life of the request. Keyed via
+	 * {@see \Atmosphere\publishable_content_cache_key()} — not the bare
+	 * post ID — so gating state an integration folds into that key (an
+	 * access level flipped mid-request, a preview override) recomputes
+	 * here too instead of serving the block tree memoized under the
+	 * earlier, more permissive decision.
 	 *
-	 * @var array<int,array>
+	 * @var array<string,array>
 	 */
 	private static array $block_cache = array();
 
 	/**
-	 * Per-request cache of rendered HTML, keyed by post ID.
+	 * Per-request cache of rendered HTML, keyed by the publishable-content
+	 * cache key (see {@see self::$block_cache}).
 	 *
-	 * @var array<int,string>
+	 * @var array<string,string>
 	 */
 	private static array $rendered_html_cache = array();
 
@@ -80,11 +88,13 @@ abstract class Parser_Base implements Content_Parser {
 	 * @return array Parsed blocks from parse_blocks().
 	 */
 	final protected function get_blocks( \WP_Post $post ): array {
-		if ( ! isset( self::$block_cache[ $post->ID ] ) ) {
-			self::$block_cache[ $post->ID ] = \parse_blocks( get_publishable_content( $post ) );
+		$key = publishable_content_cache_key( $post );
+
+		if ( ! isset( self::$block_cache[ $key ] ) ) {
+			self::$block_cache[ $key ] = \parse_blocks( get_publishable_content( $post ) );
 		}
 
-		return self::$block_cache[ $post->ID ];
+		return self::$block_cache[ $key ];
 	}
 
 	/**
@@ -119,8 +129,10 @@ abstract class Parser_Base implements Content_Parser {
 	final protected function get_rendered_html( \WP_Post $post ): string {
 		global $wp_query;
 
-		if ( isset( self::$rendered_html_cache[ $post->ID ] ) ) {
-			return self::$rendered_html_cache[ $post->ID ];
+		$key = publishable_content_cache_key( $post );
+
+		if ( isset( self::$rendered_html_cache[ $key ] ) ) {
+			return self::$rendered_html_cache[ $key ];
 		}
 
 		/*
@@ -160,9 +172,9 @@ abstract class Parser_Base implements Content_Parser {
 			}
 		}
 
-		self::$rendered_html_cache[ $post->ID ] = \trim( $html );
+		self::$rendered_html_cache[ $key ] = \trim( $html );
 
-		return self::$rendered_html_cache[ $post->ID ];
+		return self::$rendered_html_cache[ $key ];
 	}
 
 	/**

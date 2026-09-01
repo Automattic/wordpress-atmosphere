@@ -68,19 +68,28 @@ class Jetpack {
 	private const PAYWALL_CONTENT_FILTER = 'Automattic\Jetpack\Extensions\Subscriptions\add_paywall';
 
 	/**
-	 * Nesting depth of the current publishable-render suspension.
+	 * Stack of post IDs currently inside a publishable render.
 	 *
-	 * @var int
+	 * The paywall is only stepped aside for these posts: their bodies were
+	 * already narrowed by {@see self::filter_publishable_content()}. Any
+	 * other post rendered while the stack is non-empty (a query loop or
+	 * shortcode rendering a different post inline) keeps its paywall.
+	 *
+	 * @var int[]
 	 */
-	private static int $suspend_depth = 0;
+	private static array $suspended_posts = array();
 
 	/**
-	 * Priority the paywall filter was attached at before suspension, or null
-	 * when it was not attached.
+	 * Paywall callbacks swapped out for the duration of the suspension.
 	 *
-	 * @var int|null
+	 * Each entry records the original callback, the priority it was hooked
+	 * at, and the scoped wrapper standing in for it, so
+	 * {@see self::restore_paywall_filter()} can put everything back exactly
+	 * as found.
+	 *
+	 * @var array<int,array{function:string,priority:int,wrapper:\Closure}>
 	 */
-	private static ?int $suspended_priority = null;
+	private static array $suspended_callbacks = array();
 
 	/**
 	 * Per-post access-level override, keyed by post ID.
@@ -155,20 +164,17 @@ class Jetpack {
 	 * key, two different gating decisions for the same post + content would share
 	 * a cache slot: an unsaved override would mask the saved post, and changing
 	 * the saved access level mid-request would return the earlier, more
-	 * permissive answer. Appends the effective level — the override when a
-	 * preview set one, otherwise the stored meta — so each decision gets its own
-	 * slot.
+	 * permissive answer. Appends the effective level, resolved by
+	 * {@see self::effective_access_level()} — the same source the gating
+	 * decision itself reads — so the key can never diverge from the decision
+	 * it caches.
 	 *
 	 * @param string   $key  The default cache key (post ID + content hash).
 	 * @param \WP_Post $post The post being published.
 	 * @return string The key, varied by the effective access level.
 	 */
 	public static function vary_cache_key( string $key, \WP_Post $post ): string {
-		$level = isset( self::$access_override[ $post->ID ] )
-			? self::$access_override[ $post->ID ]
-			: (string) \get_post_meta( $post->ID, self::ACCESS_META, true );
-
-		return $key . ':access=' . $level;
+		return $key . ':access=' . self::effective_access_level( $post );
 	}
 
 	/**
@@ -253,54 +259,99 @@ class Jetpack {
 	}
 
 	/**
-	 * Unhook Jetpack's `the_content` paywall while ATmosphere renders.
+	 * Step Jetpack's `the_content` paywall aside for the post being rendered.
 	 *
 	 * Fired from `atmosphere_pre_render_publishable_content`. ATmosphere hands
 	 * `the_content` a body already narrowed by {@see
 	 * self::filter_publishable_content()}, but Jetpack's own paywall callback
-	 * (see {@see self::PAYWALL_CONTENT_FILTER}) still runs against the original
-	 * global post and, finding no visible viewer, would replace that body with a
-	 * subscribe form. Remembering its priority so
-	 * {@see self::restore_paywall_filter()} can put it back exactly as it was.
-	 * Depth-counted so nested renders suspend once and restore once.
+	 * (see {@see self::PAYWALL_CONTENT_FILTER}) still runs against the global
+	 * post and, finding no visible viewer, would replace that body with a
+	 * subscribe form.
 	 *
-	 * Known limitation: the suspension is global for its duration. If the body
-	 * we render itself runs `the_content` for a *different* post — a query-loop
-	 * or shortcode that renders another post inline — that post loses its gate
-	 * too, and its gated body could surface in the record. The paywall keys off
-	 * the global post, which is not reliably set in the logged-out WP-Cron
-	 * render, so scoping the suspension to our post alone is not dependable here.
-	 * The exposure is narrow (our public body must inline-render another, gated,
-	 * post), so we accept it rather than risk the primary suspension.
+	 * The suspension is scoped, not global: each matched paywall callback is
+	 * swapped for a wrapper that skips the paywall only when the post under
+	 * render is one ATmosphere narrowed (the render seam sets the global
+	 * post; see Parser_Base::get_rendered_html()). A *different* post
+	 * rendered inline — a query loop or shortcode embedding another, gated
+	 * post — keeps its paywall, so its gated body cannot surface in the
+	 * record.
+	 *
+	 * Matching covers any string callback named `add_paywall`, at any
+	 * priority, so a renamed namespace or a WordPress.com variant is caught
+	 * too. A paywall hooked as a closure is not detectable and stays active —
+	 * which fails closed: its subscribe form would replace the narrowed body,
+	 * never reveal the gated one.
+	 *
+	 * @param \WP_Post $post The post about to be rendered.
 	 */
-	public static function suspend_paywall_filter(): void {
-		if ( 0 === self::$suspend_depth ) {
-			$priority                 = \has_filter( 'the_content', self::PAYWALL_CONTENT_FILTER );
-			self::$suspended_priority = ( false === $priority ) ? null : (int) $priority;
+	public static function suspend_paywall_filter( \WP_Post $post ): void {
+		self::$suspended_posts[] = $post->ID;
 
-			if ( null !== self::$suspended_priority ) {
-				\remove_filter( 'the_content', self::PAYWALL_CONTENT_FILTER, self::$suspended_priority );
-			}
+		if ( 1 !== \count( self::$suspended_posts ) ) {
+			return;
 		}
 
-		++self::$suspend_depth;
+		$hook = $GLOBALS['wp_filter']['the_content'] ?? null;
+
+		if ( ! $hook instanceof \WP_Hook ) {
+			return;
+		}
+
+		foreach ( $hook->callbacks as $priority => $callbacks ) {
+			foreach ( $callbacks as $entry ) {
+				$function = $entry['function'] ?? null;
+
+				if ( ! \is_string( $function )
+					|| ! \str_ends_with( \strtolower( $function ), 'add_paywall' )
+				) {
+					continue;
+				}
+
+				$wrapper = static function ( $content ) use ( $function ) {
+					$post_id = ( $GLOBALS['post'] ?? null ) instanceof \WP_Post ? (int) $GLOBALS['post']->ID : 0;
+
+					if ( \in_array( $post_id, self::$suspended_posts, true ) ) {
+						return $content;
+					}
+
+					return \is_callable( $function ) ? $function( $content ) : $content;
+				};
+
+				\remove_filter( 'the_content', $function, (int) $priority );
+				\add_filter( 'the_content', $wrapper, (int) $priority );
+
+				self::$suspended_callbacks[] = array(
+					'function' => $function,
+					'priority' => (int) $priority,
+					'wrapper'  => $wrapper,
+				);
+			}
+		}
 	}
 
 	/**
 	 * Re-hook Jetpack's `the_content` paywall after ATmosphere renders.
 	 *
 	 * Fired from `atmosphere_post_render_publishable_content`; the mirror of
-	 * {@see self::suspend_paywall_filter()}.
+	 * {@see self::suspend_paywall_filter()}. Pops the rendered post off the
+	 * stack and, once the outermost render finishes, swaps every wrapper
+	 * back for the original callback at its original priority.
 	 */
 	public static function restore_paywall_filter(): void {
-		if ( self::$suspend_depth > 0 ) {
-			--self::$suspend_depth;
+		if ( ! empty( self::$suspended_posts ) ) {
+			\array_pop( self::$suspended_posts );
 		}
 
-		if ( 0 === self::$suspend_depth && null !== self::$suspended_priority ) {
-			\add_filter( 'the_content', self::PAYWALL_CONTENT_FILTER, self::$suspended_priority );
-			self::$suspended_priority = null;
+		if ( ! empty( self::$suspended_posts ) ) {
+			return;
 		}
+
+		foreach ( self::$suspended_callbacks as $entry ) {
+			\remove_filter( 'the_content', $entry['wrapper'], $entry['priority'] );
+			\add_filter( 'the_content', $entry['function'], $entry['priority'] );
+		}
+
+		self::$suspended_callbacks = array();
 	}
 
 	/**
@@ -350,29 +401,49 @@ class Jetpack {
 	/**
 	 * Whether the post's whole-post access level is readable by everybody.
 	 *
-	 * Prefers Jetpack's canonical accessor when present (it caches and coerces
-	 * the value); otherwise reads the stored meta directly so the check works
-	 * in tests and on sites where the class is not loaded. Fails closed: any
-	 * value other than '' / 'everybody' is treated as gated.
+	 * Reads {@see self::effective_access_level()}. Fails closed: any value
+	 * other than '' / 'everybody' is treated as gated.
 	 *
 	 * @param \WP_Post $post The post being checked.
 	 * @return bool
 	 */
 	private static function is_access_level_public( \WP_Post $post ): bool {
+		$level = self::effective_access_level( $post );
+
+		return '' === $level || self::ACCESS_EVERYBODY === $level;
+	}
+
+	/**
+	 * The post's effective whole-post access level.
+	 *
+	 * Resolution order: the preview's unsaved override (it reflects the
+	 * editor's latest choice, so it wins over any memoized lookup), then
+	 * Jetpack's canonical accessor when present (it caches and coerces the
+	 * value), then the stored meta so the check works in tests and on sites
+	 * where the class is not loaded.
+	 *
+	 * The single resolver feeds both the gating decision
+	 * ({@see self::is_access_level_public()}) and the memo key
+	 * ({@see self::vary_cache_key()}): reading two different sources there
+	 * could cache a full body under a gated-labeled slot when the sources
+	 * disagree mid-request.
+	 *
+	 * @param \WP_Post $post The post being checked.
+	 * @return string The access level ('' when none is stored).
+	 */
+	private static function effective_access_level( \WP_Post $post ): string {
 		if ( isset( self::$access_override[ $post->ID ] ) ) {
-			// Pre-publish preview: use the editor's unsaved access level. Applied
-			// last so it wins over Jetpack's memoized save-time lookup below.
-			$level = self::$access_override[ $post->ID ];
-		} elseif (
+			return self::$access_override[ $post->ID ];
+		}
+
+		if (
 			\class_exists( 'Jetpack_Memberships' )
 			&& \method_exists( 'Jetpack_Memberships', 'get_post_access_level' )
 		) {
-			$level = (string) \Jetpack_Memberships::get_post_access_level( $post->ID );
-		} else {
-			$level = (string) \get_post_meta( $post->ID, self::ACCESS_META, true );
+			return (string) \Jetpack_Memberships::get_post_access_level( $post->ID );
 		}
 
-		return '' === $level || self::ACCESS_EVERYBODY === $level;
+		return (string) \get_post_meta( $post->ID, self::ACCESS_META, true );
 	}
 
 	/**

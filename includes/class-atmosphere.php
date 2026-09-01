@@ -1735,6 +1735,19 @@ class Atmosphere {
 			return false;
 		}
 
+		/*
+		 * A gated parent keeps its comment thread private too. The post lane
+		 * narrows every body-derived field through get_publishable_content(),
+		 * but a reply can quote or continue the gated discussion, and the
+		 * membership plugin shows the on-site thread behind its gate — so
+		 * when any gating narrowed the body (fully gated, split-point, or an
+		 * inline region), no comment on that post federates. Fails closed on
+		 * any narrowing.
+		 */
+		if ( get_publishable_content( $post ) !== $post->post_content ) {
+			return false;
+		}
+
 		$post_uri = \get_post_meta( $post_id, Post::META_URI, true );
 		$post_cid = \get_post_meta( $post_id, Post::META_CID, true );
 

@@ -244,16 +244,15 @@ class Test_Pre_Publish_Controller extends WP_UnitTestCase {
 	}
 
 	/**
-	 * A blank `customText` param must also fall back to the saved meta. Once the
-	 * request is dispatched, the param resolves to its registered `''` default,
-	 * so `has_param( 'customText' )` is true even when the client sent nothing.
-	 * A cast-from-blank empty string must not force the default composition over
-	 * a post's saved custom text — that would make the preview disagree with
-	 * what an older editor actually publishes.
+	 * A blank `customText` the client actually sent means the author cleared
+	 * the textarea: the preview must project the default composition — what
+	 * publish will do once the cleared meta is saved — not fall back to the
+	 * stale saved custom text. Presence is read from the request payload
+	 * itself, so this stays distinguishable from an omitted param.
 	 *
 	 * @covers ::get_preview
 	 */
-	public function test_preview_with_blank_custom_text_param_reads_saved_meta() {
+	public function test_preview_with_blank_custom_text_param_clears_saved_meta() {
 		$post = self::factory()->post->create_and_get(
 			array(
 				'post_title'   => 'A Titled Post',
@@ -262,13 +261,12 @@ class Test_Pre_Publish_Controller extends WP_UnitTestCase {
 		);
 		\update_post_meta( $post->ID, ATMOSPHERE_META_CUSTOM_TEXT, 'Saved custom words.' );
 
-		// make_request() sends customText => '' by default, standing in for the
-		// dispatched default a client that omitted the field would receive.
+		// make_request() sends customText => '' — the cleared textarea.
 		$data = $this->controller->get_preview(
 			$this->make_request( $post->ID, array( 'content' => 'Body.' ) )
 		)->get_data();
 
-		$this->assertSame( 'custom-text', $data['strategy'] );
+		$this->assertNotSame( 'custom-text', $data['strategy'] );
 	}
 
 	/**

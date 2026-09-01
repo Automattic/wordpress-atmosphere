@@ -1179,23 +1179,7 @@ function get_publishable_content( \WP_Post $post ): string {
 	 */
 	$cache = &publishable_content_cache();
 
-	$key = $post->ID . ':' . \md5( (string) $post->post_content );
-
-	/**
-	 * Filters the memoization key for {@see get_publishable_content()}.
-	 *
-	 * The default key covers the post ID and its stored content. Integrations
-	 * whose publishable-content output also depends on state the stored content
-	 * does not capture — an unsaved access-level override applied during a
-	 * preview projection, for instance — should append that state so each
-	 * variant gets its own cache slot instead of masking another's.
-	 *
-	 * @since unreleased
-	 *
-	 * @param string   $key  The default cache key (post ID + content hash).
-	 * @param \WP_Post $post The post being published.
-	 */
-	$key = (string) \apply_filters( 'atmosphere_publishable_content_cache_key', $key, $post );
+	$key = publishable_content_cache_key( $post );
 
 	if ( isset( $cache[ $key ] ) ) {
 		return $cache[ $key ];
@@ -1261,6 +1245,41 @@ function flush_publishable_content_cache(): void {
 }
 
 /**
+ * The memoization key for a post's publishable-content and parser caches.
+ *
+ * Covers the post ID and a hash of the stored content, then lets integrations
+ * fold in any gating state the stored content does not capture. Shared by
+ * {@see get_publishable_content()} and the content parser's block-tree and
+ * rendered-HTML caches so every body-derived cache varies together: a gating
+ * change that recomputes the publishable content must never be served a block
+ * tree or HTML memoized under the previous, more permissive decision.
+ *
+ * @since unreleased
+ *
+ * @param \WP_Post $post Post object.
+ * @return string The cache key.
+ */
+function publishable_content_cache_key( \WP_Post $post ): string {
+	$key = $post->ID . ':' . \md5( (string) $post->post_content );
+
+	/**
+	 * Filters the memoization key for {@see get_publishable_content()}.
+	 *
+	 * The default key covers the post ID and its stored content. Integrations
+	 * whose publishable-content output also depends on state the stored content
+	 * does not capture — an unsaved access-level override applied during a
+	 * preview projection, for instance — should append that state so each
+	 * variant gets its own cache slot instead of masking another's.
+	 *
+	 * @since unreleased
+	 *
+	 * @param string   $key  The default cache key (post ID + content hash).
+	 * @param \WP_Post $post The post being published.
+	 */
+	return (string) \apply_filters( 'atmosphere_publishable_content_cache_key', $key, $post );
+}
+
+/**
  * Render a post's publishable content through the `the_content` filter chain.
  *
  * Wraps the render in a pair of actions so membership/paywall integrations can
@@ -1269,8 +1288,9 @@ function flush_publishable_content_cache(): void {
  * publicly readable portion via {@see get_publishable_content()} and publishes
  * from a logged-out context (WP-Cron); left in place, a membership gate would
  * re-render the *global* post as a "subscribe to keep reading" form and
- * overwrite the safe body. The actions always fire in pairs, even if the filter
- * chain throws, so an integration can restore its own state in the `post` hook.
+ * overwrite the safe body. The actions fire in pairs even when the filter
+ * chain or a pre-render callback throws, so an integration can restore its own
+ * state in the `post` hook.
  *
  * @since unreleased
  *
@@ -1278,20 +1298,23 @@ function flush_publishable_content_cache(): void {
  * @return string The rendered HTML.
  */
 function render_publishable_content( \WP_Post $post ): string {
-	/**
-	 * Fires before ATmosphere renders a post's publishable content.
-	 *
-	 * Membership integrations suspend their own `the_content` gating here so it
-	 * does not overwrite the already-narrowed body. Must be mirrored by
-	 * {@see 'atmosphere_post_render_publishable_content'}.
-	 *
-	 * @since unreleased
-	 *
-	 * @param \WP_Post $post The post being rendered.
-	 */
-	\do_action( 'atmosphere_pre_render_publishable_content', $post );
-
 	try {
+		/**
+		 * Fires before ATmosphere renders a post's publishable content.
+		 *
+		 * Membership integrations suspend their own `the_content` gating here
+		 * so it does not overwrite the already-narrowed body. Must be mirrored
+		 * by {@see 'atmosphere_post_render_publishable_content'}. Fires inside
+		 * the try so a throwing callback still reaches the mirror action: an
+		 * integration that already suspended its gate gets restored rather
+		 * than left off for the rest of the request.
+		 *
+		 * @since unreleased
+		 *
+		 * @param \WP_Post $post The post being rendered.
+		 */
+		\do_action( 'atmosphere_pre_render_publishable_content', $post );
+
 		// phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Core WordPress filter.
 		return (string) \apply_filters( 'the_content', get_publishable_content( $post ) );
 	} finally {
