@@ -1192,7 +1192,10 @@ function get_publishable_content( \WP_Post $post ): string {
 	 * visitor-independent way. Return only the publicly readable portion of
 	 * `$content`; return `''` when the whole post is gated. Callbacks must not
 	 * depend on the current user, cookies, or session state, and must fail
-	 * closed (return less on any ambiguity).
+	 * closed (return less on any ambiguity). When nothing is gated, return the
+	 * content byte-for-byte unchanged: consumers detect narrowing by comparing
+	 * the result against the stored content (see {@see is_post_gated()}), so
+	 * an unnecessary serialize round-trip reads as gating.
 	 *
 	 * @since unreleased
 	 *
@@ -1280,6 +1283,41 @@ function publishable_content_cache_key( \WP_Post $post ): string {
 }
 
 /**
+ * Whether any gating narrowed the post's publishable body.
+ *
+ * True when the publicly publishable content differs from the stored
+ * `post_content` — a fully gated body, a split point, or an inline gated
+ * region. Consumers that must fail closed around gated discussion — the
+ * comment lane keeps a gated parent's whole thread private — read this
+ * predicate rather than comparing content themselves.
+ *
+ * @since unreleased
+ *
+ * @param \WP_Post $post Post object.
+ * @return bool True when the post is gated in any way.
+ */
+function is_post_gated( \WP_Post $post ): bool {
+	$gated = get_publishable_content( $post ) !== $post->post_content;
+
+	/**
+	 * Filters whether a post counts as gated.
+	 *
+	 * The default detects narrowing by comparing the publishable content
+	 * against the stored `post_content` byte for byte. Integrations should
+	 * correct both error directions: return true for gating the comparison
+	 * cannot see (a whole-post access level on an empty or image-only body),
+	 * and false when a re-serializing parser changed the markup without
+	 * actually gating anything.
+	 *
+	 * @since unreleased
+	 *
+	 * @param bool     $gated Whether the post is gated.
+	 * @param \WP_Post $post  The post being checked.
+	 */
+	return (bool) \apply_filters( 'atmosphere_is_post_gated', $gated, $post );
+}
+
+/**
  * Render a post's publishable content through the `the_content` filter chain.
  *
  * Wraps the render in a pair of actions so membership/paywall integrations can
@@ -1297,6 +1335,19 @@ function publishable_content_cache_key( \WP_Post $post ): string {
  * @return string The rendered HTML.
  */
 function render_publishable_content( \WP_Post $post ): string {
+	$content = get_publishable_content( $post );
+
+	/*
+	 * A fully gated body renders to nothing at all. Running the empty string
+	 * through `the_content` would still collect unconditional appenders
+	 * (sharing buttons, CTAs, related-posts blocks) whose boilerplate would
+	 * then ship as the public record body of a gated post — in the Bluesky
+	 * text, the document textContent, and the long-form compositions alike.
+	 */
+	if ( '' === \trim( $content ) && '' !== \trim( (string) $post->post_content ) ) {
+		return '';
+	}
+
 	/**
 	 * Fires before ATmosphere renders a post's publishable content.
 	 *
@@ -1311,7 +1362,7 @@ function render_publishable_content( \WP_Post $post ): string {
 	\do_action( 'atmosphere_pre_render_publishable_content', $post );
 
 	// phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Core WordPress filter.
-	$html = (string) \apply_filters( 'the_content', get_publishable_content( $post ) );
+	$html = (string) \apply_filters( 'the_content', $content );
 
 	/**
 	 * Fires after ATmosphere renders a post's publishable content.

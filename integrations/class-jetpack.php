@@ -109,6 +109,13 @@ class Jetpack {
 	public static function init(): void {
 		\add_filter( 'atmosphere_publishable_content', array( self::class, 'filter_publishable_content' ), 10, 2 );
 
+		/*
+		 * The byte comparison behind is_post_gated() cannot see a whole-post
+		 * access level on a body it never narrows (an empty or image-only
+		 * post), so flag gated levels explicitly.
+		 */
+		\add_filter( 'atmosphere_is_post_gated', array( self::class, 'flag_gated_post' ), 10, 2 );
+
 		// Neutralise Jetpack's own `the_content` paywall while ATmosphere
 		// renders the already-narrowed body (see PAYWALL_CONTENT_FILTER).
 		\add_action( 'atmosphere_pre_render_publishable_content', array( self::class, 'suspend_paywall_filter' ) );
@@ -175,6 +182,23 @@ class Jetpack {
 	 */
 	public static function vary_cache_key( string $key, \WP_Post $post ): string {
 		return $key . ':access=' . self::effective_access_level( $post );
+	}
+
+	/**
+	 * Flag a post with a non-public access level as gated.
+	 *
+	 * Backstop for {@see \Atmosphere\is_post_gated()}: its byte comparison
+	 * detects narrowing, but a whole-post level on a body the filter never
+	 * changes (empty content, an image-only newsletter) narrows nothing while
+	 * the post is still subscriber-only. The comment lane reads the
+	 * predicate, so without this flag such a post's thread would federate.
+	 *
+	 * @param bool     $gated Whether the post already counts as gated.
+	 * @param \WP_Post $post  The post being checked.
+	 * @return bool
+	 */
+	public static function flag_gated_post( bool $gated, \WP_Post $post ): bool {
+		return $gated || ! self::is_access_level_public( $post );
 	}
 
 	/**
@@ -276,11 +300,13 @@ class Jetpack {
 	 * post — keeps its paywall, so its gated body cannot surface in the
 	 * record.
 	 *
-	 * Matching covers any string callback named `add_paywall`, at any
-	 * priority, so a renamed namespace or a WordPress.com variant is caught
-	 * too. A paywall hooked as a closure is not detectable and stays active —
-	 * which fails closed: its subscribe form would replace the narrowed body,
-	 * never reveal the gated one.
+	 * Only the known paywall callbacks (see the
+	 * `atmosphere_paywall_content_filters` filter) are matched, at any
+	 * priority. An unknown or closure-hooked paywall stays active — which
+	 * fails closed: its subscribe form would replace the narrowed body, never
+	 * reveal the gated one. The list is deliberately narrow: stepping an
+	 * unknown third-party paywall aside could bypass a gate ATmosphere knows
+	 * nothing about.
 	 *
 	 * @param \WP_Post $post The post about to be rendered.
 	 */
@@ -297,12 +323,29 @@ class Jetpack {
 			return;
 		}
 
+		/**
+		 * Filters the `the_content` callbacks treated as the paywall.
+		 *
+		 * Only these exact string callbacks are stepped aside during a
+		 * publishable render. The list is deliberately narrow: bypassing an
+		 * unknown third-party paywall for the post under render could leak a
+		 * body ATmosphere did not narrow, whereas an unmatched paywall merely
+		 * replaces the already-narrowed body with its subscribe form. A host
+		 * whose paywall lives under another name can append it — after also
+		 * narrowing its gated content via `atmosphere_publishable_content`.
+		 *
+		 * @since unreleased
+		 *
+		 * @param string[] $callbacks Callback names to suspend.
+		 */
+		$paywall_callbacks = (array) \apply_filters( 'atmosphere_paywall_content_filters', array( self::PAYWALL_CONTENT_FILTER ) );
+
 		foreach ( $hook->callbacks as $priority => $callbacks ) {
 			foreach ( $callbacks as $entry ) {
 				$function = $entry['function'] ?? null;
 
 				if ( ! \is_string( $function )
-					|| ! \str_ends_with( \strtolower( $function ), 'add_paywall' )
+					|| ! \in_array( $function, $paywall_callbacks, true )
 				) {
 					continue;
 				}
@@ -440,6 +483,18 @@ class Jetpack {
 			\class_exists( 'Jetpack_Memberships' )
 			&& \method_exists( 'Jetpack_Memberships', 'get_post_access_level' )
 		) {
+			/*
+			 * Jetpack memoizes the level per post in a static cache that only
+			 * switch_blog clears, so a level changed mid-process (a WP-CLI
+			 * backfill batch, a cron worker publishing after an author save)
+			 * would keep resolving to the stale value — and the memo key
+			 * would never vary with it. Drop that entry first so the accessor
+			 * re-reads the stored meta.
+			 */
+			if ( \method_exists( 'Jetpack_Memberships', 'clear_post_access_level_cache' ) ) {
+				\Jetpack_Memberships::clear_post_access_level_cache( $post->ID );
+			}
+
 			return (string) \Jetpack_Memberships::get_post_access_level( $post->ID );
 		}
 

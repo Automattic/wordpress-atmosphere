@@ -21,6 +21,8 @@ use Atmosphere\Transformer\Document;
 use Atmosphere\Transformer\Post;
 
 use function Atmosphere\get_publishable_content;
+use function Atmosphere\is_post_gated;
+use function Atmosphere\render_publishable_content;
 
 /**
  * Jetpack gating integration tests.
@@ -58,6 +60,7 @@ class Test_Jetpack extends \WP_UnitTestCase {
 	 */
 	public function tear_down(): void {
 		\remove_all_filters( 'atmosphere_publishable_content' );
+		\remove_all_filters( 'atmosphere_is_post_gated' );
 		Registry::reset();
 		Parser_Base::flush_block_cache();
 		Atmosphere::register_default_content_parsers();
@@ -650,5 +653,44 @@ class Test_Jetpack extends \WP_UnitTestCase {
 
 		// Override lifted: the saved public value is served again.
 		$this->assertSame( 'Shared body.', get_publishable_content( $post ), 'override lifts cleanly after the projection' );
+	}
+
+	/**
+	 * A fully gated body renders to nothing even when an unconditional
+	 * `the_content` appender (sharing buttons, a CTA) adds boilerplate to
+	 * every render: none of it may ship as the record body of a gated post,
+	 * while a public post keeps the appender output like the front end does.
+	 */
+	public function test_fully_gated_post_renders_to_nothing_despite_appender() {
+		$post     = $this->gated_post( 'subscribers' );
+		$appender = static function ( $content ) {
+			return $content . '<p>Share this: Facebook Twitter</p>';
+		};
+		\add_filter( 'the_content', $appender );
+
+		$gated_html  = render_publishable_content( $post );
+		$public      = self::factory()->post->create_and_get( array( 'post_content' => 'Public body.' ) );
+		$public_html = render_publishable_content( $public );
+
+		\remove_filter( 'the_content', $appender );
+
+		$this->assertSame( '', $gated_html, 'no appender boilerplate may ship for a gated body' );
+		$this->assertStringContainsString( 'Share this:', $public_html, 'a public post keeps the appender output' );
+	}
+
+	/**
+	 * A whole-post access level gates the comment thread even when the body
+	 * comparison sees nothing: an empty-content (title + featured image)
+	 * subscribers post narrows no bytes but is still subscriber-only.
+	 */
+	public function test_gated_post_with_empty_content_is_flagged_gated() {
+		$post = self::factory()->post->create_and_get( array( 'post_content' => '' ) );
+		\update_post_meta( $post->ID, '_jetpack_newsletter_access', 'subscribers' );
+
+		$this->assertTrue( is_post_gated( $post ), 'empty-content subscribers post counts as gated' );
+
+		$public = self::factory()->post->create_and_get( array( 'post_content' => 'Public body.' ) );
+
+		$this->assertFalse( is_post_gated( $public ), 'an ungated post does not' );
 	}
 }
