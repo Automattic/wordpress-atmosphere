@@ -408,6 +408,9 @@ with `protocol` comment meta `atproto`). Replies carry a link to the
 reply's Bluesky page in `source_url`; likes and reposts have no Bluesky
 landing page, so their `source_url` is intentionally empty and
 `comment_author_url` (the author's profile) is the outbound link.
+`comment_author` holds the remote display name HTML-encoded, the same way
+core stores names that arrive through the comment form: safe to print as
+is, decode it with `html_entity_decode()` if you need the plain-text name.
 Integrations can react to each via
 [`atmosphere_reaction_synced`](#public-hooks).
 

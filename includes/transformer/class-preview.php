@@ -242,7 +242,7 @@ class Preview {
 			\_doing_it_wrong(
 				__METHOD__,
 				\esc_html__( 'atmosphere_atproto_preview_transformers must return an array; falling back to the built-in transformers.', 'atmosphere' ),
-				'unreleased'
+				'2.0.0'
 			);
 			$transformers = $defaults;
 		}
