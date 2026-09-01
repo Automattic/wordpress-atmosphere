@@ -1348,6 +1348,17 @@ function render_publishable_content( \WP_Post $post ): string {
 		return '';
 	}
 
+	/*
+	 * Establish the post as the global render context. Blocks, shortcodes,
+	 * and the scoped paywall suspension all key off the global post; the
+	 * parser lane sets up full loop context already, but the Bluesky text
+	 * lane calls this directly — without the global, an inline block would
+	 * resolve against a stale post and the paywall wrapper could not tell
+	 * the narrowed post from any other. Restored below.
+	 */
+	$previous_global_post = $GLOBALS['post'] ?? null;
+	$GLOBALS['post']      = $post; // phpcs:ignore WordPress.WP.GlobalVariablesOverride.Prohibited -- Render context for the duration of the render; restored below.
+
 	/**
 	 * Fires before ATmosphere renders a post's publishable content.
 	 *
@@ -1374,6 +1385,12 @@ function render_publishable_content( \WP_Post $post ): string {
 	 * @param \WP_Post $post The post that was rendered.
 	 */
 	\do_action( 'atmosphere_post_render_publishable_content', $post );
+
+	if ( null === $previous_global_post ) {
+		unset( $GLOBALS['post'] );
+	} else {
+		$GLOBALS['post'] = $previous_global_post; // phpcs:ignore WordPress.WP.GlobalVariablesOverride.Prohibited -- Restores the previous global post.
+	}
 
 	return $html;
 }

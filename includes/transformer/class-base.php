@@ -16,6 +16,7 @@ use Atmosphere\Mention;
 use function Atmosphere\build_at_uri;
 use function Atmosphere\get_did;
 use function Atmosphere\get_publishable_content;
+use function Atmosphere\publishable_content_cache_key;
 use function Atmosphere\render_publishable_content;
 use function Atmosphere\sanitize_text;
 use function Atmosphere\to_iso8601;
@@ -353,20 +354,25 @@ abstract class Base {
 	}
 
 	/**
-	 * Cache of `render_post_content_plain()` output keyed by post ID.
+	 * Cache of `render_post_content_plain()` output, keyed by the
+	 * publishable-content cache key.
 	 *
 	 * Per-instance memoization; `the_content` filter chains can be
 	 * expensive, and long-form composition may touch a post's plain
-	 * text from multiple helpers inside a single publish pass.
+	 * text from multiple helpers inside a single publish pass. Keyed via
+	 * {@see \Atmosphere\publishable_content_cache_key()} — not the bare
+	 * post ID — so gating state folded into that key gets its own slot,
+	 * like every other body-derived cache.
 	 *
-	 * @var array<int,string>
+	 * @var array<string,string>
 	 */
 	private array $plain_content_cache = array();
 
 	/**
-	 * Per-instance memoization of the rendered-HTML render (linkification off).
+	 * Per-instance memoization of the rendered-HTML render (linkification
+	 * off), keyed like {@see self::$plain_content_cache}.
 	 *
-	 * @var array<int,string>
+	 * @var array<string,string>
 	 */
 	private array $html_content_cache = array();
 
@@ -390,15 +396,17 @@ abstract class Base {
 	 * @return string
 	 */
 	protected function render_post_content_html( \WP_Post $post ): string {
-		if ( isset( $this->html_content_cache[ $post->ID ] ) ) {
-			return $this->html_content_cache[ $post->ID ];
+		$key = publishable_content_cache_key( $post );
+
+		if ( isset( $this->html_content_cache[ $key ] ) ) {
+			return $this->html_content_cache[ $key ];
 		}
 
 		$html = Mention::without_links(
 			static fn() => render_publishable_content( $post )
 		);
 
-		$this->html_content_cache[ $post->ID ] = $html;
+		$this->html_content_cache[ $key ] = $html;
 
 		return $html;
 	}
@@ -409,19 +417,22 @@ abstract class Base {
 	 * Runs the_content filter, strips tags, decodes entities, and
 	 * collapses whitespace. Shared by short-form Bluesky post
 	 * composition and the document record's textContent field.
-	 * Memoized per post ID to avoid re-running the filter chain.
+	 * Memoized per publishable-content cache key to avoid re-running
+	 * the filter chain.
 	 *
 	 * @param \WP_Post $post Post object.
 	 * @return string
 	 */
 	protected function render_post_content_plain( \WP_Post $post ): string {
-		if ( isset( $this->plain_content_cache[ $post->ID ] ) ) {
-			return $this->plain_content_cache[ $post->ID ];
+		$key = publishable_content_cache_key( $post );
+
+		if ( isset( $this->plain_content_cache[ $key ] ) ) {
+			return $this->plain_content_cache[ $key ];
 		}
 
 		$plain = sanitize_text( $this->render_post_content_html( $post ) );
 
-		$this->plain_content_cache[ $post->ID ] = $plain;
+		$this->plain_content_cache[ $key ] = $plain;
 
 		return $plain;
 	}
