@@ -1,6 +1,6 @@
 # Federation in ATmosphere
 
-The plugin connects a WordPress site to the AT Protocol network. It writes records into the connected account's repository on its PDS, reads interactions back from the Bluesky appview, and verifies the site's identity in both directions. This file describes that surface, following the [FEDERATION.md convention](https://codeberg.org/fediverse/fep/src/branch/main/fep/67ff/fep-67ff.md); the AT Protocol community has no distinct name for federating, so the name fits here too.
+The plugin connects a WordPress site to the AT Protocol network as a client, not as a node. There is no "real" federation here: the site does not run a PDS, hosts no repositories, and never receives server-to-server traffic. Everything works through one connected account on an existing PDS, which the plugin writes to and reads from over OAuth; what WordPress serves itself is limited to identity and discovery documents. This file describes that surface, following the [FEDERATION.md convention](https://codeberg.org/fediverse/fep/src/branch/main/fep/67ff/fep-67ff.md); the AT Protocol community has no distinct name for federating, so the name fits here too.
 
 ## Supported protocols and standards
 
@@ -64,6 +64,7 @@ include:site.standard.authFull
 
 ## Known limitations
 
+- The WordPress server is not an AT Protocol service. Other services on the network talk to the connected account's PDS, never to WordPress; removing the plugin removes the integration, but nothing federated ever lived on this server beyond the identity documents.
 - Interaction sync reads the Bluesky appview (`did:web:api.bsky.app`) only: the RPC scopes are audience-locked to it, so likes and replies that exist solely on another appview are not imported.
 - The web links the plugin renders default to `bsky.app` but can be pointed at any appview via the `atmosphere_appview_host` filter.
 
