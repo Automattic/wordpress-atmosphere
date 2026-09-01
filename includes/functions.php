@@ -1288,9 +1288,8 @@ function publishable_content_cache_key( \WP_Post $post ): string {
  * publicly readable portion via {@see get_publishable_content()} and publishes
  * from a logged-out context (WP-Cron); left in place, a membership gate would
  * re-render the *global* post as a "subscribe to keep reading" form and
- * overwrite the safe body. The actions fire in pairs even when the filter
- * chain or a pre-render callback throws, so an integration can restore its own
- * state in the `post` hook.
+ * overwrite the safe body. The actions always fire in pairs around the
+ * render, so an integration can restore its own state in the `post` hook.
  *
  * @since unreleased
  *
@@ -1298,38 +1297,34 @@ function publishable_content_cache_key( \WP_Post $post ): string {
  * @return string The rendered HTML.
  */
 function render_publishable_content( \WP_Post $post ): string {
-	try {
-		/**
-		 * Fires before ATmosphere renders a post's publishable content.
-		 *
-		 * Membership integrations suspend their own `the_content` gating here
-		 * so it does not overwrite the already-narrowed body. Must be mirrored
-		 * by {@see 'atmosphere_post_render_publishable_content'}. Fires inside
-		 * the try so a throwing callback still reaches the mirror action: an
-		 * integration that already suspended its gate gets restored rather
-		 * than left off for the rest of the request.
-		 *
-		 * @since unreleased
-		 *
-		 * @param \WP_Post $post The post being rendered.
-		 */
-		\do_action( 'atmosphere_pre_render_publishable_content', $post );
+	/**
+	 * Fires before ATmosphere renders a post's publishable content.
+	 *
+	 * Membership integrations suspend their own `the_content` gating here so it
+	 * does not overwrite the already-narrowed body. Must be mirrored by
+	 * {@see 'atmosphere_post_render_publishable_content'}.
+	 *
+	 * @since unreleased
+	 *
+	 * @param \WP_Post $post The post being rendered.
+	 */
+	\do_action( 'atmosphere_pre_render_publishable_content', $post );
 
-		// phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Core WordPress filter.
-		return (string) \apply_filters( 'the_content', get_publishable_content( $post ) );
-	} finally {
-		/**
-		 * Fires after ATmosphere renders a post's publishable content.
-		 *
-		 * Mirror of {@see 'atmosphere_pre_render_publishable_content'}; fires
-		 * even when the render throws.
-		 *
-		 * @since unreleased
-		 *
-		 * @param \WP_Post $post The post that was rendered.
-		 */
-		\do_action( 'atmosphere_post_render_publishable_content', $post );
-	}
+	// phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Core WordPress filter.
+	$html = (string) \apply_filters( 'the_content', get_publishable_content( $post ) );
+
+	/**
+	 * Fires after ATmosphere renders a post's publishable content.
+	 *
+	 * Mirror of {@see 'atmosphere_pre_render_publishable_content'}.
+	 *
+	 * @since unreleased
+	 *
+	 * @param \WP_Post $post The post that was rendered.
+	 */
+	\do_action( 'atmosphere_post_render_publishable_content', $post );
+
+	return $html;
 }
 
 /**

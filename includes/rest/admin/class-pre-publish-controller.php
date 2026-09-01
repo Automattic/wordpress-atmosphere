@@ -285,22 +285,15 @@ class Pre_Publish_Controller extends \WP_REST_Controller {
 		 * the author is still drafting, then publish a teaser. The clone carries
 		 * unsaved content/title/excerpt already; this covers state that lives in
 		 * meta rather than the post row. Paired so the override never leaks past
-		 * this request, even if projection throws.
+		 * this request.
 		 */
-		try {
-			\do_action( 'atmosphere_pre_projection', $draft, $request );
+		\do_action( 'atmosphere_pre_projection', $draft, $request );
 
-			$projection = $transformer->project();
-		} finally {
-			/*
-			 * Both cleanups run even when a pre-projection callback or the
-			 * projection itself throws: the access override must not outlive
-			 * the request, and the HTTP kill-switch must not leave every
-			 * later wp_remote_*() call in this request failing.
-			 */
-			\do_action( 'atmosphere_post_projection', $draft, $request );
-			\remove_filter( 'pre_http_request', $block_http, 0 );
-		}
+		$projection = $transformer->project();
+
+		\do_action( 'atmosphere_post_projection', $draft, $request );
+
+		\remove_filter( 'pre_http_request', $block_http, 0 );
 
 		return \rest_ensure_response(
 			array(
