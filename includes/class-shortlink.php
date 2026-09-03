@@ -23,6 +23,7 @@
  * instead, which is already unique and already stored.
  *
  * @package Atmosphere
+ * @since unreleased
  */
 
 namespace Atmosphere;
@@ -40,6 +41,8 @@ class Shortlink {
 
 	/**
 	 * Register the hooks.
+	 *
+	 * @since unreleased
 	 */
 	public static function register(): void {
 		/*
@@ -59,10 +62,17 @@ class Shortlink {
 		 * another plugin's rule — has already won by the time this runs,
 		 * so the short link can only ever claim a URL that was going
 		 * nowhere. No ordering to get right, and no collisions possible.
+		 *
+		 * Late on the hook for the same reason. Redirect managers and SEO
+		 * plugins resolve their own 404s around the default priority, and
+		 * a rule someone wrote by hand should outrank one we inferred from
+		 * a record id. Deferring costs nothing: if another handler claims
+		 * the request it exits, and if none does the 404 was headed for an
+		 * error page anyway.
 		 */
-		\add_action( 'template_redirect', array( self::class, 'maybe_redirect' ), 0 );
+		\add_action( 'template_redirect', array( self::class, 'maybe_redirect' ), 100 );
 
-		\add_filter( 'pre_get_shortlink', array( self::class, 'filter_shortlink' ), 10, 2 );
+		\add_filter( 'pre_get_shortlink', array( self::class, 'filter_shortlink' ), 10, 4 );
 	}
 
 	/**
@@ -70,9 +80,25 @@ class Shortlink {
 	 *
 	 * Runs only on a request WordPress could not resolve. See the note in
 	 * {@see self::register()} for why that is the whole collision strategy.
+	 *
+	 * @since unreleased
 	 */
 	public static function maybe_redirect(): void {
 		if ( ! \is_404() ) {
+			return;
+		}
+
+		/*
+		 * A 301 invites most clients to repeat the request as a GET, so a
+		 * write that happened to land on a TID-shaped path would come back
+		 * as something the caller never sent. Nothing legitimately POSTs
+		 * to a short link.
+		 */
+		$method = isset( $_SERVER['REQUEST_METHOD'] )
+			? \strtoupper( \sanitize_text_field( \wp_unslash( $_SERVER['REQUEST_METHOD'] ) ) )
+			: 'GET';
+
+		if ( 'GET' !== $method && 'HEAD' !== $method ) {
 			return;
 		}
 
@@ -109,6 +135,8 @@ class Shortlink {
 	 * Reads the parsed path rather than `REQUEST_URI` so the query string,
 	 * the site's subdirectory, and any trailing slash are already off.
 	 *
+	 * @since unreleased
+	 *
 	 * @return string A valid TID, or an empty string.
 	 */
 	private static function requested_tid(): string {
@@ -128,6 +156,13 @@ class Shortlink {
 	 * `site.standard.document` one. They are minted separately, so a
 	 * document-only site still gets working short links, and a site
 	 * publishing both has two that land on the same post.
+	 *
+	 * Takes the first match. TIDs are unique by construction — see the
+	 * monotonic counter and clock id in {@see TID} — so a second owner
+	 * can only come from a hand-edited meta row or a partially restored
+	 * backup, and picking either one is as good an answer as exists.
+	 *
+	 * @since unreleased
 	 *
 	 * @param string $tid A TID, already validated.
 	 * @return int|null Post ID, or null when nothing owns it.
@@ -167,6 +202,8 @@ class Shortlink {
 
 	/**
 	 * The short link for a post, when it has a record to build one from.
+	 *
+	 * @since unreleased
 	 *
 	 * @param int $post_id Post ID.
 	 * @return string Short link URL, or an empty string.
@@ -210,17 +247,42 @@ class Shortlink {
 	 * emit its own `?p=` link exactly as before, which is what happens for
 	 * every post ATmosphere has not shared.
 	 *
-	 * @param false|string $shortlink Short-circuit value from a prior filter.
-	 * @param int          $post_id   Post ID, or 0 for the current post.
+	 * Mirrors {@see \wp_get_shortlink()}'s own resolution of `$context`,
+	 * including the `is_singular()` gate, because the short-circuit runs
+	 * before core gets to apply it. Every real caller —
+	 * `wp_shortlink_wp_head()`, `wp_shortlink_header()`, the admin bar —
+	 * passes `0` with the `query` context, and on an archive WordPress has
+	 * already primed `$GLOBALS['post']` with the first post in the loop.
+	 * Falling back to "the current post" there would advertise one post's
+	 * short link on every archive that happened to list it first.
+	 *
+	 * @since unreleased
+	 *
+	 * @param false|string $shortlink   Short-circuit value from a prior filter.
+	 * @param int          $id          Post ID, or 0 to resolve from context.
+	 * @param string       $context     Either 'post' or 'query'.
+	 * @param bool         $allow_slugs Unused; the short link is never a slug.
 	 * @return false|string
 	 */
-	public static function filter_shortlink( $shortlink, $post_id ) {
+	public static function filter_shortlink( $shortlink, $id, $context = 'post', $allow_slugs = true ) {
 		// Another plugin already answered; leave it alone.
 		if ( false !== $shortlink ) {
 			return $shortlink;
 		}
 
-		$post_id = $post_id ? (int) $post_id : (int) \get_the_ID();
+		unset( $allow_slugs );
+
+		$post_id = 0;
+
+		if ( 'query' === $context && \is_singular() ) {
+			$post_id = (int) \get_queried_object_id();
+		} elseif ( 'post' === $context ) {
+			$post = \get_post( $id );
+
+			if ( ! empty( $post->ID ) ) {
+				$post_id = (int) $post->ID;
+			}
+		}
 
 		if ( ! $post_id ) {
 			return $shortlink;

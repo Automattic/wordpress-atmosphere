@@ -222,4 +222,74 @@ class Test_Shortlink extends \WP_UnitTestCase {
 
 		$this->assertSame( 'https://example.com/hum', \wp_get_shortlink( $post_id ) );
 	}
+
+	/**
+	 * An archive must not advertise some other post's short link.
+	 *
+	 * This is the shape every real caller uses: `wp_shortlink_wp_head()`,
+	 * `wp_shortlink_header()`, and the admin bar all call
+	 * `wp_get_shortlink( 0, 'query' )`. On a home page or archive,
+	 * WordPress has already set `$GLOBALS['post']` to the first post in
+	 * the loop, so resolving "the current post" without checking
+	 * `is_singular()` first silently points the whole archive at whichever
+	 * post happens to be at the top of it.
+	 */
+	public function test_archive_does_not_advertise_a_shortlink() {
+		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		\update_post_meta( $post_id, Post::META_TID, self::TID );
+
+		$this->go_to( \home_url( '/' ) );
+
+		$this->assertFalse( \is_singular(), 'Precondition: this is an archive.' );
+		$this->assertNotEmpty( $GLOBALS['post'], 'Precondition: the loop has primed a global post.' );
+
+		$this->assertSame(
+			'',
+			\wp_get_shortlink( 0, 'query' ),
+			'An archive has no single post to advertise, so it must advertise nothing.'
+		);
+	}
+
+	/**
+	 * On the post's own page, the query context does resolve it.
+	 */
+	public function test_singular_query_context_resolves_the_shortlink() {
+		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		\update_post_meta( $post_id, Post::META_TID, self::TID );
+
+		$this->go_to( \get_permalink( $post_id ) );
+
+		$this->assertTrue( \is_singular(), 'Precondition: this is the post.' );
+		$this->assertSame( \home_url( '/' . self::TID ), \wp_get_shortlink( 0, 'query' ) );
+	}
+
+	/**
+	 * A post that is no longer public does not resolve.
+	 *
+	 * The publisher clears both record ids when a post leaves public
+	 * visibility, so this should never come up — but the query is the last
+	 * line of that defence, and a short link must never be the thing that
+	 * confirms a draft exists.
+	 */
+	public function test_non_public_post_does_not_resolve() {
+		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		\update_post_meta( $post_id, Post::META_TID, self::TID );
+
+		foreach ( array( 'draft', 'private', 'pending', 'trash' ) as $status ) {
+			\wp_update_post(
+				array(
+					'ID'          => $post_id,
+					'post_status' => $status,
+				)
+			);
+
+			// Re-stamp: the status change clears the record meta.
+			\update_post_meta( $post_id, Post::META_TID, self::TID );
+
+			$this->assertNull(
+				Shortlink::resolve( self::TID ),
+				\sprintf( 'A %s post must not resolve.', $status )
+			);
+		}
+	}
 }
