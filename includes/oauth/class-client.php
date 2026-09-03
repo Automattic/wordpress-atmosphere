@@ -17,6 +17,7 @@ use function Atmosphere\clear_scheduled_hooks;
 use function Atmosphere\debug_log;
 use function Atmosphere\get_connection;
 use function Atmosphere\set_identity;
+use const Atmosphere\SESSION_VERIFIED_TRANSIENT;
 use function Atmosphere\is_success_status;
 
 /**
@@ -730,6 +731,16 @@ class Client {
 		 * rows.
 		 */
 		\delete_option( self::DISCONNECTED_OPTION );
+
+		/*
+		 * Drop any cached "the PDS accepted our credentials" verdict. This
+		 * path is reached without a preceding `disconnect()` — the settings
+		 * connect field and the Connectors card both authorize straight over
+		 * a live connection — so reconnecting, and in particular switching
+		 * to a different account, would otherwise inherit the previous
+		 * session's clean bill of health for the rest of the TTL.
+		 */
+		\delete_transient( SESSION_VERIFIED_TRANSIENT );
 
 		/*
 		 * Encrypted token blobs do not need to ride along in every
@@ -1611,6 +1622,13 @@ class Client {
 
 		\delete_option( 'atmosphere_connection' );
 		\delete_option( self::REFRESH_LOCK_OPTION );
+
+		/*
+		 * Drop the session-verification cache so a reconnect — including
+		 * a reconnect to a *different* account — is probed fresh rather
+		 * than inheriting the previous account's clean bill of health.
+		 */
+		\delete_transient( SESSION_VERIFIED_TRANSIENT );
 
 		/*
 		 * Sweep a stale option from 1.0.0 installs. `atmosphere_publication_uri`

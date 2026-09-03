@@ -10,9 +10,12 @@
 namespace Atmosphere\Tests\Rest\Admin;
 
 use Atmosphere\OAuth\Client;
+use Atmosphere\OAuth\DPoP;
+use Atmosphere\OAuth\Encryption;
 use Atmosphere\Rest\Admin\Pre_Publish_Controller;
 use WP_REST_Request;
 use WP_UnitTestCase;
+use const Atmosphere\SESSION_VERIFIED_TRANSIENT;
 
 /**
  * Pre-publish preview controller tests.
@@ -36,15 +39,48 @@ class Test_Pre_Publish_Controller extends WP_UnitTestCase {
 
 		$this->controller = new Pre_Publish_Controller();
 
+		/*
+		 * Real, decryptable credentials rather than a placeholder string:
+		 * the endpoint now verifies the session with the PDS before it
+		 * reads local connection state, so a fixture holding credentials
+		 * nothing can decrypt is a *broken* connection, not a connected
+		 * site, and every preview here would correctly report that.
+		 */
+		$dpop_jwk = DPoP::generate_key();
+
 		\update_option(
 			'atmosphere_connection',
 			array(
-				'did'          => 'did:plc:test123',
-				'handle'       => 'me.example.com',
-				'access_token' => 'test-token',
+				'did'            => 'did:plc:test123',
+				'handle'         => 'me.example.com',
+				'access_token'   => Encryption::encrypt( 'test-access-token' ),
+				'refresh_token'  => Encryption::encrypt( 'test-refresh-token' ),
+				'dpop_jwk'       => Encryption::encrypt( \wp_json_encode( $dpop_jwk ) ),
+				'pds_endpoint'   => 'https://pds.example.com',
+				'token_endpoint' => 'https://auth.example.com/oauth/token',
+				'expires_at'     => \time() + 3600,
+				'needs_reauth'   => false,
 			)
 		);
 		\update_option( 'atmosphere_auto_publish', '1' );
+
+		// A PDS that accepts the session, so the probe is a no-op here.
+		\add_filter(
+			'pre_http_request',
+			static function ( $response, $args, $url ) {
+				if ( false !== \strpos( $url, 'getSession' ) ) {
+					return array(
+						'response' => array( 'code' => 200 ),
+						'headers'  => new \WpOrg\Requests\Utility\CaseInsensitiveDictionary( array() ),
+						'body'     => \wp_json_encode( array( 'did' => 'did:plc:test123' ) ),
+					);
+				}
+
+				return $response;
+			},
+			1,
+			3
+		);
 	}
 
 	/**
@@ -56,6 +92,8 @@ class Test_Pre_Publish_Controller extends WP_UnitTestCase {
 		\delete_option( 'atmosphere_auto_publish' );
 		\delete_option( 'atmosphere_support_post_types' );
 		\delete_option( Client::DISCONNECTED_OPTION );
+		\delete_transient( SESSION_VERIFIED_TRANSIENT );
+		\remove_all_filters( 'pre_http_request' );
 		\remove_all_filters( 'atmosphere_long_form_composition' );
 		\remove_all_filters( 'atmosphere_connection_only_mode' );
 		\wp_set_current_user( 0 );
@@ -744,5 +782,82 @@ class Test_Pre_Publish_Controller extends WP_UnitTestCase {
 		$this->assertFalse( $data['will_publish'] );
 		$this->assertFalse( $data['needs_reconnect'] );
 		$this->assertStringContainsString( 'switched off', $data['reason'] );
+	}
+
+	/**
+	 * The whole point of the probe: a session the user revoked from their
+	 * Bluesky account is caught while the panel is still open.
+	 *
+	 * Local state cannot see this. The stored credentials are byte-for-byte
+	 * what a working connection holds, so without asking the PDS the panel
+	 * would promise a share that is already impossible. The probe runs the
+	 * ordinary request path, the flag lands on the connection row, and the
+	 * decision below reaches its existing reconnect branch — no new copy.
+	 */
+	public function test_revoked_session_is_caught_before_the_author_publishes() {
+		$this->login_as_admin();
+
+		// Replace the accepting PDS from set_up() with one that rejects.
+		\remove_all_filters( 'pre_http_request' );
+		\add_filter(
+			'pre_http_request',
+			static function ( $response, $args, $url ) {
+				if ( false !== \strpos( $url, 'oauth/token' ) ) {
+					return array(
+						'response' => array( 'code' => 400 ),
+						'headers'  => new \WpOrg\Requests\Utility\CaseInsensitiveDictionary( array() ),
+						'body'     => \wp_json_encode( array( 'error' => 'invalid_grant' ) ),
+					);
+				}
+
+				if ( false !== \strpos( $url, 'getSession' ) ) {
+					return array(
+						'response' => array( 'code' => 401 ),
+						'headers'  => new \WpOrg\Requests\Utility\CaseInsensitiveDictionary( array() ),
+						'body'     => \wp_json_encode( array( 'error' => 'InvalidToken' ) ),
+					);
+				}
+
+				return $response;
+			},
+			1,
+			3
+		);
+
+		$post = self::factory()->post->create( array( 'post_status' => 'draft' ) );
+		$data = \rest_do_request( $this->make_request( $post ) )->get_data();
+
+		$this->assertFalse( $data['will_publish'], 'A revoked session must not promise a share.' );
+		$this->assertTrue( $data['needs_reconnect'], 'The panel must offer the reconnect prompt.' );
+		$this->assertNotEmpty( $data['reason'] );
+	}
+
+	/**
+	 * A PDS we cannot reach is not a disconnection.
+	 *
+	 * Reporting one would block an author over our own inability to ask —
+	 * a worse failure than the stale verdict the probe exists to fix.
+	 */
+	public function test_unreachable_pds_does_not_block_the_share() {
+		$this->login_as_admin();
+
+		\remove_all_filters( 'pre_http_request' );
+		\add_filter(
+			'pre_http_request',
+			static function ( $response, $args, $url ) {
+				if ( false !== \strpos( $url, 'getSession' ) ) {
+					return new \WP_Error( 'http_request_failed', 'Connection timed out.' );
+				}
+
+				return $response;
+			},
+			1,
+			3
+		);
+
+		$post = self::factory()->post->create( array( 'post_status' => 'draft' ) );
+		$data = \rest_do_request( $this->make_request( $post ) )->get_data();
+
+		$this->assertTrue( $data['will_publish'], 'An unreachable PDS must not be read as a disconnection.' );
 	}
 }
