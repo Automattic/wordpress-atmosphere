@@ -443,6 +443,27 @@ class API {
 	}
 
 	/**
+	 * Ask the PDS to describe the session behind the stored credentials.
+	 *
+	 * `com.atproto.server.getSession` is the cheapest authenticated read
+	 * the PDS offers, which makes it the natural liveness probe: it either
+	 * comes back with the account it authenticated, or it fails the way any
+	 * other authenticated call would — including running the same 401 →
+	 * refresh → retry ladder in {@see self::request()}. That is the point.
+	 * A session whose refresh token has been revoked cannot be told apart
+	 * from a healthy one by reading local state, because revocation happens
+	 * at the auth server and leaves no local trace.
+	 *
+	 * @since unreleased
+	 *
+	 * @return array|\WP_Error Session description, or the failure that
+	 *                         proves the credentials no longer work.
+	 */
+	public static function get_session(): array|\WP_Error {
+		return self::get( '/xrpc/com.atproto.server.getSession' );
+	}
+
+	/**
 	 * Upload a blob (image) to the PDS.
 	 *
 	 * @param string $file_path Local file path.

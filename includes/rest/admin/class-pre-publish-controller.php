@@ -25,6 +25,7 @@ use function Atmosphere\is_connected;
 use function Atmosphere\is_supported_post_type;
 use function Atmosphere\needs_reauth;
 use function Atmosphere\share_status;
+use function Atmosphere\verify_connection;
 
 /**
  * Pre-publish preview controller.
@@ -224,6 +225,21 @@ class Pre_Publish_Controller extends \WP_REST_Controller {
 		$draft->post_title   = (string) $request['title'];
 		$draft->post_content = (string) $request['content'];
 		$draft->post_excerpt = (string) $request['excerpt'];
+
+		/*
+		 * Confirm the session with the PDS before reading any local
+		 * connection state below. This is the last moment where telling
+		 * the author their site is disconnected still saves them
+		 * something: the panel is open, the post is not away yet.
+		 *
+		 * The call records nothing of its own — it lets a dead session
+		 * travel the ordinary refresh path into `needs_reauth`, so the
+		 * decision below reaches the reconnect branch it already has.
+		 * Cached, so this costs one PDS round-trip per quarter hour
+		 * rather than one per panel open, and it must run before the
+		 * projection's `pre_http_request` block goes up.
+		 */
+		verify_connection();
 
 		/*
 		 * Whether the post will actually be shared is decided from the

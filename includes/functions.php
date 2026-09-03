@@ -641,6 +641,111 @@ function is_comment_publishing_enabled(): bool {
 }
 
 /**
+ * Transient holding the "the PDS accepted our credentials" verdict.
+ *
+ * Only ever set on success. A failed probe needs no cache entry: a
+ * permanent rejection has already flipped `needs_reauth` on the
+ * connection row itself, and {@see is_connected()} answers from there
+ * without touching the network.
+ *
+ * @var string
+ */
+const SESSION_VERIFIED_TRANSIENT = 'atmosphere_session_verified';
+
+/**
+ * How long a successful verification is trusted, in seconds.
+ *
+ * @var int
+ */
+const SESSION_VERIFY_TTL = 15 * MINUTE_IN_SECONDS;
+
+/**
+ * Confirm with the PDS that the stored session still authenticates.
+ *
+ * {@see is_connected()} reads three stored fields and never leaves the
+ * site, which is the right answer almost everywhere — but it cannot
+ * detect the one failure that matters before publishing. A refresh token
+ * the user revoked from their Bluesky account looks byte-for-byte
+ * identical on disk to a working one; revocation happens at the auth
+ * server and writes nothing locally. Only asking can tell them apart.
+ *
+ * The probe deliberately records nothing itself. `API::get_session()`
+ * runs the ordinary authenticated request path, so a dead session
+ * travels the existing 401 → refresh → `mark_needs_reauth()` route and
+ * lands in the connection row. This function's whole job is to make that
+ * happen *before* a caller reads local state, so every surface already
+ * built on `is_connected()` and `needs_reauth()` reports the truth with
+ * its existing copy. Nothing new to display, nothing new to translate.
+ *
+ * Failure is not evidence. A timeout, a 5xx, or a rate limit says the
+ * check did not complete, not that the session is dead, so those leave
+ * the stored state exactly as they found it — the publish path has its
+ * own retry ladder for that, and blocking an author because our probe
+ * could not get through would be a worse bug than the one this fixes.
+ *
+ * @since unreleased
+ *
+ * @param bool $force Skip the cache and probe unconditionally.
+ * @return bool Whether the site holds credentials the PDS will accept.
+ */
+function verify_connection( bool $force = false ): bool {
+	// Nothing to verify, and the existing surfaces already explain why.
+	if ( ! is_connected() ) {
+		return false;
+	}
+
+	if ( ! $force && false !== \get_transient( SESSION_VERIFIED_TRANSIENT ) ) {
+		return true;
+	}
+
+	$result = API::get_session();
+
+	if ( \is_wp_error( $result ) ) {
+		/*
+		 * Re-read the connection rather than classifying the error code.
+		 * When the request path gives up on these credentials it flags
+		 * the row itself, and that flag — not the code that happened to
+		 * surface — is what every other caller will see. Reading the
+		 * outcome instead of predicting it keeps this correct no matter
+		 * which layer decided, and picks up any future path that reaches
+		 * the same conclusion by a different route.
+		 */
+		if ( ! is_connected() ) {
+			return false;
+		}
+
+		debug_log(
+			\sprintf(
+				'session probe inconclusive (%s): %s',
+				$result->get_error_code(),
+				$result->get_error_message()
+			)
+		);
+
+		return true;
+	}
+
+	/**
+	 * Filters how long a successful session verification is trusted.
+	 *
+	 * Raising this trades freshness for fewer PDS round-trips; lowering it
+	 * does the reverse. The floor is one probe per editor session either
+	 * way, since the cache is only ever populated on success.
+	 *
+	 * @since unreleased
+	 *
+	 * @param int $ttl Seconds to trust a successful probe. Default 15 minutes.
+	 */
+	$ttl = (int) \apply_filters( 'atmosphere_session_verify_ttl', SESSION_VERIFY_TTL );
+
+	if ( $ttl > 0 ) {
+		\set_transient( SESSION_VERIFIED_TRANSIENT, 1, $ttl );
+	}
+
+	return true;
+}
+
+/**
  * Whether the connection requires the user to re-authorize.
  *
  * True when an identity is on file but the credentials option is
