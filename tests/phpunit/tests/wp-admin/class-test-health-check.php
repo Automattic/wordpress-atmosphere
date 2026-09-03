@@ -31,6 +31,7 @@ class Test_Health_Check extends \WP_UnitTestCase {
 		\delete_option( 'atmosphere_connection' );
 		\delete_option( 'atmosphere_identity' );
 		\delete_option( Client::DISCONNECTED_OPTION );
+		\delete_option( Client::REFRESH_STATUS_OPTION );
 
 		parent::tear_down();
 	}
@@ -650,6 +651,72 @@ class Test_Health_Check extends \WP_UnitTestCase {
 		$this->seed_connection();
 
 		$this->assertSame( 'good', Health_Check::test_threadgate_scope()['status'] );
+	}
+
+	/**
+	 * A site that has never renewed its login says so plainly, which is the
+	 * signal that the background renewal is not running at all.
+	 */
+	public function test_debug_information_reports_never_renewed() {
+		$this->seed_connection();
+
+		$fields = Health_Check::debug_information( array() )['atmosphere']['fields'];
+
+		$this->assertSame( 'never', $fields['last_refresh']['value'] );
+	}
+
+	/**
+	 * A renewed login reports how long ago, so a long gap on a connected
+	 * site is visible without asking the reporter to dig.
+	 */
+	public function test_debug_information_reports_last_renewal() {
+		$this->seed_connection();
+
+		/*
+		 * A non-UTC site offset: the stamps are UTC epoch seconds, so a
+		 * renderer that lets human_time_diff() default to the site-local
+		 * baseline skews every delta by the offset and fails here.
+		 */
+		\update_option( 'gmt_offset', 5 );
+		\update_option(
+			Client::REFRESH_STATUS_OPTION,
+			array( 'last_success' => \time() - 2 * HOUR_IN_SECONDS )
+		);
+
+		$fields = Health_Check::debug_information( array() )['atmosphere']['fields'];
+
+		$this->assertStringContainsString( '2 hours ago', $fields['last_refresh']['value'] );
+		$this->assertStringNotContainsString( 'last failure', $fields['last_refresh']['value'] );
+	}
+
+	/**
+	 * A recorded failure reports the auth server's own error code alongside
+	 * the last success, which is what tells a consumed token apart from an
+	 * unreachable server.
+	 */
+	public function test_debug_information_reports_last_failure_and_error() {
+		$this->seed_connection();
+
+		/*
+		 * A non-UTC site offset: the stamps are UTC epoch seconds, so a
+		 * renderer that lets human_time_diff() default to the site-local
+		 * baseline skews every delta by the offset and fails here.
+		 */
+		\update_option( 'gmt_offset', 5 );
+		\update_option(
+			Client::REFRESH_STATUS_OPTION,
+			array(
+				'last_success' => \time() - 3 * DAY_IN_SECONDS,
+				'last_failure' => \time() - 1 * HOUR_IN_SECONDS,
+				'last_error'   => 'invalid_grant',
+			)
+		);
+
+		$value = Health_Check::debug_information( array() )['atmosphere']['fields']['last_refresh']['value'];
+
+		$this->assertStringContainsString( '3 days ago', $value );
+		$this->assertStringContainsString( '1 hour', $value );
+		$this->assertStringContainsString( 'invalid_grant', $value );
 	}
 
 	/**

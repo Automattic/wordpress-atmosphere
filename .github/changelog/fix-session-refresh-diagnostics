@@ -1,0 +1,4 @@
+Significance: patch
+Type: added
+
+Site Health now shows when ATmosphere last renewed its Bluesky login, and what went wrong if the renewal failed.

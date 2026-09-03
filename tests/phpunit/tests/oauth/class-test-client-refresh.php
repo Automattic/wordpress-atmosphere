@@ -73,6 +73,7 @@ class Test_Client_Refresh extends WP_UnitTestCase {
 		\delete_option( 'atmosphere_identity' );
 		\delete_option( Client::REFRESH_LOCK_OPTION );
 		\delete_option( Client::DISCONNECTED_OPTION );
+		\delete_option( Client::REFRESH_STATUS_OPTION );
 		\remove_all_filters( 'pre_http_request' );
 		\remove_all_actions( 'atmosphere_reauth_required' );
 
@@ -668,5 +669,237 @@ class Test_Client_Refresh extends WP_UnitTestCase {
 			$polls,
 			'Wait must poll at least twice: first sees the stale snapshot, second sees the rotation.'
 		);
+	}
+
+	/**
+	 * A successful refresh stamps the renewal timestamp, so a support
+	 * report can tell "renewing fine" apart from "worker never ran".
+	 */
+	public function test_successful_refresh_records_timestamp() {
+		$this->mock_token_response(
+			200,
+			array(
+				'access_token'  => 'new-access-token',
+				'refresh_token' => 'new-refresh-token',
+				'expires_in'    => 3600,
+			)
+		);
+
+		$this->assertTrue( Client::refresh() );
+
+		$status = \get_option( Client::REFRESH_STATUS_OPTION );
+
+		$this->assertIsArray( $status );
+		$this->assertArrayHasKey( 'last_success', $status );
+		$this->assertEqualsWithDelta( \time(), $status['last_success'], 5 );
+		$this->assertArrayNotHasKey( 'last_failure', $status );
+	}
+
+	/**
+	 * A rejected refresh records the auth server's own error code, which is
+	 * what distinguishes a consumed token from an unrecognised client.
+	 */
+	public function test_rejected_refresh_records_server_error() {
+		$this->mock_token_response( 400, array( 'error' => 'invalid_grant' ) );
+
+		$this->assertWPError( Client::refresh() );
+
+		$status = \get_option( Client::REFRESH_STATUS_OPTION );
+
+		$this->assertSame( 'invalid_grant', $status['last_error'] );
+		$this->assertEqualsWithDelta( \time(), $status['last_failure'], 5 );
+	}
+
+	/**
+	 * A failure without an `error` member still records something usable,
+	 * rather than an empty string nobody can act on.
+	 */
+	public function test_rejected_refresh_without_error_member_records_status() {
+		$this->mock_token_response( 503, array() );
+
+		$this->assertWPError( Client::refresh() );
+
+		$this->assertSame( 'http_503', \get_option( Client::REFRESH_STATUS_OPTION )['last_error'] );
+	}
+
+	/**
+	 * An unreachable auth server is recorded too: a run of these is what a
+	 * firewalled or offline site looks like, and it must not be mistaken
+	 * for a worker that never ran.
+	 */
+	public function test_unreachable_auth_server_is_recorded() {
+		\add_filter(
+			'pre_http_request',
+			static function ( $response, $args, $url ) {
+				if ( false !== \strpos( $url, 'oauth/token' ) ) {
+					return new \WP_Error( 'http_request_failed', 'Connection timed out.' );
+				}
+
+				return $response;
+			},
+			1,
+			3
+		);
+
+		$this->assertWPError( Client::refresh() );
+
+		$this->assertSame( 'http_request_failed', \get_option( Client::REFRESH_STATUS_OPTION )['last_error'] );
+	}
+
+	/**
+	 * The earlier success stays on record after a later failure: recovering
+	 * from one rejection reads differently from never having worked.
+	 */
+	public function test_failure_keeps_the_previous_success_stamp() {
+		$this->mock_token_response(
+			200,
+			array(
+				'access_token'  => 'new-access-token',
+				'refresh_token' => 'new-refresh-token',
+				'expires_in'    => 3600,
+			)
+		);
+		$this->assertTrue( Client::refresh() );
+		$succeeded_at = \get_option( Client::REFRESH_STATUS_OPTION )['last_success'];
+
+		\remove_all_filters( 'pre_http_request' );
+		\delete_option( Client::REFRESH_LOCK_OPTION );
+		$this->mock_token_response( 400, array( 'error' => 'invalid_grant' ) );
+		$this->assertWPError( Client::refresh() );
+
+		$status = \get_option( Client::REFRESH_STATUS_OPTION );
+
+		$this->assertSame( $succeeded_at, $status['last_success'] );
+		$this->assertSame( 'invalid_grant', $status['last_error'] );
+	}
+
+	/**
+	 * Disconnecting drops the history, so a reconnected account is not
+	 * date-stamped with the previous session's failure.
+	 */
+	public function test_disconnect_clears_the_refresh_history() {
+		\update_option( Client::REFRESH_STATUS_OPTION, array( 'last_success' => \time() ) );
+
+		Client::disconnect();
+
+		$this->assertFalse( \get_option( Client::REFRESH_STATUS_OPTION ) );
+	}
+
+	/**
+	 * A non-string `error` member from an untrusted auth server must not
+	 * reach the string-typed recorder, where it would fatal the cron run
+	 * instead of failing gracefully.
+	 */
+	public function test_non_string_error_member_does_not_fatal() {
+		$this->mock_token_response( 400, array( 'error' => array( 'code' => 'invalid_grant' ) ) );
+
+		$this->assertWPError( Client::refresh() );
+
+		$this->assertSame( 'http_400', \get_option( Client::REFRESH_STATUS_OPTION )['last_error'] );
+	}
+
+	/**
+	 * A key rotation fails every run before a request is built. Recording it
+	 * keeps the panel from reading as "the renewal never ran", which would
+	 * send the operator after WP-Cron instead of their keys.
+	 */
+	public function test_undecryptable_credentials_are_recorded() {
+		$conn                  = \get_option( 'atmosphere_connection' );
+		$conn['refresh_token'] = 'not-decryptable';
+		\update_option( 'atmosphere_connection', $conn );
+
+		$this->assertWPError( Client::refresh() );
+
+		$status = \get_option( Client::REFRESH_STATUS_OPTION );
+
+		$this->assertNotEmpty( $status['last_error'] );
+	}
+
+	/**
+	 * A connection row without a refresh token is fixed by reconnecting, not
+	 * by looking at cron, so it must not report as a renewal that never ran.
+	 */
+	public function test_missing_refresh_token_is_recorded() {
+		$conn                  = \get_option( 'atmosphere_connection' );
+		$conn['refresh_token'] = '';
+		\update_option( 'atmosphere_connection', $conn );
+
+		$this->assertWPError( Client::refresh() );
+
+		$this->assertSame( 'atmosphere_no_refresh', \get_option( Client::REFRESH_STATUS_OPTION )['last_error'] );
+	}
+
+	/**
+	 * A failure belonging to a session that ended mid-flight is dropped, so a
+	 * freshly reconnected account is not stamped with the old one's error.
+	 */
+	public function test_failure_from_a_replaced_session_is_dropped() {
+		\add_filter(
+			'pre_http_request',
+			static function ( $response, $args, $url ) {
+				if ( false !== \strpos( $url, 'oauth/token' ) ) {
+					/*
+					 * Stand in for the operator reconnecting while this
+					 * request was in flight: the row now holds another
+					 * account's credentials.
+					 */
+					$conn                  = \get_option( 'atmosphere_connection' );
+					$conn['refresh_token'] = Encryption::encrypt( 'a-different-accounts-token' );
+					\update_option( 'atmosphere_connection', $conn );
+
+					return array(
+						'response' => array( 'code' => 400 ),
+						'headers'  => new \WpOrg\Requests\Utility\CaseInsensitiveDictionary( array() ),
+						'body'     => \wp_json_encode( array( 'error' => 'invalid_grant' ) ),
+					);
+				}
+
+				return $response;
+			},
+			1,
+			3
+		);
+
+		$this->assertWPError( Client::refresh() );
+
+		$this->assertFalse( \get_option( Client::REFRESH_STATUS_OPTION ) );
+	}
+
+	/**
+	 * The stored code is bounded and stripped: it comes from a remote server
+	 * and ends up in a panel people paste into public threads.
+	 */
+	public function test_recorded_error_is_sanitized_and_bounded() {
+		$this->mock_token_response( 400, array( 'error' => '<b>bad</b>' . \str_repeat( 'x', 200 ) ) );
+
+		$this->assertWPError( Client::refresh() );
+
+		$recorded = \get_option( Client::REFRESH_STATUS_OPTION )['last_error'];
+
+		$this->assertLessThanOrEqual( 64, \strlen( $recorded ) );
+		$this->assertStringNotContainsString( '<b>', $recorded );
+	}
+
+	/**
+	 * A corrupted row must degrade member by member: non-numeric or
+	 * non-positive timestamps and a non-string error are dropped so no
+	 * reader can fatal or render a 1970 delta, while intact members
+	 * survive.
+	 */
+	public function test_refresh_status_drops_corrupted_members() {
+		\update_option(
+			Client::REFRESH_STATUS_OPTION,
+			array(
+				'last_success' => '-1',
+				'last_failure' => \time(),
+				'last_error'   => array( 'nested' ),
+			)
+		);
+
+		$status = Client::refresh_status();
+
+		$this->assertArrayNotHasKey( 'last_success', $status );
+		$this->assertArrayNotHasKey( 'last_error', $status );
+		$this->assertArrayHasKey( 'last_failure', $status );
 	}
 }
