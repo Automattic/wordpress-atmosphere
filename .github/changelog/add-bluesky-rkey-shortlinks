@@ -1,0 +1,4 @@
+Significance: minor
+Type: added
+
+Cross-posted articles now get a short link on your own domain, built from the ID Bluesky already assigned them. Nothing extra is stored, and your own pages always take priority.

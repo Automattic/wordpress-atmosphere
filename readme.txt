@@ -26,6 +26,7 @@ When you publish a post, ATmosphere automatically shares it on Bluesky and store
 * **Catch up on older posts.** A `wp atmosphere backfill` command can publish posts you wrote before installing the plugin.
 * **Per-post control.** You can opt individual posts out of cross-posting straight from the editor sidebar.
 * **No middleman.** ATmosphere talks directly to your Bluesky account using modern, secure sign-in. Nothing is routed through a third-party service, and your tokens never leave your WordPress site.
+* **Free short links.** Every cross-posted article gets a short URL on your own domain, like `example.com/3mn3kzvtns72d`, built from the ID Bluesky already gave it. Nothing extra is stored and no link database is kept.
 * **Translation-ready.** Help translate ATmosphere into your language.
 
 = How it works =
@@ -96,6 +97,18 @@ By default, only new posts are shared. You can publish older ones on demand by r
 = Can I undo a cross-post? =
 
 Yes. If you delete or unpublish a WordPress post, the matching Bluesky post and AT Protocol records are removed too. If you trash a post and then restore it, ATmosphere re-publishes it.
+
+= Where do the short links come from? =
+
+Every post ATmosphere shares gets an identifier on Bluesky: a 13-character record ID like `3mn3kzvtns72d`. It has to be unique, and your site already stores it in order to edit or delete the post later.
+
+So it is also a perfectly good short URL, and ATmosphere serves one at `example.com/3mn3kzvtns72d` that redirects to the full article. There is no counter to maintain, no lookup table, and no third-party shortener that can disappear and take your links with it. If you ever paste a Bluesky record ID into your own address bar, it just works.
+
+The idea comes from [Felix Schwenzel's write-up on short URLs](https://wirres.net/articles/kurzurls), which weighs up several candidate identifiers for a personal short link, Bluesky post IDs among them, and concludes the best one is whatever your site already has. The broader pattern is the IndieWeb's [permashortlink](https://indieweb.org/permashortlink): a short URL on your own domain that expands to your own permalink, so it cannot rot the way a third-party shortener does.
+
+Short links never take priority over your own content. If you have a page or post whose address happens to look like a record ID, that page wins and the short link steps aside.
+
+The link is also advertised in your page's HTML as `rel="shortlink"`, which is what browsers, feed readers, and other IndieWeb tools look for. If you already run a URL shortener such as Hum, it keeps control and ATmosphere stays out of the way.
 
 = Does ATmosphere support WordPress Multisite? =
 

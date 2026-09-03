@@ -232,6 +232,13 @@ class Atmosphere {
 		// off when the ActivityPub plugin is active.
 		Blocks::register();
 
+		/*
+		 * Short links built from the AT Protocol record id. Resolves after
+		 * a 404 rather than through a rewrite rule, so it can never shadow
+		 * real content — see {@see Shortlink::register()}.
+		 */
+		Shortlink::register();
+
 		// Per-post "share to Bluesky" toggle + custom-text meta (REST-exposed for the editor panel).
 		\add_action( 'init', array( $this, 'register_share_meta' ) );
 
