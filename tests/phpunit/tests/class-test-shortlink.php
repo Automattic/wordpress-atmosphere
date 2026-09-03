@@ -120,29 +120,58 @@ class Test_Shortlink extends \WP_UnitTestCase {
 	}
 
 	/**
-	 * A visit to a bare rkey redirects to the post, permanently.
+	 * A visit to the short link redirects to the post, permanently.
 	 */
-	public function test_bare_rkey_redirects_to_the_permalink() {
+	public function test_shortlink_redirects_to_the_permalink() {
 		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
 		\update_post_meta( $post_id, Post::META_TID, self::TID );
 
-		$this->go_to( \home_url( '/' . self::TID ) );
+		$this->go_to( \home_url( '/post/' . self::TID ) );
 
-		$this->assertTrue( \is_404(), 'WordPress cannot resolve a bare rkey on its own.' );
+		$this->assertSame( self::TID, \get_query_var( 'atmosphere_shortlink' ), 'The rewrite rule must match.' );
 		$this->assertSame( \get_permalink( $post_id ), $this->capture_redirect() );
 	}
 
 	/**
-	 * The collision case, which is why there is no rewrite rule.
-	 *
-	 * `wordpressblog` is thirteen characters drawn entirely from the TID
-	 * charset, so a top-priority rewrite rule for a bare thirteen-character
-	 * path would swallow this page and make it unreachable. Resolving after
-	 * the 404 means the page is served normally and the short link never
-	 * gets a look in.
+	 * The path mirrors Bluesky's own, which is the whole point: strip
+	 * `/profile/<handle>` off an app URL, swap the host, and the rkey is
+	 * already in the right place.
 	 */
-	public function test_a_real_page_at_a_tid_shaped_slug_still_wins() {
-		$this->assertTrue( TID::is_valid( 'wordpressblog' ), 'Precondition: the slug really is TID-shaped.' );
+	public function test_path_mirrors_the_bluesky_app_url() {
+		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		\update_post_meta( $post_id, Post::META_TID, self::TID );
+
+		$app_url  = 'https://bsky.app/profile/example.com/post/' . self::TID;
+		$expected = \home_url( \str_replace( '/profile/example.com', '', \wp_parse_url( $app_url, \PHP_URL_PATH ) ) );
+
+		$this->assertSame( $expected, Shortlink::get( $post_id ) );
+	}
+
+	/**
+	 * A short link nothing owns is a 404, not the blog index.
+	 *
+	 * The rewrite rule matches on shape alone, so an rkey that was never
+	 * ours still gets routed here. Left alone, the query var would leave
+	 * WordPress with no constraints and it would render the home page at
+	 * a URL that means nothing.
+	 */
+	public function test_unknown_shortlink_is_a_404() {
+		$this->go_to( \home_url( '/post/' . self::TID ) );
+
+		$this->assertSame( '', $this->capture_redirect(), 'Nothing owns this rkey, so nothing to redirect to.' );
+		$this->assertTrue( \is_404() );
+	}
+
+	/**
+	 * The rule is scoped to `post/` plus exactly thirteen characters from
+	 * the rkey charset, so ordinary content is untouched.
+	 *
+	 * `wordpressblog` is thirteen characters drawn entirely from that
+	 * charset — a rule matching a bare path would have swallowed a page
+	 * slugged that way. Under `post/` it cannot.
+	 */
+	public function test_ordinary_paths_are_not_claimed() {
+		$this->assertTrue( TID::is_valid( 'wordpressblog' ), 'Precondition: the slug really is rkey-shaped.' );
 
 		$page_id = self::factory()->post->create(
 			array(
@@ -152,28 +181,10 @@ class Test_Shortlink extends \WP_UnitTestCase {
 			)
 		);
 
-		/*
-		 * A post that would answer to the same path, so the test fails if
-		 * the short link ever starts outranking real content.
-		 */
-		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
-		\update_post_meta( $post_id, Post::META_TID, 'wordpressblog' );
-
 		$this->go_to( \home_url( '/wordpressblog' ) );
 
-		$this->assertFalse( \is_404(), 'The page must resolve normally.' );
+		$this->assertSame( '', \get_query_var( 'atmosphere_shortlink' ), 'A bare path must not route to the short link.' );
 		$this->assertTrue( \is_page( $page_id ) );
-		$this->assertSame( '', $this->capture_redirect(), 'The short link must not fire over real content.' );
-	}
-
-	/**
-	 * A 404 that is not rkey-shaped is left alone for the theme to render.
-	 */
-	public function test_ordinary_404_is_left_alone() {
-		$this->go_to( \home_url( '/no-such-thing' ) );
-
-		$this->assertTrue( \is_404() );
-		$this->assertSame( '', $this->capture_redirect() );
 	}
 
 	/**
@@ -183,7 +194,7 @@ class Test_Shortlink extends \WP_UnitTestCase {
 		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
 		\update_post_meta( $post_id, Post::META_TID, self::TID );
 
-		$this->assertSame( \home_url( '/' . self::TID ), \wp_get_shortlink( $post_id ) );
+		$this->assertSame( \home_url( '/post/' . self::TID ), \wp_get_shortlink( $post_id ) );
 	}
 
 	/**
@@ -260,7 +271,7 @@ class Test_Shortlink extends \WP_UnitTestCase {
 		$this->go_to( \get_permalink( $post_id ) );
 
 		$this->assertTrue( \is_singular(), 'Precondition: this is the post.' );
-		$this->assertSame( \home_url( '/' . self::TID ), \wp_get_shortlink( 0, 'query' ) );
+		$this->assertSame( \home_url( '/post/' . self::TID ), \wp_get_shortlink( 0, 'query' ) );
 	}
 
 	/**

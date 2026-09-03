@@ -3,24 +3,29 @@
  * Bluesky rkey short links.
  *
  * Every post ATmosphere shares already carries a globally unique,
- * 13-character identifier: the TID it minted for the AT Protocol record.
- * It is sitting in post meta doing nothing but addressing a record on the
- * PDS. This class points it back at the post, so `example.com/3m…` is a
- * working short link with nothing new to store and no counter to keep.
+ * 13-character identifier: the rkey it minted for the AT Protocol record.
+ * It sits in post meta addressing a record on the PDS and nothing else.
+ * This class points it back at the post, so the site gets a short URL for
+ * every cross-posted article with nothing new to store and no counter to
+ * keep.
+ *
+ * The path mirrors Bluesky's own. An app URL looks like
+ * `bsky.app/profile/<handle>/post/<rkey>`; drop the profile segment and
+ * swap the host and you have `example.com/post/<rkey>`, the same post on
+ * the author's own domain. Aaron Parecki's site already works this way —
+ * `aaronpk.com/post/3juasablkof2o` — which is where the shape comes from.
  *
  * The idea is Felix Schwenzel's, from {@link https://wirres.net/articles/kurzurls},
- * which weighs a handful of candidate identifiers for a personal short
- * URL — including, explicitly, a Bluesky post id like `3mn3kzvtns72d` —
- * and settles on the one the site already had. This takes the same
- * position from the other side: on a site running ATmosphere, the rkey
- * *is* the identifier it already has.
+ * which weighs up several candidate identifiers for a personal short URL
+ * and lands on the position that the best one is whatever the site
+ * already has. On a site running ATmosphere, that is the rkey.
  *
  * The IndieWeb frames the general pattern as a permashortlink
  * ({@link https://indieweb.org/permashortlink}): a short URL on your own
  * domain that expands to your own permalink, so it cannot rot the way a
  * third-party shortener does. Tantek Çelik's Whistle and NewBase60 derive
- * theirs from the publication date; this derives it from the record id
- * instead, which is already unique and already stored.
+ * theirs from the publication date; this derives it from the record id,
+ * which is already unique and already stored.
  *
  * @package Atmosphere
  * @since unreleased
@@ -42,57 +47,35 @@ class Shortlink {
 	/**
 	 * Register the hooks.
 	 *
+	 * The rewrite rule itself is declared alongside the plugin's other
+	 * rules in {@see Atmosphere}, so the persisted-rules drift check that
+	 * keeps the well-known endpoints working covers this one too.
+	 *
 	 * @since unreleased
 	 */
 	public static function register(): void {
-		/*
-		 * Deliberately NOT a rewrite rule.
-		 *
-		 * A rule for a bare 13-character path would have to be registered
-		 * at the top to fire at all — WordPress's page catch-all
-		 * (`(.?.+?)/?$`) sits above anything appended at the bottom, so a
-		 * low-priority rule for a single segment is never reached. But at
-		 * the top it outranks real content, and a TID is drawn from
-		 * `234567a-z`, which ordinary slugs are too: `wordpressblog` is
-		 * exactly thirteen of those characters. That page would become
-		 * unreachable.
-		 *
-		 * Resolving after the 404 inverts the priority for free. Anything
-		 * WordPress can serve itself — page, post, custom post type,
-		 * another plugin's rule — has already won by the time this runs,
-		 * so the short link can only ever claim a URL that was going
-		 * nowhere. No ordering to get right, and no collisions possible.
-		 *
-		 * Late on the hook for the same reason. Redirect managers and SEO
-		 * plugins resolve their own 404s around the default priority, and
-		 * a rule someone wrote by hand should outrank one we inferred from
-		 * a record id. Deferring costs nothing: if another handler claims
-		 * the request it exits, and if none does the 404 was headed for an
-		 * error page anyway.
-		 */
-		\add_action( 'template_redirect', array( self::class, 'maybe_redirect' ), 100 );
+		\add_action( 'template_redirect', array( self::class, 'maybe_redirect' ), 0 );
 
 		\add_filter( 'pre_get_shortlink', array( self::class, 'filter_shortlink' ), 10, 4 );
 	}
 
 	/**
-	 * Redirect a bare rkey to the post that owns it.
-	 *
-	 * Runs only on a request WordPress could not resolve. See the note in
-	 * {@see self::register()} for why that is the whole collision strategy.
+	 * Redirect a short link to the post that owns the rkey.
 	 *
 	 * @since unreleased
 	 */
 	public static function maybe_redirect(): void {
-		if ( ! \is_404() ) {
+		$tid = (string) \get_query_var( 'atmosphere_shortlink' );
+
+		if ( '' === $tid ) {
 			return;
 		}
 
 		/*
 		 * A 301 invites most clients to repeat the request as a GET, so a
-		 * write that happened to land on a TID-shaped path would come back
-		 * as something the caller never sent. Nothing legitimately POSTs
-		 * to a short link.
+		 * write that happened to land here would come back as something
+		 * the caller never sent. Nothing legitimately POSTs to a short
+		 * link.
 		 */
 		$method = isset( $_SERVER['REQUEST_METHOD'] )
 			? \strtoupper( \sanitize_text_field( \wp_unslash( $_SERVER['REQUEST_METHOD'] ) ) )
@@ -102,21 +85,18 @@ class Shortlink {
 			return;
 		}
 
-		$tid = self::requested_tid();
-
-		if ( '' === $tid ) {
-			return;
-		}
-
-		$post_id = self::resolve( $tid );
-
-		if ( null === $post_id ) {
-			return;
-		}
-
-		$permalink = \get_permalink( $post_id );
+		$post_id   = self::resolve( $tid );
+		$permalink = $post_id ? \get_permalink( $post_id ) : '';
 
 		if ( ! $permalink ) {
+			/*
+			 * The rule matched the shape but nothing owns this rkey. The
+			 * query var alone would leave WordPress with no constraints
+			 * and render the blog index at a URL that means nothing, so
+			 * say so properly instead.
+			 */
+			self::set_404();
+
 			return;
 		}
 
@@ -130,23 +110,19 @@ class Shortlink {
 	}
 
 	/**
-	 * The rkey the current request is asking for, if it is asking for one.
-	 *
-	 * Reads the parsed path rather than `REQUEST_URI` so the query string,
-	 * the site's subdirectory, and any trailing slash are already off.
+	 * Turn the current request into a proper 404.
 	 *
 	 * @since unreleased
-	 *
-	 * @return string A valid TID, or an empty string.
 	 */
-	private static function requested_tid(): string {
-		$request = isset( $GLOBALS['wp']->request ) ? (string) $GLOBALS['wp']->request : '';
+	private static function set_404(): void {
+		global $wp_query;
 
-		if ( '' === $request || \str_contains( $request, '/' ) ) {
-			return '';
+		if ( $wp_query instanceof \WP_Query ) {
+			$wp_query->set_404();
 		}
 
-		return TID::is_valid( $request ) ? $request : '';
+		\status_header( 404 );
+		\nocache_headers();
 	}
 
 	/**
@@ -219,7 +195,7 @@ class Shortlink {
 			return '';
 		}
 
-		$url = \home_url( '/' . $tid );
+		$url = \home_url( '/post/' . $tid );
 
 		/**
 		 * Filters the short link for a post.

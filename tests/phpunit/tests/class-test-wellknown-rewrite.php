@@ -40,6 +40,9 @@ class Test_Wellknown_Rewrite extends WP_UnitTestCase {
 	private const WELLKNOWN_PATTERNS = array(
 		'^\.well-known/atproto-did/?$'                 => 'index.php?atmosphere_wellknown=atproto-did',
 		'^\.well-known/site\.standard\.publication/?$' => 'index.php?atmosphere_wellknown=publication',
+
+		// The short link rides the same drift check, so it belongs here too.
+		'^post/([234567a-z]{13})/?$'                   => 'index.php?atmosphere_shortlink=$matches[1]',
 	);
 
 	/**
@@ -164,18 +167,14 @@ class Test_Wellknown_Rewrite extends WP_UnitTestCase {
 	}
 
 	/**
-	 * No-op when both well-known patterns are already in the option.
+	 * No-op when every pattern the plugin owns is already in the option.
 	 *
 	 * Asserts byte-identical state after the call so even a flush that
 	 * happened to produce the same result would fail this test — what
 	 * we are verifying is that no flush ran at all.
 	 */
 	public function test_no_flush_when_both_patterns_present(): void {
-		$original = array(
-			'^\.well-known/atproto-did/?$'                 => 'index.php?atmosphere_wellknown=atproto-did',
-			'^\.well-known/site\.standard\.publication/?$' => 'index.php?atmosphere_wellknown=publication',
-			'some/other/rule'                              => 'index.php?other=1',
-		);
+		$original = self::WELLKNOWN_PATTERNS + array( 'some/other/rule' => 'index.php?other=1' );
 		\update_option( 'rewrite_rules', $original );
 
 		Atmosphere::maybe_flush_wellknown_rewrites();
