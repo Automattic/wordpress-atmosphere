@@ -1122,6 +1122,280 @@ function is_sharing_enabled( \WP_Post $post ): bool {
 }
 
 /**
+ * The portion of a post's body that is safe to publish to AT Protocol.
+ *
+ * Federation output is remote, site-wide state, so the answer must be
+ * visitor-independent — it may not depend on the current user, cookies, or an
+ * unlock session (the same reasoning that governs {@see is_post_publishable()}).
+ * `the_content` is deliberately *not* used for gating here: membership plugins
+ * hang their paywalls on that filter but resolve them against the current
+ * visitor, so during an author save or WP-Cron run they return the full body.
+ *
+ * By default this returns the post content unchanged — a site with no
+ * membership plugin publishes everything, exactly as before. A membership
+ * integration narrows it through the `atmosphere_publishable_content` filter,
+ * returning only the publicly readable portion:
+ *
+ *  - A fully gated post returns `''` (no body federates; the post transformer
+ *    still shares a title-and-link teaser).
+ *  - A split-point post (e.g. a paywall marker) returns the content above the
+ *    split.
+ *  - A post with an inline gated region returns the content with that region
+ *    removed.
+ *
+ * Every record field *derived from the body* (document `textContent`/
+ * `content`/`description`/images, the Bluesky post text, and the derived
+ * link-card excerpt) reads through this helper, so a single integration closes
+ * all of them at once. The one field that does not is an author-written
+ * `post_excerpt`: it is a deliberate public teaser (the same string a
+ * membership plugin shows in place of the gated body), so it is used as-is.
+ * Integrations MUST fail closed: any ambiguity — gating state unreadable, an
+ * unrecognised access level — must return less content, never more.
+ *
+ * @since unreleased
+ *
+ * @param \WP_Post $post Post object.
+ * @return string Publicly publishable post content.
+ */
+function get_publishable_content( \WP_Post $post ): string {
+	/*
+	 * Per-request memoization. Integrations doing real work here (Jetpack
+	 * parses and re-serializes the block tree) are hit several times per
+	 * transform and again on every keystroke of the pre-publish preview, so
+	 * the repeated parse dominates. Key on the post ID plus a hash of the
+	 * stored content: the pre-publish endpoint projects a clone that keeps the
+	 * real ID but carries unsaved content, and the hash keeps those from
+	 * colliding with — or masking — the saved post.
+	 *
+	 * The cache is bounded. `Backfill_Command` walks every post ID in a single
+	 * process and drops its per-post object-cache entries each batch precisely
+	 * to keep memory flat; an unbounded memo here would hold every visited
+	 * post's content for the life of that run and undo it. Evict the oldest
+	 * entry once the cap is reached — the transform path only ever reads back
+	 * the post it is working on.
+	 *
+	 * Held by reference so {@see flush_publishable_content_cache()} can clear it
+	 * (mirroring the content parser's block-cache flush).
+	 */
+	$cache = &publishable_content_cache();
+
+	$key = publishable_content_cache_key( $post );
+
+	if ( isset( $cache[ $key ] ) ) {
+		return $cache[ $key ];
+	}
+
+	/**
+	 * Filters the portion of a post's content that is safe to federate.
+	 *
+	 * Membership/paywall integrations hook this to strip gated content in a
+	 * visitor-independent way. Return only the publicly readable portion of
+	 * `$content`; return `''` when the whole post is gated. Callbacks must not
+	 * depend on the current user, cookies, or session state, and must fail
+	 * closed (return less on any ambiguity). When nothing is gated, return the
+	 * content byte-for-byte unchanged: consumers detect narrowing by comparing
+	 * the result against the stored content (see {@see is_post_gated()}), so
+	 * an unnecessary serialize round-trip reads as gating.
+	 *
+	 * @since unreleased
+	 *
+	 * @param string   $content The post's stored content (`post_content`).
+	 * @param \WP_Post $post    The post being published.
+	 */
+	$content = (string) \apply_filters( 'atmosphere_publishable_content', $post->post_content, $post );
+
+	// Keep the memo bounded (see the note above): once full, drop the
+	// oldest entry before recording the newest.
+	if ( \count( $cache ) >= 100 ) {
+		\array_shift( $cache );
+	}
+
+	$cache[ $key ] = $content;
+
+	return $content;
+}
+
+/**
+ * The in-process memo backing {@see get_publishable_content()}.
+ *
+ * Returned by reference so both the memoizing reader and
+ * {@see flush_publishable_content_cache()} operate on the same array.
+ *
+ * @return array<string,string> The memo, by reference.
+ */
+function &publishable_content_cache(): array {
+	static $cache = array();
+
+	return $cache;
+}
+
+/**
+ * Clear the {@see get_publishable_content()} memo.
+ *
+ * The memo is a per-request in-process cache keyed on the post content plus any
+ * state integrations fold in via `atmosphere_publishable_content_cache_key`.
+ * Flushing forces a full recompute for callers that change a gating input the
+ * key does not capture mid-request, and gives tests a reset akin to the content
+ * parser's `flush_block_cache()`.
+ *
+ * @since unreleased
+ *
+ * @return void
+ */
+function flush_publishable_content_cache(): void {
+	$cache = &publishable_content_cache();
+	$cache = array();
+}
+
+/**
+ * The memoization key for a post's publishable-content and parser caches.
+ *
+ * Covers the post ID and a hash of the stored content, then lets integrations
+ * fold in any gating state the stored content does not capture. Shared by
+ * {@see get_publishable_content()} and the content parser's block-tree and
+ * rendered-HTML caches so every body-derived cache varies together: a gating
+ * change that recomputes the publishable content must never be served a block
+ * tree or HTML memoized under the previous, more permissive decision.
+ *
+ * @since unreleased
+ *
+ * @param \WP_Post $post Post object.
+ * @return string The cache key.
+ */
+function publishable_content_cache_key( \WP_Post $post ): string {
+	$key = $post->ID . ':' . \md5( (string) $post->post_content );
+
+	/**
+	 * Filters the memoization key for {@see get_publishable_content()}.
+	 *
+	 * The default key covers the post ID and its stored content. Integrations
+	 * whose publishable-content output also depends on state the stored content
+	 * does not capture — an unsaved access-level override applied during a
+	 * preview projection, for instance — should append that state so each
+	 * variant gets its own cache slot instead of masking another's.
+	 *
+	 * @since unreleased
+	 *
+	 * @param string   $key  The default cache key (post ID + content hash).
+	 * @param \WP_Post $post The post being published.
+	 */
+	return (string) \apply_filters( 'atmosphere_publishable_content_cache_key', $key, $post );
+}
+
+/**
+ * Whether any gating narrowed the post's publishable body.
+ *
+ * True when the publicly publishable content differs from the stored
+ * `post_content` — a fully gated body, a split point, or an inline gated
+ * region. Consumers that must fail closed around gated discussion — the
+ * comment lane keeps a gated parent's whole thread private — read this
+ * predicate rather than comparing content themselves.
+ *
+ * @since unreleased
+ *
+ * @param \WP_Post $post Post object.
+ * @return bool True when the post is gated in any way.
+ */
+function is_post_gated( \WP_Post $post ): bool {
+	$gated = get_publishable_content( $post ) !== $post->post_content;
+
+	/**
+	 * Filters whether a post counts as gated.
+	 *
+	 * The default detects narrowing by comparing the publishable content
+	 * against the stored `post_content` byte for byte. Integrations should
+	 * correct both error directions: return true for gating the comparison
+	 * cannot see (a whole-post access level on an empty or image-only body),
+	 * and false when a re-serializing parser changed the markup without
+	 * actually gating anything.
+	 *
+	 * @since unreleased
+	 *
+	 * @param bool     $gated Whether the post is gated.
+	 * @param \WP_Post $post  The post being checked.
+	 */
+	return (bool) \apply_filters( 'atmosphere_is_post_gated', $gated, $post );
+}
+
+/**
+ * Render a post's publishable content through the `the_content` filter chain.
+ *
+ * Wraps the render in a pair of actions so membership/paywall integrations can
+ * step their own `the_content` gating aside for its duration. Those callbacks
+ * key off the current viewer, but ATmosphere already narrowed the body to the
+ * publicly readable portion via {@see get_publishable_content()} and publishes
+ * from a logged-out context (WP-Cron); left in place, a membership gate would
+ * re-render the *global* post as a "subscribe to keep reading" form and
+ * overwrite the safe body. The actions always fire in pairs around the
+ * render, so an integration can restore its own state in the `post` hook.
+ *
+ * @since unreleased
+ *
+ * @param \WP_Post $post Post object.
+ * @return string The rendered HTML.
+ */
+function render_publishable_content( \WP_Post $post ): string {
+	$content = get_publishable_content( $post );
+
+	/*
+	 * A fully gated body renders to nothing at all. Running the empty string
+	 * through `the_content` would still collect unconditional appenders
+	 * (sharing buttons, CTAs, related-posts blocks) whose boilerplate would
+	 * then ship as the public record body of a gated post — in the Bluesky
+	 * text, the document textContent, and the long-form compositions alike.
+	 */
+	if ( '' === \trim( $content ) && '' !== \trim( (string) $post->post_content ) ) {
+		return '';
+	}
+
+	/*
+	 * Establish the post as the global render context. Blocks, shortcodes,
+	 * and the scoped paywall suspension all key off the global post; the
+	 * parser lane sets up full loop context already, but the Bluesky text
+	 * lane calls this directly — without the global, an inline block would
+	 * resolve against a stale post and the paywall wrapper could not tell
+	 * the narrowed post from any other. Restored below.
+	 */
+	$previous_global_post = $GLOBALS['post'] ?? null;
+	$GLOBALS['post']      = $post; // phpcs:ignore WordPress.WP.GlobalVariablesOverride.Prohibited -- Render context for the duration of the render; restored below.
+
+	/**
+	 * Fires before ATmosphere renders a post's publishable content.
+	 *
+	 * Membership integrations suspend their own `the_content` gating here so it
+	 * does not overwrite the already-narrowed body. Must be mirrored by
+	 * {@see 'atmosphere_post_render_publishable_content'}.
+	 *
+	 * @since unreleased
+	 *
+	 * @param \WP_Post $post The post being rendered.
+	 */
+	\do_action( 'atmosphere_pre_render_publishable_content', $post );
+
+	// phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Core WordPress filter.
+	$html = (string) \apply_filters( 'the_content', $content );
+
+	/**
+	 * Fires after ATmosphere renders a post's publishable content.
+	 *
+	 * Mirror of {@see 'atmosphere_pre_render_publishable_content'}.
+	 *
+	 * @since unreleased
+	 *
+	 * @param \WP_Post $post The post that was rendered.
+	 */
+	\do_action( 'atmosphere_post_render_publishable_content', $post );
+
+	if ( null === $previous_global_post ) {
+		unset( $GLOBALS['post'] );
+	} else {
+		$GLOBALS['post'] = $previous_global_post; // phpcs:ignore WordPress.WP.GlobalVariablesOverride.Prohibited -- Restores the previous global post.
+	}
+
+	return $html;
+}
+
+/**
  * Whether the plugin is running purely as a connection layer for another plugin.
  *
  * A host plugin that embeds ATmosphere only to reuse its AT Protocol
