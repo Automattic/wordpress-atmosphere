@@ -1002,6 +1002,25 @@ class Client {
 			if ( \in_array( $error, array( 'invalid_grant', 'invalid_client', 'unauthorized_client' ), true ) ) {
 				self::mark_needs_reauth( $conn, 'refresh_token' );
 
+				/*
+				 * The generic message above is what authors need; the raw
+				 * auth-server text is what triage needs, and it is the only
+				 * thing that tells `invalid_grant` (token consumed or
+				 * revoked) apart from `invalid_client` /
+				 * `unauthorized_client` (the client registration itself is
+				 * being rejected) — a very different problem with a very
+				 * different fix. `log_cron_error()` only ever sees the
+				 * message we return, so the detail has to be logged here or
+				 * it is gone.
+				 */
+				debug_log(
+					\sprintf(
+						'refresh rejected permanently (%s): %s',
+						'' !== $error ? $error : 'unspecified',
+						$msg
+					)
+				);
+
 				return new \WP_Error(
 					'atmosphere_needs_reauth',
 					\__( 'AT Protocol session expired. Reconnect to resume publishing.', 'atmosphere' ),

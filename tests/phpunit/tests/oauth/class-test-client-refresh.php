@@ -13,6 +13,7 @@
 namespace Atmosphere\Tests\OAuth;
 
 use WP_UnitTestCase;
+use Atmosphere\Atmosphere;
 use Atmosphere\OAuth\Client;
 use Atmosphere\OAuth\DPoP;
 use Atmosphere\OAuth\Encryption;
@@ -720,5 +721,56 @@ class Test_Client_Refresh extends WP_UnitTestCase {
 
 		$conn = \get_option( 'atmosphere_connection' );
 		$this->assertEmpty( $conn['needs_reauth'], 'A transient failure must not flag the connection.' );
+	}
+
+	/**
+	 * End-to-end: a revoked refresh token must leave the post carrying a
+	 * reconnect prompt, not an auth-server string.
+	 *
+	 * The two tests above pin `refresh()`'s returned code, which is the
+	 * source of truth, but the behaviour authors actually see depends on a
+	 * chain: `access_token()` sees a stale `expires_at` and refreshes, the
+	 * auth server rejects the token, the publish worker records the failure,
+	 * and `get_publish_error()` classifies it for the editor panel and the
+	 * posts-list column. Nothing else pins that chain, so a refactor that
+	 * dropped any link in it would leave the unit tests green and the bug
+	 * back in place.
+	 */
+	public function test_permanent_refresh_failure_surfaces_reconnect_on_the_post() {
+		// Send the next publish through `refresh()` rather than straight to the PDS.
+		$conn               = \get_option( 'atmosphere_connection' );
+		$conn['expires_at'] = \time() - 1;
+		\update_option( 'atmosphere_connection', $conn );
+
+		$this->mock_token_response(
+			400,
+			array(
+				'error'             => 'invalid_grant',
+				'error_description' => 'Refresh token expired.',
+			)
+		);
+
+		$post = self::factory()->post->create_and_get( array( 'post_status' => 'publish' ) );
+
+		/*
+		 * WP-Cron unschedules an event before running its callback; mirror
+		 * that so the creation-time event doesn't mask this run.
+		 */
+		\wp_clear_scheduled_hook( 'atmosphere_publish_post', array( $post->ID ) );
+
+		\do_action( 'atmosphere_publish_post', $post->ID );
+
+		$error = Atmosphere::get_publish_error( $post->ID );
+
+		$this->assertIsArray( $error, 'The failed share must be recorded on the post.' );
+		$this->assertTrue(
+			$error['needs_reconnect'],
+			'A revoked refresh token must raise needs_reconnect so the surfaces offer a reconnect link.'
+		);
+		$this->assertStringNotContainsString(
+			'invalid_grant',
+			$error['message'],
+			'The auth server\'s raw error must not reach the author.'
+		);
 	}
 }
