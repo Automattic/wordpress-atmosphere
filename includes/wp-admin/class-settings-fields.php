@@ -17,7 +17,9 @@ use Atmosphere\Content_Parser\Pckt;
 use Atmosphere\Content_Parser\Registry;
 use Atmosphere\Handle;
 use Atmosphere\Transformer\Publication;
+use function Atmosphere\appview_url;
 use function Atmosphere\get_connection;
+use function Atmosphere\get_identity;
 use function Atmosphere\get_supported_post_types;
 use function Atmosphere\has_identity;
 use function Atmosphere\is_connected;
@@ -649,31 +651,49 @@ class Settings_Fields {
 	/**
 	 * Render the record-id link explainer and its `rel=shortlink` opt-in.
 	 *
-	 * The checkbox is the smaller half of this field. The pattern it
-	 * belongs to is not obvious from a label, and it is genuinely useful
-	 * to know even for someone who leaves the box unticked, so the field
-	 * leads with the example and offers the toggle underneath.
+	 * Control first, explanation after, as everywhere else on this page.
+	 * The description carries more than usual because the pattern is not
+	 * obvious from a label, and it is worth knowing even for someone who
+	 * leaves the box unticked — the address resolves either way.
 	 *
 	 * @since unreleased
 	 */
 	public static function render_shortlink_field(): void {
-		$example = \home_url( '/post/3mn3kzvtns72d' );
+		$rkey = '3mn3kzvtns72d';
+
+		/*
+		 * The site's own handle when it has one, so the example is the
+		 * reader's own address rather than an abstract one. Falls back to
+		 * a plausible handle before the first connection, when there is
+		 * nothing truthful to put here.
+		 */
+		$handle = (string) ( get_identity()['handle'] ?? '' );
+
+		if ( '' === $handle ) {
+			$handle = 'yourname.bsky.social';
+		}
+
+		$example = self::bare_url( \home_url( '/post/' . $rkey ) );
+
+		/*
+		 * Built through `appview_url()` rather than hardcoded, so a site
+		 * pointed at a different appview sees its own host here instead of
+		 * being told about one it does not use.
+		 */
+		$bluesky = self::bare_url(
+			appview_url(
+				'profile/' . $handle . '/post/' . $rkey,
+				array(
+					'type'   => 'post',
+					'handle' => $handle,
+					'rkey'   => $rkey,
+				)
+			)
+		);
+
+		// What WordPress offers today, so the choice below is a comparison.
+		$core = self::bare_url( \home_url( '/?p=123' ) );
 		?>
-		<p class="description">
-			<?php \esc_html_e( 'Every post shared to Bluesky is also reachable on your own site at the address Bluesky uses for it:', 'atmosphere' ); ?>
-		</p>
-		<p>
-			<code><?php echo \esc_html( \preg_replace( '#^https?://#', '', (string) $example ) ); ?></code>
-		</p>
-		<p class="description">
-			<?php
-			\printf(
-				/* translators: %s: an example Bluesky post address, e.g. bsky.app/profile/you.example.com/post/3mn3kzvtns72d */
-				\esc_html__( 'That last part is the ID Bluesky gave the post. Take any Bluesky link to it, such as %s, drop the profile section, and swap in your own domain. Your site does the rest. Nothing extra is stored, and the address keeps working even if you later change the post title or its permalink.', 'atmosphere' ),
-				'<code>bsky.app/profile/&hellip;/post/3mn3kzvtns72d</code>'
-			);
-			?>
-		</p>
 		<label>
 			<input
 				type="checkbox"
@@ -682,12 +702,44 @@ class Settings_Fields {
 				aria-describedby="atmosphere-shortlink-description"
 				<?php \checked( \get_option( 'atmosphere_shortlink', '0' ), '1' ); ?>
 			>
-			<?php \esc_html_e( 'Offer this as the short link for your posts', 'atmosphere' ); ?>
+			<?php \esc_html_e( 'Use the Bluesky ID as the short URL', 'atmosphere' ); ?>
 		</label>
 		<p class="description" id="atmosphere-shortlink-description">
-			<?php \esc_html_e( 'Tells browsers and other tools to prefer this address, in place of the one WordPress offers. Leave it off if another plugin already handles short links on this site. The address works either way.', 'atmosphere' ); ?>
+			<?php
+			\printf(
+				/* translators: 1: WordPress's own short link, e.g. example.com/?p=123 */
+				\esc_html__( 'WordPress normally offers %1$s. Ticking this offers the address below instead, and browsers and other tools will prefer it. Leave it off if another plugin already handles short links here.', 'atmosphere' ),
+				'<code>' . \esc_html( $core ) . '</code>'
+			);
+			?>
+		</p>
+		<p class="description">
+			<?php \esc_html_e( 'Either way, every post you share to Bluesky is also reachable on your own site at the address Bluesky uses for it:', 'atmosphere' ); ?>
+		</p>
+		<p>
+			<?php \esc_html_e( 'On Bluesky', 'atmosphere' ); ?><br>
+			<code><?php echo \esc_html( $bluesky ); ?></code>
+		</p>
+		<p>
+			<?php \esc_html_e( 'On your site', 'atmosphere' ); ?><br>
+			<code><?php echo \esc_html( $example ); ?></code>
+		</p>
+		<p class="description">
+			<?php \esc_html_e( 'Same ID on the end. Nothing extra is stored, and the address keeps working even if you later change the post title or its permalink.', 'atmosphere' ); ?>
 		</p>
 		<?php
+	}
+
+	/**
+	 * Strip the scheme from a URL so an example reads as an address.
+	 *
+	 * @since unreleased
+	 *
+	 * @param string $url Absolute URL.
+	 * @return string The URL without its scheme.
+	 */
+	private static function bare_url( string $url ): string {
+		return (string) \preg_replace( '#^https?://#', '', $url );
 	}
 
 	/**

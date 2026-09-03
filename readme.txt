@@ -108,7 +108,7 @@ It is the same shape Bluesky uses. A post on Bluesky lives at `bsky.app/profile/
 
 The idea comes from [Felix Schwenzel's write-up on short URLs](https://wirres.net/articles/kurzurls), which weighs up several candidate identifiers for a personal short link and concludes the best one is whatever your site already has. The broader pattern is the IndieWeb's [permashortlink](https://indieweb.org/permashortlink): an address on your own domain that expands to your own permalink, so it cannot rot the way a third-party shortener does.
 
-Under **Settings → ATmosphere** you can also offer this as the short link for your posts, which tells browsers and other tools to prefer it over the one WordPress provides. That part is off unless you turn it on, so a site already running a shortener such as Hum keeps control. The address itself works either way.
+Under **Settings → ATmosphere** there is an option to use the Bluesky ID as the short URL, which tells browsers and other tools to prefer this address over the `?p=123` one WordPress provides. It is off unless you turn it on, so a site already running a shortener such as Hum keeps control. The address itself works either way.
 
 These addresses need pretty permalinks turned on under **Settings → Permalinks**.
 
