@@ -41,8 +41,8 @@ class Test_Wellknown_Rewrite extends WP_UnitTestCase {
 		'^\.well-known/atproto-did/?$'                 => 'index.php?atmosphere_wellknown=atproto-did',
 		'^\.well-known/site\.standard\.publication/?$' => 'index.php?atmosphere_wellknown=publication',
 
-		// The short link rides the same drift check, so it belongs here too.
-		'^post/([234567a-z]{13})/?$'                   => 'index.php?atmosphere_shortlink=$matches[1]',
+		// The record-id link rides the same drift check, so it belongs here too.
+		'^post/([234567a-z]{13})/?$'                   => 'index.php?atmosphere_link=$matches[1]',
 	);
 
 	/**

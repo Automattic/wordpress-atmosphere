@@ -42,7 +42,7 @@ use Atmosphere\Transformer\TID;
 /**
  * Resolve and advertise rkey-based short links.
  */
-class Shortlink {
+class Link {
 
 	/**
 	 * Register the hooks.
@@ -65,7 +65,7 @@ class Shortlink {
 	 * @since unreleased
 	 */
 	public static function maybe_redirect(): void {
-		$tid = (string) \get_query_var( 'atmosphere_shortlink' );
+		$tid = (string) \get_query_var( 'atmosphere_link' );
 
 		if ( '' === $tid ) {
 			return;
@@ -211,7 +211,7 @@ class Shortlink {
 		 * @param int    $post_id Post the link points at.
 		 * @param string $tid     The rkey the link is built from.
 		 */
-		return (string) \apply_filters( 'atmosphere_shortlink', $url, $post_id, $tid );
+		return (string) \apply_filters( 'atmosphere_link', $url, $post_id, $tid );
 	}
 
 	/**
@@ -241,6 +241,11 @@ class Shortlink {
 	 * @return false|string
 	 */
 	public static function filter_shortlink( $shortlink, $id, $context = 'post', $allow_slugs = true ) {
+		// Off by default: claiming this relation is opt in.
+		if ( ! is_shortlink_enabled() ) {
+			return $shortlink;
+		}
+
 		// Another plugin already answered; leave it alone.
 		if ( false !== $shortlink ) {
 			return $shortlink;

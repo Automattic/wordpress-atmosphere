@@ -163,6 +163,14 @@ class Settings_Fields {
 			);
 		}
 
+		\add_settings_field(
+			'atmosphere_shortlink',
+			\__( 'Post links', 'atmosphere' ),
+			array( self::class, 'render_shortlink_field' ),
+			'atmosphere',
+			'atmosphere_publishing'
+		);
+
 		// Reactions section.
 		\add_settings_section(
 			'atmosphere_reactions',
@@ -634,6 +642,50 @@ class Settings_Fields {
 				<br>
 				<strong><?php \esc_html_e( 'Your theme does not provide this color. Set it here, along with the other two, for any colors to be published.', 'atmosphere' ); ?></strong>
 			<?php endif; ?>
+		</p>
+		<?php
+	}
+
+	/**
+	 * Render the record-id link explainer and its `rel=shortlink` opt-in.
+	 *
+	 * The checkbox is the smaller half of this field. The pattern it
+	 * belongs to is not obvious from a label, and it is genuinely useful
+	 * to know even for someone who leaves the box unticked, so the field
+	 * leads with the example and offers the toggle underneath.
+	 *
+	 * @since unreleased
+	 */
+	public static function render_shortlink_field(): void {
+		$example = \home_url( '/post/3mn3kzvtns72d' );
+		?>
+		<p class="description">
+			<?php \esc_html_e( 'Every post shared to Bluesky is also reachable on your own site at the address Bluesky uses for it:', 'atmosphere' ); ?>
+		</p>
+		<p>
+			<code><?php echo \esc_html( \preg_replace( '#^https?://#', '', (string) $example ) ); ?></code>
+		</p>
+		<p class="description">
+			<?php
+			\printf(
+				/* translators: %s: an example Bluesky post address, e.g. bsky.app/profile/you.example.com/post/3mn3kzvtns72d */
+				\esc_html__( 'That last part is the ID Bluesky gave the post. Take any Bluesky link to it, such as %s, drop the profile section, and swap in your own domain. Your site does the rest. Nothing extra is stored, and the address keeps working even if you later change the post title or its permalink.', 'atmosphere' ),
+				'<code>bsky.app/profile/&hellip;/post/3mn3kzvtns72d</code>'
+			);
+			?>
+		</p>
+		<label>
+			<input
+				type="checkbox"
+				name="atmosphere_shortlink"
+				value="1"
+				aria-describedby="atmosphere-shortlink-description"
+				<?php \checked( \get_option( 'atmosphere_shortlink', '0' ), '1' ); ?>
+			>
+			<?php \esc_html_e( 'Offer this as the short link for your posts', 'atmosphere' ); ?>
+		</label>
+		<p class="description" id="atmosphere-shortlink-description">
+			<?php \esc_html_e( 'Tells browsers and other tools to prefer this address, in place of the one WordPress offers. Leave it off if another plugin already handles short links on this site. The address works either way.', 'atmosphere' ); ?>
 		</p>
 		<?php
 	}

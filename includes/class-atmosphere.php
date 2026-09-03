@@ -233,11 +233,11 @@ class Atmosphere {
 		Blocks::register();
 
 		/*
-		 * Short links built from the AT Protocol record id. The rewrite
+		 * Record-id links. The rewrite
 		 * rule itself lives in self::REWRITE_PATTERNS with the plugin's
 		 * other rules, so the persisted-rules drift check covers it too.
 		 */
-		Shortlink::register();
+		Link::register();
 
 		// Per-post "share to Bluesky" toggle + custom-text meta (REST-exposed for the editor panel).
 		\add_action( 'init', array( $this, 'register_share_meta' ) );
@@ -968,7 +968,7 @@ class Atmosphere {
 		 * can only shadow a page whose path is `post/` plus exactly
 		 * thirteen of those characters.
 		 */
-		'^post/([234567a-z]{13})/?$'                   => 'index.php?atmosphere_shortlink=$matches[1]',
+		'^post/([234567a-z]{13})/?$'                   => 'index.php?atmosphere_link=$matches[1]',
 	);
 
 	/**
@@ -988,7 +988,7 @@ class Atmosphere {
 	 */
 	public function register_query_vars( array $vars ): array {
 		$vars[] = 'atmosphere_wellknown';
-		$vars[] = 'atmosphere_shortlink';
+		$vars[] = 'atmosphere_link';
 		$vars[] = 'atproto';
 
 		return $vars;

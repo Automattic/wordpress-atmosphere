@@ -8,7 +8,7 @@
 
 namespace Atmosphere\Tests;
 
-use Atmosphere\Shortlink;
+use Atmosphere\Link;
 use Atmosphere\Transformer\Document;
 use Atmosphere\Transformer\Post;
 use Atmosphere\Transformer\TID;
@@ -16,7 +16,7 @@ use Atmosphere\Transformer\TID;
 /**
  * Short link tests.
  */
-class Test_Shortlink extends \WP_UnitTestCase {
+class Test_Link extends \WP_UnitTestCase {
 
 	/**
 	 * A real, well-formed rkey.
@@ -39,12 +39,21 @@ class Test_Shortlink extends \WP_UnitTestCase {
 	}
 
 	/**
+	 * Opt in to advertising the link as `rel=shortlink`.
+	 */
+	private function enable_shortlink(): void {
+		\update_option( 'atmosphere_shortlink', '1' );
+	}
+
+	/**
 	 * Tear down each test.
 	 */
 	public function tear_down(): void {
 		$this->set_permalink_structure( '' );
+		\delete_option( 'atmosphere_shortlink' );
+		\remove_all_filters( 'atmosphere_should_advertise_shortlink' );
 		\remove_all_filters( 'wp_redirect' );
-		\remove_all_filters( 'atmosphere_shortlink' );
+		\remove_all_filters( 'atmosphere_link' );
 		\remove_all_filters( 'pre_get_shortlink' );
 
 		parent::tear_down();
@@ -73,7 +82,7 @@ class Test_Shortlink extends \WP_UnitTestCase {
 		);
 
 		try {
-			Shortlink::maybe_redirect();
+			Link::maybe_redirect();
 		} catch ( \RuntimeException $e ) {
 			// Expected: the redirect fired.
 			unset( $e );
@@ -89,7 +98,7 @@ class Test_Shortlink extends \WP_UnitTestCase {
 		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
 		\update_post_meta( $post_id, Post::META_TID, self::TID );
 
-		$this->assertSame( $post_id, Shortlink::resolve( self::TID ) );
+		$this->assertSame( $post_id, Link::resolve( self::TID ) );
 	}
 
 	/**
@@ -100,23 +109,23 @@ class Test_Shortlink extends \WP_UnitTestCase {
 		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
 		\update_post_meta( $post_id, Document::META_TID, self::TID );
 
-		$this->assertSame( $post_id, Shortlink::resolve( self::TID ) );
+		$this->assertSame( $post_id, Link::resolve( self::TID ) );
 	}
 
 	/**
 	 * An rkey nothing owns resolves to nothing.
 	 */
 	public function test_unknown_rkey_resolves_to_null() {
-		$this->assertNull( Shortlink::resolve( self::TID ) );
+		$this->assertNull( Link::resolve( self::TID ) );
 	}
 
 	/**
 	 * Anything that is not a TID is rejected before it reaches the database.
 	 */
 	public function test_non_tid_is_rejected() {
-		$this->assertNull( Shortlink::resolve( 'hello' ) );
-		$this->assertNull( Shortlink::resolve( '0000000000000' ), 'The charset excludes 0, 1, 8 and 9.' );
-		$this->assertNull( Shortlink::resolve( '3mn3kzvtns72' ), 'A TID is exactly thirteen characters.' );
+		$this->assertNull( Link::resolve( 'hello' ) );
+		$this->assertNull( Link::resolve( '0000000000000' ), 'The charset excludes 0, 1, 8 and 9.' );
+		$this->assertNull( Link::resolve( '3mn3kzvtns72' ), 'A TID is exactly thirteen characters.' );
 	}
 
 	/**
@@ -128,7 +137,7 @@ class Test_Shortlink extends \WP_UnitTestCase {
 
 		$this->go_to( \home_url( '/post/' . self::TID ) );
 
-		$this->assertSame( self::TID, \get_query_var( 'atmosphere_shortlink' ), 'The rewrite rule must match.' );
+		$this->assertSame( self::TID, \get_query_var( 'atmosphere_link' ), 'The rewrite rule must match.' );
 		$this->assertSame( \get_permalink( $post_id ), $this->capture_redirect() );
 	}
 
@@ -144,7 +153,7 @@ class Test_Shortlink extends \WP_UnitTestCase {
 		$app_url  = 'https://bsky.app/profile/example.com/post/' . self::TID;
 		$expected = \home_url( \str_replace( '/profile/example.com', '', \wp_parse_url( $app_url, \PHP_URL_PATH ) ) );
 
-		$this->assertSame( $expected, Shortlink::get( $post_id ) );
+		$this->assertSame( $expected, Link::get( $post_id ) );
 	}
 
 	/**
@@ -183,7 +192,7 @@ class Test_Shortlink extends \WP_UnitTestCase {
 
 		$this->go_to( \home_url( '/wordpressblog' ) );
 
-		$this->assertSame( '', \get_query_var( 'atmosphere_shortlink' ), 'A bare path must not route to the short link.' );
+		$this->assertSame( '', \get_query_var( 'atmosphere_link' ), 'A bare path must not route to the short link.' );
 		$this->assertTrue( \is_page( $page_id ) );
 	}
 
@@ -191,6 +200,8 @@ class Test_Shortlink extends \WP_UnitTestCase {
 	 * A shared post advertises the rkey short link as its `rel=shortlink`.
 	 */
 	public function test_shared_post_advertises_the_rkey_shortlink() {
+		$this->enable_shortlink();
+
 		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
 		\update_post_meta( $post_id, Post::META_TID, self::TID );
 
@@ -210,10 +221,12 @@ class Test_Shortlink extends \WP_UnitTestCase {
 	 * A site running its own shortener can take the field back.
 	 */
 	public function test_the_filter_can_hand_the_shortlink_back() {
+		$this->enable_shortlink();
+
 		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
 		\update_post_meta( $post_id, Post::META_TID, self::TID );
 
-		\add_filter( 'atmosphere_shortlink', '__return_empty_string' );
+		\add_filter( 'atmosphere_link', '__return_empty_string' );
 
 		$this->assertSame(
 			\home_url( '/?p=' . $post_id ),
@@ -226,6 +239,8 @@ class Test_Shortlink extends \WP_UnitTestCase {
 	 * Another plugin that answered first is not overridden.
 	 */
 	public function test_a_prior_short_circuit_is_respected() {
+		$this->enable_shortlink();
+
 		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
 		\update_post_meta( $post_id, Post::META_TID, self::TID );
 
@@ -246,6 +261,8 @@ class Test_Shortlink extends \WP_UnitTestCase {
 	 * post happens to be at the top of it.
 	 */
 	public function test_archive_does_not_advertise_a_shortlink() {
+		$this->enable_shortlink();
+
 		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
 		\update_post_meta( $post_id, Post::META_TID, self::TID );
 
@@ -265,6 +282,8 @@ class Test_Shortlink extends \WP_UnitTestCase {
 	 * On the post's own page, the query context does resolve it.
 	 */
 	public function test_singular_query_context_resolves_the_shortlink() {
+		$this->enable_shortlink();
+
 		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
 		\update_post_meta( $post_id, Post::META_TID, self::TID );
 
@@ -298,9 +317,46 @@ class Test_Shortlink extends \WP_UnitTestCase {
 			\update_post_meta( $post_id, Post::META_TID, self::TID );
 
 			$this->assertNull(
-				Shortlink::resolve( self::TID ),
+				Link::resolve( self::TID ),
 				\sprintf( 'A %s post must not resolve.', $status )
 			);
 		}
+	}
+
+	/**
+	 * The opt-in is off by default, so WordPress keeps its own short link.
+	 *
+	 * Claiming `rel=shortlink` speaks for the whole site, including posts
+	 * that were never cross-posted, and plenty of sites already run a
+	 * shortener that owns it. The link itself still resolves.
+	 */
+	public function test_shortlink_is_not_claimed_by_default() {
+		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		\update_post_meta( $post_id, Post::META_TID, self::TID );
+
+		$this->assertSame(
+			\home_url( '/?p=' . $post_id ),
+			\wp_get_shortlink( $post_id ),
+			'Nothing should be claimed until the site opts in.'
+		);
+
+		$this->go_to( \home_url( '/post/' . self::TID ) );
+		$this->assertSame(
+			\get_permalink( $post_id ),
+			$this->capture_redirect(),
+			'The link must resolve whether or not it is advertised.'
+		);
+	}
+
+	/**
+	 * The opt-in can also be driven from code.
+	 */
+	public function test_filter_overrides_the_stored_opt_in() {
+		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		\update_post_meta( $post_id, Post::META_TID, self::TID );
+
+		\add_filter( 'atmosphere_should_advertise_shortlink', '__return_true' );
+
+		$this->assertSame( \home_url( '/post/' . self::TID ), \wp_get_shortlink( $post_id ) );
 	}
 }

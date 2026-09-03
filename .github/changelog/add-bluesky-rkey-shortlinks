@@ -1,4 +1,4 @@
 Significance: minor
 Type: added
 
-Cross-posted articles now get a short link on your own domain, built from the ID Bluesky already assigned them. It uses the same address shape as Bluesky, so swapping the domain on a Bluesky link lands on your own site.
+Posts shared to Bluesky are now also reachable on your own site at the address Bluesky uses for them, so swapping the domain on a Bluesky link lands on your own copy. A new setting can offer these as your posts' short links.
