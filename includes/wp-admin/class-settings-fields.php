@@ -708,25 +708,30 @@ class Settings_Fields {
 			<?php
 			\printf(
 				/* translators: 1: WordPress's own short link, e.g. example.com/?p=123 */
-				\esc_html__( 'WordPress normally offers %1$s. Ticking this offers the address below instead, and browsers and other tools will prefer it. Leave it off if another plugin already handles short links here.', 'atmosphere' ),
+				\esc_html__( 'WordPress normally offers %1$s. Ticking this uses your post\'s Bluesky ID instead, and browsers and other tools will prefer it. Leave it off if another plugin already handles short links here.', 'atmosphere' ),
 				'<code>' . \esc_html( $core ) . '</code>'
 			);
 			?>
 		</p>
-		<p class="description">
-			<?php \esc_html_e( 'Either way, every post you share to Bluesky is also reachable on your own site at the address Bluesky uses for it:', 'atmosphere' ); ?>
-		</p>
-		<p>
-			<?php \esc_html_e( 'On Bluesky', 'atmosphere' ); ?><br>
-			<code><?php echo \esc_html( $bluesky ); ?></code>
-		</p>
-		<p>
-			<?php \esc_html_e( 'On your site', 'atmosphere' ); ?><br>
-			<code><?php echo \esc_html( $example ); ?></code>
-		</p>
-		<p class="description">
-			<?php \esc_html_e( 'Same ID on the end. Nothing extra is stored, and the address keeps working even if you later change the post title or its permalink.', 'atmosphere' ); ?>
-		</p>
+
+		<?php /* Folded away: useful context, but not needed to answer the checkbox. */ ?>
+		<details>
+			<summary><?php \esc_html_e( 'What that address looks like', 'atmosphere' ); ?></summary>
+			<p class="description">
+				<?php \esc_html_e( 'Whether or not you tick the box, every post you share to Bluesky is also reachable on your own site at the address Bluesky uses for it:', 'atmosphere' ); ?>
+			</p>
+			<p>
+				<?php \esc_html_e( 'On Bluesky', 'atmosphere' ); ?><br>
+				<code><?php echo \esc_html( $bluesky ); ?></code>
+			</p>
+			<p>
+				<?php \esc_html_e( 'On your site', 'atmosphere' ); ?><br>
+				<code><?php echo \esc_html( $example ); ?></code>
+			</p>
+			<p class="description">
+				<?php \esc_html_e( 'Same ID on the end. Nothing extra is stored, and the address keeps working even if you later change the post title or its permalink.', 'atmosphere' ); ?>
+			</p>
+		</details>
 		<?php
 	}
 

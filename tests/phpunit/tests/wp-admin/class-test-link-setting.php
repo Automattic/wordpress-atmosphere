@@ -92,6 +92,24 @@ class Test_Link_Setting extends \WP_UnitTestCase {
 	}
 
 	/**
+	 * The example is folded away, so the checkbox and the one sentence
+	 * needed to answer it are what the reader meets first.
+	 */
+	public function test_example_is_behind_a_disclosure() {
+		$html = $this->render();
+
+		$this->assertStringContainsString( '<details>', $html );
+		$this->assertStringContainsString( '<summary>', $html );
+
+		// The control and its own description stay outside the fold.
+		$this->assertLessThan(
+			\strpos( $html, '<details>' ),
+			\strpos( $html, 'atmosphere_shortlink' ),
+			'The checkbox must come before the disclosure.'
+		);
+	}
+
+	/**
 	 * The opt-in reflects the stored option.
 	 */
 	public function test_checkbox_reflects_the_option() {
