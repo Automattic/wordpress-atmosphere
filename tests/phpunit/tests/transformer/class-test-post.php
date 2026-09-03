@@ -2308,6 +2308,45 @@ class Test_Post extends WP_UnitTestCase {
 	}
 
 	/**
+	 * A whitespace-only, ungated post with a featured image stays on the plain
+	 * short-form path (the image embed), rather than being mistaken for a fully
+	 * gated body and pushed to the link card. `is_body_gated()` trims the stored
+	 * content before deciding it is "empty", so a stray newline does not look
+	 * like a gated-away body.
+	 *
+	 * @covers ::transform
+	 */
+	public function test_whitespace_only_ungated_post_with_featured_image_stays_short_form() {
+		$thumb = self::factory()->attachment->create();
+		$post  = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => '',
+				'post_content' => "\n",
+			)
+		);
+		// Set the thumbnail meta directly: set_post_thumbnail() drops it when the
+		// factory attachment has no real image file.
+		\update_post_meta( $post->ID, '_thumbnail_id', $thumb );
+
+		$seen_strategy = null;
+		\add_filter(
+			'atmosphere_post_embed',
+			static function ( $embed, $filter_post, $strategy ) use ( &$seen_strategy ) {
+				$seen_strategy = $strategy;
+				return $embed;
+			},
+			10,
+			3
+		);
+
+		// Projection stands in a placeholder blob for the featured image, so the
+		// embed is non-null and `is_body_gated()` alone decides the path.
+		( new Post( $post ) )->project();
+
+		$this->assertSame( 'short-form', $seen_strategy );
+	}
+
+	/**
 	 * Filter return replaces the embed assigned to the record.
 	 *
 	 * @covers ::transform

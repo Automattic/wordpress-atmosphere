@@ -1,8 +1,12 @@
 # Integrations
 
-Plugin-specific integrations that teach ATmosphere how to format the `content` field of `site.standard.document` records for content produced by third-party plugins.
+Plugin-specific integrations that teach ATmosphere about third-party plugins. Most format the `content` field of `site.standard.document` records (see below); others hook ATmosphere's filters to change what gets published at all.
 
-## How it works
+Each integration is a class with a static `init()` that registers hooks, loaded from `class-load.php` behind a check that its target plugin is active.
+
+**Gating example — `class-jetpack.php`.** Keeps Jetpack subscriber-only and paywalled content out of public AT Protocol records by hooking `atmosphere_publishable_content` (see `Atmosphere\get_publishable_content()`). It reads a post's stored access-level meta and block markup in a visitor-independent way and returns only the publicly readable portion: nothing for a fully gated post, the content above a `jetpack/paywall` block for a split post, or the content minus `premium-content/subscriber-view` regions for an inline gate. Other membership plugins can close the same leak by hooking that filter.
+
+## Content formatting: how it works
 
 `site.standard.document` records have an [open content union](../docs/content-formats.md) — any object with a valid `$type` is accepted, but the field is **singular**: exactly one parser produces the `content` object per document.
 
@@ -31,6 +35,8 @@ interface Content_Parser {
     public function parse( string $content, \WP_Post $post ): ?array;
 }
 ```
+
+`$content` is the post's **publishable** content — the body already stripped of any subscriber-only / paywalled portions by membership integrations (see `Atmosphere\get_publishable_content()`), not the raw `post_content`. Parse it directly, or render it with `Atmosphere\render_publishable_content( $post )` (which `Parser_Base::get_rendered_html()` uses). **Do not** re-render it with a bare `apply_filters( 'the_content', … )`: a membership plugin's own `the_content` gate reads the *global* post and would put the gated body — or a "subscribe to keep reading" form — back into the record.
 
 `applies_to( \WP_Post $post ): bool` is optional. `Parser_Base` provides it with a default `true` result; override it when a format only works for certain posts, such as block-editor-only formats. If your parser reads saved block markup directly, use `saved_content_survives_rendering( $post )` in the guard so render-time visibility filters can force a fallback to rendered HTML.
 
