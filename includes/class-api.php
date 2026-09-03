@@ -456,11 +456,17 @@ class API {
 	 *
 	 * @since unreleased
 	 *
+	 * @param int $timeout Seconds to wait. Defaults to the shared request
+	 *                     timeout; callers on an interactive path should
+	 *                     pass something far shorter, since a person is
+	 *                     waiting on the answer.
 	 * @return array|\WP_Error Session description, or the failure that
 	 *                         proves the credentials no longer work.
 	 */
-	public static function get_session(): array|\WP_Error {
-		return self::get( '/xrpc/com.atproto.server.getSession' );
+	public static function get_session( int $timeout = 0 ): array|\WP_Error {
+		$args = $timeout > 0 ? array( 'timeout' => $timeout ) : array();
+
+		return self::request( 'GET', '/xrpc/com.atproto.server.getSession', $args );
 	}
 
 	/**

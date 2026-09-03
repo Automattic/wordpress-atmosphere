@@ -11,7 +11,10 @@ namespace Atmosphere\Tests;
 use Atmosphere\Block_Editor;
 use Atmosphere\Connectors;
 use Atmosphere\OAuth\Client;
+use Atmosphere\OAuth\DPoP;
+use Atmosphere\OAuth\Encryption;
 use function Atmosphere\settings_url;
+use const Atmosphere\SESSION_VERIFIED_TRANSIENT;
 
 /**
  * Tests for the config the editor scripts receive as `window.atmosphereEditor`.
@@ -31,6 +34,8 @@ class Test_Block_Editor extends \WP_UnitTestCase {
 		\delete_option( 'atmosphere_auto_publish' );
 		\remove_all_filters( 'atmosphere_should_auto_publish' );
 		\remove_all_filters( 'atmosphere_connection_only_mode' );
+		\remove_all_filters( 'pre_http_request' );
+		\delete_transient( SESSION_VERIFIED_TRANSIENT );
 		parent::tear_down();
 	}
 
@@ -325,5 +330,177 @@ class Test_Block_Editor extends \WP_UnitTestCase {
 
 		$this->assertTrue( $data['shareStatus']['sharing_enabled'] );
 		$this->assertSame( '', $data['shareStatus']['message'] );
+	}
+
+	/**
+	 * Opening the editor is the earliest useful moment to notice a dead
+	 * connection: the author has written nothing yet.
+	 *
+	 * A session the user revoked from their Bluesky account leaves stored
+	 * credentials byte-for-byte identical to a working one, so the banner
+	 * would otherwise vouch for it right up until the publish failed. The
+	 * probe runs before the share status is resolved, so the prompt is
+	 * there on the first paint.
+	 */
+	public function test_editor_load_catches_a_revoked_session() {
+		$dpop_jwk = DPoP::generate_key();
+
+		\update_option( 'atmosphere_identity', array( 'did' => 'did:plc:test123' ) );
+		\update_option(
+			'atmosphere_connection',
+			array(
+				'did'            => 'did:plc:test123',
+				'access_token'   => Encryption::encrypt( 'test-access-token' ),
+				'refresh_token'  => Encryption::encrypt( 'test-refresh-token' ),
+				'dpop_jwk'       => Encryption::encrypt( \wp_json_encode( $dpop_jwk ) ),
+				'pds_endpoint'   => 'https://pds.example.com',
+				'token_endpoint' => 'https://auth.example.com/oauth/token',
+				'expires_at'     => \time() + 3600,
+				'needs_reauth'   => false,
+			)
+		);
+		\update_option( 'atmosphere_auto_publish', '1' );
+
+		\add_filter(
+			'pre_http_request',
+			static function ( $response, $args, $url ) {
+				if ( false !== \strpos( $url, 'oauth/token' ) ) {
+					return array(
+						'response' => array( 'code' => 400 ),
+						'headers'  => new \WpOrg\Requests\Utility\CaseInsensitiveDictionary( array() ),
+						'body'     => \wp_json_encode( array( 'error' => 'invalid_grant' ) ),
+					);
+				}
+
+				if ( false !== \strpos( $url, 'getSession' ) ) {
+					return array(
+						'response' => array( 'code' => 401 ),
+						'headers'  => new \WpOrg\Requests\Utility\CaseInsensitiveDictionary( array() ),
+						'body'     => \wp_json_encode( array( 'error' => 'InvalidToken' ) ),
+					);
+				}
+
+				return $response;
+			},
+			1,
+			3
+		);
+
+		$data = $this->script_data();
+
+		$this->assertSame(
+			'needs_reconnect',
+			$data['shareStatus']['state'],
+			'A revoked session must surface as a reconnect prompt on editor load.'
+		);
+		$this->assertFalse(
+			$data['shareStatus']['can_share'],
+			'A revoked session must not be advertised as ready to share.'
+		);
+		$this->assertNotEmpty(
+			$data['shareStatus']['reason'],
+			'The banner needs a reason to render the reconnect prompt from.'
+		);
+	}
+
+	/**
+	 * The probe must not hold up the editor when the PDS is unreachable.
+	 *
+	 * Failing open here matters more than anywhere else: this runs during
+	 * `enqueue_block_editor_assets`, so treating a timeout as a
+	 * disconnection would greet an author with a reconnect prompt every
+	 * time their PDS had a bad minute.
+	 */
+	public function test_editor_load_ignores_an_unreachable_pds() {
+		$dpop_jwk = DPoP::generate_key();
+
+		\update_option( 'atmosphere_identity', array( 'did' => 'did:plc:test123' ) );
+		\update_option(
+			'atmosphere_connection',
+			array(
+				'did'            => 'did:plc:test123',
+				'access_token'   => Encryption::encrypt( 'test-access-token' ),
+				'refresh_token'  => Encryption::encrypt( 'test-refresh-token' ),
+				'dpop_jwk'       => Encryption::encrypt( \wp_json_encode( $dpop_jwk ) ),
+				'pds_endpoint'   => 'https://pds.example.com',
+				'token_endpoint' => 'https://auth.example.com/oauth/token',
+				'expires_at'     => \time() + 3600,
+				'needs_reauth'   => false,
+			)
+		);
+		\update_option( 'atmosphere_auto_publish', '1' );
+
+		\add_filter(
+			'pre_http_request',
+			static function ( $response, $args, $url ) {
+				if ( false !== \strpos( $url, 'getSession' ) ) {
+					return new \WP_Error( 'http_request_failed', 'Connection timed out.' );
+				}
+
+				return $response;
+			},
+			1,
+			3
+		);
+
+		$data = $this->script_data();
+
+		$this->assertSame(
+			'ok',
+			$data['shareStatus']['state'],
+			'An unreachable PDS must not read as a disconnection.'
+		);
+		$this->assertTrue( $data['shareStatus']['can_share'] );
+	}
+
+	/**
+	 * The probe waits far less than the shared request timeout.
+	 *
+	 * This one runs while the editor renders, so the ceiling is the
+	 * difference between a slow load and a frozen one.
+	 */
+	public function test_editor_load_probe_uses_a_short_timeout() {
+		$dpop_jwk = DPoP::generate_key();
+
+		\update_option( 'atmosphere_identity', array( 'did' => 'did:plc:test123' ) );
+		\update_option(
+			'atmosphere_connection',
+			array(
+				'did'            => 'did:plc:test123',
+				'access_token'   => Encryption::encrypt( 'test-access-token' ),
+				'refresh_token'  => Encryption::encrypt( 'test-refresh-token' ),
+				'dpop_jwk'       => Encryption::encrypt( \wp_json_encode( $dpop_jwk ) ),
+				'pds_endpoint'   => 'https://pds.example.com',
+				'token_endpoint' => 'https://auth.example.com/oauth/token',
+				'expires_at'     => \time() + 3600,
+				'needs_reauth'   => false,
+			)
+		);
+
+		$captured = null;
+
+		\add_filter(
+			'pre_http_request',
+			static function ( $response, $args, $url ) use ( &$captured ) {
+				if ( false !== \strpos( $url, 'getSession' ) ) {
+					$captured = $args;
+
+					return array(
+						'response' => array( 'code' => 200 ),
+						'headers'  => new \WpOrg\Requests\Utility\CaseInsensitiveDictionary( array() ),
+						'body'     => \wp_json_encode( array( 'did' => 'did:plc:test123' ) ),
+					);
+				}
+
+				return $response;
+			},
+			1,
+			3
+		);
+
+		$this->script_data();
+
+		$this->assertNotNull( $captured, 'The probe should have reached the transport.' );
+		$this->assertLessThanOrEqual( 5, $captured['timeout'], 'The editor must not wait 30 seconds on a probe.' );
 	}
 }

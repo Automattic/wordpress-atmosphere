@@ -1,4 +1,4 @@
 Significance: minor
 Type: added
 
-The pre-publish panel now checks with Bluesky that your connection still works, so a session you revoked is caught before you publish instead of after.
+The editor now checks with Bluesky that your connection still works when you open a post, so you can reconnect before writing instead of finding out after publishing.

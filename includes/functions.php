@@ -664,6 +664,21 @@ const SESSION_VERIFIED_TRANSIENT = 'atmosphere_session_verified';
 const SESSION_VERIFY_TTL = 15 * MINUTE_IN_SECONDS;
 
 /**
+ * How long the probe waits for the PDS, in seconds.
+ *
+ * Deliberately far below the shared 30-second request timeout. Every
+ * caller of this probe is on a path where a person is waiting — an
+ * editor rendering, a panel opening — and the answer is optional: the
+ * probe fails open, so giving up early costs a stale verdict for one
+ * cache window, while waiting costs the author a frozen editor.
+ *
+ * @since unreleased
+ *
+ * @var int
+ */
+const SESSION_VERIFY_TIMEOUT = 5;
+
+/**
  * Confirm with the PDS that the stored session still authenticates.
  *
  * {@see is_connected()} reads three stored fields and never leaves the
@@ -711,7 +726,7 @@ function verify_connection( bool $force = false ): bool {
 		return true;
 	}
 
-	$result = API::get_session();
+	$result = API::get_session( SESSION_VERIFY_TIMEOUT );
 
 	if ( \is_wp_error( $result ) ) {
 		/*
