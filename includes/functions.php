@@ -648,12 +648,16 @@ function is_comment_publishing_enabled(): bool {
  * connection row itself, and {@see is_connected()} answers from there
  * without touching the network.
  *
+ * @since unreleased
+ *
  * @var string
  */
 const SESSION_VERIFIED_TRANSIENT = 'atmosphere_session_verified';
 
 /**
  * How long a successful verification is trusted, in seconds.
+ *
+ * @since unreleased
  *
  * @var int
  */
@@ -682,6 +686,15 @@ const SESSION_VERIFY_TTL = 15 * MINUTE_IN_SECONDS;
  * the stored state exactly as they found it — the publish path has its
  * own retry ladder for that, and blocking an author because our probe
  * could not get through would be a worse bug than the one this fixes.
+ *
+ * Known gap: this verifies that the credentials still authenticate, not
+ * that the account may post. A deactivated, suspended, or taken-down
+ * account is rejected as a 400/403 rather than a 401, so it never enters
+ * the refresh ladder, nothing flags the row, and the probe reports
+ * healthy. `getSession` carries `active` and `status` fields that would
+ * settle it, but acting on them means new copy on every surface, so that
+ * is deliberately left for its own change. {@see \Atmosphere\Tests\Test_Verify_Connection}
+ * pins the current behavior so the gap cannot close by accident.
  *
  * @since unreleased
  *

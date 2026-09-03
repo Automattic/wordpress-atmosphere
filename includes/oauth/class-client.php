@@ -733,6 +733,16 @@ class Client {
 		\delete_option( self::DISCONNECTED_OPTION );
 
 		/*
+		 * Drop any cached "the PDS accepted our credentials" verdict. This
+		 * path is reached without a preceding `disconnect()` — the settings
+		 * connect field and the Connectors card both authorize straight over
+		 * a live connection — so reconnecting, and in particular switching
+		 * to a different account, would otherwise inherit the previous
+		 * session's clean bill of health for the rest of the TTL.
+		 */
+		\delete_transient( SESSION_VERIFIED_TRANSIENT );
+
+		/*
 		 * Encrypted token blobs do not need to ride along in every
 		 * request's `alloptions` payload; they're only read on the
 		 * paths that actually talk to the PDS. WP 6.6+ honours the

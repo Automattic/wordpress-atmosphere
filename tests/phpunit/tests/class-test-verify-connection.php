@@ -269,4 +269,80 @@ class Test_Verify_Connection extends \WP_UnitTestCase {
 
 		$this->assertFalse( \get_transient( SESSION_VERIFIED_TRANSIENT ) );
 	}
+
+	/**
+	 * An account the PDS refuses to let post is NOT caught by this probe.
+	 *
+	 * Deactivation, suspension, and takedown come back as 400/403 rather
+	 * than 401, so they never enter the refresh ladder and nothing flags
+	 * the connection. `getSession` carries `active`/`status` fields that
+	 * would settle it, but acting on them needs new copy on every surface.
+	 * This pins the gap so closing it is a deliberate change with a
+	 * failing test, rather than a silent behavior shift.
+	 */
+	public function test_taken_down_account_is_a_known_gap() {
+		$this->mock_transport( 400, array( 'error' => 'AccountTakedown' ) );
+
+		$this->assertTrue( verify_connection(), 'Documented gap: a takedown is not detected today.' );
+		$this->assertFalse( needs_reauth() );
+	}
+
+	/**
+	 * Reconnecting without disconnecting first must re-probe.
+	 *
+	 * Both connect surfaces — the settings field and the Connectors card —
+	 * authorize straight over a live connection, so this path never passes
+	 * through `disconnect()`. Inheriting the previous account's verdict
+	 * would leave the panel vouching for credentials it has never seen,
+	 * which is the exact staleness the probe exists to remove.
+	 */
+	public function test_reconnect_clears_the_cached_verdict() {
+		$this->mock_transport( 200, array( 'did' => 'did:plc:test123' ) );
+
+		verify_connection();
+		$this->assertNotFalse( \get_transient( SESSION_VERIFIED_TRANSIENT ) );
+
+		/*
+		 * Drive a real OAuth callback. Nothing calls `disconnect()` first:
+		 * this is the reconnect-over-a-live-connection path both connect
+		 * surfaces actually take.
+		 */
+		$jwk = DPoP::generate_key();
+
+		\set_transient( 'atmosphere_oauth_state', 'state-abc', \HOUR_IN_SECONDS );
+		\set_transient( 'atmosphere_oauth_verifier', 'verifier-xyz', \HOUR_IN_SECONDS );
+		\set_transient( 'atmosphere_oauth_dpop_jwk', Encryption::encrypt( (string) \wp_json_encode( $jwk ) ), \HOUR_IN_SECONDS );
+		\set_transient(
+			'atmosphere_oauth_resolved',
+			array(
+				'did'          => 'did:plc:other456',
+				'pds_endpoint' => 'https://pds.example.com',
+				'auth_server'  => array(
+					'token_endpoint' => self::TOKEN_ENDPOINT,
+					'issuer_url'     => 'https://auth.example.com',
+				),
+				'handle'       => 'someone-else.example.com',
+			),
+			\HOUR_IN_SECONDS
+		);
+
+		\remove_all_filters( 'pre_http_request' );
+		$this->mock_transport(
+			200,
+			array( 'did' => 'did:plc:other456' ),
+			200,
+			array(
+				'access_token'  => 'new-access-token',
+				'refresh_token' => 'new-refresh-token',
+				'expires_in'    => 3600,
+			)
+		);
+
+		$this->assertTrue( Client::handle_callback( 'code-123', 'state-abc' ) );
+
+		$this->assertFalse(
+			\get_transient( SESSION_VERIFIED_TRANSIENT ),
+			'A reconnect must not inherit the previous session\'s verdict.'
+		);
+	}
 }
