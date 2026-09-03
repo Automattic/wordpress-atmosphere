@@ -973,6 +973,23 @@ class Client {
 			 * consumed the token, so the connection can recover on the
 			 * next attempt without operator action.
 			 *
+			 * The two branches must not share an error code. Everything
+			 * downstream classifies the failure through
+			 * {@see self::is_reconnect_error()}: the publish retry ladder
+			 * decides whether another attempt could ever succeed, and the
+			 * editor and posts-list surfaces decide between offering a
+			 * reconnect prompt and reporting a retryable glitch. One code
+			 * would force one answer onto both branches — either dropping a
+			 * post the auth server would have accepted a minute later, or
+			 * leaving the author with a raw OAuth string and no way to act
+			 * on it while the site-wide notice says to reconnect.
+			 *
+			 * So the permanent branch returns `atmosphere_needs_reauth`,
+			 * the same code (and wording) `access_token()` returns once the
+			 * flag is set, and the auth server's own `error_description` is
+			 * dropped: it reaches authors verbatim in the posts-list column,
+			 * where "invalid_grant" tells them nothing they can use.
+			 *
 			 * The connection row itself is preserved (rather than deleted)
 			 * so the durable identity inside it stays available for the
 			 * public verification headers — see `Atmosphere\has_identity()`
@@ -984,6 +1001,31 @@ class Client {
 			$error = $data['error'] ?? '';
 			if ( \in_array( $error, array( 'invalid_grant', 'invalid_client', 'unauthorized_client' ), true ) ) {
 				self::mark_needs_reauth( $conn, 'refresh_token' );
+
+				/*
+				 * The generic message above is what authors need; the raw
+				 * auth-server text is what triage needs, and it is the only
+				 * thing that tells `invalid_grant` (token consumed or
+				 * revoked) apart from `invalid_client` /
+				 * `unauthorized_client` (the client registration itself is
+				 * being rejected) — a very different problem with a very
+				 * different fix. `log_cron_error()` only ever sees the
+				 * message we return, so the detail has to be logged here or
+				 * it is gone.
+				 */
+				debug_log(
+					\sprintf(
+						'refresh rejected permanently (%s): %s',
+						'' !== $error ? $error : 'unspecified',
+						$msg
+					)
+				);
+
+				return new \WP_Error(
+					'atmosphere_needs_reauth',
+					\__( 'AT Protocol session expired. Reconnect to resume publishing.', 'atmosphere' ),
+					array( 'status' => $status )
+				);
 			}
 
 			return new \WP_Error( 'atmosphere_refresh', $msg, array( 'status' => $status ) );
