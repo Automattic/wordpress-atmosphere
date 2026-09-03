@@ -673,6 +673,28 @@ class Settings_Fields {
 			$handle = 'yourname.bsky.social';
 		}
 
+		/*
+		 * Whether the site already uses its own domain as its Bluesky
+		 * handle. That is the case the whole pattern is prettiest in: the
+		 * handle *is* the domain, so the two addresses differ only by the
+		 * appview prefix, and the explanation can say so plainly instead
+		 * of talking the reader through a substitution.
+		 */
+		$target           = Handle::get_target_handle();
+		$is_domain_handle = '' !== $target && \strtolower( $handle ) === $target;
+
+		/*
+		 * Only recommend the swap where it is actually available. The
+		 * Domain handle row applies the same gate, so the tip cannot point
+		 * at a setting that is not on the page.
+		 */
+		$can_use_domain_handle = ! $is_domain_handle && Handle::should_offer(
+			array(
+				'connected' => is_connected(),
+				'handle'    => $handle,
+			)
+		);
+
 		$example = self::bare_url( \home_url( '/post/' . $rkey ) );
 
 		// What WordPress offers today, so the setting reads as a swap.
@@ -738,8 +760,24 @@ class Settings_Fields {
 						?>
 					</li>
 				</ul>
-				<p><?php \esc_html_e( 'Take any Bluesky link to one of your posts, drop the profile part, and put your own domain in front. Nothing extra is stored, and the address keeps working if you later change the post title or its permalink.', 'atmosphere' ); ?></p>
-				<p><?php \esc_html_e( 'This address works whether or not you tick the box above.', 'atmosphere' ); ?></p>
+				<?php if ( $is_domain_handle ) : ?>
+					<p><?php \esc_html_e( 'Because your Bluesky handle is your domain, the two are the same address with a different prefix. Drop the Bluesky part and you are on your own site.', 'atmosphere' ); ?></p>
+				<?php else : ?>
+					<p><?php \esc_html_e( 'Take any Bluesky link to one of your posts, drop the profile part, and put your own domain in front.', 'atmosphere' ); ?></p>
+					<?php if ( $can_use_domain_handle ) : ?>
+						<p>
+							<?php
+							\printf(
+								/* translators: 1: the site's domain, e.g. example.com. 2: the name of the Domain handle setting, quoted. */
+								\esc_html__( 'They would line up more neatly if you used %1$s as your Bluesky handle: the two addresses would then differ only by the part in front. See %2$s above.', 'atmosphere' ),
+								'<code>' . \esc_html( Handle::get_target_handle() ) . '</code>',
+								'<strong>' . \esc_html__( 'Domain handle', 'atmosphere' ) . '</strong>'
+							);
+							?>
+						</p>
+					<?php endif; ?>
+				<?php endif; ?>
+				<p><?php \esc_html_e( 'Nothing extra is stored, and the address keeps working if you later change the post title or its permalink. It works whether or not you tick the box above.', 'atmosphere' ); ?></p>
 			</div>
 		</details>
 		<?php

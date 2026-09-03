@@ -8,6 +8,7 @@
 
 namespace Atmosphere\Tests\WP_Admin;
 
+use Atmosphere\Handle;
 use Atmosphere\WP_Admin\Settings_Fields;
 
 /**
@@ -23,6 +24,7 @@ class Test_Link_Setting extends \WP_UnitTestCase {
 		\delete_option( 'atmosphere_identity' );
 		\delete_option( 'atmosphere_connection' );
 		\remove_all_filters( 'atmosphere_appview_host' );
+		\remove_all_filters( Handle::FILTER_ENABLED );
 
 		parent::tear_down();
 	}
@@ -101,6 +103,61 @@ class Test_Link_Setting extends \WP_UnitTestCase {
 
 		$this->assertStringContainsString( 'deer.social/profile/', $html );
 		$this->assertStringNotContainsString( 'bsky.app', $html );
+	}
+
+	/**
+	 * Store an identity with the given handle.
+	 *
+	 * @param string $handle Bluesky handle.
+	 */
+	private function connect_as( string $handle ): void {
+		$row = array(
+			'did'          => 'did:plc:test123',
+			'handle'       => $handle,
+			'access_token' => 'token',
+		);
+
+		\update_option( 'atmosphere_identity', $row );
+		\update_option( 'atmosphere_connection', $row );
+	}
+
+	/**
+	 * When the handle is the site's own domain, the pattern is at its
+	 * neatest and the copy says so, instead of walking the reader through
+	 * a substitution they do not have to make.
+	 */
+	public function test_domain_handle_gets_its_own_explanation() {
+		$host = (string) \wp_parse_url( \home_url(), \PHP_URL_HOST );
+		$this->connect_as( $host );
+
+		$html = $this->render();
+
+		$this->assertStringContainsString( 'Because your Bluesky handle is your domain', $html );
+		$this->assertStringNotContainsString( 'would line up more neatly', $html );
+	}
+
+	/**
+	 * Otherwise the domain handle is recommended, because it is what makes
+	 * the two addresses line up.
+	 */
+	public function test_other_handles_get_the_recommendation() {
+		$this->connect_as( 'someone.bsky.social' );
+
+		$html = $this->render();
+
+		$this->assertStringContainsString( 'would line up more neatly', $html );
+		$this->assertStringContainsString( 'Domain handle', $html, 'The tip must name the setting it points at.' );
+	}
+
+	/**
+	 * The recommendation is suppressed where the swap is not on offer, so
+	 * it cannot point at a row that is not on the page.
+	 */
+	public function test_recommendation_is_suppressed_when_unavailable() {
+		$this->connect_as( 'someone.bsky.social' );
+		\add_filter( Handle::FILTER_ENABLED, '__return_false' );
+
+		$this->assertStringNotContainsString( 'would line up more neatly', $this->render() );
 	}
 
 	/**

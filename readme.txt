@@ -104,7 +104,9 @@ Every post ATmosphere shares gets an ID on Bluesky: a 13-character string like `
 
 That makes it a perfectly good address, so your site also answers at `example.com/post/3mn3kzvtns72d` and sends visitors to the full article.
 
-It is the same shape Bluesky uses. A post on Bluesky lives at `bsky.app/profile/yourhandle/post/3mn3kzvtns72d`, so if you drop the profile part and put your own domain in front, you land on the same post on your own site. There is no lookup table to maintain and no third-party shortener that can disappear and take your links with it. The address also survives a rename: it finds the post by its Bluesky ID, not by its title, so changing either leaves it working.
+It is the same shape Bluesky uses. A post on Bluesky lives at `bsky.app/profile/yourhandle/post/3mn3kzvtns72d`, so if you drop the profile part and put your own domain in front, you land on the same post on your own site.
+
+This works best if you use your own domain as your Bluesky handle, which ATmosphere can set up for you in one click. Then your handle *is* your domain, and the two addresses are the same but for the `bsky.app/profile/` in front. There is no lookup table to maintain and no third-party shortener that can disappear and take your links with it. The address also survives a rename: it finds the post by its Bluesky ID, not by its title, so changing either leaves it working.
 
 The idea comes from [Felix Schwenzel's write-up on short URLs](https://wirres.net/articles/kurzurls), which weighs up several candidate identifiers for a personal short link and concludes the best one is whatever your site already has. The broader pattern is the IndieWeb's [permashortlink](https://indieweb.org/permashortlink): an address on your own domain that expands to your own permalink, so it cannot rot the way a third-party shortener does.
 
