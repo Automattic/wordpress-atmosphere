@@ -651,10 +651,10 @@ class Settings_Fields {
 	/**
 	 * Render the record-id link explainer and its `rel=shortlink` opt-in.
 	 *
-	 * Control first, explanation after, as everywhere else on this page.
-	 * The description carries more than usual because the pattern is not
-	 * obvious from a label, and it is worth knowing even for someone who
-	 * leaves the box unticked — the address resolves either way.
+	 * The description names both addresses rather than saying "short URL"
+	 * and leaving the reader to picture it. Where the address comes from
+	 * is a longer story, so it sits behind a disclosure, styled as a link
+	 * the way the ActivityPub plugin styles its own.
 	 *
 	 * @since unreleased
 	 */
@@ -664,8 +664,8 @@ class Settings_Fields {
 		/*
 		 * The site's own handle when it has one, so the example is the
 		 * reader's own address rather than an abstract one. Falls back to
-		 * a plausible handle before the first connection, when there is
-		 * nothing truthful to put here.
+		 * a placeholder before the first connection, when there is nothing
+		 * truthful to put here.
 		 */
 		$handle = (string) ( get_identity()['handle'] ?? '' );
 
@@ -674,6 +674,9 @@ class Settings_Fields {
 		}
 
 		$example = self::bare_url( \home_url( '/post/' . $rkey ) );
+
+		// What WordPress offers today, so the setting reads as a swap.
+		$core = self::bare_url( \home_url( '/?p=123' ) );
 
 		/*
 		 * Built through `appview_url()` rather than hardcoded, so a site
@@ -690,9 +693,6 @@ class Settings_Fields {
 				)
 			)
 		);
-
-		// What WordPress offers today, so the choice below is a comparison.
-		$core = self::bare_url( \home_url( '/?p=123' ) );
 		?>
 		<label>
 			<input
@@ -707,30 +707,40 @@ class Settings_Fields {
 		<p class="description" id="atmosphere-shortlink-description">
 			<?php
 			\printf(
-				/* translators: 1: WordPress's own short link, e.g. example.com/?p=123 */
-				\esc_html__( 'WordPress normally offers %1$s. Ticking this uses your post\'s Bluesky ID instead, and browsers and other tools will prefer it. Leave it off if another plugin already handles short links here.', 'atmosphere' ),
+				/* translators: 1: the Bluesky-derived address, e.g. example.com/post/3mn3kzvtns72d. 2: WordPress's own short link, e.g. example.com/?p=123 */
+				\esc_html__( 'Short URLs become %1$s instead of %2$s. Leave this off if another plugin already handles short URLs on this site.', 'atmosphere' ),
+				'<code>' . \esc_html( $example ) . '</code>',
 				'<code>' . \esc_html( $core ) . '</code>'
 			);
 			?>
 		</p>
-
-		<?php /* Folded away: useful context, but not needed to answer the checkbox. */ ?>
-		<details>
-			<summary><?php \esc_html_e( 'What that address looks like', 'atmosphere' ); ?></summary>
-			<p class="description">
-				<?php \esc_html_e( 'Whether or not you tick the box, every post you share to Bluesky is also reachable on your own site at the address Bluesky uses for it:', 'atmosphere' ); ?>
-			</p>
-			<p>
-				<?php \esc_html_e( 'On Bluesky', 'atmosphere' ); ?><br>
-				<code><?php echo \esc_html( $bluesky ); ?></code>
-			</p>
-			<p>
-				<?php \esc_html_e( 'On your site', 'atmosphere' ); ?><br>
-				<code><?php echo \esc_html( $example ); ?></code>
-			</p>
-			<p class="description">
-				<?php \esc_html_e( 'Same ID on the end. Nothing extra is stored, and the address keeps working even if you later change the post title or its permalink.', 'atmosphere' ); ?>
-			</p>
+		<details class="atmosphere-details">
+			<summary><?php \esc_html_e( 'See where that address comes from.', 'atmosphere' ); ?></summary>
+			<div class="description">
+				<p><?php \esc_html_e( 'Bluesky gives every post an ID, and your site already stores it. That makes it an address your site can answer to.', 'atmosphere' ); ?></p>
+				<ul>
+					<li>
+						<?php
+						\printf(
+							/* translators: %s: the post's address on Bluesky. */
+							\esc_html__( '%s is your post on Bluesky.', 'atmosphere' ),
+							'<code>' . \esc_html( $bluesky ) . '</code>'
+						);
+						?>
+					</li>
+					<li>
+						<?php
+						\printf(
+							/* translators: %s: the same post's address on this site. */
+							\esc_html__( '%s is the same post on your site.', 'atmosphere' ),
+							'<code>' . \esc_html( $example ) . '</code>'
+						);
+						?>
+					</li>
+				</ul>
+				<p><?php \esc_html_e( 'Take any Bluesky link to one of your posts, drop the profile part, and put your own domain in front. Nothing extra is stored, and the address keeps working if you later change the post title or its permalink.', 'atmosphere' ); ?></p>
+				<p><?php \esc_html_e( 'This address works whether or not you tick the box above.', 'atmosphere' ); ?></p>
+			</div>
 		</details>
 		<?php
 	}

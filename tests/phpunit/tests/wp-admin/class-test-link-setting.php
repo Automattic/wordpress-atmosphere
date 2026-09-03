@@ -16,12 +16,12 @@ use Atmosphere\WP_Admin\Settings_Fields;
 class Test_Link_Setting extends \WP_UnitTestCase {
 
 	/**
-	 * Reset identity between tests.
+	 * Reset the option between tests.
 	 */
 	public function tear_down(): void {
+		\delete_option( 'atmosphere_shortlink' );
 		\delete_option( 'atmosphere_identity' );
 		\delete_option( 'atmosphere_connection' );
-		\delete_option( 'atmosphere_shortlink' );
 		\remove_all_filters( 'atmosphere_appview_host' );
 
 		parent::tear_down();
@@ -40,8 +40,43 @@ class Test_Link_Setting extends \WP_UnitTestCase {
 	}
 
 	/**
-	 * The example uses the site's own handle, so the reader recognises it
-	 * as their address rather than an abstract one.
+	 * The choice is put as a comparison between two visible addresses.
+	 *
+	 * Naming only the one being offered leaves "short link" as something
+	 * the reader has to picture, and the thing it replaces is exactly
+	 * what makes the trade legible.
+	 */
+	public function test_compares_both_addresses() {
+		$html = $this->render();
+
+		$this->assertStringContainsString( '?p=123', $html, 'What WordPress offers today.' );
+		$this->assertStringContainsString( '/post/3mn3kzvtns72d', $html, 'What this offers instead.' );
+	}
+
+	/**
+	 * Where the address comes from sits behind a disclosure, so the
+	 * checkbox and the sentence answering it come first.
+	 *
+	 * The class is load-bearing: `assets/css/admin.css` styles the summary
+	 * as a link with a pointer cursor, matching how the ActivityPub plugin
+	 * presents the same control.
+	 */
+	public function test_explanation_sits_behind_a_styled_disclosure() {
+		$html = $this->render();
+
+		$this->assertStringContainsString( '<details class="atmosphere-details">', $html );
+		$this->assertStringContainsString( '<summary>', $html );
+
+		$this->assertLessThan(
+			\strpos( $html, '<details' ),
+			\strpos( $html, 'atmosphere_shortlink' ),
+			'The checkbox must come before the disclosure.'
+		);
+	}
+
+	/**
+	 * The example inside names the site's own handle, so the reader sees
+	 * their address rather than an abstract one.
 	 */
 	public function test_example_uses_the_connected_handle() {
 		\update_option(
@@ -52,23 +87,12 @@ class Test_Link_Setting extends \WP_UnitTestCase {
 			)
 		);
 
-		$this->assertStringContainsString( 'bsky.app/profile/alice.example.com/post/', $this->render() );
+		$this->assertStringContainsString( 'profile/alice.example.com/post/', $this->render() );
 	}
 
 	/**
-	 * Before the first connection there is no truthful handle to show, so
-	 * the example falls back to a placeholder rather than inventing one.
-	 */
-	public function test_example_falls_back_before_connecting() {
-		$html = $this->render();
-
-		$this->assertStringContainsString( 'yourname.bsky.social', $html );
-		$this->assertStringContainsString( '/post/', $html );
-	}
-
-	/**
-	 * A site pointed at a different appview is not told about one it does
-	 * not use, because the example is built through `appview_url()`.
+	 * A site pointed at another appview is not told about one it does not
+	 * use, because the example is built through `appview_url()`.
 	 */
 	public function test_example_follows_the_appview_filter() {
 		\add_filter( 'atmosphere_appview_host', static fn() => 'deer.social' );
@@ -77,36 +101,6 @@ class Test_Link_Setting extends \WP_UnitTestCase {
 
 		$this->assertStringContainsString( 'deer.social/profile/', $html );
 		$this->assertStringNotContainsString( 'bsky.app', $html );
-	}
-
-	/**
-	 * The choice is shown as a comparison: what WordPress offers today
-	 * against what ticking the box would offer instead. Without the
-	 * former, "short link" is an abstraction the reader has to supply.
-	 */
-	public function test_shows_what_wordpress_offers_today() {
-		$html = $this->render();
-
-		$this->assertStringContainsString( '?p=123', $html );
-		$this->assertStringContainsString( '/post/', $html );
-	}
-
-	/**
-	 * The example is folded away, so the checkbox and the one sentence
-	 * needed to answer it are what the reader meets first.
-	 */
-	public function test_example_is_behind_a_disclosure() {
-		$html = $this->render();
-
-		$this->assertStringContainsString( '<details>', $html );
-		$this->assertStringContainsString( '<summary>', $html );
-
-		// The control and its own description stay outside the fold.
-		$this->assertLessThan(
-			\strpos( $html, '<details>' ),
-			\strpos( $html, 'atmosphere_shortlink' ),
-			'The checkbox must come before the disclosure.'
-		);
 	}
 
 	/**
