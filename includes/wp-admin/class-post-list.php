@@ -10,7 +10,6 @@ namespace Atmosphere\WP_Admin;
 \defined( 'ABSPATH' ) || exit;
 
 use Atmosphere\Atmosphere;
-use Atmosphere\Shortlink;
 use function Atmosphere\get_supported_post_types;
 use function Atmosphere\is_auto_publish_enabled;
 use function Atmosphere\is_bluesky_post_enabled;
@@ -156,23 +155,6 @@ class Post_List {
 				\esc_html__( '(opens in a new tab)', 'atmosphere' )
 			);
 
-			/*
-			 * The short link, under the view link, because this is the
-			 * screen you come to when you want to copy one. Rendered as
-			 * plain selectable text rather than an anchor: it points back
-			 * at this same site, and a link that merely redirects to the
-			 * row you are already looking at invites a click that does
-			 * nothing useful.
-			 */
-			$shortlink = Shortlink::get( $post_id );
-			if ( '' !== $shortlink ) {
-				\printf(
-					'<br /><small><span class="screen-reader-text">%1$s </span><code>%2$s</code></small>',
-					\esc_html__( 'Short link:', 'atmosphere' ),
-					\esc_html( self::display_url( $shortlink ) )
-				);
-			}
-
 			return;
 		}
 
@@ -188,22 +170,6 @@ class Post_List {
 			'<span aria-hidden="true">&mdash;</span><span class="screen-reader-text">%s</span>',
 			\esc_html__( 'Not shared to Bluesky', 'atmosphere' )
 		);
-	}
-
-	/**
-	 * Strip the scheme from a URL for display.
-	 *
-	 * The point of a short link is that it is short enough to read, copy
-	 * by eye, or say out loud, and `https://` is a third of the width
-	 * while carrying none of the meaning.
-	 *
-	 * @since unreleased
-	 *
-	 * @param string $url Absolute URL.
-	 * @return string The URL without its scheme.
-	 */
-	private static function display_url( string $url ): string {
-		return (string) \preg_replace( '#^https?://#', '', $url );
 	}
 
 	/**
