@@ -669,4 +669,56 @@ class Test_Client_Refresh extends WP_UnitTestCase {
 			'Wait must poll at least twice: first sees the stale snapshot, second sees the rotation.'
 		);
 	}
+
+	/**
+	 * A permanent refresh failure must surface a reconnect-class error code.
+	 *
+	 * `mark_needs_reauth()` runs on this branch, so the connection is already
+	 * flagged; the returned code has to agree. Everything downstream keys off
+	 * {@see Client::is_reconnect_error()} — the retry ladder to skip a failure
+	 * no retry can fix, and the editor and posts-list surfaces to offer the
+	 * reconnect prompt instead of an opaque auth-server string.
+	 */
+	public function test_permanent_failure_returns_reconnect_class_error() {
+		$this->mock_token_response(
+			400,
+			array(
+				'error'             => 'invalid_grant',
+				'error_description' => 'Refresh token expired.',
+			)
+		);
+
+		$result = Client::refresh();
+
+		$this->assertWPError( $result );
+		$this->assertTrue(
+			Client::is_reconnect_error( $result->get_error_code() ),
+			'A refresh failure that flags needs_reauth must return a reconnect-class code.'
+		);
+	}
+
+	/**
+	 * A transient refresh failure must NOT be reconnect-class.
+	 *
+	 * The auth server can fail for reasons that leave the refresh token
+	 * intact (5xx, rate limiting), and `mark_needs_reauth()` deliberately
+	 * does not run on that branch. Classifying it as reconnect-class would
+	 * take it out of the retry ladder and silently drop the post, so the two
+	 * branches must keep distinct codes.
+	 */
+	public function test_transient_failure_is_not_reconnect_class() {
+		$this->mock_token_response( 503, array( 'error' => 'server_error' ) );
+
+		$result = Client::refresh();
+
+		$this->assertWPError( $result );
+		$this->assertSame( 'atmosphere_refresh', $result->get_error_code() );
+		$this->assertFalse(
+			Client::is_reconnect_error( $result->get_error_code() ),
+			'A transient refresh failure must stay retryable.'
+		);
+
+		$conn = \get_option( 'atmosphere_connection' );
+		$this->assertEmpty( $conn['needs_reauth'], 'A transient failure must not flag the connection.' );
+	}
 }
