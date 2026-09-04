@@ -17,7 +17,9 @@ use Atmosphere\Content_Parser\Pckt;
 use Atmosphere\Content_Parser\Registry;
 use Atmosphere\Handle;
 use Atmosphere\Transformer\Publication;
+use function Atmosphere\appview_url;
 use function Atmosphere\get_connection;
+use function Atmosphere\get_identity;
 use function Atmosphere\get_supported_post_types;
 use function Atmosphere\has_identity;
 use function Atmosphere\is_connected;
@@ -162,6 +164,14 @@ class Settings_Fields {
 				)
 			);
 		}
+
+		\add_settings_field(
+			'atmosphere_shortlink',
+			\__( 'Post links', 'atmosphere' ),
+			array( self::class, 'render_shortlink_field' ),
+			'atmosphere',
+			'atmosphere_publishing'
+		);
 
 		// Reactions section.
 		\add_settings_section(
@@ -636,6 +646,153 @@ class Settings_Fields {
 			<?php endif; ?>
 		</p>
 		<?php
+	}
+
+	/**
+	 * Render the record-id link explainer and its `rel=shortlink` opt-in.
+	 *
+	 * The description names both addresses rather than saying "short URL"
+	 * and leaving the reader to picture it. Where the address comes from
+	 * is a longer story, so it sits behind a disclosure, styled as a link
+	 * the way the ActivityPub plugin styles its own.
+	 *
+	 * @since unreleased
+	 */
+	public static function render_shortlink_field(): void {
+		$rkey = '3mn3kzvtns72d';
+
+		/*
+		 * The site's own handle when it has one, so the example is the
+		 * reader's own address rather than an abstract one. Falls back to
+		 * a placeholder before the first connection, when there is nothing
+		 * truthful to put here.
+		 */
+		$handle = (string) ( get_identity()['handle'] ?? '' );
+
+		if ( '' === $handle ) {
+			$handle = 'yourname.bsky.social';
+		}
+
+		/*
+		 * Whether the site already uses its own domain as its Bluesky
+		 * handle. That is the case the whole pattern is prettiest in: the
+		 * handle *is* the domain, so the two addresses differ only by the
+		 * appview prefix, and the explanation can say so plainly instead
+		 * of talking the reader through a substitution.
+		 */
+		$target           = Handle::get_target_handle();
+		$is_domain_handle = '' !== $target && \strtolower( $handle ) === $target;
+
+		/*
+		 * Only recommend the swap where it is actually available. The
+		 * Domain handle row applies the same gate, so the tip cannot point
+		 * at a setting that is not on the page.
+		 */
+		$can_use_domain_handle = ! $is_domain_handle && Handle::should_offer(
+			array(
+				'connected' => is_connected(),
+				'handle'    => $handle,
+			)
+		);
+
+		$example = self::bare_url( \home_url( '/post/' . $rkey ) );
+
+		// What WordPress offers today, so the setting reads as a swap.
+		$core = self::bare_url( \home_url( '/?p=123' ) );
+
+		/*
+		 * Built through `appview_url()` rather than hardcoded, so a site
+		 * pointed at a different appview sees its own host here instead of
+		 * being told about one it does not use.
+		 */
+		$bluesky = self::bare_url(
+			appview_url(
+				'profile/' . $handle . '/post/' . $rkey,
+				array(
+					'type'   => 'post',
+					'handle' => $handle,
+					'rkey'   => $rkey,
+				)
+			)
+		);
+		?>
+		<label>
+			<input
+				type="checkbox"
+				name="atmosphere_shortlink"
+				value="1"
+				aria-describedby="atmosphere-shortlink-description"
+				<?php \checked( \get_option( 'atmosphere_shortlink', '0' ), '1' ); ?>
+			>
+			<?php \esc_html_e( 'Use the Bluesky ID as the short URL', 'atmosphere' ); ?>
+		</label>
+		<p class="description" id="atmosphere-shortlink-description">
+			<?php
+			\printf(
+				/* translators: 1: the Bluesky-derived address, e.g. example.com/post/3mn3kzvtns72d. 2: WordPress's own short link, e.g. example.com/?p=123 */
+				\esc_html__( 'Short URLs become %1$s instead of %2$s. Leave this off if another plugin already handles short URLs on this site.', 'atmosphere' ),
+				'<code>' . \esc_html( $example ) . '</code>',
+				'<code>' . \esc_html( $core ) . '</code>'
+			);
+			?>
+		</p>
+		<details class="atmosphere-details">
+			<summary><?php \esc_html_e( 'See where that address comes from.', 'atmosphere' ); ?></summary>
+			<div class="description">
+				<p><?php \esc_html_e( 'Bluesky gives every post an ID, and your site already stores it. That makes it an address your site can answer to.', 'atmosphere' ); ?></p>
+				<ul>
+					<li>
+						<?php
+						\printf(
+							/* translators: %s: the post's address on Bluesky. */
+							\esc_html__( '%s is your post on Bluesky.', 'atmosphere' ),
+							'<code>' . \esc_html( $bluesky ) . '</code>'
+						);
+						?>
+					</li>
+					<li>
+						<?php
+						\printf(
+							/* translators: %s: the same post's address on this site. */
+							\esc_html__( '%s is the same post on your site.', 'atmosphere' ),
+							'<code>' . \esc_html( $example ) . '</code>'
+						);
+						?>
+					</li>
+				</ul>
+				<?php if ( $is_domain_handle ) : ?>
+					<p><?php \esc_html_e( 'Because your Bluesky handle is your domain, the two are the same address with a different prefix. Drop the Bluesky part and you are on your own site.', 'atmosphere' ); ?></p>
+				<?php else : ?>
+					<p><?php \esc_html_e( 'Take any Bluesky link to one of your posts, drop the profile part, and put your own domain in front.', 'atmosphere' ); ?></p>
+					<?php if ( $can_use_domain_handle ) : ?>
+						<p>
+							<?php
+							\printf(
+								/* translators: 1: the site's domain, e.g. example.com. 2: the name of the Domain handle setting, quoted. */
+								\esc_html__( 'They would line up more neatly if you used %1$s as your Bluesky handle: the two addresses would then differ only by the part in front. See %2$s above.', 'atmosphere' ),
+								'<code>' . \esc_html( Handle::get_target_handle() ) . '</code>',
+								'<strong>' . \esc_html__( 'Domain handle', 'atmosphere' ) . '</strong>'
+							);
+							?>
+						</p>
+					<?php endif; ?>
+				<?php endif; ?>
+				<p><?php \esc_html_e( 'Nothing extra is stored, and the address keeps working if you later change the post title or its permalink. It works whether or not you tick the box above.', 'atmosphere' ); ?></p>
+			</div>
+		</details>
+		<?php
+	}
+
+	/**
+	 * Strip the scheme from a URL so an example reads as an address.
+	 *
+	 * @since unreleased
+	 *
+	 * @param string $url Absolute URL.
+	 * @return string The URL without its scheme.
+	 */
+	private static function bare_url( string $url ): string {
+		return (string) \preg_replace( '#^https?://#', '', $url );
 	}
 
 	/**

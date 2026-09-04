@@ -232,6 +232,13 @@ class Atmosphere {
 		// off when the ActivityPub plugin is active.
 		Blocks::register();
 
+		/*
+		 * Record-id links. The rewrite
+		 * rule itself lives in self::REWRITE_PATTERNS with the plugin's
+		 * other rules, so the persisted-rules drift check covers it too.
+		 */
+		Link::register();
+
 		// Per-post "share to Bluesky" toggle + custom-text meta (REST-exposed for the editor panel).
 		\add_action( 'init', array( $this, 'register_share_meta' ) );
 
@@ -937,7 +944,7 @@ class Atmosphere {
 	}
 
 	/**
-	 * Regex patterns of the well-known rewrite rules this plugin owns.
+	 * Regex patterns of every rewrite rule this plugin owns.
 	 *
 	 * Maps each pattern to its `index.php` query target. Kept as a single
 	 * source of truth so {@see register_wellknown_rewrite()} and
@@ -947,16 +954,34 @@ class Atmosphere {
 	 *
 	 * @var array<string, string>
 	 */
-	private const WELLKNOWN_REWRITE_PATTERNS = array(
+	private const REWRITE_PATTERNS = array(
 		'^\.well-known/atproto-did/?$'                 => 'index.php?atmosphere_wellknown=atproto-did',
 		'^\.well-known/site\.standard\.publication/?$' => 'index.php?atmosphere_wellknown=publication',
+
+		/*
+		 * Short links. The path deliberately mirrors Bluesky's own
+		 * `/profile/<handle>/post/<rkey>`, so dropping the profile
+		 * segment off an app URL and swapping the host lands on the same
+		 * post here. The rkey charset is fixed at 32 characters and the
+		 * length at 13 ({@see \Atmosphere\Transformer\TID}), which is
+		 * what makes claiming this at the top of the rule set safe: it
+		 * can only shadow a page whose path is `post/` plus exactly
+		 * thirteen of those characters.
+		 */
+		'^post/([234567a-z]{13})/?$'                   => 'index.php?atmosphere_link=$matches[1]',
 	);
 
 	/**
-	 * Register rewrite rules for well-known endpoints.
+	 * Register every rewrite rule this plugin owns.
+	 *
+	 * Named for the well-known endpoints it was written for, but it walks
+	 * {@see self::REWRITE_PATTERNS} and so also registers the record-id
+	 * link rule. Keeping one registration point is what lets
+	 * {@see self::maybe_flush_wellknown_rewrites()} check every pattern
+	 * against the persisted array with a single loop.
 	 */
 	public function register_wellknown_rewrite(): void {
-		foreach ( self::WELLKNOWN_REWRITE_PATTERNS as $pattern => $target ) {
+		foreach ( self::REWRITE_PATTERNS as $pattern => $target ) {
 			\add_rewrite_rule( $pattern, $target, 'top' );
 		}
 	}
@@ -969,14 +994,19 @@ class Atmosphere {
 	 */
 	public function register_query_vars( array $vars ): array {
 		$vars[] = 'atmosphere_wellknown';
+		$vars[] = 'atmosphere_link';
 		$vars[] = 'atproto';
 
 		return $vars;
 	}
 
 	/**
-	 * Ensure the well-known rewrite rules are present in the persisted
+	 * Ensure this plugin's rewrite rules are present in the persisted
 	 * `rewrite_rules` option, and flush them in if not.
+	 *
+	 * Covers every pattern in {@see self::REWRITE_PATTERNS}, the record-id
+	 * link rule included, not only the well-known endpoints the method is
+	 * named after.
 	 *
 	 * The activation hook flushes once, but the rule set can drift away
 	 * from the persisted array later for several real install paths:
@@ -1042,7 +1072,7 @@ class Atmosphere {
 		$rules = \get_option( 'rewrite_rules' );
 
 		if ( \is_array( $rules ) ) {
-			foreach ( self::WELLKNOWN_REWRITE_PATTERNS as $pattern => $target ) {
+			foreach ( self::REWRITE_PATTERNS as $pattern => $target ) {
 				if ( ! isset( $rules[ $pattern ] ) || $rules[ $pattern ] !== $target ) {
 					\flush_rewrite_rules( false );
 					return;
