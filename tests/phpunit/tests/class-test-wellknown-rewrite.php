@@ -173,7 +173,7 @@ class Test_Wellknown_Rewrite extends WP_UnitTestCase {
 	 * happened to produce the same result would fail this test — what
 	 * we are verifying is that no flush ran at all.
 	 */
-	public function test_no_flush_when_both_patterns_present(): void {
+	public function test_no_flush_when_every_pattern_present(): void {
 		$original = self::WELLKNOWN_PATTERNS + array( 'some/other/rule' => 'index.php?other=1' );
 		\update_option( 'rewrite_rules', $original );
 

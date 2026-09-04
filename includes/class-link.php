@@ -71,20 +71,6 @@ class Link {
 			return;
 		}
 
-		/*
-		 * A 301 invites most clients to repeat the request as a GET, so a
-		 * write that happened to land here would come back as something
-		 * the caller never sent. Nothing legitimately POSTs to a short
-		 * link.
-		 */
-		$method = isset( $_SERVER['REQUEST_METHOD'] )
-			? \strtoupper( \sanitize_text_field( \wp_unslash( $_SERVER['REQUEST_METHOD'] ) ) )
-			: 'GET';
-
-		if ( 'GET' !== $method && 'HEAD' !== $method ) {
-			return;
-		}
-
 		$post_id   = self::resolve( $tid );
 		$permalink = $post_id ? \get_permalink( $post_id ) : '';
 
@@ -158,7 +144,14 @@ class Link {
 				'ignore_sticky_posts' => true,
 				'suppress_filters'    => false,
 
-				// phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_query -- Indexed meta lookup on a 404; the alternative is not resolving at all.
+				/*
+				 * `wp_postmeta` indexes `meta_key` but not `meta_value`, so
+				 * this narrows to posts carrying a record id and compares
+				 * values within that set. It runs only on a request that
+				 * already matched the `/post/<rkey>` rule, and the
+				 * alternative is not resolving at all.
+				 */
+				// phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_query -- See above.
 				'meta_query'          => array(
 					'relation' => 'OR',
 					array(

@@ -972,7 +972,13 @@ class Atmosphere {
 	);
 
 	/**
-	 * Register rewrite rules for well-known endpoints.
+	 * Register every rewrite rule this plugin owns.
+	 *
+	 * Named for the well-known endpoints it was written for, but it walks
+	 * {@see self::REWRITE_PATTERNS} and so also registers the record-id
+	 * link rule. Keeping one registration point is what lets
+	 * {@see self::maybe_flush_wellknown_rewrites()} check every pattern
+	 * against the persisted array with a single loop.
 	 */
 	public function register_wellknown_rewrite(): void {
 		foreach ( self::REWRITE_PATTERNS as $pattern => $target ) {
@@ -995,8 +1001,12 @@ class Atmosphere {
 	}
 
 	/**
-	 * Ensure the well-known rewrite rules are present in the persisted
+	 * Ensure this plugin's rewrite rules are present in the persisted
 	 * `rewrite_rules` option, and flush them in if not.
+	 *
+	 * Covers every pattern in {@see self::REWRITE_PATTERNS}, the record-id
+	 * link rule included, not only the well-known endpoints the method is
+	 * named after.
 	 *
 	 * The activation hook flushes once, but the rule set can drift away
 	 * from the persisted array later for several real install paths:
