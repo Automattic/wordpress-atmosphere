@@ -88,13 +88,13 @@ class Pre_Publish_Controller extends \WP_REST_Controller {
 					'permission_callback' => array( $this, 'check_permission' ),
 					'show_in_index'       => false,
 					'args'                => array(
-						'id'         => array(
+						'id'          => array(
 							'description'       => \__( 'The ID of the post being edited.', 'atmosphere' ),
 							'type'              => 'integer',
 							'required'          => true,
 							'sanitize_callback' => 'absint',
 						),
-						'title'      => array(
+						'title'       => array(
 							'description'       => \__( 'The unsaved post title.', 'atmosphere' ),
 							'type'              => 'string',
 							'default'           => '',
@@ -109,29 +109,29 @@ class Pre_Publish_Controller extends \WP_REST_Controller {
 						 * strip the `<!-- wp:* -->` block delimiters and
 						 * corrupt the projection.
 						 */
-						'content'    => array(
+						'content'     => array(
 							'description' => \__( 'The unsaved post content.', 'atmosphere' ),
 							'type'        => 'string',
 							'default'     => '',
 						),
-						'excerpt'    => array(
+						'excerpt'     => array(
 							'description'       => \__( 'The unsaved post excerpt.', 'atmosphere' ),
 							'type'              => 'string',
 							'default'           => '',
 							'sanitize_callback' => 'sanitize_text_field',
 						),
-						'status'     => array(
+						'status'      => array(
 							'description'       => \__( 'The intended post status / visibility.', 'atmosphere' ),
 							'type'              => 'string',
 							'default'           => 'publish',
 							'sanitize_callback' => 'sanitize_key',
 						),
-						'password'   => array(
+						'password'    => array(
 							'description' => \__( 'The intended post password (empty when not protected).', 'atmosphere' ),
 							'type'        => 'string',
 							'default'     => '',
 						),
-						'disabled'   => array(
+						'disabled'    => array(
 							'description' => \__( 'Whether sharing is switched off for this post.', 'atmosphere' ),
 							'type'        => 'boolean',
 							'default'     => false,
@@ -144,7 +144,7 @@ class Pre_Publish_Controller extends \WP_REST_Controller {
 						 * line breaks while stripping tags, matching the meta's
 						 * registered sanitizer.
 						 */
-						'customText' => array(
+						'customText'  => array(
 							'description'       => \__( 'The unsaved custom Bluesky text (empty to use the default composition).', 'atmosphere' ),
 							'type'              => 'string',
 							'default'           => '',
@@ -153,6 +153,20 @@ class Pre_Publish_Controller extends \WP_REST_Controller {
 							// published anyway.
 							'maxLength'         => 2000,
 							'sanitize_callback' => 'sanitize_textarea_field',
+						),
+
+						/*
+						 * The unsaved whole-post access level (e.g. a membership
+						 * plugin's subscriber/paid visibility). Forwarded so the
+						 * preview reflects a gating change the author has made but
+						 * not yet saved; integrations read it on
+						 * `atmosphere_pre_projection`. Opaque to this endpoint.
+						 */
+						'accessLevel' => array(
+							'description'       => \__( 'The unsaved whole-post access level, when a membership plugin is active.', 'atmosphere' ),
+							'type'              => 'string',
+							'default'           => '',
+							'sanitize_callback' => 'sanitize_key',
 						),
 					),
 				),
@@ -250,16 +264,34 @@ class Pre_Publish_Controller extends \WP_REST_Controller {
 		$transformer = new Post( $draft );
 
 		/*
-		 * Project against the *unsaved* custom text so the preview tracks
-		 * the textarea as the author types. Only override when the param is
-		 * actually present: an older/cached editor that doesn't send it must
-		 * fall back to the saved meta, not be forced to the default
-		 * composition by a cast-from-missing empty string.
+		 * Project against the *unsaved* custom text so the preview tracks the
+		 * textarea as the author types — including when they clear it, which
+		 * must preview the default composition, not the stale saved meta. A
+		 * blank value is a real signal here, so "provided" is decided by the
+		 * key's presence in what the client actually sent (`has_param()`
+		 * cannot decide it: the param registers a `''` default and dispatch
+		 * fills it in, so it is true even for an older editor that never sent
+		 * the field). An absent key still falls back to the saved meta.
 		 */
-		if ( $request->has_param( 'customText' ) ) {
+		if ( self::request_provided( $request, 'customText' ) ) {
 			$transformer->set_custom_text_override( (string) $request['customText'] );
 		}
+
+		/*
+		 * Let integrations reflect *unsaved* editor state that the transformer
+		 * would otherwise read from the last save. A membership integration, for
+		 * instance, gates on the post's access level, which is only written on
+		 * save; without this the preview would show the full body of a paid post
+		 * the author is still drafting, then publish a teaser. The clone carries
+		 * unsaved content/title/excerpt already; this covers state that lives in
+		 * meta rather than the post row. Paired so the override never leaks past
+		 * this request.
+		 */
+		\do_action( 'atmosphere_pre_projection', $draft, $request );
+
 		$projection = $transformer->project();
+
+		\do_action( 'atmosphere_post_projection', $draft, $request );
 
 		\remove_filter( 'pre_http_request', $block_http, 0 );
 
@@ -283,6 +315,35 @@ class Pre_Publish_Controller extends \WP_REST_Controller {
 		);
 	}
 
+
+	/**
+	 * Whether the client actually sent a parameter with the request.
+	 *
+	 * `WP_REST_Request::has_param()` cannot answer this: once the request is
+	 * dispatched, params with a registered default resolve to that default
+	 * and count as present. Checking the raw JSON, POST, and query payloads
+	 * keeps a deliberately blank value (a cleared textarea) distinguishable
+	 * from a client that never sent the field at all.
+	 *
+	 * @param WP_REST_Request $request REST request.
+	 * @param string          $param   Parameter name.
+	 * @return bool True when the parameter key appears in the request payload.
+	 */
+	private static function request_provided( WP_REST_Request $request, string $param ): bool {
+		$sources = array(
+			$request->get_json_params(),
+			$request->get_body_params(),
+			$request->get_query_params(),
+		);
+
+		foreach ( $sources as $source ) {
+			if ( \is_array( $source ) && \array_key_exists( $param, $source ) ) {
+				return true;
+			}
+		}
+
+		return false;
+	}
 
 	/**
 	 * Decide whether the post will be shared to Bluesky, with a

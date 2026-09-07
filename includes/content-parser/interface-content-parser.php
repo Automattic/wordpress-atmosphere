@@ -33,11 +33,20 @@ interface Content_Parser {
 	 * omit the content field — which is preferable to shipping an
 	 * empty-text record.
 	 *
-	 * Receives raw post content so parsers can choose their own
-	 * strategy: parse_blocks() for block-aware parsing, or
-	 * apply_filters( 'the_content', ... ) for rendered HTML.
+	 * Receives the post's *publishable* content — the body already narrowed by
+	 * membership/paywall integrations (see
+	 * `Atmosphere\get_publishable_content()`), never the raw `post_content`.
+	 * Parsers choose their own strategy over it: parse_blocks() for block-aware
+	 * parsing, or the render helper for rendered HTML.
 	 *
-	 * @param string   $content Raw post content (post_content).
+	 * IMPORTANT: do not re-render this string with a bare
+	 * apply_filters( 'the_content', ... ). A membership plugin's own
+	 * `the_content` gate would re-read the *global* post and could put the
+	 * gated body — or a "subscribe to keep reading" form — straight back into
+	 * the record. Use `Atmosphere\render_publishable_content( $post )`, which
+	 * suspends those gates for the duration of the render.
+	 *
+	 * @param string   $content Publishable post content (gated portions removed).
 	 * @param \WP_Post $post    The WordPress post object.
 	 * @return array|null AT Protocol content object, or null to omit.
 	 */

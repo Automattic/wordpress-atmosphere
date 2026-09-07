@@ -244,6 +244,32 @@ class Test_Pre_Publish_Controller extends WP_UnitTestCase {
 	}
 
 	/**
+	 * A blank `customText` the client actually sent means the author cleared
+	 * the textarea: the preview must project the default composition — what
+	 * publish will do once the cleared meta is saved — not fall back to the
+	 * stale saved custom text. Presence is read from the request payload
+	 * itself, so this stays distinguishable from an omitted param.
+	 *
+	 * @covers ::get_preview
+	 */
+	public function test_preview_with_blank_custom_text_param_clears_saved_meta() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'A Titled Post',
+				'post_content' => 'Body.',
+			)
+		);
+		\update_post_meta( $post->ID, ATMOSPHERE_META_CUSTOM_TEXT, 'Saved custom words.' );
+
+		// make_request() sends customText => '' — the cleared textarea.
+		$data = $this->controller->get_preview(
+			$this->make_request( $post->ID, array( 'content' => 'Body.' ) )
+		)->get_data();
+
+		$this->assertNotSame( 'custom-text', $data['strategy'] );
+	}
+
+	/**
 	 * A disconnected site reports will_publish=false with a reason and still
 	 * returns a projection.
 	 *

@@ -19,6 +19,8 @@ use Atmosphere\Mention;
 use function Atmosphere\build_at_uri;
 use function Atmosphere\debug_log;
 use function Atmosphere\get_did;
+use function Atmosphere\get_publishable_content;
+use function Atmosphere\render_publishable_content;
 use function Atmosphere\grapheme_length;
 use function Atmosphere\sanitize_text;
 use function Atmosphere\truncate_graphemes;
@@ -606,11 +608,22 @@ class Post extends Base {
 				$link_facets = $short['facets'];
 
 				$embed = $this->build_images_embed();
-				if ( '' === $text && null === $embed ) {
+				if ( $this->is_body_gated() || ( '' === $text && null === $embed ) ) {
 					/*
-					 * Empty body and no images: there is nothing to publish
-					 * natively, so fall back to the link-card composition. This
-					 * is a link-card record, so flip $is_short to false (the
+					 * Fall back to the link-card composition when there is
+					 * nothing to publish natively — a fully gated body, or an
+					 * empty body with no images. The gated check is
+					 * unconditional: the rendered $text can be non-empty even
+					 * though the publishable body is '', because a the_content
+					 * appender (a sharing/CTA/related-posts filter) adds its
+					 * boilerplate regardless of input — text that must not
+					 * ship as the body of a gated post. build_images_embed()
+					 * can also still surface the (public) featured image, but
+					 * an image with no text and no link home is not a useful
+					 * share of a gated post; the link card restores a title
+					 * and a link back to the post.
+					 *
+					 * This is a link-card record, so flip $is_short to false (the
 					 * embed-filter strategy label and the
 					 * atmosphere_transform_bsky_post context below must report
 					 * `link-card`, not `short-form`), and the short-form anchor
@@ -1141,6 +1154,29 @@ class Post extends Base {
 	}
 
 	/**
+	 * Whether the whole body was gated away.
+	 *
+	 * True when the post has stored content but none of it is publicly
+	 * publishable — i.e. a membership plugin gated the entire body (see
+	 * {@see \Atmosphere\get_publishable_content()}). Distinguishes a genuinely
+	 * empty post from one that only looks empty because it is fully gated, so
+	 * the short-form path can fall back to a link card that still links home
+	 * instead of shipping a bare, contextless featured image. A split (partly
+	 * gated) post keeps a public portion, so it is not "body gated" here.
+	 *
+	 * Both sides trim before comparing: a post whose stored content is only
+	 * whitespace is genuinely empty, not gated, so it must keep the plain
+	 * short-form path (e.g. a bare featured image) rather than be mistaken for
+	 * a fully gated body and pushed to the link card.
+	 *
+	 * @return bool
+	 */
+	private function is_body_gated(): bool {
+		return '' !== \trim( (string) $this->object->post_content )
+			&& '' === \trim( get_publishable_content( $this->object ) );
+	}
+
+	/**
 	 * Build an `app.bsky.embed.images` record from the post's images.
 	 *
 	 * Source priority:
@@ -1249,7 +1285,7 @@ class Post extends Base {
 	 * @return int[]
 	 */
 	private function collect_image_attachment_ids(): array {
-		$content = (string) $this->object->post_content;
+		$content = get_publishable_content( $this->object );
 
 		if ( '' === $content || ! \has_blocks( $content ) ) {
 			return array();
@@ -2053,7 +2089,7 @@ class Post extends Base {
 		}
 
 		$html = Mention::without_links(
-			fn() => \apply_filters( 'the_content', $this->object->post_content ) // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Core WordPress filter.
+			fn() => render_publishable_content( $this->object )
 		);
 
 		/*
