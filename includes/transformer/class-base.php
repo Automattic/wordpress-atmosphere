@@ -175,6 +175,64 @@ abstract class Base {
 	}
 
 	/**
+	 * Reserve the record's rkey (TID) and refresh its DID provenance.
+	 *
+	 * Shared by the Post, Document, and Comment transformers, which each
+	 * store an rkey plus the DID it was minted under so the delete guards
+	 * in {@see \Atmosphere\Publisher} can refuse a wrong-repo delete after
+	 * a disconnect + reconnect-to-a-different-account. The subclass supplies
+	 * the meta accessors (post vs comment meta); the key set comes from its
+	 * `static::META_DID` / `static::META_TID` constants.
+	 *
+	 * Three invariants live here once, all load-bearing for the guard:
+	 *
+	 * 1. When there is a DID to write, it is written BEFORE the TID, so a
+	 *    partial failure between the two writes leaves the safe "DID set,
+	 *    no TID" state. The inverse, "TID set, no DID", reads as "origin
+	 *    unknown" and lets the guard fall through to the current DID,
+	 *    re-opening the wrong-repo delete. A disconnected site does end
+	 *    up in that state (see 3), and there it is the truth: nothing was
+	 *    published under any account.
+	 * 2. The DID is compared before writing, so republishing an unchanged
+	 *    record is a meta no-op and only an actual account transition
+	 *    issues a write. Every caller is in the Publisher at publish time;
+	 *    the `wp_head` emitters deliberately read the stored AT-URI
+	 *    instead of routing through `get_rkey()`.
+	 * 3. An empty current DID never overwrites a stored one. The guards
+	 *    read an empty origin as "unknown" and wave the delete through,
+	 *    so blanking a real origin on a disconnected site would disarm
+	 *    them for that record. Every caller today sits behind
+	 *    `is_connected()`, so this is belt and braces, but it is the one
+	 *    place the rule has to hold.
+	 *
+	 * The historical-rkey path exists for posts only: `historical_rkey()`
+	 * derives the TID from `get_post_time()` and the post ID, neither of
+	 * which a `WP_Comment` has. A comment transformer with original-time
+	 * minting switched on therefore falls back to a fresh TID.
+	 *
+	 * @param callable $read  Reader: `fn( string $key ): mixed`.
+	 * @param callable $write Writer: `fn( string $key, string $value ): void`.
+	 * @return string The reserved 13-character TID.
+	 */
+	protected function reserve_rkey_with_provenance( callable $read, callable $write ): string {
+		$current_did = get_did();
+		$stored_did  = (string) $read( static::META_DID );
+		if ( '' !== $current_did && $stored_did !== $current_did ) {
+			$write( static::META_DID, $current_did );
+		}
+
+		$rkey = (string) $read( static::META_TID );
+		if ( '' === $rkey ) {
+			$rkey = ( $this->original_time && $this->object instanceof \WP_Post )
+				? $this->historical_rkey()
+				: TID::generate();
+			$write( static::META_TID, $rkey );
+		}
+
+		return $rkey;
+	}
+
+	/**
 	 * WordPress locale as BCP-47 language tag array.
 	 *
 	 * @return string[]

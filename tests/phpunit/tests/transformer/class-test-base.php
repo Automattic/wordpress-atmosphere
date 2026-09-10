@@ -14,6 +14,7 @@
 
 namespace Atmosphere\Tests\Transformer;
 
+use Atmosphere\Transformer\Comment;
 use Atmosphere\Transformer\Document;
 use Atmosphere\Transformer\Post;
 
@@ -28,6 +29,7 @@ class Test_Base extends \WP_UnitTestCase {
 	 */
 	public function tear_down(): void {
 		\remove_all_filters( 'atmosphere_record_tags' );
+		\delete_option( 'atmosphere_identity' );
 
 		parent::tear_down();
 	}
@@ -203,5 +205,47 @@ class Test_Base extends \WP_UnitTestCase {
 		$record = ( new Document( $post ) )->transform();
 
 		$this->assertCount( 8, $record['tags'] );
+	}
+
+	/**
+	 * A disconnected site must not blank a record's stored origin DID.
+	 *
+	 * The delete guards read an empty origin as "unknown" and wave the
+	 * delete through, so overwriting a real origin with the empty DID of
+	 * a disconnected site would disarm them for that record. The TID is
+	 * still reserved; only the provenance write is skipped.
+	 */
+	public function test_disconnected_site_keeps_the_stored_origin_did() {
+		\delete_option( 'atmosphere_identity' );
+
+		$post = self::factory()->post->create_and_get( array( 'post_status' => 'publish' ) );
+		\update_post_meta( $post->ID, Post::META_DID, 'did:plc:previous' );
+		\update_post_meta( $post->ID, Document::META_DID, 'did:plc:previous' );
+
+		$this->assertNotEmpty( ( new Post( $post ) )->get_rkey() );
+		$this->assertNotEmpty( ( new Document( $post ) )->get_rkey() );
+
+		$this->assertSame( 'did:plc:previous', \get_post_meta( $post->ID, Post::META_DID, true ) );
+		$this->assertSame( 'did:plc:previous', \get_post_meta( $post->ID, Document::META_DID, true ) );
+
+		$comment_id = self::factory()->comment->create( array( 'comment_post_ID' => $post->ID ) );
+		\update_comment_meta( $comment_id, Comment::META_DID, 'did:plc:previous' );
+
+		$this->assertNotEmpty( ( new Comment( \get_comment( $comment_id ) ) )->get_rkey() );
+		$this->assertSame( 'did:plc:previous', \get_comment_meta( $comment_id, Comment::META_DID, true ) );
+	}
+
+	/**
+	 * A fresh reservation on a disconnected site writes no origin at all,
+	 * rather than an empty string that later reads as a real value.
+	 */
+	public function test_disconnected_site_writes_no_origin_did() {
+		\delete_option( 'atmosphere_identity' );
+
+		$post = self::factory()->post->create_and_get( array( 'post_status' => 'publish' ) );
+
+		( new Post( $post ) )->get_rkey();
+
+		$this->assertFalse( \metadata_exists( 'post', $post->ID, Post::META_DID ) );
 	}
 }
