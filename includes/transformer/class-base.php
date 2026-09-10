@@ -191,10 +191,16 @@ abstract class Base {
 	 *    inverse, "TID set, no DID", reads as "origin unknown" and lets the
 	 *    guard fall through to the current DID, re-opening the wrong-repo
 	 *    delete.
-	 * 2. The DID is compared before writing, so read-path callers (the
-	 *    `wp_head` document-link renderer that routes through
-	 *    `Document::get_rkey()`) don't issue a DB write on every pageload,
-	 *    only on an actual account transition.
+	 * 2. The DID is compared before writing, so republishing an unchanged
+	 *    record is a meta no-op and only an actual account transition
+	 *    issues a write. Every caller is in the Publisher at publish time;
+	 *    the `wp_head` emitters deliberately read the stored AT-URI
+	 *    instead of routing through `get_rkey()`.
+	 *
+	 * The historical-rkey path exists for posts only: `historical_rkey()`
+	 * derives the TID from `get_post_time()` and the post ID, neither of
+	 * which a `WP_Comment` has. A comment transformer with original-time
+	 * minting switched on therefore falls back to a fresh TID.
 	 *
 	 * @param callable $read  Reader: `fn( string $key ): mixed`.
 	 * @param callable $write Writer: `fn( string $key, string $value ): void`.
@@ -209,7 +215,9 @@ abstract class Base {
 
 		$rkey = (string) $read( static::META_TID );
 		if ( '' === $rkey ) {
-			$rkey = $this->original_time ? $this->historical_rkey() : TID::generate();
+			$rkey = ( $this->original_time && $this->object instanceof \WP_Post )
+				? $this->historical_rkey()
+				: TID::generate();
 			$write( static::META_TID, $rkey );
 		}
 
