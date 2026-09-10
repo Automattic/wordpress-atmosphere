@@ -4243,6 +4243,32 @@ class Test_Atmosphere extends WP_UnitTestCase {
 	}
 
 	/**
+	 * The two refresh failure classes must land on opposite sides of the
+	 * retry ladder.
+	 *
+	 * `Client::refresh()` fails for two very different reasons: a revoked or
+	 * consumed refresh token (permanent — only a reconnect fixes it) and an
+	 * auth server having a bad day (transient — the next attempt may well
+	 * succeed). Collapsing them onto one code would force a single answer
+	 * here, and either choice would be wrong for the other branch.
+	 */
+	public function test_refresh_failure_classes_split_across_the_retry_ladder() {
+		$reflection = new \ReflectionClass( Atmosphere::class );
+		$method     = $reflection->getMethod( 'is_transient_publish_error' );
+		$method->setAccessible( true );
+
+		$this->assertFalse(
+			$method->invoke( null, new \WP_Error( 'atmosphere_needs_reauth', 'nope', array( 'status' => 400 ) ) ),
+			'A revoked refresh token can never succeed on retry.'
+		);
+
+		$this->assertTrue(
+			$method->invoke( null, new \WP_Error( 'atmosphere_refresh', 'nope', array( 'status' => 503 ) ) ),
+			'An auth server 5xx must stay on the retry ladder.'
+		);
+	}
+
+	/**
 	 * Fetch a post's `atmosphere_publish_error` REST field in the edit context.
 	 *
 	 * @param int $post_id Post ID.
