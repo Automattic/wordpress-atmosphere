@@ -6,8 +6,8 @@
  * Settings → Connectors screen enables connection-only mode
  * (`atmosphere_connection_only_mode`), which hides Settings → ATmosphere. When
  * hidden, the plugin-row Settings shortcut turns into a plain label and the
- * reauth notice — whose only call to action links to the now-hidden page — is
- * suppressed.
+ * reauth notice sends its reconnect link to the Connectors screen instead,
+ * falling back to link-free copy when there is no such screen.
  *
  * @package Atmosphere
  * @group atmosphere
@@ -147,8 +147,8 @@ class Test_Settings_Page_Visibility extends WP_UnitTestCase {
 	/**
 	 * When the settings page is hidden (connection-only mode), the reauth notice
 	 * points its reconnect link at the Connectors screen (which can also
-	 * reconnect) instead of the hidden settings page — and is only suppressed
-	 * entirely when there's genuinely no screen to link to (WP < 7.0).
+	 * reconnect) instead of the hidden settings page. With no such screen
+	 * (WP < 7.0) the notice still renders, minus the link.
 	 */
 	public function test_reauth_notice_uses_connectors_screen_when_settings_page_hidden(): void {
 		$admin = self::factory()->user->create( array( 'role' => 'administrator' ) );
@@ -179,9 +179,15 @@ class Test_Settings_Page_Visibility extends WP_UnitTestCase {
 			$this->assertStringContainsString( \admin_url( 'options-connectors.php' ), $html );
 			$this->assertStringNotContainsString( 'page=atmosphere', $html );
 		} else {
-			// No Connectors screen and the settings page is hidden — nothing to
-			// link to, so the notice is suppressed.
-			$this->assertSame( '', $html );
+			/*
+			 * No Connectors screen and the settings page is hidden, so there
+			 * is nowhere to send the reader. The notice still renders: a dead
+			 * connection is worth saying out loud even when this site cannot
+			 * offer the fix itself. Only the link is dropped.
+			 */
+			$this->assertStringContainsString( 'notice-warning', $html );
+			$this->assertStringContainsString( 'Reconnect your Bluesky account to fix this.', $html );
+			$this->assertStringNotContainsString( '<a href', $html );
 		}
 	}
 

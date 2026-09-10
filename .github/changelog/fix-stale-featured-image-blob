@@ -1,4 +1,0 @@
-Significance: patch
-Type: fixed
-
-Posts with images no longer fail to share when a stored image reference is no longer available on the server; the images are automatically re-uploaded and the post is shared on a second attempt.

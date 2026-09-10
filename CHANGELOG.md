@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.2.0] - 2026-08-31
+### Security
+- Strip HTML from the display names of Bluesky accounts whose replies, likes, and reposts are imported as comments, and keep names containing an ampersand from breaking the comment feeds. [#255]
+- Treat the text of imported Bluesky replies as plain text, so markup in a reply can no longer alter the look of your site. [#256]
+
+### Added
+- Add a Bluesky column to the posts list showing whether a post was shared, with a link to it, plus a "Share to Bluesky" action to share a post that did not make it the first time. [#248]
+- Add a Site Health check that tells you when Bluesky cannot reach your site, which is why connecting silently fails when a security plugin limits the REST API. [#250]
+- Add a way for sites to change the tags and keywords sent to Bluesky and standard.site, so leftover terms from an import stay out of the records. [#243]
+- Add the ATmosphere and Bluesky icons to the WordPress 7.1 icon library, so you can use them in the Icon block. [#254]
+- Allow sites to publish posts as standard.site documents without also posting to Bluesky. [#211]
+- Compatible plugins can now decide per post whether it is also shared to Bluesky. [#240]
+- Handle Bluesky rate limits when sharing: a share that hits the limit now waits for it to lift before retrying, and bulk syncs can be paced so they stay under it. [#244]
+- The backfill command can now preserve each post's original publish date so historical posts appear in the right chronological order in Bluesky and standard.site readers. [#213]
+- The post editor now tells you when your Bluesky connection has expired so you can reconnect before publishing, and warns you in the editor before saving a change that removes a post from Bluesky. [#233]
+- You can now choose who is allowed to reply to a post on Bluesky: everyone, no one, people you mention, people you follow, or your followers. Sites that connected to Bluesky before this update need to reconnect once to turn it on. [#229]
+- Your posts and home page now name the AT Protocol records they were published as, so other apps can tell which record a page came from. [#220]
+
+### Changed
+- Mention resolution now tells a temporarily unreachable handle host apart from a handle that has no verification set up. [#214]
+
+### Fixed
+- Fixed a case where deleting a post or comment after reconnecting to a different Bluesky account could quietly leave the original records stranded on the old account. Atmosphere now stops and reports the mismatch instead. [#216]
+- Fix sharing to Bluesky failing with an "Invalid client ID" error on sites served through a reverse proxy or CDN. [#230]
+- Posts with images no longer fail to share when a stored image reference is no longer available on the server; the images are automatically re-uploaded and the post is shared on a second attempt. [#143]
+- Show a clearer error when your own domain, Bluesky's directory, or a login server is temporarily unavailable, instead of reporting the account as invalid. [#214]
+- The Bluesky pre-publish preview now shows a clear message when it can't be generated — including a distinct one for permission errors — instead of failing without explanation. [#149]
+
 ## [2.1.0] - 2026-07-22
 ### Added
 - Add a connection-only mode so another plugin can reuse just the Bluesky connection: automatic cross-posting, likes and reposts, and reply importing all stay off, and the ATmosphere settings screen is hidden. [#203]
@@ -162,6 +190,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Remove a comment reply from Bluesky if the comment was deleted or unapproved while it was being published, instead of leaving an orphan reply behind. [#32]
 - Short posts under the long-form teaser-thread strategy no longer ship a redundant "continue reading" reply when the entire body already fits in a single Bluesky post. The link-back is preserved as a card on the same post. [#51]
 
+[2.2.0]: https://github.com/Automattic/wordpress-atmosphere/compare/2.1.0...2.2.0
 [2.1.0]: https://github.com/Automattic/wordpress-atmosphere/compare/2.0.0...2.1.0
 [2.0.0]: https://github.com/Automattic/wordpress-atmosphere/compare/1.2.0...2.0.0
 [1.2.0]: https://github.com/Automattic/wordpress-atmosphere/compare/1.1.1...1.2.0

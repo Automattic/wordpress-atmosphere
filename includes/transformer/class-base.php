@@ -15,6 +15,9 @@ namespace Atmosphere\Transformer;
 use Atmosphere\Mention;
 use function Atmosphere\build_at_uri;
 use function Atmosphere\get_did;
+use function Atmosphere\get_publishable_content;
+use function Atmosphere\publishable_content_cache_key;
+use function Atmosphere\render_publishable_content;
 use function Atmosphere\sanitize_text;
 use function Atmosphere\to_iso8601;
 
@@ -233,6 +236,21 @@ abstract class Base {
 	}
 
 	/**
+	 * Maximum tags written into a record.
+	 *
+	 * Both `app.bsky.feed.post` and `site.standard.document` cap their
+	 * `tags` array at 8, so the limit is applied here rather than in
+	 * each transformer. It is enforced after
+	 * `atmosphere_record_tags` runs, so a filter cannot push a record
+	 * past what the lexicons accept.
+	 *
+	 * @since 2.2.0
+	 *
+	 * @var int
+	 */
+	private const MAX_TAGS = 8;
+
+	/**
 	 * Collect tags from post taxonomies (max 8, no "uncategorized").
 	 *
 	 * @param \WP_Post $post Post object.
@@ -257,11 +275,91 @@ abstract class Base {
 			}
 		}
 
-		return \array_slice( \array_unique( $tags ), 0, 8 );
+		$tags = \array_values( \array_unique( $tags ) );
+
+		/**
+		 * Filters the tag list for a post's AT Protocol records.
+		 *
+		 * Runs before the 8-tag cap and before any record is built, so
+		 * the `app.bsky.feed.post` and the `site.standard.document` for
+		 * a post always see the same list. Use it to drop junk terms a
+		 * migration left behind, or to feed the records from a taxonomy
+		 * the plugin does not read.
+		 *
+		 * This is the filter to reach for rather than
+		 * `atmosphere_transform_document` / `atmosphere_transform_bsky_post`:
+		 * those run after the cap, so dropping a tag there shortens the
+		 * list instead of making room for the next one.
+		 *
+		 * The return value is normalized before use. Entries that are
+		 * not strings are dropped, the rest are trimmed, empties are
+		 * removed, and the result is de-duplicated and capped again at
+		 * {@see self::MAX_TAGS}. That bounds how many tags a record
+		 * carries, not how long each one is: both lexicons also bound a
+		 * single tag (64 graphemes for `app.bsky.feed.post`), and an
+		 * over-long entry is passed through as-is, exactly as an
+		 * over-long WordPress tag name already is. A filter that builds
+		 * tag names rather than picking from existing terms should keep
+		 * them short itself.
+		 *
+		 * @since 2.2.0
+		 *
+		 * @param string[] $tags Tag names collected from the post's tags and categories.
+		 * @param \WP_Post $post WordPress post.
+		 */
+		$filtered = \apply_filters( 'atmosphere_record_tags', $tags, $post );
+
+		if ( ! \is_array( $filtered ) ) {
+			\_doing_it_wrong(
+				__METHOD__,
+				\esc_html__( 'atmosphere_record_tags must return an array; falling back to the unfiltered tags.', 'atmosphere' ),
+				'2.2.0'
+			);
+			$filtered = $tags;
+		}
+
+		/*
+		 * Normalize whatever came back. A record's `tags` entries have
+		 * to be strings, and this list is written to the PDS unescaped,
+		 * so a filter returning term objects or integers must not reach
+		 * the transformer. Dropping silently rather than casting is
+		 * deliberate: `(string) $term` on a WP_Term would fatal, and
+		 * stringifying an integer would quietly write the junk keyword
+		 * this filter mostly exists to remove.
+		 *
+		 * Deliberately quieter than the non-array branch above, which
+		 * does call `_doing_it_wrong()`. A filter returning the wrong
+		 * type outright is a bug in that filter; a filter returning a
+		 * mixed list is usually a `get_terms()` result someone forgot to
+		 * pluck, and warning once per post across a backfill would be
+		 * noise rather than signal.
+		 */
+		$normalized = array();
+
+		foreach ( $filtered as $tag ) {
+			if ( ! \is_string( $tag ) ) {
+				continue;
+			}
+
+			$tag = \trim( $tag );
+
+			if ( '' !== $tag ) {
+				$normalized[] = $tag;
+			}
+		}
+
+		return \array_slice( \array_values( \array_unique( $normalized ) ), 0, self::MAX_TAGS );
 	}
 
 	/**
 	 * Get a short plain-text excerpt for a post.
+	 *
+	 * A stored `post_excerpt` is an author-provided public teaser and is used
+	 * verbatim — this is the same string Jetpack surfaces as the public preview
+	 * of a gated post, so it stays public here too. Only the *derived* excerpt,
+	 * generated when no excerpt was written, is pulled from the body, and it
+	 * reads through {@see get_publishable_content()} so a gated body never leaks
+	 * into it.
 	 *
 	 * @param \WP_Post $post      Post object.
 	 * @param int      $word_limit Words to keep.
@@ -272,7 +370,7 @@ abstract class Base {
 			return sanitize_text( $post->post_excerpt );
 		}
 
-		return \wp_trim_words( sanitize_text( $post->post_content ), $word_limit, '...' );
+		return \wp_trim_words( sanitize_text( get_publishable_content( $post ) ), $word_limit, '...' );
 	}
 
 	/**
@@ -298,20 +396,25 @@ abstract class Base {
 	}
 
 	/**
-	 * Cache of `render_post_content_plain()` output keyed by post ID.
+	 * Cache of `render_post_content_plain()` output, keyed by the
+	 * publishable-content cache key.
 	 *
 	 * Per-instance memoization; `the_content` filter chains can be
 	 * expensive, and long-form composition may touch a post's plain
-	 * text from multiple helpers inside a single publish pass.
+	 * text from multiple helpers inside a single publish pass. Keyed via
+	 * {@see \Atmosphere\publishable_content_cache_key()} — not the bare
+	 * post ID — so gating state folded into that key gets its own slot,
+	 * like every other body-derived cache.
 	 *
-	 * @var array<int,string>
+	 * @var array<string,string>
 	 */
 	private array $plain_content_cache = array();
 
 	/**
-	 * Per-instance memoization of the rendered-HTML render (linkification off).
+	 * Per-instance memoization of the rendered-HTML render (linkification
+	 * off), keyed like {@see self::$plain_content_cache}.
 	 *
-	 * @var array<int,string>
+	 * @var array<string,string>
 	 */
 	private array $html_content_cache = array();
 
@@ -335,15 +438,17 @@ abstract class Base {
 	 * @return string
 	 */
 	protected function render_post_content_html( \WP_Post $post ): string {
-		if ( isset( $this->html_content_cache[ $post->ID ] ) ) {
-			return $this->html_content_cache[ $post->ID ];
+		$key = publishable_content_cache_key( $post );
+
+		if ( isset( $this->html_content_cache[ $key ] ) ) {
+			return $this->html_content_cache[ $key ];
 		}
 
 		$html = Mention::without_links(
-			static fn() => \apply_filters( 'the_content', $post->post_content ) // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Core WordPress filter.
+			static fn() => render_publishable_content( $post )
 		);
 
-		$this->html_content_cache[ $post->ID ] = $html;
+		$this->html_content_cache[ $key ] = $html;
 
 		return $html;
 	}
@@ -354,19 +459,22 @@ abstract class Base {
 	 * Runs the_content filter, strips tags, decodes entities, and
 	 * collapses whitespace. Shared by short-form Bluesky post
 	 * composition and the document record's textContent field.
-	 * Memoized per post ID to avoid re-running the filter chain.
+	 * Memoized per publishable-content cache key to avoid re-running
+	 * the filter chain.
 	 *
 	 * @param \WP_Post $post Post object.
 	 * @return string
 	 */
 	protected function render_post_content_plain( \WP_Post $post ): string {
-		if ( isset( $this->plain_content_cache[ $post->ID ] ) ) {
-			return $this->plain_content_cache[ $post->ID ];
+		$key = publishable_content_cache_key( $post );
+
+		if ( isset( $this->plain_content_cache[ $key ] ) ) {
+			return $this->plain_content_cache[ $key ];
 		}
 
 		$plain = sanitize_text( $this->render_post_content_html( $post ) );
 
-		$this->plain_content_cache[ $post->ID ] = $plain;
+		$this->plain_content_cache[ $key ] = $plain;
 
 		return $plain;
 	}
@@ -385,7 +493,7 @@ abstract class Base {
 		}
 
 		if ( ! \is_array( $value ) || empty( $value['$type'] ) || ! \is_string( $value['$type'] ) ) {
-			\_doing_it_wrong( \esc_html( $method ), \esc_html( $message ), 'unreleased' );
+			\_doing_it_wrong( \esc_html( $method ), \esc_html( $message ), '2.0.0' );
 			return null;
 		}
 
@@ -413,7 +521,7 @@ abstract class Base {
 			\_doing_it_wrong(
 				\esc_html( $method ),
 				\esc_html__( 'Self-label filters must return a com.atproto.label.defs#selfLabels object with a values array; omitting the labels field.', 'atmosphere' ),
-				'unreleased'
+				'2.0.0'
 			);
 			return null;
 		}
@@ -423,7 +531,7 @@ abstract class Base {
 				\_doing_it_wrong(
 					\esc_html( $method ),
 					\esc_html__( 'Self-label values must be arrays with a non-empty string val field; omitting the labels field.', 'atmosphere' ),
-					'unreleased'
+					'2.0.0'
 				);
 				return null;
 			}

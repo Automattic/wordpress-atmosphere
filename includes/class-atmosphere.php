@@ -20,6 +20,7 @@ use Atmosphere\Transformer\Document;
 use Atmosphere\Transformer\Post;
 use Atmosphere\Transformer\Preview;
 use Atmosphere\Transformer\Publication;
+use Atmosphere\Transformer\Threadgate;
 use Atmosphere\Integrations\Load;
 use Atmosphere\Rest\Admin\Connection_Controller;
 use Atmosphere\Rest\Admin\Pre_Publish_Controller;
@@ -27,6 +28,7 @@ use Atmosphere\Rest\Client_Metadata_Controller;
 use Atmosphere\Rest\Reactions_Controller;
 use Atmosphere\WP_Admin\Admin;
 use Atmosphere\WP_Admin\Health_Check;
+use Atmosphere\WP_Admin\Post_List;
 use Atmosphere\WP_Admin\Settings_Fields;
 
 /**
@@ -171,6 +173,8 @@ class Atmosphere {
 		 * available on non-admin requests.
 		 */
 		\add_action( 'init', array( Admin::class, 'register' ), 5 );
+		\add_action( 'init', array( Icons::class, 'register' ) );
+		\add_action( 'admin_init', array( Post_List::class, 'register' ) );
 
 		/*
 		 * Settings API option registration (`Options::init()`) and
@@ -187,10 +191,14 @@ class Atmosphere {
 		 * directly on the pull filters (no context gate, no `init`
 		 * indirection): they only fire on Site Health surfaces — the
 		 * screen, the weekly scheduled check, WP-CLI — so the class is
-		 * autoloaded only there and every other request just stores two
-		 * callables.
+		 * autoloaded only there and every other request just stores three
+		 * callables. That is also why the ajax action is spelled out
+		 * instead of read from `Health_Check::REACHABILITY_ACTION`: a
+		 * constant fetch autoloads the class, `::class` does not. The
+		 * registration test pins the literal to the constant.
 		 */
 		\add_filter( 'site_status_tests', array( Health_Check::class, 'add_tests' ) );
+		\add_action( 'wp_ajax_health-check-atmosphere-reachability', array( Health_Check::class, 'ajax_client_metadata' ) );
 		\add_filter( 'debug_information', array( Health_Check::class, 'debug_information' ) );
 
 		/*
@@ -829,7 +837,7 @@ class Atmosphere {
 		 * account, so `at:author` would attribute every post on a
 		 * multi-author site to whoever connected it.
 		 *
-		 * @since unreleased
+		 * @since 2.2.0
 		 *
 		 * @param array<string, string[]> $tags Tag name => list of AT-URIs.
 		 */
@@ -839,7 +847,7 @@ class Atmosphere {
 			\_doing_it_wrong(
 				__METHOD__,
 				\esc_html__( 'The atmosphere_at_tags filter must return an array keyed by tag name.', 'atmosphere' ),
-				'unreleased'
+				'2.2.0'
 			);
 			return;
 		}
@@ -878,7 +886,7 @@ class Atmosphere {
 			\_doing_it_wrong(
 				__METHOD__,
 				\esc_html__( 'The atmosphere_at_tags filter produced entries that were not non-empty strings; those were skipped.', 'atmosphere' ),
-				'unreleased'
+				'2.2.0'
 			);
 		}
 	}
@@ -1504,11 +1512,18 @@ class Atmosphere {
 		$bsky_origin_did = (string) \get_post_meta( $post_id, Transformer\Post::META_DID, true );
 		$doc_origin_did  = (string) \get_post_meta( $post_id, Transformer\Document::META_DID, true );
 
+		// A written threadgate shares the root post's rkey. Capture it now
+		// while the meta still exists so the async delete can remove it after
+		// the post row is gone.
+		$threadgate_tid = ( ! empty( $bsky_tids ) && Threadgate::is_written( $post_id ) )
+			? $bsky_tids[0]
+			: '';
+
 		if ( ! empty( $bsky_tids ) || '' !== $doc_tid || ! empty( $comment_tids ) ) {
 			\wp_schedule_single_event(
 				\time(),
 				'atmosphere_delete_records',
-				array( $bsky_tids, $doc_tid, $comment_tids, $bsky_origin_did, $doc_origin_did )
+				array( $bsky_tids, $doc_tid, $comment_tids, $threadgate_tid, $bsky_origin_did, $doc_origin_did )
 			);
 		}
 	}
@@ -1720,6 +1735,19 @@ class Atmosphere {
 			return false;
 		}
 
+		/*
+		 * A gated parent keeps its comment thread private too. The post lane
+		 * narrows every body-derived field through get_publishable_content(),
+		 * but a reply can quote or continue the gated discussion, and the
+		 * membership plugin shows the on-site thread behind its gate — so on
+		 * a gated post (fully gated, split-point, an inline region, or a
+		 * gated access level on a body that narrows no bytes) no comment
+		 * federates.
+		 */
+		if ( is_post_gated( $post ) ) {
+			return false;
+		}
+
 		$post_uri = \get_post_meta( $post_id, Post::META_URI, true );
 		$post_cid = \get_post_meta( $post_id, Post::META_CID, true );
 
@@ -1879,7 +1907,7 @@ class Atmosphere {
 	 * @param string    $meta_key Meta key that changed.
 	 */
 	public function on_share_meta_changed( $meta_id, $post_id, $meta_key ): void {
-		if ( ! \in_array( $meta_key, array( ATMOSPHERE_META_DISABLED, ATMOSPHERE_META_CUSTOM_TEXT ), true ) ) {
+		if ( ! \in_array( $meta_key, array( ATMOSPHERE_META_DISABLED, ATMOSPHERE_META_CUSTOM_TEXT, Threadgate::META_RESTRICTION ), true ) ) {
 			return;
 		}
 
@@ -1936,6 +1964,30 @@ class Atmosphere {
 					'auth_callback'     => $auth_callback,
 				)
 			);
+
+			\register_post_meta(
+				$post_type,
+				Threadgate::META_RESTRICTION,
+				array(
+					'type'              => 'array',
+					'single'            => true,
+					'default'           => array(),
+					'show_in_rest'      => array(
+						'schema' => array(
+							'type'  => 'array',
+							'items' => array(
+								'type' => 'string',
+								'enum' => \array_merge(
+									array( Threadgate::AUDIENCE_NOBODY ),
+									\array_keys( Threadgate::audience_rules() )
+								),
+							),
+						),
+					),
+					'sanitize_callback' => array( Threadgate::class, 'sanitize_restriction' ),
+					'auth_callback'     => $auth_callback,
+				)
+			);
 		}
 	}
 
@@ -1948,7 +2000,16 @@ class Atmosphere {
 	 * `atmosphere_publish_error` carries the most recent share failure
 	 * (null when the last attempt succeeded) so the panel can tell the
 	 * author a share failed instead of the failure vanishing into a
-	 * WP_DEBUG-gated log line. Both are edit-context only.
+	 * WP_DEBUG-gated log line.
+	 * `atmosphere_has_record` answers "is there anything out there to
+	 * delete", which is what the removal warning needs. It is deliberately
+	 * not derived from `atmosphere_url`: that carries a Bluesky web URL
+	 * built from `Post::META_URI` alone, so a document-only site (one
+	 * filtering `atmosphere_should_publish_bluesky_post` false) never has
+	 * one, while `delete_post()` still removes its `Document::META_URI`
+	 * record. Backing the flag with the same `has_post_records()` the
+	 * cleanup path calls keeps the warning and the deletion keyed off one
+	 * fact. All three are edit-context only.
 	 */
 	public function register_share_status_field(): void {
 		foreach ( get_supported_post_types() as $post_type ) {
@@ -1956,11 +2017,7 @@ class Atmosphere {
 				$post_type,
 				'atmosphere_url',
 				array(
-					'get_callback'    => static function ( $post_arr ) {
-						$uri = (string) \get_post_meta( (int) $post_arr['id'], Post::META_URI, true );
-
-						return '' === $uri ? '' : self::bsky_web_url_from_uri( $uri );
-					},
+					'get_callback'    => static fn ( $post_arr ) => post_share_url( (int) $post_arr['id'] ),
 					'update_callback' => null,
 					'schema'          => array(
 						'type'        => 'string',
@@ -1972,40 +2029,27 @@ class Atmosphere {
 
 			\register_rest_field(
 				$post_type,
-				'atmosphere_publish_error',
+				'atmosphere_has_record',
 				array(
 					'get_callback'    => static function ( $post_arr ) {
-						$error = \get_post_meta( (int) $post_arr['id'], self::META_LAST_PUBLISH_ERROR, true );
+						$post = \get_post( (int) $post_arr['id'] );
 
-						if ( ! \is_array( $error ) || empty( $error['code'] ) ) {
-							return null;
-						}
-
-						$reconnect_class = Client::is_reconnect_error( (string) $error['code'] );
-						$needs_reconnect = $reconnect_class && ! is_connected();
-
-						/*
-						 * The stored code says whether the failure was
-						 * reconnect-class; the live connection check drops
-						 * the flag once the operator has reconnected, so a
-						 * stale per-post error can't keep claiming the site
-						 * is disconnected. The stored message of a
-						 * reconnect-class failure is that same claim in
-						 * prose ("Reconnect your Bluesky account …"), so it
-						 * is suppressed on the same condition — the panel
-						 * would otherwise say "update the post to try
-						 * again" and "reconnect your account" at once.
-						 */
-						return array(
-							'code'            => (string) $error['code'],
-							'message'         => $reconnect_class && ! $needs_reconnect
-								? ''
-								: (string) ( $error['message'] ?? '' ),
-							'retrying'        => ! empty( $error['retrying'] ),
-							'needs_reconnect' => $needs_reconnect,
-							'time'            => (int) ( $error['time'] ?? 0 ),
-						);
+						return $post instanceof \WP_Post && self::has_post_records( $post );
 					},
+					'update_callback' => null,
+					'schema'          => array(
+						'type'        => 'boolean',
+						'description' => \__( 'Whether this post has records on the PDS that a cleanup would remove.', 'atmosphere' ),
+						'context'     => array( 'edit' ),
+					),
+				)
+			);
+
+			\register_rest_field(
+				$post_type,
+				'atmosphere_publish_error',
+				array(
+					'get_callback'    => static fn ( $post_arr ) => self::get_publish_error( (int) $post_arr['id'] ),
 					'update_callback' => null,
 					'schema'          => array(
 						'type'        => array( 'object', 'null' ),
@@ -2040,32 +2084,74 @@ class Atmosphere {
 	}
 
 	/**
-	 * Build the appview web URL for one of our own post AT-URIs.
+	 * Queue a share of one post through the standard publish worker.
 	 *
-	 * `at://<did>/app.bsky.feed.post/<rkey>` →
-	 * `https://<appview-host>/profile/<did>/post/<rkey>`. The appview resolves
-	 * the DID form, so no handle lookup is needed. The host defaults to
-	 * `bsky.app` and is filterable via `atmosphere_appview_host`.
+	 * Owns the hook name, the argument shape, and the duplicate rule, so a
+	 * caller does not have to know any of them. The worker itself decides
+	 * between a first publish and an update, re-checks visibility at fire
+	 * time, logs failures and schedules retries.
 	 *
-	 * @param string $uri AT-URI from `Post::META_URI`.
-	 * @return string Web URL, or '' when the URI shape is unexpected.
+	 * The `wp_next_scheduled()` check is load-bearing beyond the duplicate
+	 * protection core gives for identical events within ten minutes: a
+	 * failed attempt is retried on a ladder that reaches fifteen minutes
+	 * and beyond, and a second worker must not be queued alongside a retry
+	 * that is still pending.
+	 *
+	 * @since 2.2.0
+	 *
+	 * @param int $post_id Post to share.
+	 * @return bool True when a worker was queued, false when one was already pending.
 	 */
-	private static function bsky_web_url_from_uri( string $uri ): string {
-		if ( ! \preg_match( '#^at://(?P<did>[^/]+)/app\.bsky\.feed\.post/(?P<rkey>[^/]+)$#', $uri, $matches ) ) {
-			return '';
+	public static function queue_post_share( int $post_id ): bool {
+		$args = array( $post_id );
+
+		if ( \wp_next_scheduled( 'atmosphere_publish_post', $args ) ) {
+			return false;
 		}
 
-		return \esc_url_raw(
-			appview_url(
-				'profile/' . $matches['did'] . '/post/' . $matches['rkey'],
-				array(
-					'type' => 'post',
-					'did'  => $matches['did'],
-					'rkey' => $matches['rkey'],
-				)
-			)
+		return (bool) \wp_schedule_single_event( \time(), 'atmosphere_publish_post', $args );
+	}
+
+	/**
+	 * Shape the stored publish failure for display.
+	 *
+	 * Shared by the editor panel's `atmosphere_publish_error` REST field
+	 * and the posts-list column, so both describe a failure the same way.
+	 *
+	 * The stored code says whether the failure was reconnect-class; the
+	 * live connection check drops the flag once the operator has
+	 * reconnected, so a stale per-post error can't keep claiming the site
+	 * is disconnected. The stored message of a reconnect-class failure is
+	 * that same claim in prose ("Reconnect your Bluesky account …"), so it
+	 * is suppressed on the same condition: the surface would otherwise say
+	 * "update the post to try again" and "reconnect your account" at once.
+	 *
+	 * @since 2.2.0
+	 *
+	 * @param int $post_id Post ID.
+	 * @return array|null Failure details, or null when the last attempt succeeded.
+	 */
+	public static function get_publish_error( int $post_id ): ?array {
+		$error = \get_post_meta( $post_id, self::META_LAST_PUBLISH_ERROR, true );
+
+		if ( ! \is_array( $error ) || empty( $error['code'] ) ) {
+			return null;
+		}
+
+		$reconnect_class = Client::is_reconnect_error( (string) $error['code'] );
+		$needs_reconnect = $reconnect_class && ! is_connected();
+
+		return array(
+			'code'            => (string) $error['code'],
+			'message'         => $reconnect_class && ! $needs_reconnect
+				? ''
+				: (string) ( $error['message'] ?? '' ),
+			'retrying'        => ! empty( $error['retrying'] ),
+			'needs_reconnect' => $needs_reconnect,
+			'time'            => (int) ( $error['time'] ?? 0 ),
 		);
 	}
+
 
 	/**
 	 * Register async action hooks (called by WP-Cron).
@@ -2176,16 +2262,18 @@ class Atmosphere {
 
 		\add_action(
 			'atmosphere_delete_records',
-			static function ( $bsky_tids, string $doc_tid, $comment_tids = array(), string $bsky_origin_did = '', string $doc_origin_did = '' ): void {
+			static function ( $bsky_tids, string $doc_tid, $comment_tids = array(), string $threadgate_tid = '', string $bsky_origin_did = '', string $doc_origin_did = '' ): void {
 				/*
 				 * delete_post_by_tids() drops the comment TIDs itself when
 				 * comment publishing is disabled at execution time. The
-				 * origin DIDs default to empty so an event queued before
-				 * this guard shipped (three positional args) still fires
-				 * cleanly, with the guard disabled for that record.
+				 * trailing args all default so an event queued before they
+				 * existed still fires cleanly: no threadgate to remove, and
+				 * the wrong-repo-delete guard disabled for that record. The
+				 * threadgate arg comes first because it shipped first; the
+				 * positions of already-queued events must not move.
 				 */
 				$comment_tids = \is_array( $comment_tids ) ? $comment_tids : array();
-				$result       = Publisher::delete_post_by_tids( $bsky_tids, $doc_tid, $comment_tids, $bsky_origin_did, $doc_origin_did );
+				$result       = Publisher::delete_post_by_tids( $bsky_tids, $doc_tid, $comment_tids, $threadgate_tid, $bsky_origin_did, $doc_origin_did );
 
 				if ( \is_wp_error( $result ) ) {
 					/*
@@ -2207,7 +2295,7 @@ class Atmosphere {
 				}
 			},
 			10,
-			5
+			6
 		);
 
 		/*
@@ -2595,10 +2683,49 @@ class Atmosphere {
 		self::record_publish_error( $post_id, $result, true );
 		\update_post_meta( $post_id, self::META_PUBLISH_RETRIES, $attempts + 1 );
 		\wp_schedule_single_event(
-			\time() + $delays[ $attempts ],
+			\time() + self::publish_retry_delay( $delays[ $attempts ], $result ),
 			$hook,
 			array( $post_id )
 		);
+	}
+
+	/**
+	 * Resolve how long to wait before the next publish attempt.
+	 *
+	 * Normally this is just the ladder's own step. The exception is a
+	 * rate-limited PDS: it tells us exactly when the window rolls over
+	 * (`API::rate_limited_error()` carries that as `retry_after`), and
+	 * retrying before then is guaranteed to burn a rung of the ladder on
+	 * an identical 429. So the longer of the two wins.
+	 *
+	 * Only the PDS-supplied wait is capped, and at a day rather than an
+	 * hour: Bluesky budgets repo writes per day as well as per hour, so
+	 * a daily-limit 429 legitimately reports a reset most of a day out,
+	 * and an hour-capped wait would spend every rung of the ladder
+	 * inside a window that is still closed. The cap is there so a
+	 * malformed or hostile `ratelimit-reset` cannot park a queued
+	 * publish weeks into the future; it must never shorten the ladder's
+	 * own step, which is why it applies to the header value alone.
+	 *
+	 * @since 2.2.0
+	 *
+	 * @param int       $delay Ladder delay for this attempt, in seconds.
+	 * @param \WP_Error $error The failure being retried.
+	 * @return int Seconds to wait.
+	 */
+	private static function publish_retry_delay( int $delay, \WP_Error $error ): int {
+		$data        = $error->get_error_data();
+		$retry_after = \is_array( $data ) && isset( $data['retry_after'] ) ? (int) $data['retry_after'] : 0;
+
+		if ( $retry_after <= 0 ) {
+			return $delay;
+		}
+
+		/*
+		 * Pad by a second so the retry lands just after the window
+		 * rolls over rather than exactly on the boundary.
+		 */
+		return \max( $delay, \min( $retry_after + 1, DAY_IN_SECONDS ) );
 	}
 
 	/**

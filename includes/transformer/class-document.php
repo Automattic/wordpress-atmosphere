@@ -16,6 +16,7 @@ use Atmosphere\Content_Parser\Content_Parser;
 use Atmosphere\Content_Parser\Registry;
 use function Atmosphere\build_at_uri;
 use function Atmosphere\get_did;
+use function Atmosphere\get_publishable_content;
 use function Atmosphere\sanitize_text;
 use function Atmosphere\truncate_graphemes;
 
@@ -268,7 +269,7 @@ class Document extends Base {
 			\_doing_it_wrong(
 				__METHOD__,
 				\esc_html__( 'atmosphere_document_contributors must return an array of contributor objects; omitting the contributors field.', 'atmosphere' ),
-				'unreleased'
+				'2.0.0'
 			);
 			return null;
 		}
@@ -279,7 +280,7 @@ class Document extends Base {
 				\_doing_it_wrong(
 					__METHOD__,
 					\esc_html__( 'Document contributors must include a non-empty DID string; omitting the contributors field.', 'atmosphere' ),
-					'unreleased'
+					'2.0.0'
 				);
 				return null;
 			}
@@ -331,7 +332,9 @@ class Document extends Base {
 	 * @return array|null Parsed content object or null.
 	 */
 	private function get_content(): ?array {
-		if ( empty( \trim( $this->object->post_content ) ) ) {
+		$publishable = get_publishable_content( $this->object );
+
+		if ( empty( \trim( $publishable ) ) ) {
 			return null;
 		}
 
@@ -341,7 +344,7 @@ class Document extends Base {
 			return null;
 		}
 
-		$content = $parser->parse( $this->object->post_content, $this->object );
+		$content = $parser->parse( $publishable, $this->object );
 
 		if ( null === $content ) {
 			return null;
@@ -365,7 +368,7 @@ class Document extends Base {
 			\_doing_it_wrong(
 				__METHOD__,
 				\esc_html__( 'atmosphere_document_content must return an array; falling back to the parser output.', 'atmosphere' ),
-				'unreleased'
+				'1.2.0'
 			);
 			return $content;
 		}
@@ -390,7 +393,7 @@ class Document extends Base {
 				$fallback_to_parser
 					? \esc_html__( 'Content parsers must return a non-empty $type field; falling back to the parser output.', 'atmosphere' )
 					: \esc_html__( 'Content parsers must return a non-empty $type field; omitting the content field.', 'atmosphere' ),
-				'unreleased'
+				'1.2.0'
 			);
 			return null;
 		}
@@ -401,7 +404,7 @@ class Document extends Base {
 				$fallback_to_parser
 					? \esc_html__( 'Content parsers must return a $type field matching get_type(); falling back to the parser output.', 'atmosphere' )
 					: \esc_html__( 'Content parsers must return a $type field matching get_type(); omitting the content field.', 'atmosphere' ),
-				'unreleased'
+				'1.2.0'
 			);
 			return null;
 		}

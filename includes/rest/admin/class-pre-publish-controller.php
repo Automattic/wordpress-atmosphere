@@ -23,6 +23,8 @@ use WP_REST_Server;
 use function Atmosphere\is_auto_publish_enabled;
 use function Atmosphere\is_connected;
 use function Atmosphere\is_supported_post_type;
+use function Atmosphere\needs_reauth;
+use function Atmosphere\share_status;
 
 /**
  * Pre-publish preview controller.
@@ -86,13 +88,13 @@ class Pre_Publish_Controller extends \WP_REST_Controller {
 					'permission_callback' => array( $this, 'check_permission' ),
 					'show_in_index'       => false,
 					'args'                => array(
-						'id'         => array(
+						'id'          => array(
 							'description'       => \__( 'The ID of the post being edited.', 'atmosphere' ),
 							'type'              => 'integer',
 							'required'          => true,
 							'sanitize_callback' => 'absint',
 						),
-						'title'      => array(
+						'title'       => array(
 							'description'       => \__( 'The unsaved post title.', 'atmosphere' ),
 							'type'              => 'string',
 							'default'           => '',
@@ -107,29 +109,29 @@ class Pre_Publish_Controller extends \WP_REST_Controller {
 						 * strip the `<!-- wp:* -->` block delimiters and
 						 * corrupt the projection.
 						 */
-						'content'    => array(
+						'content'     => array(
 							'description' => \__( 'The unsaved post content.', 'atmosphere' ),
 							'type'        => 'string',
 							'default'     => '',
 						),
-						'excerpt'    => array(
+						'excerpt'     => array(
 							'description'       => \__( 'The unsaved post excerpt.', 'atmosphere' ),
 							'type'              => 'string',
 							'default'           => '',
 							'sanitize_callback' => 'sanitize_text_field',
 						),
-						'status'     => array(
+						'status'      => array(
 							'description'       => \__( 'The intended post status / visibility.', 'atmosphere' ),
 							'type'              => 'string',
 							'default'           => 'publish',
 							'sanitize_callback' => 'sanitize_key',
 						),
-						'password'   => array(
+						'password'    => array(
 							'description' => \__( 'The intended post password (empty when not protected).', 'atmosphere' ),
 							'type'        => 'string',
 							'default'     => '',
 						),
-						'disabled'   => array(
+						'disabled'    => array(
 							'description' => \__( 'Whether sharing is switched off for this post.', 'atmosphere' ),
 							'type'        => 'boolean',
 							'default'     => false,
@@ -142,7 +144,7 @@ class Pre_Publish_Controller extends \WP_REST_Controller {
 						 * line breaks while stripping tags, matching the meta's
 						 * registered sanitizer.
 						 */
-						'customText' => array(
+						'customText'  => array(
 							'description'       => \__( 'The unsaved custom Bluesky text (empty to use the default composition).', 'atmosphere' ),
 							'type'              => 'string',
 							'default'           => '',
@@ -151,6 +153,20 @@ class Pre_Publish_Controller extends \WP_REST_Controller {
 							// published anyway.
 							'maxLength'         => 2000,
 							'sanitize_callback' => 'sanitize_textarea_field',
+						),
+
+						/*
+						 * The unsaved whole-post access level (e.g. a membership
+						 * plugin's subscriber/paid visibility). Forwarded so the
+						 * preview reflects a gating change the author has made but
+						 * not yet saved; integrations read it on
+						 * `atmosphere_pre_projection`. Opaque to this endpoint.
+						 */
+						'accessLevel' => array(
+							'description'       => \__( 'The unsaved whole-post access level, when a membership plugin is active.', 'atmosphere' ),
+							'type'              => 'string',
+							'default'           => '',
+							'sanitize_callback' => 'sanitize_key',
 						),
 					),
 				),
@@ -248,29 +264,85 @@ class Pre_Publish_Controller extends \WP_REST_Controller {
 		$transformer = new Post( $draft );
 
 		/*
-		 * Project against the *unsaved* custom text so the preview tracks
-		 * the textarea as the author types. Only override when the param is
-		 * actually present: an older/cached editor that doesn't send it must
-		 * fall back to the saved meta, not be forced to the default
-		 * composition by a cast-from-missing empty string.
+		 * Project against the *unsaved* custom text so the preview tracks the
+		 * textarea as the author types — including when they clear it, which
+		 * must preview the default composition, not the stale saved meta. A
+		 * blank value is a real signal here, so "provided" is decided by the
+		 * key's presence in what the client actually sent (`has_param()`
+		 * cannot decide it: the param registers a `''` default and dispatch
+		 * fills it in, so it is true even for an older editor that never sent
+		 * the field). An absent key still falls back to the saved meta.
 		 */
-		if ( $request->has_param( 'customText' ) ) {
+		if ( self::request_provided( $request, 'customText' ) ) {
 			$transformer->set_custom_text_override( (string) $request['customText'] );
 		}
+
+		/*
+		 * Let integrations reflect *unsaved* editor state that the transformer
+		 * would otherwise read from the last save. A membership integration, for
+		 * instance, gates on the post's access level, which is only written on
+		 * save; without this the preview would show the full body of a paid post
+		 * the author is still drafting, then publish a teaser. The clone carries
+		 * unsaved content/title/excerpt already; this covers state that lives in
+		 * meta rather than the post row. Paired so the override never leaks past
+		 * this request.
+		 */
+		\do_action( 'atmosphere_pre_projection', $draft, $request );
+
 		$projection = $transformer->project();
+
+		\do_action( 'atmosphere_post_projection', $draft, $request );
 
 		\remove_filter( 'pre_http_request', $block_http, 0 );
 
 		return \rest_ensure_response(
 			array(
-				'will_publish'  => $decision['will_publish'],
-				'reason'        => $decision['reason'],
-				'is_short_form' => $projection['is_short_form'],
-				'strategy'      => $projection['strategy'],
-				'limit'         => $projection['limit'],
-				'records'       => $projection['records'],
+				'will_publish'    => $decision['will_publish'],
+
+				/*
+				 * Only the reconnect branch sets this, covering both an
+				 * expired session and a deliberate disconnect, so every
+				 * other "will not publish" reason defaults to false and
+				 * stays an info-level note in the panel.
+				 */
+				'needs_reconnect' => $decision['needs_reconnect'] ?? false,
+				'reason'          => $decision['reason'],
+				'is_short_form'   => $projection['is_short_form'],
+				'strategy'        => $projection['strategy'],
+				'limit'           => $projection['limit'],
+				'records'         => $projection['records'],
 			)
 		);
+	}
+
+
+	/**
+	 * Whether the client actually sent a parameter with the request.
+	 *
+	 * `WP_REST_Request::has_param()` cannot answer this: once the request is
+	 * dispatched, params with a registered default resolve to that default
+	 * and count as present. Checking the raw JSON, POST, and query payloads
+	 * keeps a deliberately blank value (a cleared textarea) distinguishable
+	 * from a client that never sent the field at all.
+	 *
+	 * @param WP_REST_Request $request REST request.
+	 * @param string          $param   Parameter name.
+	 * @return bool True when the parameter key appears in the request payload.
+	 */
+	private static function request_provided( WP_REST_Request $request, string $param ): bool {
+		$sources = array(
+			$request->get_json_params(),
+			$request->get_body_params(),
+			$request->get_query_params(),
+		);
+
+		foreach ( $sources as $source ) {
+			if ( \is_array( $source ) && \array_key_exists( $param, $source ) ) {
+				return true;
+			}
+		}
+
+		return false;
 	}
 
 	/**
@@ -287,29 +359,30 @@ class Pre_Publish_Controller extends \WP_REST_Controller {
 	 * @param string  $status   The intended post status (e.g. 'publish', 'private').
 	 * @param string  $password The intended post password ('' when not protected).
 	 * @param bool    $disabled Whether sharing is switched off for this post.
-	 * @return array{will_publish: bool, reason: ?string}
+	 * @return array{will_publish: bool, reason: ?string, needs_reconnect?: bool}
 	 */
 	private function publish_decision( WP_Post $post, string $status, string $password, bool $disabled ): array {
-		if ( ! is_connected() ) {
-			return array(
-				'will_publish' => false,
-				'reason'       => \__( 'Your site isn’t connected to Bluesky yet.', 'atmosphere' ),
-			);
-		}
+		/*
+		 * Checked first, ahead of the per-post toggle and the connection
+		 * state. Automatic sharing being off decides the answer on its own:
+		 * the per-post toggle only records a preference for `backfill` in
+		 * that state, and reconnecting would not change whether this post
+		 * publishes either, so both would be pointing at something that
+		 * cannot alter the outcome.
+		 */
+		$site = share_status();
 
-		if ( ! is_auto_publish_enabled() ) {
-			// Attribute the off state to "another plugin" whenever something
-			// external forces it off despite the user's saved preference being
-			// on — connection-only mode OR the `atmosphere_should_auto_publish`
-			// filter. Only blame settings when the stored option is itself off,
-			// so the editor never tells the author "turned off in settings" while
-			// their checkbox is checked.
-			$stored_on = '1' === (string) \get_option( 'atmosphere_auto_publish', '1' );
+		if ( ! $site['sharing_enabled'] ) {
+			/*
+			 * `reason`, not `message`: this panel was asked a direct question
+			 * about a post, so it always answers, including in the state where
+			 * the document panel deliberately says nothing because a host
+			 * plugin owns the sharing experience. Same sentence either way,
+			 * decided in {@see \Atmosphere\share_status()}.
+			 */
 			return array(
 				'will_publish' => false,
-				'reason'       => $stored_on
-					? \__( 'Automatic publishing to Bluesky is turned off by another plugin on this site.', 'atmosphere' )
-					: \__( 'Automatic publishing to Bluesky is turned off in settings.', 'atmosphere' ),
+				'reason'       => $site['reason'],
 			);
 		}
 
@@ -338,6 +411,45 @@ class Pre_Publish_Controller extends \WP_REST_Controller {
 			return array(
 				'will_publish' => false,
 				'reason'       => \__( 'Private posts aren’t shared to Bluesky.', 'atmosphere' ),
+			);
+		}
+
+		if ( ! is_connected() ) {
+			/*
+			 * `is_connected()` is false for both a dead session and a site
+			 * that never connected. Only the first is fixable by an admin,
+			 * so it gets its own copy and lifts the panel's notice from
+			 * info to warning.
+			 */
+			if ( needs_reauth() ) {
+				/*
+				 * The cause sentence is shared with the document panel via
+				 * {@see \Atmosphere\share_status()}, so a
+				 * `key_changed` (or any other recorded) cause reads
+				 * identically on both surfaces, including the
+				 * operator-disconnect swap. The consequence sentence is
+				 * this panel's own.
+				 *
+				 * `needs_reconnect` tracks whether a cause sentence is
+				 * actually shown, not just whether the connection is dead:
+				 * a non-admin reading a suppressed operator-disconnect gets
+				 * `false`, matching the document panel showing no banner
+				 * for the same reader.
+				 */
+				$lead   = $site['reason'];
+				$tail   = \__( 'This post will not be shared until your site is reconnected.', 'atmosphere' );
+				$reason = '' !== $lead ? $lead . ' ' . $tail : $tail;
+
+				return array(
+					'will_publish'    => false,
+					'needs_reconnect' => '' !== $lead,
+					'reason'          => $reason,
+				);
+			}
+
+			return array(
+				'will_publish' => false,
+				'reason'       => \__( 'Your site isn’t connected to Bluesky yet.', 'atmosphere' ),
 			);
 		}
 

@@ -1318,11 +1318,16 @@ class Reaction_Sync {
 		$did = get_did();
 
 		/*
-		 * getProfile can fail transiently, but our own handle is stored
-		 * locally — fall back to it so the comment author link never
-		 * degrades to a broken profile URL.
+		 * getProfile can fail transiently, and a call that succeeds can
+		 * still hand back an empty handle. Our own handle is stored
+		 * locally, so fall back to it in both cases and the comment
+		 * author link never degrades to a broken profile URL.
 		 */
-		$handle = self::resolve_author( $did )['handle'] ?? ( get_identity()['handle'] ?? '' );
+		$handle = self::resolve_author( $did )['handle'] ?? '';
+
+		if ( '' === $handle ) {
+			$handle = get_identity()['handle'] ?? '';
+		}
 
 		$notification = array(
 			'uri'    => $record['uri'] ?? '',
@@ -1579,8 +1584,18 @@ class Reaction_Sync {
 		$author = $notification['author'] ?? array();
 		$record = $notification['record'] ?? array();
 
-		$author_handle = $profile['handle'] ?? ( $author['handle'] ?? '' );
-		$author_name   = $profile['name'] ?? $author_handle;
+		// Same sanitizer as resolve_author(), for the reason documented there.
+		$author_handle = \sanitize_text_field( $profile['handle'] ?? '' );
+
+		if ( '' === $author_handle ) {
+			$author_handle = \sanitize_text_field( $author['handle'] ?? '' );
+		}
+
+		$author_name = \sanitize_text_field( $profile['name'] ?? '' );
+
+		if ( '' === $author_name ) {
+			$author_name = $author_handle;
+		}
 
 		$timestamp = \strtotime( $record['createdAt'] ?? '' );
 		$gm_date   = \gmdate( 'Y-m-d H:i:s', false === $timestamp ? 0 : $timestamp );
@@ -1589,10 +1604,24 @@ class Reaction_Sync {
 			$content = self::default_reaction_excerpt( $comment_type );
 		}
 
+		/*
+		 * Encoded, not just stripped: core's comment pipeline stores the
+		 * author name HTML-encoded, and every reader of the column relies
+		 * on that, the XML feed templates included.
+		 *
+		 * `_wp_specialchars()` is marked `@access private` in core, so
+		 * there is no backward compatibility promise on it. It is the only
+		 * way to match what `pre_comment_author_name` produces byte for
+		 * byte, which is the whole point here — if it ever goes away,
+		 * inline its `htmlspecialchars()` call rather than reaching for a
+		 * different encoder.
+		 */
+		$comment_author = \_wp_specialchars( $author_name );
+
 		$comment_data = array(
 			'comment_post_ID'      => $post_id,
 			'comment_parent'       => $comment_parent,
-			'comment_author'       => $author_name,
+			'comment_author'       => $comment_author,
 			'comment_author_url'   => \esc_url_raw(
 				appview_url(
 					'profile/' . \rawurlencode( $author_handle ),
@@ -1674,7 +1703,8 @@ class Reaction_Sync {
 		\update_comment_meta( $comment_id, self::META_SOURCE_URL, self::build_bsky_web_url( $uri, $author_handle ) );
 		\update_comment_meta( $comment_id, self::META_BSKY_CID, $cid );
 		\update_comment_meta( $comment_id, self::META_AUTHOR_DID, $author['did'] ?? '' );
-		\update_comment_meta( $comment_id, self::META_AUTHOR_AVATAR, $profile['avatar'] ?? '' );
+		$author_avatar = $profile['avatar'] ?? '';
+		\update_comment_meta( $comment_id, self::META_AUTHOR_AVATAR, \is_string( $author_avatar ) ? \esc_url_raw( $author_avatar ) : '' );
 
 		/**
 		 * Fires after a Bluesky reaction is synced as a WordPress comment.
@@ -1752,10 +1782,26 @@ class Reaction_Sync {
 			return array();
 		}
 
+		/*
+		 * `sanitize_text_field()`, not `Atmosphere\sanitize_text()`. The
+		 * helper decodes entities before it strips tags, which is right
+		 * for a value we are about to publish into an AT Protocol record
+		 * — see its use for `displayName` in Transformer\Document.
+		 *
+		 * This value goes the other way, into `comment_author`, where the
+		 * only safe shape is the one core itself would have stored. Core
+		 * runs `sanitize_text_field()` on `pre_comment_author_name` and
+		 * nothing downstream decodes the column before output, so
+		 * decoding here would break that parity for no gain.
+		 */
+		$handle = \sanitize_text_field( $result['handle'] ?? '' );
+		$name   = \sanitize_text_field( $result['displayName'] ?? '' );
+		$avatar = $result['avatar'] ?? '';
+
 		$profile = array(
-			'name'   => $result['displayName'] ?? ( $result['handle'] ?? '' ),
-			'handle' => $result['handle'] ?? '',
-			'avatar' => $result['avatar'] ?? '',
+			'name'   => '' !== $name ? $name : $handle,
+			'handle' => $handle,
+			'avatar' => \is_string( $avatar ) ? \esc_url_raw( $avatar ) : '',
 		);
 
 		\set_transient( $cache_key, $profile, HOUR_IN_SECONDS );

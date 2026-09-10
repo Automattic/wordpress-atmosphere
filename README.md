@@ -7,6 +7,7 @@ Publish your WordPress posts to the [AT Protocol](https://atproto.com/) network 
 ## Documentation
 
 - [Developer Documentation](docs/developer-docs.md) — entry point for developers extending or integrating with ATmosphere.
+- [How the plugin federates on the AT Protocol](FEDERATION.md)
 - [Development Environment](docs/development-environment.md) — wp-env setup, prerequisites, troubleshooting, coverage.
 - [PHP Coding Standards](docs/php-coding-standards.md) — naming, escaping, error handling, performance, cron rules.
 - [Class Structure](docs/php-class-structure.md) — directory layout, namespaces, architectural patterns.

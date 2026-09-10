@@ -17,6 +17,8 @@ namespace Atmosphere\Tests\Transformer;
 use WP_UnitTestCase;
 use Atmosphere\Transformer\Base;
 use Atmosphere\Transformer\Preview;
+use Atmosphere\Transformer\Post;
+use Atmosphere\Transformer\Threadgate;
 
 /**
  * Preview resolver tests.
@@ -292,6 +294,67 @@ class Test_Preview extends WP_UnitTestCase {
 		$this->assertArrayHasKey( 'app.bsky.feed.post', $payload );
 		$this->assertSame( 'site.standard.document', $payload['site.standard.document'][0]['$type'] );
 		$this->assertSame( 'app.bsky.feed.post', $payload['app.bsky.feed.post'][0]['$type'] );
+	}
+
+	/**
+	 * A gated post exposes its threadgate in the preview set.
+	 */
+	public function test_includes_threadgate_when_restricted() {
+		$post = $this->make_post();
+		\update_post_meta(
+			$post->ID,
+			Threadgate::META_RESTRICTION,
+			array( Threadgate::AUDIENCE_FOLLOWING )
+		);
+		// The gate needs the post's reserved rkey to build a valid `post` ref.
+		\update_post_meta( $post->ID, Post::META_TID, 'root-tid-123' );
+
+		$all = Preview::for_post( $post, 'all' );
+		$this->assertIsArray( $all );
+		$this->assertArrayHasKey( 'app.bsky.feed.threadgate', $all );
+
+		$record = Preview::for_post( $post, 'app.bsky.feed.threadgate' );
+		$this->assertIsArray( $record );
+		$this->assertSame( 'app.bsky.feed.threadgate', $record['$type'] );
+		$this->assertSame(
+			array( array( '$type' => 'app.bsky.feed.threadgate#followingRule' ) ),
+			$record['allow']
+		);
+	}
+
+	/**
+	 * An ungated post publishes no threadgate, so the preview omits it —
+	 * otherwise it would read as an empty `allow` ("nobody can reply").
+	 */
+	public function test_omits_threadgate_when_everybody() {
+		$post = $this->make_post();
+
+		$all = Preview::for_post( $post, 'all' );
+		$this->assertIsArray( $all );
+		$this->assertArrayNotHasKey( 'app.bsky.feed.threadgate', $all );
+
+		$record = Preview::for_post( $post, 'app.bsky.feed.threadgate' );
+		$this->assertTrue( \is_wp_error( $record ) );
+		$this->assertSame( 'atmosphere_atproto_preview_type', $record->get_error_code() );
+	}
+
+	/**
+	 * A gated post that has never been published has no reserved rkey, so
+	 * the preview omits the threadgate rather than emit a malformed
+	 * `post` reference with an empty rkey.
+	 */
+	public function test_omits_threadgate_without_reserved_rkey() {
+		$post = $this->make_post();
+		\update_post_meta(
+			$post->ID,
+			Threadgate::META_RESTRICTION,
+			array( Threadgate::AUDIENCE_FOLLOWING )
+		);
+		// No Post::META_TID — never published by Atmosphere.
+
+		$all = Preview::for_post( $post, 'all' );
+		$this->assertIsArray( $all );
+		$this->assertArrayNotHasKey( 'app.bsky.feed.threadgate', $all );
 	}
 
 	/**

@@ -21,8 +21,25 @@ import {
 	DISABLED_META_KEY,
 	CUSTOM_TEXT_META_KEY,
 	PREVIEW_PATH,
+	SHARE_STATUS,
 } from '../config';
+import { ReconnectAction } from '../shared/reconnect-notice';
 import { strategyLabel, hasOverLimit, isAuthError } from './utils';
+
+/**
+ * Jetpack's whole-post newsletter access meta key.
+ *
+ * Read straight from the editor so the preview tracks a subscriber/paid
+ * visibility change before it is saved; the server only reads this from the
+ * last save otherwise. When the meta key is registered but empty, the level is
+ * sent as an explicit 'everybody' so flipping a saved-gated post back to
+ * public previews as public. When the key is absent (Jetpack inactive, or a
+ * post type without the meta), no level is sent and the server falls back to
+ * the saved value, failing closed.
+ *
+ * @type {string}
+ */
+const JETPACK_ACCESS_META_KEY = '_jetpack_newsletter_access';
 
 /**
  * The pre-publish panel body.
@@ -47,6 +64,10 @@ function PrePublishPanel() {
 	const [ meta ] = useEntityProp( 'postType', postType, 'meta' );
 	const disabled = !! ( meta && meta[ DISABLED_META_KEY ] );
 	const customText = ( meta && meta[ CUSTOM_TEXT_META_KEY ] ) || '';
+	const accessLevel =
+		meta && JETPACK_ACCESS_META_KEY in meta
+			? meta[ JETPACK_ACCESS_META_KEY ] || 'everybody'
+			: undefined;
 
 	const [ preview, setPreview ] = useState( null );
 	const [ loading, setLoading ] = useState( true );
@@ -76,6 +97,7 @@ function PrePublishPanel() {
 					password,
 					disabled,
 					customText,
+					accessLevel,
 				},
 			} )
 				.then( ( result ) => {
@@ -108,6 +130,7 @@ function PrePublishPanel() {
 		password,
 		disabled,
 		customText,
+		accessLevel,
 	] );
 
 	if ( loading ) {
@@ -136,14 +159,29 @@ function PrePublishPanel() {
 		);
 	}
 
+	/*
+	 * A dead connection is the one non-publishing reason someone can act on
+	 * right now, so it renders as a warning with a way out. Every other
+	 * reason (sharing off, private post, unsupported type) is a statement of
+	 * fact and stays at info level.
+	 */
 	if ( ! preview.will_publish ) {
 		return (
-			<Notice status="info" isDismissible={ false }>
+			<Notice
+				status={ preview.needs_reconnect ? 'warning' : 'info' }
+				isDismissible={ false }
+			>
 				{ preview.reason ||
 					__(
 						'This post won’t be shared to Bluesky.',
 						'atmosphere'
 					) }
+				{ preview.needs_reconnect && (
+					<>
+						{ ' ' }
+						<ReconnectAction />
+					</>
+				) }
 			</Notice>
 		);
 	}
@@ -219,12 +257,26 @@ function PrePublishPanel() {
 }
 
 registerPlugin( 'atmosphere-pre-publish-panel', {
-	render: () => (
-		<PluginPrePublishPanel
-			title={ __( 'Bluesky', 'atmosphere' ) }
-			initialOpen
-		>
-			<PrePublishPanel />
-		</PluginPrePublishPanel>
-	),
+	render: () => {
+		/*
+		 * A host plugin owns the sharing experience in connection-only mode,
+		 * so ATmosphere says nothing about sharing anywhere in the editor,
+		 * here included. The document panel is silent in the same state.
+		 *
+		 * Only the UI hides. The REST projector still answers in full, since
+		 * anything else asking it deserves the reason rather than silence.
+		 */
+		if ( 'sharing_off_external' === SHARE_STATUS.state ) {
+			return null;
+		}
+
+		return (
+			<PluginPrePublishPanel
+				title={ __( 'Bluesky', 'atmosphere' ) }
+				initialOpen
+			>
+				<PrePublishPanel />
+			</PluginPrePublishPanel>
+		);
+	},
 } );

@@ -3,6 +3,7 @@
 const { execSync } = require( 'child_process' );
 const readline = require( 'readline' );
 const fs = require( 'fs' );
+const { phpVersionPatterns, LEFTOVER_MARKER_GREP } = require( './version-patterns' );
 
 const rl = readline.createInterface( {
 	input: process.stdin,
@@ -243,32 +244,27 @@ async function createRelease() {
 	// Prompt for and update the upgrade notice section in readme.txt
 	await updateReadmeWithUpgradeNotice( version );
 
-	const phpFiles = execWithOutput( 'find . -name "*.php"' ).split( '\n' );
+	const phpFiles = execWithOutput(
+		'find . -name "*.php" -not -path "./vendor/*" -not -path "./node_modules/*"'
+	).split( '\n' );
 
 	phpFiles.forEach( ( filePath ) => {
-		updateVersionInFile( filePath, version, [
-			{
-				search: /@since unreleased/gi,
-				replace: `@since ${ version }`,
-			},
-			{
-				search: /@deprecated unreleased/gi,
-				replace: `@deprecated ${ version }`,
-			},
-			{
-				search: /(?<=_deprecated_(?:function|class|constructor|file|argument|hook)\s*\(\s*.*?,\s*')unreleased(?=')/gi,
-				replace: ( match ) => match.replace( /unreleased/i, version ),
-			},
-			{
-				search: /(?<=_doing_it_wrong\s*\(\s*.*?,\s*'.*?',\s*')unreleased(?=')/gi,
-				replace: ( match ) => match.replace( /unreleased/i, version ),
-			},
-			{
-				search: /(?<=\b(?:apply_filters_deprecated|do_action_deprecated)\s*\(\s*'.*?'\s*,\s*array\s*\(.*?\)\s*,\s*')unreleased(?=['"],\s*['"])/gi,
-				replace: ( match ) => match.replace( /unreleased/i, version ),
-			},
-		] );
+		updateVersionInFile( filePath, version, phpVersionPatterns( version ) );
 	} );
+
+	/*
+	 * The rewrite above is best-effort, so report anything still carrying the
+	 * placeholder instead of letting it reach a tag unnoticed.
+	 */
+	const leftovers = execWithOutput(
+		`grep -rnE "${ LEFTOVER_MARKER_GREP }" --include="*.php" . --exclude-dir=vendor --exclude-dir=node_modules || true`
+	);
+
+	if ( leftovers ) {
+		console.warn( `\nWarning: \`unreleased\` is still present after the ${ version } rewrite:` );
+		console.warn( leftovers );
+		console.warn( 'Stamp each one with the release that added it before merging the release PR.\n' );
+	}
 
 	// Stage and commit changes
 	exec( 'git add .' );
