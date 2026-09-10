@@ -234,11 +234,13 @@ class Atmosphere {
 
 		/*
 		 * Per-post "share to Bluesky" toggle + custom-text meta (REST-exposed
-		 * for the editor panel). Hooked late: the supported types are read
-		 * through `get_post_types_by_support( 'atmosphere' )` at call time,
-		 * so a plugin that loads after this one and opts its type in through
-		 * `register_post_type()`'s `supports` at the default priority would
-		 * otherwise be invisible here and get no meta registered at all.
+		 * for the editor panel). Hooked late: `get_supported_post_types()`
+		 * merges the option, the filter, and the native opt-ins, and the
+		 * native ones come from `get_post_types_by_support( 'atmosphere' )`
+		 * at call time. A plugin that loads after this one and opts its type
+		 * in through `register_post_type()`'s `supports` at the default
+		 * priority would otherwise be invisible here and get no meta
+		 * registered at all.
 		 */
 		\add_action( 'init', array( $this, 'register_share_meta' ), 20 );
 

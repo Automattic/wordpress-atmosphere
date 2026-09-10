@@ -19,6 +19,7 @@ namespace Atmosphere\Tests;
 
 use Atmosphere\Atmosphere;
 use Atmosphere\Transformer\Threadgate;
+use function Atmosphere\is_sharing_enabled;
 
 /**
  * Share-meta-on-CPT tests.
@@ -101,7 +102,7 @@ class Test_Share_Meta_Cpt extends \WP_UnitTestCase {
 		$post_id = $response->get_data()['id'];
 
 		$this->assertSame( 'Hand-written for Bluesky.', \get_post_meta( $post_id, ATMOSPHERE_META_CUSTOM_TEXT, true ), 'The custom text must persist, not just render in the editor.' );
-		$this->assertTrue( (bool) \get_post_meta( $post_id, ATMOSPHERE_META_DISABLED, true ), 'The do-not-share choice must persist; losing it silently federates the post.' );
+		$this->assertFalse( is_sharing_enabled( \get_post( $post_id ) ), 'The do-not-share choice must persist as the value the sharing gate reads; losing it silently federates the post.' );
 		$this->assertSame( array( 'nobody' ), \get_post_meta( $post_id, Threadgate::META_RESTRICTION, true ), 'The reply restriction is a safety setting and must persist.' );
 	}
 
