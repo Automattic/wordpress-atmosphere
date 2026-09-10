@@ -26,8 +26,8 @@ class Test_Link extends \WP_UnitTestCase {
 	private const TID = '3mn3kzvtns72d';
 
 	/**
-	 * Pretty permalinks: WordPress only parses the request path when
-	 * rewrite rules exist, and the resolver reads that parsed path.
+	 * Pretty permalinks: an unknown path only 404s when rewrite rules
+	 * exist, and the resolver hangs off that 404.
 	 */
 	public function set_up(): void {
 		parent::set_up();
@@ -59,8 +59,9 @@ class Test_Link extends \WP_UnitTestCase {
 	/**
 	 * Run a request and capture the redirect it issues, instead of exiting.
 	 *
-	 * The resolver hooks `parse_request`, which `go_to()` fires as part of
-	 * the main request, so this exercises the real path from URL to redirect.
+	 * The resolver hooks `template_redirect`, which `go_to()` stops short
+	 * of, so the handler is called by hand once the main query has run and
+	 * WordPress has decided whether the path is a 404.
 	 *
 	 * @param string $url The URL to request.
 	 * @return string The redirect target, or '' when none was issued.
@@ -82,8 +83,10 @@ class Test_Link extends \WP_UnitTestCase {
 			}
 		);
 
+		$this->go_to( $url );
+
 		try {
-			$this->go_to( $url );
+			Link::maybe_redirect();
 		} catch ( \RuntimeException $e ) {
 			// Expected: the redirect fired.
 			unset( $e );

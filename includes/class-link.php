@@ -50,7 +50,7 @@ class Link {
 	 * @since unreleased
 	 */
 	public static function register(): void {
-		\add_action( 'parse_request', array( self::class, 'maybe_redirect' ) );
+		\add_action( 'template_redirect', array( self::class, 'maybe_redirect' ), 0 );
 
 		\add_filter( 'pre_get_shortlink', array( self::class, 'filter_shortlink' ), 10, 4 );
 	}
@@ -58,38 +58,38 @@ class Link {
 	/**
 	 * Redirect `/post/<rkey>` to the post that owns the rkey.
 	 *
-	 * Runs on `parse_request` instead of through a rewrite rule, and that
-	 * is deliberate. A rule has to claim the path on shape alone, before
-	 * anyone knows whether a post owns the id, and `post/` plus thirteen
-	 * characters from the rkey charset is a perfectly ordinary path: a
-	 * post slugged `configuration` under a `/post/%postname%/` permalink
-	 * structure, or a page at `post/wordpressblog`. A rule at the top of
-	 * the set made those unreachable; a rule at the bottom never fires,
-	 * because the page catch-all sits above anything appended.
+	 * Hangs off the 404 rather than a rewrite rule, and that is deliberate.
+	 * A rule has to claim the path on shape alone, before anyone knows
+	 * whether a post owns the id, and `post/` plus thirteen characters
+	 * from the rkey charset is a perfectly ordinary path: a post slugged
+	 * `configuration` under a `/post/%postname%/` permalink structure, or
+	 * a page at `post/wordpressblog`. A rule at the top of the set made
+	 * those unreachable; a rule at the bottom never fires, because the
+	 * page catch-all sits above anything appended.
 	 *
-	 * Looking at the parsed path here and redirecting only when a post
-	 * owns the id means nothing else is ever shadowed. When nothing owns
-	 * it, WordPress carries on and serves whatever lives at that path,
-	 * or its own 404. The only remaining overlap is a slug equal to one
-	 * of this site's own record ids, which are timestamp-derived and
-	 * currently all start with `3`.
+	 * Acting only once WordPress has found nothing at the path means a
+	 * request that resolves costs nothing here, and nothing that resolves
+	 * is ever shadowed. The lookup runs only on a 404 whose path has the
+	 * right shape; when nothing owns the id either, the 404 stands.
 	 *
-	 * `$wp->request` is only populated when rewrite rules exist, so like
-	 * the well-known endpoints this needs pretty permalinks.
+	 * Priority 0 so this runs before core's canonical redirect gets to
+	 * guess a permalink for the 404. `$wp->request` is only populated
+	 * when rewrite rules exist, so like the well-known endpoints this
+	 * needs pretty permalinks.
 	 *
 	 * @since unreleased
-	 *
-	 * @param \WP $wp The request being parsed.
 	 */
-	public static function maybe_redirect( $wp ): void {
-		if ( ! $wp instanceof \WP || ! \preg_match( '#^post/([234567a-z]{13})$#', (string) $wp->request, $matches ) ) {
+	public static function maybe_redirect(): void {
+		global $wp;
+
+		if ( ! \is_404() || ! $wp instanceof \WP || ! \preg_match( '#^post/([234567a-z]{13})$#', (string) $wp->request, $matches ) ) {
 			return;
 		}
 
 		$post_id   = self::resolve( $matches[1] );
 		$permalink = $post_id ? \get_permalink( $post_id ) : '';
 
-		// Nothing owns this id: whatever WordPress has at this path wins.
+		// Nothing owns this id either: the 404 WordPress already produced stands.
 		if ( ! $permalink ) {
 			return;
 		}
@@ -139,9 +139,9 @@ class Link {
 				/*
 				 * `wp_postmeta` indexes `meta_key` but not `meta_value`, so
 				 * this narrows to posts carrying a record id and compares
-				 * values within that set. It runs only on a request whose
-				 * path already has the `/post/<rkey>` shape, and the
-				 * alternative is not resolving at all.
+				 * values within that set. It runs only on a 404 whose path
+				 * has the `/post/<rkey>` shape, and the alternative is not
+				 * resolving at all.
 				 */
 				// phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_query -- See above.
 				'meta_query'          => array(

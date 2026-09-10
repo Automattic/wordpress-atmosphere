@@ -233,10 +233,9 @@ class Atmosphere {
 		Blocks::register();
 
 		/*
-		 * Record-id links (`/post/<rkey>`). Resolved on `parse_request`
-		 * rather than through a rewrite rule, so the path is only claimed
-		 * when a post actually owns the id and whatever else lives there
-		 * keeps winning.
+		 * Record-id links (`/post/<rkey>`). Resolved off the 404 rather
+		 * than through a rewrite rule, so a request that resolves costs
+		 * nothing and whatever else lives at that path keeps winning.
 		 */
 		Link::register();
 
