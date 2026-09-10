@@ -184,7 +184,7 @@ abstract class Base {
 	 * the meta accessors (post vs comment meta); the key set comes from its
 	 * `static::META_DID` / `static::META_TID` constants.
 	 *
-	 * Two invariants live here once, both load-bearing for the guard:
+	 * Three invariants live here once, all load-bearing for the guard:
 	 *
 	 * 1. The DID is written BEFORE the TID, so a partial failure between
 	 *    the two writes leaves the safe "DID set, no TID" state. The
@@ -196,6 +196,12 @@ abstract class Base {
 	 *    issues a write. Every caller is in the Publisher at publish time;
 	 *    the `wp_head` emitters deliberately read the stored AT-URI
 	 *    instead of routing through `get_rkey()`.
+	 * 3. An empty current DID never overwrites a stored one. The guards
+	 *    read an empty origin as "unknown" and wave the delete through,
+	 *    so blanking a real origin on a disconnected site would disarm
+	 *    them for that record. Every caller today sits behind
+	 *    `is_connected()`, so this is belt and braces, but it is the one
+	 *    place the rule has to hold.
 	 *
 	 * The historical-rkey path exists for posts only: `historical_rkey()`
 	 * derives the TID from `get_post_time()` and the post ID, neither of
@@ -209,7 +215,7 @@ abstract class Base {
 	protected function reserve_rkey_with_provenance( callable $read, callable $write ): string {
 		$current_did = get_did();
 		$stored_did  = (string) $read( static::META_DID );
-		if ( $stored_did !== $current_did ) {
+		if ( '' !== $current_did && $stored_did !== $current_did ) {
 			$write( static::META_DID, $current_did );
 		}
 
