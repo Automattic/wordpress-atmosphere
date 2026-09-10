@@ -130,6 +130,7 @@ class Link {
 			array(
 				'post_type'           => 'any',
 				'post_status'         => 'publish',
+				'has_password'        => false,
 				'posts_per_page'      => 1,
 				'fields'              => 'ids',
 				'no_found_rows'       => true,

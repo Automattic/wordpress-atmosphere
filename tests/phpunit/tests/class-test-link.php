@@ -379,6 +379,41 @@ class Test_Link extends \WP_UnitTestCase {
 	}
 
 	/**
+	 * A password-protected post is published but not public, and a short
+	 * link must not hand out a redirect to it. Same line the publisher's
+	 * own publishable check draws.
+	 */
+	public function test_password_protected_post_does_not_resolve() {
+		$post_id = self::factory()->post->create(
+			array(
+				'post_status'   => 'publish',
+				'post_password' => 'secret',
+			)
+		);
+		\update_post_meta( $post_id, Post::META_TID, self::TID );
+
+		$this->assertNull( Link::resolve( self::TID ) );
+	}
+
+	/**
+	 * `wp_get_shortlink()` with no arguments, the way a theme calls it
+	 * inside the loop, resolves the global post exactly as core does:
+	 * `get_post( 0 )` is the current post.
+	 */
+	public function test_bare_call_resolves_the_global_post() {
+		$this->enable_shortlink();
+
+		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		\update_post_meta( $post_id, Post::META_TID, self::TID );
+
+		$this->go_to( \get_permalink( $post_id ) );
+		\the_post();
+
+		$this->assertSame( $post_id, \get_the_ID(), 'Precondition: the loop has set the global post.' );
+		$this->assertSame( \home_url( '/post/' . self::TID ), \wp_get_shortlink() );
+	}
+
+	/**
 	 * The opt-in is off by default, so WordPress keeps its own short link.
 	 *
 	 * Claiming `rel=shortlink` speaks for the whole site, including posts
