@@ -318,6 +318,31 @@ class Test_Comment extends WP_UnitTestCase {
 	}
 
 	/**
+	 * Original-time minting is a post-only concept: the historical rkey
+	 * derives from the post date and ID, which a comment does not have.
+	 * Switching it on for a comment must fall back to a generated TID
+	 * rather than reaching into `WP_Post` fields that are not there.
+	 *
+	 * @covers ::get_rkey
+	 */
+	public function test_get_rkey_ignores_original_time_for_comments() {
+		$comment_id = self::factory()->comment->create(
+			array(
+				'comment_post_ID' => $this->post_id,
+				'user_id'         => 1,
+			)
+		);
+
+		$transformer = new Comment( \get_comment( $comment_id ) );
+		$transformer->use_original_time();
+
+		$rkey = $transformer->get_rkey();
+
+		$this->assertMatchesRegularExpression( '/^[234567a-z]{13}$/', $rkey );
+		$this->assertSame( $rkey, \get_comment_meta( $comment_id, Comment::META_TID, true ) );
+	}
+
+	/**
 	 * The atmosphere_transform_comment filter can mutate the record.
 	 *
 	 * @covers ::transform
