@@ -26,11 +26,8 @@ class Test_Link extends \WP_UnitTestCase {
 	private const TID = '3mn3kzvtns72d';
 
 	/**
-	 * Pretty permalinks, so a path that matches nothing actually 404s.
-	 *
-	 * With the plain structure the test suite starts from, every unknown
-	 * path lands on the home page instead, and the 404 this feature hangs
-	 * off never happens.
+	 * Pretty permalinks: WordPress only parses the request path when
+	 * rewrite rules exist, and the resolver reads that parsed path.
 	 */
 	public function set_up(): void {
 		parent::set_up();
@@ -60,11 +57,15 @@ class Test_Link extends \WP_UnitTestCase {
 	}
 
 	/**
-	 * Capture the redirect `maybe_redirect()` issues, instead of exiting.
+	 * Run a request and capture the redirect it issues, instead of exiting.
 	 *
+	 * The resolver hooks `parse_request`, which `go_to()` fires as part of
+	 * the main request, so this exercises the real path from URL to redirect.
+	 *
+	 * @param string $url The URL to request.
 	 * @return string The redirect target, or '' when none was issued.
 	 */
-	private function capture_redirect(): string {
+	private function capture_redirect( string $url ): string {
 		$captured = '';
 
 		/*
@@ -82,7 +83,7 @@ class Test_Link extends \WP_UnitTestCase {
 		);
 
 		try {
-			Link::maybe_redirect();
+			$this->go_to( $url );
 		} catch ( \RuntimeException $e ) {
 			// Expected: the redirect fired.
 			unset( $e );
@@ -135,10 +136,7 @@ class Test_Link extends \WP_UnitTestCase {
 		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
 		\update_post_meta( $post_id, Post::META_TID, self::TID );
 
-		$this->go_to( \home_url( '/post/' . self::TID ) );
-
-		$this->assertSame( self::TID, \get_query_var( 'atmosphere_link' ), 'The rewrite rule must match.' );
-		$this->assertSame( \get_permalink( $post_id ), $this->capture_redirect() );
+		$this->assertSame( \get_permalink( $post_id ), $this->capture_redirect( \home_url( '/post/' . self::TID ) ) );
 	}
 
 	/**
@@ -157,29 +155,23 @@ class Test_Link extends \WP_UnitTestCase {
 	}
 
 	/**
-	 * A short link nothing owns is a 404, not the blog index.
-	 *
-	 * The rewrite rule matches on shape alone, so an rkey that was never
-	 * ours still gets routed here. Left alone, the query var would leave
-	 * WordPress with no constraints and it would render the home page at
-	 * a URL that means nothing.
+	 * An rkey nothing owns is left to WordPress, which has nothing at
+	 * that path either: a plain 404, not the blog index.
 	 */
-	public function test_unknown_shortlink_is_a_404() {
-		$this->go_to( \home_url( '/post/' . self::TID ) );
-
-		$this->assertSame( '', $this->capture_redirect(), 'Nothing owns this rkey, so nothing to redirect to.' );
+	public function test_unowned_rkey_is_left_to_wordpress() {
+		$this->assertSame( '', $this->capture_redirect( \home_url( '/post/' . self::TID ) ), 'Nothing owns this rkey, so nothing to redirect to.' );
 		$this->assertTrue( \is_404() );
 	}
 
 	/**
-	 * The rule is scoped to `post/` plus exactly thirteen characters from
-	 * the rkey charset, so ordinary content is untouched.
+	 * The resolver only looks under `post/`, so a bare path is never
+	 * touched, however rkey-shaped its slug.
 	 *
-	 * `wordpressblog` is thirteen characters drawn entirely from that
-	 * charset — a rule matching a bare path would have swallowed a page
-	 * slugged that way. Under `post/` it cannot.
+	 * `wordpressblog` is thirteen characters drawn entirely from the rkey
+	 * charset, so a resolver matching on the bare path would have
+	 * swallowed a page slugged that way.
 	 */
-	public function test_ordinary_paths_are_not_claimed() {
+	public function test_bare_paths_are_not_claimed() {
 		$this->assertTrue( TID::is_valid( 'wordpressblog' ), 'Precondition: the slug really is rkey-shaped.' );
 
 		$page_id = self::factory()->post->create(
@@ -190,9 +182,69 @@ class Test_Link extends \WP_UnitTestCase {
 			)
 		);
 
-		$this->go_to( \home_url( '/wordpressblog' ) );
+		$this->assertSame( '', $this->capture_redirect( \home_url( '/wordpressblog' ) ), 'A bare path must not resolve as a short link.' );
+		$this->assertTrue( \is_page( $page_id ) );
+	}
 
-		$this->assertSame( '', \get_query_var( 'atmosphere_link' ), 'A bare path must not route to the short link.' );
+	/**
+	 * A post under a `/post/%postname%/` permalink structure is served,
+	 * even when its slug is rkey-shaped.
+	 *
+	 * This is the case a rewrite rule cannot get right. `configuration`
+	 * is thirteen characters from the rkey charset, and a rule claiming
+	 * `post/` plus that shape at the top of the set 404ed the post at its
+	 * own permalink. Resolving by ownership instead leaves it alone.
+	 */
+	public function test_post_under_post_prefix_permalinks_is_served() {
+		$this->set_permalink_structure( '/post/%postname%/' );
+
+		$this->assertTrue( TID::is_valid( 'configuration' ), 'Precondition: the slug really is rkey-shaped.' );
+
+		$post_id = self::factory()->post->create(
+			array(
+				'post_status' => 'publish',
+				'post_name'   => 'configuration',
+			)
+		);
+
+		$this->assertSame( '', $this->capture_redirect( \get_permalink( $post_id ) ), 'The real post must not be redirected away from.' );
+		$this->assertTrue( \is_single( $post_id ) );
+	}
+
+	/**
+	 * The same `/post/%postname%/` site still gets its short links: an
+	 * owned rkey redirects, a slug does not, and they share the prefix.
+	 */
+	public function test_owned_rkey_redirects_under_post_prefix_permalinks() {
+		$this->set_permalink_structure( '/post/%postname%/' );
+
+		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		\update_post_meta( $post_id, Post::META_TID, self::TID );
+
+		$this->assertSame( \get_permalink( $post_id ), $this->capture_redirect( \home_url( '/post/' . self::TID ) ) );
+	}
+
+	/**
+	 * A page living at `post/` plus an rkey-shaped slug is served too.
+	 */
+	public function test_page_under_post_is_served() {
+		$parent_id = self::factory()->post->create(
+			array(
+				'post_type'   => 'page',
+				'post_status' => 'publish',
+				'post_name'   => 'post',
+			)
+		);
+		$page_id   = self::factory()->post->create(
+			array(
+				'post_type'   => 'page',
+				'post_status' => 'publish',
+				'post_name'   => 'wordpressblog',
+				'post_parent' => $parent_id,
+			)
+		);
+
+		$this->assertSame( '', $this->capture_redirect( \home_url( '/post/wordpressblog/' ) ), 'The page must not be redirected away from.' );
 		$this->assertTrue( \is_page( $page_id ) );
 	}
 
@@ -340,10 +392,9 @@ class Test_Link extends \WP_UnitTestCase {
 			'Nothing should be claimed until the site opts in.'
 		);
 
-		$this->go_to( \home_url( '/post/' . self::TID ) );
 		$this->assertSame(
 			\get_permalink( $post_id ),
-			$this->capture_redirect(),
+			$this->capture_redirect( \home_url( '/post/' . self::TID ) ),
 			'The link must resolve whether or not it is advertised.'
 		);
 	}
