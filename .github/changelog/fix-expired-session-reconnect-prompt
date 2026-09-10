@@ -1,0 +1,4 @@
+Significance: patch
+Type: fixed
+
+Posts that fail to share because your Bluesky session has expired now offer a reconnect link, instead of showing a technical error message.
