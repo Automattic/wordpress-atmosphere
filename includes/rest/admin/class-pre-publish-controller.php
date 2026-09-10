@@ -21,10 +21,10 @@ use WP_REST_Request;
 use WP_REST_Response;
 use WP_REST_Server;
 use function Atmosphere\is_auto_publish_enabled;
-use function Atmosphere\is_connected;
 use function Atmosphere\is_supported_post_type;
 use function Atmosphere\needs_reauth;
 use function Atmosphere\share_status;
+use function Atmosphere\verify_connection;
 
 /**
  * Pre-publish preview controller.
@@ -414,48 +414,74 @@ class Pre_Publish_Controller extends \WP_REST_Controller {
 			);
 		}
 
-		if ( ! is_connected() ) {
-			/*
-			 * `is_connected()` is false for both a dead session and a site
-			 * that never connected. Only the first is fixable by an admin,
-			 * so it gets its own copy and lifts the panel's notice from
-			 * info to warning.
-			 */
-			if ( needs_reauth() ) {
-				/*
-				 * The cause sentence is shared with the document panel via
-				 * {@see \Atmosphere\share_status()}, so a
-				 * `key_changed` (or any other recorded) cause reads
-				 * identically on both surfaces, including the
-				 * operator-disconnect swap. The consequence sentence is
-				 * this panel's own.
-				 *
-				 * `needs_reconnect` tracks whether a cause sentence is
-				 * actually shown, not just whether the connection is dead:
-				 * a non-admin reading a suppressed operator-disconnect gets
-				 * `false`, matching the document panel showing no banner
-				 * for the same reader.
-				 */
-				$lead   = $site['reason'];
-				$tail   = \__( 'This post will not be shared until your site is reconnected.', 'atmosphere' );
-				$reason = '' !== $lead ? $lead . ' ' . $tail : $tail;
+		/*
+		 * Every local gate has passed, so the connection is the last thing
+		 * that can change the answer — and the only one that cannot be
+		 * read locally. A refresh token the user revoked from their
+		 * Bluesky account is byte-for-byte identical on disk to a working
+		 * one, so this asks the PDS.
+		 *
+		 * Deliberately last. Every check above returns without consulting
+		 * the connection at all, so a site with sharing switched off — or
+		 * a private, password-protected, or opted-out post — would
+		 * otherwise spend a live round-trip on an answer nothing reads.
+		 * It also has to run before the projection's `pre_http_request`
+		 * block goes up, which it does: the caller installs that filter
+		 * after this decision returns.
+		 *
+		 * The probe records nothing itself. It lets a dead session travel
+		 * the ordinary refresh path into `needs_reauth`, which is why the
+		 * branch below needs no copy of its own.
+		 */
+		if ( verify_connection() ) {
+			return array(
+				'will_publish' => true,
+				'reason'       => null,
+			);
+		}
 
-				return array(
-					'will_publish'    => false,
-					'needs_reconnect' => '' !== $lead,
-					'reason'          => $reason,
-				);
-			}
+		/*
+		 * Re-resolve the site-level status. `$site` above was read before
+		 * the probe ran, so a session the probe just flagged would still
+		 * be carrying the healthy-connection reason.
+		 */
+		$site = share_status();
+
+		/*
+		 * The probe answers false for both a dead session and a site that
+		 * never connected. Only the first is fixable by an admin, so it
+		 * gets its own copy and lifts the panel's notice from info to
+		 * warning.
+		 */
+		if ( needs_reauth() ) {
+			/*
+			 * The cause sentence is shared with the document panel via
+			 * {@see \Atmosphere\share_status()}, so a
+			 * `key_changed` (or any other recorded) cause reads
+			 * identically on both surfaces, including the
+			 * operator-disconnect swap. The consequence sentence is
+			 * this panel's own.
+			 *
+			 * `needs_reconnect` tracks whether a cause sentence is
+			 * actually shown, not just whether the connection is dead:
+			 * a non-admin reading a suppressed operator-disconnect gets
+			 * `false`, matching the document panel showing no banner
+			 * for the same reader.
+			 */
+			$lead   = $site['reason'];
+			$tail   = \__( 'This post will not be shared until your site is reconnected.', 'atmosphere' );
+			$reason = '' !== $lead ? $lead . ' ' . $tail : $tail;
 
 			return array(
-				'will_publish' => false,
-				'reason'       => \__( 'Your site isn’t connected to Bluesky yet.', 'atmosphere' ),
+				'will_publish'    => false,
+				'needs_reconnect' => '' !== $lead,
+				'reason'          => $reason,
 			);
 		}
 
 		return array(
-			'will_publish' => true,
-			'reason'       => null,
+			'will_publish' => false,
+			'reason'       => \__( 'Your site isn’t connected to Bluesky yet.', 'atmosphere' ),
 		);
 	}
 }

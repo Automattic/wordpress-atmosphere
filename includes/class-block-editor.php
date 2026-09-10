@@ -17,6 +17,7 @@ namespace Atmosphere;
 use Atmosphere\Rest\Admin\Pre_Publish_Controller;
 use Atmosphere\Transformer\Threadgate;
 use function Atmosphere\share_status;
+use function Atmosphere\verify_connection;
 use function Atmosphere\settings_url;
 use function Atmosphere\threadgate_needs_reconnect;
 use function Atmosphere\reconnect_url;
@@ -110,6 +111,28 @@ class Block_Editor {
 		 * link them into an authorization error.
 		 */
 		$can_manage = \current_user_can( 'manage_options' );
+
+		/*
+		 * Confirm the session with the PDS before resolving the share
+		 * status below. This is the earliest useful moment: the author has
+		 * the editor open and has not written anything yet, so a dead
+		 * connection surfaces as a reconnect prompt they can act on before
+		 * investing a post in it — rather than after clicking Publish.
+		 *
+		 * A revoked refresh token is indistinguishable from a working one
+		 * in local state, so `share_status()` alone cannot see it. The
+		 * probe records nothing of its own; it lets a dead session travel
+		 * the ordinary refresh path into `needs_reauth`, which the existing
+		 * banner already renders.
+		 *
+		 * Not gated on whether sharing is switched on: the connection is
+		 * shared infrastructure, and the reconnect prompt is connection
+		 * level rather than cross-posting level. Cached site-wide, and
+		 * bounded by a short timeout, so a slow PDS cannot hold up the
+		 * editor — the probe fails open and the banner simply keeps
+		 * whatever the last verdict was.
+		 */
+		verify_connection();
 
 		/*
 		 * One decision object rather than a set of loose flags. The panel
