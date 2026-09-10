@@ -186,11 +186,13 @@ abstract class Base {
 	 *
 	 * Three invariants live here once, all load-bearing for the guard:
 	 *
-	 * 1. The DID is written BEFORE the TID, so a partial failure between
-	 *    the two writes leaves the safe "DID set, no TID" state. The
-	 *    inverse, "TID set, no DID", reads as "origin unknown" and lets the
-	 *    guard fall through to the current DID, re-opening the wrong-repo
-	 *    delete.
+	 * 1. When there is a DID to write, it is written BEFORE the TID, so a
+	 *    partial failure between the two writes leaves the safe "DID set,
+	 *    no TID" state. The inverse, "TID set, no DID", reads as "origin
+	 *    unknown" and lets the guard fall through to the current DID,
+	 *    re-opening the wrong-repo delete. A disconnected site does end
+	 *    up in that state (see 3), and there it is the truth: nothing was
+	 *    published under any account.
 	 * 2. The DID is compared before writing, so republishing an unchanged
 	 *    record is a meta no-op and only an actual account transition
 	 *    issues a write. Every caller is in the Publisher at publish time;
