@@ -112,4 +112,29 @@ class Test_Share_Meta_Cpt extends \WP_UnitTestCase {
 	public function test_registration_adds_custom_fields_support() {
 		$this->assertTrue( \post_type_supports( 'atm_case', 'custom-fields' ) );
 	}
+
+	/**
+	 * The registration reads the natively opted-in types through
+	 * `get_post_types_by_support( 'atmosphere' )` when it runs, so a plugin
+	 * that loads after ATmosphere and declares `atmosphere` in its
+	 * `register_post_type()` supports at the default `init` priority is
+	 * only visible if this callback runs later than that.
+	 */
+	public function test_registration_runs_after_default_priority_post_type_registration() {
+		$priority = null;
+
+		foreach ( $GLOBALS['wp_filter']['init']->callbacks as $hooked_at => $callbacks ) {
+			foreach ( $callbacks as $callback ) {
+				if ( \is_array( $callback['function'] )
+					&& $callback['function'][0] instanceof Atmosphere
+					&& 'register_share_meta' === $callback['function'][1]
+				) {
+					$priority = $hooked_at;
+				}
+			}
+		}
+
+		$this->assertNotNull( $priority, 'register_share_meta must be hooked on init.' );
+		$this->assertGreaterThan( 10, $priority, 'Post types registered at the default priority must already exist.' );
+	}
 }

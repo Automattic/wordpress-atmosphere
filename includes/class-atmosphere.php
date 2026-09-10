@@ -232,8 +232,15 @@ class Atmosphere {
 		// off when the ActivityPub plugin is active.
 		Blocks::register();
 
-		// Per-post "share to Bluesky" toggle + custom-text meta (REST-exposed for the editor panel).
-		\add_action( 'init', array( $this, 'register_share_meta' ) );
+		/*
+		 * Per-post "share to Bluesky" toggle + custom-text meta (REST-exposed
+		 * for the editor panel). Hooked late: the supported types are read
+		 * through `get_post_types_by_support( 'atmosphere' )` at call time,
+		 * so a plugin that loads after this one and opts its type in through
+		 * `register_post_type()`'s `supports` at the default priority would
+		 * otherwise be invisible here and get no meta registered at all.
+		 */
+		\add_action( 'init', array( $this, 'register_share_meta' ), 20 );
 
 		/*
 		 * Reconcile when the share toggle or custom text changes.
