@@ -813,7 +813,7 @@ class Client {
 	 * under the careful mid-flight race checks in {@see self::refresh_locked()},
 	 * and a failure record must not have to win those checks to be stored.
 	 *
-	 * @since unreleased
+	 * @since 2.3.0
 	 *
 	 * @var string
 	 */
@@ -1349,7 +1349,7 @@ class Client {
 	 * `mark_needs_reauth()` rewrites the row (keeping the token
 	 * ciphertext) before the failure is recorded.
 	 *
-	 * @since unreleased
+	 * @since 2.3.0
 	 *
 	 * @param array  $conn    Connection as read by the caller.
 	 * @param array  $current Connection as stored now.
@@ -1365,7 +1365,7 @@ class Client {
 	/**
 	 * The recorded refresh history, tolerating a corrupted row.
 	 *
-	 * @since unreleased
+	 * @since 2.3.0
 	 *
 	 * @return array
 	 */
@@ -1398,7 +1398,7 @@ class Client {
 	/**
 	 * Merge fields into the refresh history.
 	 *
-	 * @since unreleased
+	 * @since 2.3.0
 	 *
 	 * @param array $fields Fields to stamp.
 	 */
@@ -1414,7 +1414,7 @@ class Client {
 	 * that never failed, and the difference matters when reading a
 	 * support report weeks later.
 	 *
-	 * @since unreleased
+	 * @since 2.3.0
 	 */
 	private static function record_refresh_success(): void {
 		self::update_refresh_status( array( 'last_success' => \time() ) );
@@ -1423,7 +1423,7 @@ class Client {
 	/**
 	 * Record why a refresh attempt failed.
 	 *
-	 * @since unreleased
+	 * @since 2.3.0
 	 *
 	 * @param string $error Auth-server error code, or a transport error code.
 	 * @param array  $conn  Connection as read by the caller (required, so no

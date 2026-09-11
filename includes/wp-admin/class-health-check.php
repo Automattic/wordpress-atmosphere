@@ -600,7 +600,7 @@ class Health_Check {
 	 * weeks" and "renewed fine until it was rejected" call for opposite
 	 * advice.
 	 *
-	 * @since unreleased
+	 * @since 2.3.0
 	 *
 	 * @return string
 	 */
