@@ -659,7 +659,8 @@ class Settings_Fields {
 	 * @since unreleased
 	 */
 	public static function render_shortlink_field(): void {
-		$rkey = '3mn3kzvtns72d';
+		// A made-up record id, only here to give the example address a real shape.
+		$example_rkey = '3mn3kzvtns72d';
 
 		/*
 		 * The site's own handle when it has one, so the example is the
@@ -695,7 +696,7 @@ class Settings_Fields {
 			)
 		);
 
-		$example = self::bare_url( \home_url( '/post/' . $rkey ) );
+		$example = self::bare_url( \home_url( '/post/' . $example_rkey ) );
 
 		// What WordPress offers today, so the setting reads as a swap.
 		$core = self::bare_url( \home_url( '/?p=123' ) );
@@ -707,11 +708,11 @@ class Settings_Fields {
 		 */
 		$bluesky = self::bare_url(
 			appview_url(
-				'profile/' . $handle . '/post/' . $rkey,
+				'profile/' . $handle . '/post/' . $example_rkey,
 				array(
 					'type'   => 'post',
 					'handle' => $handle,
-					'rkey'   => $rkey,
+					'rkey'   => $example_rkey,
 				)
 			)
 		);
