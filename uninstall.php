@@ -29,6 +29,7 @@ $atmosphere_options = array(
 	'atmosphere_publication_cid',
 	'atmosphere_publication_uri',
 	'atmosphere_auto_publish',
+	'atmosphere_shortlink',
 	// Legacy: written by set_handle() in 1.0.x and 1.1.0 as a revert
 	// snapshot for disconnect. The revert path was removed; the option
 	// no longer has a producer or consumer. Kept in the uninstall sweep

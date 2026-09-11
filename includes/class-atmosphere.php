@@ -233,6 +233,13 @@ class Atmosphere {
 		Blocks::register();
 
 		/*
+		 * Record-id links (`/post/<rkey>`). Resolved off the 404 rather
+		 * than through a rewrite rule, so a request that resolves costs
+		 * nothing and whatever else lives at that path keeps winning.
+		 */
+		Link::register();
+
+		/*
 		 * Per-post "share to Bluesky" toggle + custom-text meta (REST-exposed
 		 * for the editor panel). Hooked late: `get_supported_post_types()`
 		 * merges the option, the filter, and the native opt-ins, and the

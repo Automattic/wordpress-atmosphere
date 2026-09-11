@@ -641,6 +641,34 @@ function is_comment_publishing_enabled(): bool {
 }
 
 /**
+ * Whether the record-id link is advertised as this site's `rel=shortlink`.
+ *
+ * Opt in, unlike the plugin's other toggles. The link itself always
+ * resolves — that costs the site nothing and breaks nothing. Claiming
+ * `rel=shortlink` is a different thing to ask for: it speaks for the
+ * whole site, including posts that were never cross-posted, and plenty of
+ * sites already run a shortener that owns that relation.
+ *
+ * @since unreleased
+ *
+ * @return bool
+ */
+function is_shortlink_enabled(): bool {
+	$enabled = '1' === (string) \get_option( 'atmosphere_shortlink', '0' );
+
+	/**
+	 * Filters whether the record-id link is advertised as `rel=shortlink`.
+	 *
+	 * Runs last, so it overrides the stored setting either way.
+	 *
+	 * @since unreleased
+	 *
+	 * @param bool $enabled Whether the link is advertised as the short link.
+	 */
+	return (bool) \apply_filters( 'atmosphere_should_advertise_shortlink', $enabled );
+}
+
+/**
  * Whether the connection requires the user to re-authorize.
  *
  * True when an identity is on file but the credentials option is

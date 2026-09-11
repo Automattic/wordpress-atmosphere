@@ -61,6 +61,25 @@ class Options {
 
 		\register_setting(
 			'atmosphere',
+			'atmosphere_shortlink',
+			array(
+				'type'              => 'boolean',
+				'description'       => 'Whether the record-id link is advertised as the site\'s rel=shortlink.',
+
+				/*
+				 * Opt in, unlike the plugin's other toggles. Claiming
+				 * `rel=shortlink` speaks for the whole site, including
+				 * posts that were never cross-posted, and a site may
+				 * already have a shortener that owns it.
+				 */
+				'default'           => '0',
+				'show_in_rest'      => true,
+				'sanitize_callback' => array( Sanitize::class, 'boolean_option' ),
+			)
+		);
+
+		\register_setting(
+			'atmosphere',
 			'atmosphere_publish_comments',
 			array(
 				'type'              => 'boolean',
