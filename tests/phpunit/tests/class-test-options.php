@@ -55,6 +55,7 @@ class Test_Options extends \WP_UnitTestCase {
 			'publish comments' => array( 'atmosphere_publish_comments' ),
 			'sync reactions'   => array( 'atmosphere_sync_reactions' ),
 			'sync replies'     => array( 'atmosphere_sync_replies' ),
+			'shortlink'        => array( 'atmosphere_shortlink' ),
 		);
 	}
 }
