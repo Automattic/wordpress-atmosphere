@@ -1,4 +1,0 @@
-Significance: patch
-Type: fixed
-
-Fixed the custom Bluesky text, the share toggle, and the reply restriction silently not saving on custom post types.

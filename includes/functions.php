@@ -649,7 +649,7 @@ function is_comment_publishing_enabled(): bool {
  * whole site, including posts that were never cross-posted, and plenty of
  * sites already run a shortener that owns that relation.
  *
- * @since unreleased
+ * @since 2.3.0
  *
  * @return bool
  */
@@ -661,7 +661,7 @@ function is_shortlink_enabled(): bool {
 	 *
 	 * Runs last, so it overrides the stored setting either way.
 	 *
-	 * @since unreleased
+	 * @since 2.3.0
 	 *
 	 * @param bool $enabled Whether the link is advertised as the short link.
 	 */
@@ -1180,7 +1180,7 @@ function is_sharing_enabled( \WP_Post $post ): bool {
  * Integrations MUST fail closed: any ambiguity — gating state unreadable, an
  * unrecognised access level — must return less content, never more.
  *
- * @since unreleased
+ * @since 2.3.0
  *
  * @param \WP_Post $post Post object.
  * @return string Publicly publishable post content.
@@ -1225,7 +1225,7 @@ function get_publishable_content( \WP_Post $post ): string {
 	 * the result against the stored content (see {@see is_post_gated()}), so
 	 * an unnecessary serialize round-trip reads as gating.
 	 *
-	 * @since unreleased
+	 * @since 2.3.0
 	 *
 	 * @param string   $content The post's stored content (`post_content`).
 	 * @param \WP_Post $post    The post being published.
@@ -1266,7 +1266,7 @@ function &publishable_content_cache(): array {
  * key does not capture mid-request, and gives tests a reset akin to the content
  * parser's `flush_block_cache()`.
  *
- * @since unreleased
+ * @since 2.3.0
  *
  * @return void
  */
@@ -1285,7 +1285,7 @@ function flush_publishable_content_cache(): void {
  * change that recomputes the publishable content must never be served a block
  * tree or HTML memoized under the previous, more permissive decision.
  *
- * @since unreleased
+ * @since 2.3.0
  *
  * @param \WP_Post $post Post object.
  * @return string The cache key.
@@ -1302,7 +1302,7 @@ function publishable_content_cache_key( \WP_Post $post ): string {
 	 * preview projection, for instance — should append that state so each
 	 * variant gets its own cache slot instead of masking another's.
 	 *
-	 * @since unreleased
+	 * @since 2.3.0
 	 *
 	 * @param string   $key  The default cache key (post ID + content hash).
 	 * @param \WP_Post $post The post being published.
@@ -1319,7 +1319,7 @@ function publishable_content_cache_key( \WP_Post $post ): string {
  * comment lane keeps a gated parent's whole thread private — read this
  * predicate rather than comparing content themselves.
  *
- * @since unreleased
+ * @since 2.3.0
  *
  * @param \WP_Post $post Post object.
  * @return bool True when the post is gated in any way.
@@ -1337,7 +1337,7 @@ function is_post_gated( \WP_Post $post ): bool {
 	 * and false when a re-serializing parser changed the markup without
 	 * actually gating anything.
 	 *
-	 * @since unreleased
+	 * @since 2.3.0
 	 *
 	 * @param bool     $gated Whether the post is gated.
 	 * @param \WP_Post $post  The post being checked.
@@ -1357,7 +1357,7 @@ function is_post_gated( \WP_Post $post ): bool {
  * overwrite the safe body. The actions always fire in pairs around the
  * render, so an integration can restore its own state in the `post` hook.
  *
- * @since unreleased
+ * @since 2.3.0
  *
  * @param \WP_Post $post Post object.
  * @return string The rendered HTML.
@@ -1394,7 +1394,7 @@ function render_publishable_content( \WP_Post $post ): string {
 	 * does not overwrite the already-narrowed body. Must be mirrored by
 	 * {@see 'atmosphere_post_render_publishable_content'}.
 	 *
-	 * @since unreleased
+	 * @since 2.3.0
 	 *
 	 * @param \WP_Post $post The post being rendered.
 	 */
@@ -1408,7 +1408,7 @@ function render_publishable_content( \WP_Post $post ): string {
 	 *
 	 * Mirror of {@see 'atmosphere_pre_render_publishable_content'}.
 	 *
-	 * @since unreleased
+	 * @since 2.3.0
 	 *
 	 * @param \WP_Post $post The post that was rendered.
 	 */

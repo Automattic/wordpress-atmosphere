@@ -334,7 +334,7 @@ class Jetpack {
 		 * whose paywall lives under another name can append it — after also
 		 * narrowing its gated content via `atmosphere_publishable_content`.
 		 *
-		 * @since unreleased
+		 * @since 2.3.0
 		 *
 		 * @param string[] $callbacks Callback names to suspend.
 		 */
