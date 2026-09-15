@@ -30,6 +30,7 @@ use function Atmosphere\is_auto_publish_enabled;
 use function Atmosphere\is_connected;
 use function Atmosphere\is_operator_disconnected;
 use function Atmosphere\reauth_reason_lead;
+use function Atmosphere\is_legacy_connection;
 use function Atmosphere\reconnect_url;
 use function Atmosphere\settings_url;
 use function Atmosphere\threadgate_needs_reconnect;
@@ -170,6 +171,15 @@ class Health_Check {
 					'<p>%s</p>',
 					\__( 'This site is still connected, but its saved Bluesky login has not been renewed for more than 24 hours. Configure a real server cron to run WordPress scheduled tasks so the connection does not expire while the site has little traffic.', 'atmosphere' )
 				);
+			} elseif ( is_legacy_connection() ) {
+				$result['status']         = 'recommended';
+				$result['badge']['color'] = 'orange';
+				$result['label']          = \__( 'ATmosphere still uses the older Bluesky login', 'atmosphere' );
+				$result['description']    = \sprintf(
+					'<p>%s</p>',
+					\__( 'This login expires every two weeks. Disconnect and connect again once to switch to the longer-lasting Bluesky login.', 'atmosphere' )
+				);
+				$result['actions']        = self::reconnect_action();
 			}
 
 			return $result;
@@ -181,15 +191,7 @@ class Health_Check {
 		 * the resolver falls back to the Connectors screen (or, with
 		 * neither available, an empty string — no action link to show).
 		 */
-		$reconnect_url = reconnect_url();
-
-		if ( '' !== $reconnect_url ) {
-			$result['actions'] = \sprintf(
-				'<p><a href="%s">%s</a></p>',
-				\esc_url( $reconnect_url ),
-				\esc_html__( 'Manage your Bluesky connection', 'atmosphere' )
-			);
-		}
+		$result['actions'] = self::reconnect_action();
 
 		if ( 'never_connected' === $state ) {
 			$result['status']      = 'recommended';
@@ -503,6 +505,26 @@ class Health_Check {
 	}
 
 	/**
+	 * Link to the screen where the connection can be (re)made, or '' when
+	 * there is none to send the reader to.
+	 *
+	 * @return string
+	 */
+	private static function reconnect_action(): string {
+		$reconnect_url = reconnect_url();
+
+		if ( '' === $reconnect_url ) {
+			return '';
+		}
+
+		return \sprintf(
+			'<p><a href="%s">%s</a></p>',
+			\esc_url( $reconnect_url ),
+			\esc_html__( 'Manage your Bluesky connection', 'atmosphere' )
+		);
+	}
+
+	/**
 	 * Whether the current connection has missed its renewal heartbeat.
 	 *
 	 * @param array $status Refresh status as read from `Client::refresh_status()`.
@@ -639,10 +661,30 @@ class Health_Check {
 					'value'   => self::last_refresh_debug_value(),
 					'private' => false,
 				),
+				'login_type'        => array(
+					'label'   => \__( 'Login Type', 'atmosphere' ),
+					'value'   => self::login_type_debug_value(),
+					'private' => false,
+				),
 			),
 		);
 
 		return $info;
+	}
+
+	/**
+	 * Which OAuth client the saved login belongs to, for the debug panel.
+	 *
+	 * @return string
+	 */
+	private static function login_type_debug_value(): string {
+		if ( ! is_connected() ) {
+			return \__( 'Not connected', 'atmosphere' );
+		}
+
+		return is_legacy_connection()
+			? \__( 'Older login (expires every two weeks)', 'atmosphere' )
+			: \__( 'Long-lasting login', 'atmosphere' );
 	}
 
 	/**

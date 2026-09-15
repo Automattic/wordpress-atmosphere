@@ -61,6 +61,7 @@ class Test_Health_Check extends \WP_UnitTestCase {
 					'pds_endpoint' => 'https://pds.example.com',
 					'access_token' => Encryption::encrypt( 'access-token' ),
 					'needs_reauth' => false,
+					'client_id'    => Client::client_id(),
 				),
 				$overrides
 			),
@@ -144,6 +145,31 @@ class Test_Health_Check extends \WP_UnitTestCase {
 		$this->assertStringContainsString( 'rejected', $result['label'] );
 		$this->assertStringContainsString( 'Reachability Test', $result['description'] );
 		$this->assertSame( '', $result['actions'] );
+	}
+
+	/**
+	 * A session from before confidential authentication still works but is
+	 * capped at two weeks, so Site Health asks for one reconnect.
+	 */
+	public function test_legacy_login_is_recommended_with_a_reconnect_link() {
+		$this->seed_connection( array( 'client_id' => '' ) );
+
+		$result = Health_Check::test_connection();
+
+		$this->assertSame( 'recommended', $result['status'] );
+		$this->assertStringContainsString( 'older Bluesky login', $result['label'] );
+		$this->assertStringContainsString( 'options-general.php?page=atmosphere', $result['actions'] );
+	}
+
+	/**
+	 * The debug panel names the login type for both session generations.
+	 */
+	public function test_debug_information_reports_login_type() {
+		$this->seed_connection();
+		$this->assertSame( 'Long-lasting login', Health_Check::debug_information( array() )['atmosphere']['fields']['login_type']['value'] );
+
+		$this->seed_connection( array( 'client_id' => '' ) );
+		$this->assertStringContainsString( 'two weeks', Health_Check::debug_information( array() )['atmosphere']['fields']['login_type']['value'] );
 	}
 
 	/**

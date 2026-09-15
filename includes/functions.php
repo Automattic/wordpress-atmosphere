@@ -610,6 +610,21 @@ function is_connected(): bool {
 }
 
 /**
+ * Whether the live connection still uses the public OAuth client.
+ *
+ * Sessions created before confidential client authentication store no
+ * `client_id`. Bluesky caps such sessions at two weeks, so the user has to
+ * reconnect once to get the long-lived login.
+ *
+ * @since unreleased
+ *
+ * @return bool
+ */
+function is_legacy_connection(): bool {
+	return is_connected() && empty( get_connection()['client_id'] );
+}
+
+/**
  * Whether local WordPress comments may be published to Bluesky as replies.
  *
  * Unsaved installs default to enabled. The stored per-site preference is

@@ -1,4 +1,4 @@
 Significance: patch
 Type: added
 
-Site Health warns when the Bluesky login has not been renewed for a day, and when Bluesky rejects the site's login setup.
+Site Health warns when the Bluesky login has not been renewed for a day, when Bluesky rejects the site's login setup, and when a one-time reconnect is needed for the longer-lasting login.
