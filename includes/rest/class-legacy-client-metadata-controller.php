@@ -21,13 +21,6 @@ use Atmosphere\OAuth\Client;
 class Legacy_Client_Metadata_Controller extends Client_Metadata_Controller {
 
 	/**
-	 * REST namespace of the public-client metadata document.
-	 *
-	 * @var string
-	 */
-	public const ROUTE_NAMESPACE = 'atmosphere/' . self::VERSION;
-
-	/**
 	 * Version of the client metadata document this controller serves.
 	 *
 	 * @var string
@@ -39,7 +32,7 @@ class Legacy_Client_Metadata_Controller extends Client_Metadata_Controller {
 	 *
 	 * @var string
 	 */
-	protected $namespace = self::ROUTE_NAMESPACE;
+	protected $namespace = 'atmosphere/' . self::VERSION;
 
 	/**
 	 * Fields that identify the public client.

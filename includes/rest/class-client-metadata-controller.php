@@ -28,22 +28,13 @@ use function Atmosphere\sanitize_text;
 class Client_Metadata_Controller extends \WP_REST_Controller {
 
 	/**
-	 * REST namespace of the confidential-client metadata document.
-	 *
-	 * The metadata URL is the OAuth `client_id`, an external contract:
-	 * every namespace that has ever served one must keep serving it
-	 * unchanged while sessions minted under it exist. Neither is moved
-	 * to the admin `atmosphere/1.0` namespace.
-	 *
-	 * The public-client document for legacy sessions is served by
-	 * {@see Legacy_Client_Metadata_Controller} on its own namespace.
-	 *
-	 * @var string
-	 */
-	public const ROUTE_NAMESPACE = 'atmosphere/' . self::VERSION;
-
-	/**
 	 * Version of the client metadata document this controller serves.
+	 *
+	 * It is the version of the REST namespace. The metadata URL is the
+	 * OAuth `client_id`, an external contract: every namespace that has
+	 * ever served one must keep serving it unchanged while sessions minted
+	 * under it exist. The public-client document for legacy sessions is
+	 * served by {@see Legacy_Client_Metadata_Controller}.
 	 *
 	 * @var string
 	 */
@@ -61,7 +52,7 @@ class Client_Metadata_Controller extends \WP_REST_Controller {
 	 *
 	 * @var string
 	 */
-	protected $namespace = self::ROUTE_NAMESPACE;
+	protected $namespace = 'atmosphere/' . self::VERSION;
 
 	/**
 	 * The base of this controller's route.
