@@ -184,22 +184,31 @@ class Client {
 	public const REAUTH_REASON_DECRYPT_FAILED = 'decrypt_failed';
 
 	/**
-	 * Get the client_id URL (= client metadata endpoint).
+	 * Get the client_id URL (= confidential client metadata endpoint).
+	 *
+	 * Forces the `https` scheme, mirroring redirect_uri(). AT Protocol
+	 * requires the client_id to be an https URL. rest_url() inherits its
+	 * scheme from the request context, so on a site behind a
+	 * TLS-terminating proxy a CLI/cron request (where is_ssl() is false)
+	 * yields an http client_id — which the auth server rejects as
+	 * "Invalid client ID" during the pre-publish token refresh, even
+	 * though the browser-side authorize used https and succeeded.
+	 * Forcing the scheme keeps the client_id stable across contexts and
+	 * matches the value advertised in the client metadata document.
 	 *
 	 * @return string
 	 */
 	public static function client_id(): string {
-		/*
-		 * Force the `https` scheme, mirroring redirect_uri(). AT Protocol
-		 * requires the client_id to be an https URL. rest_url() inherits its
-		 * scheme from the request context, so on a site behind a
-		 * TLS-terminating proxy a CLI/cron request (where is_ssl() is false)
-		 * yields an http client_id — which the auth server rejects as
-		 * "Invalid client ID" during the pre-publish token refresh, even
-		 * though the browser-side authorize used https and succeeded.
-		 * Forcing the scheme keeps the client_id stable across contexts and
-		 * matches the value advertised in the client metadata document.
-		 */
+		return \set_url_scheme( \rest_url( 'atmosphere/v2/client-metadata' ), 'https' );
+	}
+
+	/**
+	 * OAuth client identifier used by connections created before confidential
+	 * client authentication was introduced. Same scheme rule as client_id().
+	 *
+	 * @return string
+	 */
+	public static function legacy_client_id(): string {
 		return \set_url_scheme( \rest_url( 'atmosphere/v1/client-metadata' ), 'https' );
 	}
 
@@ -360,7 +369,8 @@ class Client {
 				$dpop_jwk,
 				$state,
 				$challenge,
-				$resolved['did']
+				$resolved['did'],
+				$auth_meta['issuer_url']
 			);
 		}
 
@@ -406,6 +416,7 @@ class Client {
 	 * @param string $state    CSRF state.
 	 * @param string $challenge PKCE challenge.
 	 * @param string $did      Login hint.
+	 * @param string $issuer   Authorization server issuer URL.
 	 * @return string|\WP_Error
 	 */
 	private static function authorize_via_par(
@@ -415,6 +426,7 @@ class Client {
 		string $state,
 		string $challenge,
 		string $did,
+		string $issuer,
 	): string|\WP_Error {
 		$dpop_proof = DPoP::create_proof( $dpop_jwk, 'POST', $par_url );
 
@@ -432,6 +444,11 @@ class Client {
 			'code_challenge_method' => 'S256',
 			'login_hint'            => $did,
 		);
+
+		$body = Client_Authentication::sign_request( $body, $issuer );
+		if ( \is_wp_error( $body ) ) {
+			return $body;
+		}
 
 		$response = \wp_safe_remote_post(
 			$par_url,
@@ -471,6 +488,11 @@ class Client {
 
 			if ( false === $dpop_proof ) {
 				return new \WP_Error( 'atmosphere_dpop', \__( 'DPoP nonce retry failed.', 'atmosphere' ) );
+			}
+
+			$body = Client_Authentication::sign_request( $body, $issuer );
+			if ( \is_wp_error( $body ) ) {
+				return $body;
 			}
 
 			$response = \wp_safe_remote_post(
@@ -578,6 +600,7 @@ class Client {
 		}
 
 		$token_endpoint = $resolved['auth_server']['token_endpoint'];
+		$issuer         = $resolved['auth_server']['issuer_url'];
 
 		// Build DPoP proof for token request.
 		$dpop_proof = DPoP::create_proof( $dpop_jwk, 'POST', $token_endpoint );
@@ -592,6 +615,11 @@ class Client {
 			'redirect_uri'  => self::redirect_uri(),
 			'code_verifier' => $verifier,
 		);
+
+		$token_body = Client_Authentication::sign_request( $token_body, $issuer );
+		if ( \is_wp_error( $token_body ) ) {
+			return $token_body;
+		}
 
 		$response = \wp_safe_remote_post(
 			$token_endpoint,
@@ -629,6 +657,11 @@ class Client {
 			$dpop_proof = DPoP::create_proof( $dpop_jwk, 'POST', $token_endpoint, $nonce );
 			if ( false === $dpop_proof ) {
 				return new \WP_Error( 'atmosphere_dpop', \__( 'DPoP nonce retry failed during token exchange.', 'atmosphere' ) );
+			}
+
+			$token_body = Client_Authentication::sign_request( $token_body, $issuer );
+			if ( \is_wp_error( $token_body ) ) {
+				return $token_body;
 			}
 
 			$response = \wp_safe_remote_post(
@@ -696,6 +729,7 @@ class Client {
 			'refresh_token'       => ! empty( $data['refresh_token'] ) ? Encryption::encrypt( $data['refresh_token'] ) : '',
 			'dpop_jwk'            => Encryption::encrypt( (string) \wp_json_encode( $dpop_jwk ) ),
 			'key_fingerprint'     => Encryption::key_fingerprint(),
+			'client_id'           => self::client_id(),
 			'expires_at'          => \time() + ( $data['expires_in'] ?? 3600 ),
 			'needs_reauth'        => false,
 
@@ -747,6 +781,14 @@ class Client {
 		 * existing autoloaded rows flip on the next reconnect.
 		 */
 		\update_option( 'atmosphere_connection', $connection, false );
+
+		/*
+		 * Treat the initial token exchange as a successful credential
+		 * renewal too. This establishes a baseline for Site Health, so a
+		 * newly-connected but low-traffic site can be warned before the
+		 * authorization server's refresh-token inactivity window expires.
+		 */
+		self::record_refresh_success();
 
 		/*
 		 * Connecting is the moment our well-known endpoints become
@@ -956,11 +998,27 @@ class Client {
 			return new \WP_Error( 'atmosphere_dpop', \__( 'Failed to create DPoP proof for refresh.', 'atmosphere' ) );
 		}
 
+		/*
+		 * A session minted by the confidential client stores its client_id;
+		 * older public-client sessions have none and must keep refreshing
+		 * without an assertion under the frozen legacy client_id.
+		 */
+		$confidential = ! empty( $conn['client_id'] );
+		$client_id    = $confidential ? (string) $conn['client_id'] : self::legacy_client_id();
+		$issuer       = (string) ( $conn['auth_server'] ?? '' );
+
 		$body = array(
 			'grant_type'    => 'refresh_token',
 			'refresh_token' => $refresh_token,
-			'client_id'     => self::client_id(),
+			'client_id'     => $client_id,
 		);
+
+		if ( $confidential ) {
+			$body = Client_Authentication::sign_request( $body, $issuer );
+			if ( \is_wp_error( $body ) ) {
+				return $body;
+			}
+		}
 
 		$response = \wp_safe_remote_post(
 			$token_endpoint,
@@ -1006,6 +1064,13 @@ class Client {
 			$dpop_proof = DPoP::create_proof( $dpop_jwk, 'POST', $token_endpoint, $nonce );
 			if ( false === $dpop_proof ) {
 				return new \WP_Error( 'atmosphere_dpop', \__( 'DPoP nonce retry failed during refresh.', 'atmosphere' ) );
+			}
+
+			if ( $confidential ) {
+				$body = Client_Authentication::sign_request( $body, $issuer );
+				if ( \is_wp_error( $body ) ) {
+					return $body;
+				}
 			}
 
 			$response = \wp_safe_remote_post(
@@ -1094,39 +1159,46 @@ class Client {
 				$msg = \__( 'Token refresh failed.', 'atmosphere' );
 			}
 
-			if ( \in_array( $error, array( 'invalid_grant', 'invalid_client', 'unauthorized_client' ), true ) ) {
+			if ( 'invalid_grant' === $error ) {
 				self::mark_needs_reauth( $conn, 'refresh_token' );
 
 				/*
 				 * The generic message above is what authors need; the raw
-				 * auth-server text is what triage needs, and it is the only
-				 * thing that tells `invalid_grant` (token consumed or
-				 * revoked) apart from `invalid_client` /
-				 * `unauthorized_client` (the client registration itself is
-				 * being rejected) — a very different problem with a very
-				 * different fix. `log_cron_error()` only ever sees the
-				 * message we return, so the detail has to be logged here or
-				 * it is gone.
+				 * auth-server text is what triage needs. `log_cron_error()`
+				 * only ever sees the message we return, so the detail has
+				 * to be logged here or it is gone.
 				 */
-				debug_log(
-					\sprintf(
-						'refresh rejected permanently (%s): %s',
-						'' !== $error ? $error : 'unspecified',
-						$msg
-					)
-				);
+				debug_log( \sprintf( 'refresh rejected permanently (%s): %s', $error, $msg ) );
 
 				/*
 				 * The server's own code rides along in the data for the
 				 * recorder in `refresh()`: the WP_Error code says a
-				 * reconnect is required but not why, and the three
-				 * permanent codes mean very different things. Without
-				 * it, every report of "it disconnected again" starts
-				 * from zero.
+				 * reconnect is required but not why. Without it, every
+				 * report of "it disconnected again" starts from zero.
 				 */
 				return new \WP_Error(
 					'atmosphere_needs_reauth',
 					\__( 'AT Protocol session expired. Reconnect to resume publishing.', 'atmosphere' ),
+					array(
+						'status'        => $status,
+						'refresh_error' => $error,
+					)
+				);
+			}
+
+			/*
+			 * A client-registration failure is not repaired by authorizing
+			 * the same client again. Keeping the session intact avoids a
+			 * misleading "disconnected" state and leaves a still-valid access
+			 * token usable while the administrator fixes stale client metadata,
+			 * a blocked client-metadata endpoint, or a provider-side policy.
+			 */
+			if ( self::is_client_configuration_error( $error ) ) {
+				debug_log( \sprintf( 'refresh rejected client configuration (%s): %s', $error, $msg ) );
+
+				return new \WP_Error(
+					'atmosphere_client_configuration',
+					\__( 'The authorization server rejected this site’s OAuth client configuration. Check ATmosphere Site Health before trying again.', 'atmosphere' ),
 					array(
 						'status'        => $status,
 						'refresh_error' => $error,
@@ -1277,6 +1349,32 @@ class Client {
 	 */
 	public static function is_reconnect_error( string $code ): bool {
 		return \in_array( $code, self::RECONNECT_ERROR_CODES, true );
+	}
+
+	/**
+	 * Auth-server error codes that reject the client registration itself.
+	 *
+	 * Reconnecting the same client cannot repair these, so `refresh()`
+	 * keeps the session and Site Health points at the client metadata
+	 * instead. Declared once here so both stay in step.
+	 *
+	 * @var string[]
+	 */
+	private const CLIENT_CONFIGURATION_ERRORS = array(
+		'invalid_client',
+		'unauthorized_client',
+	);
+
+	/**
+	 * Whether an auth-server error code means the client registration was rejected.
+	 *
+	 * @since unreleased
+	 *
+	 * @param string $error OAuth error code as returned by the authorization server.
+	 * @return bool
+	 */
+	public static function is_client_configuration_error( string $error ): bool {
+		return \in_array( $error, self::CLIENT_CONFIGURATION_ERRORS, true );
 	}
 
 	/**

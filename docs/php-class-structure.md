@@ -171,7 +171,7 @@ Concrete transformers:
 
 ### OAuth (`includes/oauth/`)
 
-Full PKCE + DPoP + PAR native OAuth flow. The handle → DID → PDS → Auth Server resolution chain is implemented across `class-resolver.php` (resolution) and `class-client.php` (OAuth lifecycle). DPoP proofs are generated in `class-dpop.php` (ES256). Tokens and the DPoP private key are encrypted at rest via `class-encryption.php` (libsodium).
+Full PKCE + DPoP + PAR native OAuth flow. The handle → DID → PDS → Auth Server resolution chain is implemented across `class-resolver.php` (resolution) and `class-client.php` (OAuth lifecycle). DPoP proofs are generated in `class-dpop.php` (ES256). `class-client-authentication.php` holds the separate persistent ES256 key that signs confidential-client assertions and exposes its public JWKS. Tokens, DPoP keys, and that private signing key are encrypted at rest via `class-encryption.php` (libsodium).
 
 ### Reaction Sync (`includes/class-reaction-sync.php`)
 
@@ -273,9 +273,11 @@ via `register_routes()`; they are all instantiated together in
 
 Route namespaces are versioned deliberately:
 
-- **`atmosphere/v1`** — the public OAuth `client-metadata` endpoint. Its URL is
-  the OAuth `client_id`, an external contract, so the version string is frozen
-  and must not change.
+- **`atmosphere/v2`** — `client-metadata`, the confidential-client document
+  whose URL is the OAuth `client_id` of every new connection.
+- **`atmosphere/v1`** — `client-metadata`, the frozen public-client document
+  used by legacy sessions. Neither client ID may be moved or removed while
+  sessions using it exist.
 - **`atmosphere/1.0`** — admin/editor routes (e.g. the pre-publish preview).
 
 New admin routes should use `atmosphere/1.0`, set `show_in_index => false`, and

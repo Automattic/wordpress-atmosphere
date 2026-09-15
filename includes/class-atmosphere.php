@@ -25,6 +25,7 @@ use Atmosphere\Integrations\Load;
 use Atmosphere\Rest\Admin\Connection_Controller;
 use Atmosphere\Rest\Admin\Pre_Publish_Controller;
 use Atmosphere\Rest\Client_Metadata_Controller;
+use Atmosphere\Rest\Legacy_Client_Metadata_Controller;
 use Atmosphere\Rest\Reactions_Controller;
 use Atmosphere\WP_Admin\Admin;
 use Atmosphere\WP_Admin\Health_Check;
@@ -1898,6 +1899,7 @@ class Atmosphere {
 	 */
 	public function register_rest_controllers(): void {
 		( new Client_Metadata_Controller() )->register_routes();
+		( new Legacy_Client_Metadata_Controller() )->register_routes();
 		( new Connection_Controller() )->register_routes();
 		( new Pre_Publish_Controller() )->register_routes();
 		( new Reactions_Controller() )->register_routes();
@@ -2812,6 +2814,7 @@ class Atmosphere {
 		}
 
 		$permanent_codes = array(
+			'atmosphere_client_configuration',
 			'atmosphere_post_not_publishable',
 			'atmosphere_missing_tid',
 			'atmosphere_invalid_pre_apply_writes_return',

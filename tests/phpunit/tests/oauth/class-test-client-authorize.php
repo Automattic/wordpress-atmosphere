@@ -15,13 +15,17 @@ namespace Atmosphere\Tests\OAuth;
 
 use WP_UnitTestCase;
 use Atmosphere\OAuth\Client;
+use Atmosphere\OAuth\Client_Authentication;
 use Atmosphere\OAuth\DPoP;
 use Atmosphere\OAuth\Encryption;
+use Atmosphere\Tests\JWT_Claims;
 
 /**
  * Authorize-flow transient encryption tests.
  */
 class Test_Client_Authorize extends WP_UnitTestCase {
+
+	use JWT_Claims;
 
 	/**
 	 * Tear down transients between tests.
@@ -33,6 +37,7 @@ class Test_Client_Authorize extends WP_UnitTestCase {
 		\delete_transient( 'atmosphere_oauth_resolved' );
 		\delete_option( 'atmosphere_connection' );
 		\delete_option( 'atmosphere_identity' );
+		\delete_option( Client_Authentication::KEY_OPTION );
 		\remove_all_filters( 'pre_http_request' );
 		\remove_all_actions( 'atmosphere_connected' );
 		\remove_all_actions( 'atmosphere_disconnected' );
@@ -371,6 +376,11 @@ class Test_Client_Authorize extends WP_UnitTestCase {
 		$this->assertIsString( $result );
 		$this->assertStringStartsWith( 'https://auth.example.com/oauth/authorize?', $result );
 		$this->assertSame( 0, $captured_args['redirection'] ?? null );
+
+		$claims = $this->jwt_payload( (string) ( $captured_args['body']['client_assertion'] ?? '' ) );
+		$this->assertSame( 'https://auth.example.com', $claims['aud'], 'PAR assertion audience must be the issuer, not the PAR endpoint.' );
+		$this->assertSame( Client::client_id(), $claims['iss'] );
+		$this->assertSame( Client::client_id(), $claims['sub'] );
 	}
 
 	/**
@@ -426,6 +436,17 @@ class Test_Client_Authorize extends WP_UnitTestCase {
 
 		$this->assertTrue( $result );
 		$this->assertSame( 0, $captured_args['redirection'] ?? null );
+		$this->assertSame( Client::client_id(), $captured_args['body']['client_id'] ?? null );
+		$this->assertSame(
+			'urn:ietf:params:oauth:client-assertion-type:jwt-bearer',
+			$captured_args['body']['client_assertion_type'] ?? null
+		);
+		$this->assertNotEmpty( $captured_args['body']['client_assertion'] ?? '' );
+		$this->assertSame( Client::client_id(), \get_option( 'atmosphere_connection' )['client_id'] ?? null );
+
+		$claims = $this->jwt_payload( $captured_args['body']['client_assertion'] );
+		$this->assertSame( 'https://auth.example.com', $claims['aud'], 'Token assertion audience must be the issuer, not the token endpoint.' );
+		$this->assertSame( Client::client_id(), $claims['iss'] );
 	}
 
 	/**

@@ -105,6 +105,48 @@ class Test_Health_Check extends \WP_UnitTestCase {
 	}
 
 	/**
+	 * A live session whose renewal heartbeat is older than one day warns before
+	 * a public OAuth refresh-token inactivity window can expire.
+	 */
+	public function test_stale_renewal_is_recommended() {
+		$this->seed_connection();
+		\update_option(
+			Client::REFRESH_STATUS_OPTION,
+			array( 'last_success' => \time() - DAY_IN_SECONDS - 1 ),
+			false
+		);
+
+		$result = Health_Check::test_connection();
+
+		$this->assertSame( 'recommended', $result['status'] );
+		$this->assertStringContainsString( 'not renewed', $result['label'] );
+		$this->assertStringContainsString( 'server cron', $result['description'] );
+	}
+
+	/**
+	 * A rejected client configuration is actionable without reconnecting, so it
+	 * remains a live connection and Site Health identifies the real problem.
+	 */
+	public function test_client_configuration_failure_is_critical_without_reconnect() {
+		$this->seed_connection();
+		\update_option(
+			Client::REFRESH_STATUS_OPTION,
+			array(
+				'last_error'   => 'invalid_client',
+				'last_failure' => \time(),
+			),
+			false
+		);
+
+		$result = Health_Check::test_connection();
+
+		$this->assertSame( 'critical', $result['status'] );
+		$this->assertStringContainsString( 'rejected', $result['label'] );
+		$this->assertStringContainsString( 'Reachability Test', $result['description'] );
+		$this->assertSame( '', $result['actions'] );
+	}
+
+	/**
 	 * A never-connected site is a recommendation, not a critical issue.
 	 */
 	public function test_never_connected_site_is_recommended() {

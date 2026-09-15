@@ -43,6 +43,18 @@ use function Atmosphere\truncate_text;
 class Health_Check {
 
 	/**
+	 * Age at which a connected site's missing credential renewal becomes a
+	 * Site Health recommendation.
+	 *
+	 * Public AT Protocol clients can receive short refresh-token inactivity
+	 * windows. Twenty-four hours gives a production site time to repair a
+	 * stalled WP-Cron runner before the provider expires the session.
+	 *
+	 * @var int
+	 */
+	private const RENEWAL_STALE_AFTER = DAY_IN_SECONDS;
+
+	/**
 	 * Async test identifier for the reachability test.
 	 *
 	 * Core turns this into the admin-ajax action by prefixing
@@ -140,6 +152,26 @@ class Health_Check {
 		$state = self::connection_state();
 
 		if ( 'connected' === $state ) {
+			$status = Client::refresh_status();
+
+			if ( self::client_configuration_failed( $status ) ) {
+				$result['status']         = 'critical';
+				$result['badge']['color'] = 'red';
+				$result['label']          = \__( 'Bluesky rejected ATmosphere’s OAuth client configuration', 'atmosphere' );
+				$result['description']    = \sprintf(
+					'<p>%s</p>',
+					\__( 'The saved login remains available, but Bluesky rejected its latest renewal. Run the ATmosphere Bluesky Reachability Test on this screen and make sure security or caching software allows the client-metadata endpoint.', 'atmosphere' )
+				);
+			} elseif ( self::renewal_is_stale( $status ) ) {
+				$result['status']         = 'recommended';
+				$result['badge']['color'] = 'orange';
+				$result['label']          = \__( 'ATmosphere has not renewed its Bluesky login recently', 'atmosphere' );
+				$result['description']    = \sprintf(
+					'<p>%s</p>',
+					\__( 'This site is still connected, but its saved Bluesky login has not been renewed for more than 24 hours. Configure a real server cron to run WordPress scheduled tasks so the connection does not expire while the site has little traffic.', 'atmosphere' )
+				);
+			}
+
 			return $result;
 		}
 
@@ -468,6 +500,29 @@ class Health_Check {
 		}
 
 		return 'needs_reauth';
+	}
+
+	/**
+	 * Whether the current connection has missed its renewal heartbeat.
+	 *
+	 * @param array $status Refresh status as read from `Client::refresh_status()`.
+	 * @return bool
+	 */
+	private static function renewal_is_stale( array $status ): bool {
+		return ! empty( $status['last_success'] )
+			&& (int) $status['last_success'] < \time() - self::RENEWAL_STALE_AFTER;
+	}
+
+	/**
+	 * Whether the latest renewal failure is a client-configuration problem.
+	 *
+	 * @param array $status Refresh status as read from `Client::refresh_status()`.
+	 * @return bool
+	 */
+	private static function client_configuration_failed( array $status ): bool {
+		return ! empty( $status['last_failure'] )
+			&& (int) $status['last_failure'] > (int) ( $status['last_success'] ?? 0 )
+			&& Client::is_client_configuration_error( (string) ( $status['last_error'] ?? '' ) );
 	}
 
 	/**

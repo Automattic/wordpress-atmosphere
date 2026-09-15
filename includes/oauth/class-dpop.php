@@ -170,6 +170,44 @@ class DPoP {
 	}
 
 	/**
+	 * Create a private_key_jwt client assertion for a token endpoint.
+	 *
+	 * The client-authentication key is deliberately separate from the DPoP
+	 * key: AT Protocol requires those key pairs to have distinct purposes.
+	 *
+	 * The audience is the authorization server's issuer URL, not the
+	 * endpoint being called: RFC 7523 allows either, but the AT Protocol
+	 * profile narrows it to the issuer and the reference server rejects
+	 * any other value.
+	 *
+	 * @param array  $jwk       Client-authentication JWK.
+	 * @param string $client_id OAuth client identifier.
+	 * @param string $audience  Authorization server issuer URL.
+	 * @param string $key_id    Public JWKS key identifier.
+	 * @return string|false Compact JWT, or false on signing failure.
+	 */
+	public static function create_client_assertion( array $jwk, string $client_id, string $audience, string $key_id ): string|false {
+		$now = \time();
+
+		return self::sign_es256(
+			array(
+				'alg' => 'ES256',
+				'typ' => 'JWT',
+				'kid' => $key_id,
+			),
+			array(
+				'iss' => $client_id,
+				'sub' => $client_id,
+				'aud' => $audience,
+				'jti' => self::base64url( \random_bytes( 16 ) ),
+				'iat' => $now,
+				'exp' => $now + 60,
+			),
+			$jwk
+		);
+	}
+
+	/**
 	 * Sign a JWT with ES256 (ECDSA using P-256 and SHA-256).
 	 *
 	 * Produces a compact-serialized JWS: base64url(header).base64url(payload).base64url(signature).

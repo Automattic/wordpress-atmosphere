@@ -15,8 +15,10 @@ namespace Atmosphere\Tests\OAuth;
 use WP_UnitTestCase;
 use Atmosphere\Atmosphere;
 use Atmosphere\OAuth\Client;
+use Atmosphere\OAuth\Client_Authentication;
 use Atmosphere\OAuth\DPoP;
 use Atmosphere\OAuth\Encryption;
+use Atmosphere\Tests\JWT_Claims;
 use function Atmosphere\has_identity;
 use function Atmosphere\is_connected;
 use function Atmosphere\needs_reauth;
@@ -25,6 +27,8 @@ use function Atmosphere\needs_reauth;
  * Client refresh tests.
  */
 class Test_Client_Refresh extends WP_UnitTestCase {
+
+	use JWT_Claims;
 
 	/**
 	 * Token endpoint URL used in tests.
@@ -75,6 +79,7 @@ class Test_Client_Refresh extends WP_UnitTestCase {
 		\delete_option( Client::REFRESH_LOCK_OPTION );
 		\delete_option( Client::DISCONNECTED_OPTION );
 		\delete_option( Client::REFRESH_STATUS_OPTION );
+		\delete_option( Client_Authentication::KEY_OPTION );
 		\remove_all_filters( 'pre_http_request' );
 		\remove_all_actions( 'atmosphere_reauth_required' );
 
@@ -281,9 +286,10 @@ class Test_Client_Refresh extends WP_UnitTestCase {
 	}
 
 	/**
-	 * Test that invalid_client marks the connection for reauth.
+	 * Test that invalid_client preserves the session because reconnecting
+	 * cannot repair a rejected client registration.
 	 */
-	public function test_invalid_client_marks_needs_reauth() {
+	public function test_invalid_client_preserves_connection() {
 		$this->mock_token_response(
 			401,
 			array(
@@ -298,7 +304,8 @@ class Test_Client_Refresh extends WP_UnitTestCase {
 
 		$conn = \get_option( 'atmosphere_connection' );
 		$this->assertNotFalse( $conn );
-		$this->assertTrue( ! empty( $conn['needs_reauth'] ) );
+		$this->assertEmpty( $conn['needs_reauth'] );
+		$this->assertSame( 'atmosphere_client_configuration', $result->get_error_code() );
 		$this->assertNotFalse( \get_option( 'atmosphere_identity' ) );
 		$this->assertFalse(
 			\get_option( Client::DISCONNECTED_OPTION ),
@@ -307,9 +314,10 @@ class Test_Client_Refresh extends WP_UnitTestCase {
 	}
 
 	/**
-	 * Test that unauthorized_client marks the connection for reauth.
+	 * Test that unauthorized_client preserves the session because reconnecting
+	 * cannot repair a rejected client registration.
 	 */
-	public function test_unauthorized_client_marks_needs_reauth() {
+	public function test_unauthorized_client_preserves_connection() {
 		$this->mock_token_response(
 			403,
 			array(
@@ -324,7 +332,8 @@ class Test_Client_Refresh extends WP_UnitTestCase {
 
 		$conn = \get_option( 'atmosphere_connection' );
 		$this->assertNotFalse( $conn );
-		$this->assertTrue( ! empty( $conn['needs_reauth'] ) );
+		$this->assertEmpty( $conn['needs_reauth'] );
+		$this->assertSame( 'atmosphere_client_configuration', $result->get_error_code() );
 		$this->assertNotFalse( \get_option( 'atmosphere_identity' ) );
 		$this->assertFalse(
 			\get_option( Client::DISCONNECTED_OPTION ),
@@ -1004,6 +1013,80 @@ class Test_Client_Refresh extends WP_UnitTestCase {
 			'invalid_grant',
 			$error['message'],
 			'The auth server\'s raw error must not reach the author.'
+		);
+	}
+
+	/**
+	 * A connection made with the confidential client authenticates its
+	 * refresh with an assertion addressed to the authorization server.
+	 */
+	public function test_confidential_refresh_sends_assertion_for_issuer() {
+		$conn                = \get_option( 'atmosphere_connection' );
+		$conn['client_id']   = Client::client_id();
+		$conn['auth_server'] = 'https://auth.example.com';
+		\update_option( 'atmosphere_connection', $conn );
+
+		$body = array();
+		$this->capture_token_request_body( $body );
+		$this->mock_successful_refresh();
+
+		$this->assertTrue( Client::refresh() );
+
+		$this->assertSame( Client::client_id(), $body['client_id'] ?? null );
+		$this->assertSame( 'urn:ietf:params:oauth:client-assertion-type:jwt-bearer', $body['client_assertion_type'] ?? null );
+
+		$claims = $this->jwt_payload( (string) ( $body['client_assertion'] ?? '' ) );
+		$this->assertSame( 'https://auth.example.com', $claims['aud'], 'Refresh assertion audience must be the issuer, not the token endpoint.' );
+		$this->assertSame( Client::client_id(), $claims['iss'] );
+	}
+
+	/**
+	 * A connection from before confidential authentication keeps refreshing
+	 * as the public client, with no assertion.
+	 */
+	public function test_legacy_refresh_sends_no_assertion() {
+		$body = array();
+		$this->capture_token_request_body( $body );
+		$this->mock_successful_refresh();
+
+		$this->assertTrue( Client::refresh() );
+
+		$this->assertSame( Client::legacy_client_id(), $body['client_id'] ?? null );
+		$this->assertArrayNotHasKey( 'client_assertion_type', $body );
+		$this->assertArrayNotHasKey( 'client_assertion', $body );
+	}
+
+	/**
+	 * Mock a token endpoint that issues a fresh token pair.
+	 */
+	private function mock_successful_refresh(): void {
+		$this->mock_token_response(
+			200,
+			array(
+				'access_token'  => 'new-access-token',
+				'refresh_token' => 'new-refresh-token',
+				'expires_in'    => 3600,
+			)
+		);
+	}
+
+	/**
+	 * Record the body of the next token-endpoint request without answering it.
+	 *
+	 * @param array $captured Filled with the request body when the request fires.
+	 */
+	private function capture_token_request_body( array &$captured ): void {
+		\add_filter(
+			'pre_http_request',
+			static function ( $response, $args, $url ) use ( &$captured ) {
+				if ( false !== \strpos( $url, 'oauth/token' ) ) {
+					$captured = (array) ( $args['body'] ?? array() );
+				}
+
+				return $response;
+			},
+			0,
+			3
 		);
 	}
 }
