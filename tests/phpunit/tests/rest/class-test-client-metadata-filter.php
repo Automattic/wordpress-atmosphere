@@ -122,6 +122,28 @@ class Test_Client_Metadata_Filter extends WP_UnitTestCase {
 	}
 
 	/**
+	 * The filter receives the namespace so a callback can tell the two
+	 * documents apart.
+	 */
+	public function test_filter_receives_the_document_namespace() {
+		$seen = array();
+		\add_filter(
+			'atmosphere_client_metadata',
+			static function ( $metadata, $route_namespace ) use ( &$seen ) {
+				$seen[] = $route_namespace;
+				return $metadata;
+			},
+			10,
+			2
+		);
+
+		( new Client_Metadata_Controller() )->get_metadata();
+		( new Legacy_Client_Metadata_Controller() )->get_metadata();
+
+		$this->assertSame( array( 'atmosphere/v2', 'atmosphere/v1' ), $seen );
+	}
+
+	/**
 	 * A filter cannot change the signing algorithm the published key uses.
 	 */
 	public function test_filter_cannot_change_signing_alg() {

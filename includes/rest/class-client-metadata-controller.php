@@ -159,9 +159,14 @@ class Client_Metadata_Controller extends \WP_REST_Controller {
 		 * {@see \Atmosphere\OAuth\Client::redirect_uri()} applies to
 		 * the inbound `atmosphere_oauth_redirect_uri` filter.
 		 *
-		 * @param array $metadata Client metadata.
+		 * @since unreleased The `$route_namespace` parameter was added.
+		 *
+		 * @param array  $metadata        Client metadata.
+		 * @param string $route_namespace REST namespace of the document: `atmosphere/v2`
+		 *                                for the confidential client, `atmosphere/v1`
+		 *                                for the public client of legacy sessions.
 		 */
-		$filtered = \apply_filters( 'atmosphere_client_metadata', $metadata );
+		$filtered = \apply_filters( 'atmosphere_client_metadata', $metadata, $this->namespace );
 
 		if ( self::filter_is_valid( $filtered ) ) {
 			$metadata = $filtered;
