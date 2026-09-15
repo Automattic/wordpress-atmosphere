@@ -355,6 +355,7 @@ class Client {
 				'auth_server'  => $auth_meta,
 				'handle'       => $handle,
 				'origin'       => 'connectors' === $origin ? 'connectors' : 'settings',
+				'client_id'    => self::client_id(),
 			),
 			HOUR_IN_SECONDS
 		);
@@ -602,6 +603,15 @@ class Client {
 		$token_endpoint = $resolved['auth_server']['token_endpoint'];
 		$issuer         = $resolved['auth_server']['issuer_url'];
 
+		/*
+		 * A flow started under the previous plugin version carries no
+		 * client_id in its transient. The code was issued to the public
+		 * client, so it is exchanged as that client and the session is
+		 * stored without a client_id, exactly like a legacy session.
+		 */
+		$confidential = ! empty( $resolved['client_id'] );
+		$client_id    = $confidential ? (string) $resolved['client_id'] : self::legacy_client_id();
+
 		// Build DPoP proof for token request.
 		$dpop_proof = DPoP::create_proof( $dpop_jwk, 'POST', $token_endpoint );
 		if ( false === $dpop_proof ) {
@@ -611,14 +621,16 @@ class Client {
 		$token_body = array(
 			'grant_type'    => 'authorization_code',
 			'code'          => $code,
-			'client_id'     => self::client_id(),
+			'client_id'     => $client_id,
 			'redirect_uri'  => self::redirect_uri(),
 			'code_verifier' => $verifier,
 		);
 
-		$token_body = Client_Authentication::sign_request( $token_body, $issuer );
-		if ( \is_wp_error( $token_body ) ) {
-			return $token_body;
+		if ( $confidential ) {
+			$token_body = Client_Authentication::sign_request( $token_body, $issuer );
+			if ( \is_wp_error( $token_body ) ) {
+				return $token_body;
+			}
 		}
 
 		$response = \wp_safe_remote_post(
@@ -659,9 +671,11 @@ class Client {
 				return new \WP_Error( 'atmosphere_dpop', \__( 'DPoP nonce retry failed during token exchange.', 'atmosphere' ) );
 			}
 
-			$token_body = Client_Authentication::sign_request( $token_body, $issuer );
-			if ( \is_wp_error( $token_body ) ) {
-				return $token_body;
+			if ( $confidential ) {
+				$token_body = Client_Authentication::sign_request( $token_body, $issuer );
+				if ( \is_wp_error( $token_body ) ) {
+					return $token_body;
+				}
 			}
 
 			$response = \wp_safe_remote_post(
@@ -729,7 +743,6 @@ class Client {
 			'refresh_token'       => ! empty( $data['refresh_token'] ) ? Encryption::encrypt( $data['refresh_token'] ) : '',
 			'dpop_jwk'            => Encryption::encrypt( (string) \wp_json_encode( $dpop_jwk ) ),
 			'key_fingerprint'     => Encryption::key_fingerprint(),
-			'client_id'           => self::client_id(),
 			'expires_at'          => \time() + ( $data['expires_in'] ?? 3600 ),
 			'needs_reauth'        => false,
 
@@ -741,6 +754,11 @@ class Client {
 			 */
 			'scope'               => (string) ( $data['scope'] ?? '' ),
 		);
+
+		// Refresh reads this to decide whether to authenticate as the confidential client.
+		if ( $confidential ) {
+			$connection['client_id'] = $client_id;
+		}
 
 		/*
 		 * Clear any prior explicit-disconnect marker BEFORE persisting

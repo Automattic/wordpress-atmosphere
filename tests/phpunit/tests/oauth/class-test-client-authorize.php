@@ -402,6 +402,7 @@ class Test_Client_Authorize extends WP_UnitTestCase {
 					'issuer_url'     => 'https://auth.example.com',
 				),
 				'handle'       => 'alice.example.com',
+				'client_id'    => Client::client_id(),
 			),
 			HOUR_IN_SECONDS
 		);
@@ -562,5 +563,63 @@ class Test_Client_Authorize extends WP_UnitTestCase {
 
 		$this->assertWPError( $result );
 		$this->assertSame( 'atmosphere_session_malformed', $result->get_error_code() );
+	}
+
+	/**
+	 * A flow started before this version has no client_id in its transient.
+	 * Its code was issued to the public client, so the exchange must stay a
+	 * public-client request and the session must be stored as legacy.
+	 */
+	public function test_handle_callback_finishes_a_pre_update_flow_as_the_public_client() {
+		$jwk = DPoP::generate_key();
+
+		\set_transient( 'atmosphere_oauth_state', 'state-abc', HOUR_IN_SECONDS );
+		\set_transient( 'atmosphere_oauth_verifier', 'verifier-xyz', HOUR_IN_SECONDS );
+		\set_transient( 'atmosphere_oauth_dpop_jwk', Encryption::encrypt( (string) \wp_json_encode( $jwk ) ), HOUR_IN_SECONDS );
+		\set_transient(
+			'atmosphere_oauth_resolved',
+			array(
+				'did'          => 'did:plc:test',
+				'pds_endpoint' => 'https://pds.example.com',
+				'auth_server'  => array(
+					'token_endpoint' => 'https://auth.example.com/oauth/token',
+					'issuer_url'     => 'https://auth.example.com',
+				),
+				'handle'       => 'alice.example.com',
+			),
+			HOUR_IN_SECONDS
+		);
+
+		$captured_body = null;
+
+		\add_filter(
+			'pre_http_request',
+			static function ( $response, $args, $url ) use ( &$captured_body ) {
+				if ( false !== \strpos( $url, 'oauth/token' ) ) {
+					$captured_body = (array) $args['body'];
+					return array(
+						'response' => array( 'code' => 200 ),
+						'headers'  => new \WpOrg\Requests\Utility\CaseInsensitiveDictionary( array() ),
+						'body'     => (string) \wp_json_encode(
+							array(
+								'access_token'  => 'access-token',
+								'refresh_token' => 'refresh-token',
+								'expires_in'    => 3600,
+							)
+						),
+					);
+				}
+
+				return $response;
+			},
+			10,
+			3
+		);
+
+		$this->assertTrue( Client::handle_callback( 'code-123', 'state-abc' ) );
+		$this->assertSame( Client::legacy_client_id(), $captured_body['client_id'] );
+		$this->assertArrayNotHasKey( 'client_assertion', $captured_body );
+		$this->assertArrayNotHasKey( 'client_assertion_type', $captured_body );
+		$this->assertArrayNotHasKey( 'client_id', \get_option( 'atmosphere_connection' ) );
 	}
 }
