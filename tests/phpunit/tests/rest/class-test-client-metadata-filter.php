@@ -122,15 +122,15 @@ class Test_Client_Metadata_Filter extends WP_UnitTestCase {
 	}
 
 	/**
-	 * The filter receives the namespace so a callback can tell the two
-	 * documents apart.
+	 * The filter receives the document version so a callback can tell the
+	 * two documents apart.
 	 */
 	public function test_filter_receives_the_document_namespace() {
 		$seen = array();
 		\add_filter(
 			'atmosphere_client_metadata',
-			static function ( $metadata, $route_namespace ) use ( &$seen ) {
-				$seen[] = $route_namespace;
+			static function ( $metadata, $version ) use ( &$seen ) {
+				$seen[] = $version;
 				return $metadata;
 			},
 			10,
@@ -140,7 +140,7 @@ class Test_Client_Metadata_Filter extends WP_UnitTestCase {
 		( new Client_Metadata_Controller() )->get_metadata();
 		( new Legacy_Client_Metadata_Controller() )->get_metadata();
 
-		$this->assertSame( array( 'atmosphere/v2', 'atmosphere/v1' ), $seen );
+		$this->assertSame( array( 'v2', 'v1' ), $seen );
 	}
 
 	/**

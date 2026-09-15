@@ -25,7 +25,14 @@ class Legacy_Client_Metadata_Controller extends Client_Metadata_Controller {
 	 *
 	 * @var string
 	 */
-	public const ROUTE_NAMESPACE = 'atmosphere/v1';
+	public const ROUTE_NAMESPACE = 'atmosphere/' . self::VERSION;
+
+	/**
+	 * Version of the client metadata document this controller serves.
+	 *
+	 * @var string
+	 */
+	public const VERSION = 'v1';
 
 	/**
 	 * The namespace of this controller's route.

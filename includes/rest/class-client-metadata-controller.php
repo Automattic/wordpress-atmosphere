@@ -40,7 +40,14 @@ class Client_Metadata_Controller extends \WP_REST_Controller {
 	 *
 	 * @var string
 	 */
-	public const ROUTE_NAMESPACE = 'atmosphere/v2';
+	public const ROUTE_NAMESPACE = 'atmosphere/' . self::VERSION;
+
+	/**
+	 * Version of the client metadata document this controller serves.
+	 *
+	 * @var string
+	 */
+	public const VERSION = 'v2';
 
 	/**
 	 * The base of this controller's route.
@@ -159,14 +166,13 @@ class Client_Metadata_Controller extends \WP_REST_Controller {
 		 * {@see \Atmosphere\OAuth\Client::redirect_uri()} applies to
 		 * the inbound `atmosphere_oauth_redirect_uri` filter.
 		 *
-		 * @since unreleased The `$route_namespace` parameter was added.
+		 * @since unreleased The `$version` parameter was added.
 		 *
-		 * @param array  $metadata        Client metadata.
-		 * @param string $route_namespace REST namespace of the document: `atmosphere/v2`
-		 *                                for the confidential client, `atmosphere/v1`
-		 *                                for the public client of legacy sessions.
+		 * @param array  $metadata Client metadata.
+		 * @param string $version  Document version: `v2` for the confidential
+		 *                         client, `v1` for the public client of legacy sessions.
 		 */
-		$filtered = \apply_filters( 'atmosphere_client_metadata', $metadata, $this->namespace );
+		$filtered = \apply_filters( 'atmosphere_client_metadata', $metadata, static::VERSION );
 
 		if ( self::filter_is_valid( $filtered ) ) {
 			$metadata = $filtered;
