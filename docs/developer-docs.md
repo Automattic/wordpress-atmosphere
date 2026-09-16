@@ -531,6 +531,8 @@ Define it in `wp-config.php` **before** connecting (or reconnect afterwards — 
 
 New connections use a confidential OAuth client. ATmosphere generates a separate per-site ES256 signing key, encrypts its private half with the token-encryption key, and publishes only its public half in the JWKS of the `atmosphere/v2` client-metadata document. PAR, authorization-code exchange, and token refresh requests carry a `private_key_jwt` assertion signed with that key; it is never reused as a DPoP key.
 
+The signing key is encrypted with the same key material as the tokens. If that material changes, the key can no longer be read; as long as a live session still matches the current material the plugin reports the error, and once no such session exists it discards the key and generates a new one, so reconnecting works without manual cleanup.
+
 The original client-metadata URL remains a public-client document for existing connections. Their stored connection has no `client_id`, so refreshes continue using that legacy URL without a client assertion. A successful new authorization stores the `atmosphere/v2` client ID. Do not repoint or remove the legacy endpoint: authorization servers must be able to refresh those sessions until their users reconnect.
 
 ## Templates and Admin UI

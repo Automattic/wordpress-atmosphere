@@ -9,6 +9,10 @@ namespace Atmosphere\OAuth;
 
 \defined( 'ABSPATH' ) || exit;
 
+use function Atmosphere\debug_log;
+use function Atmosphere\get_connection;
+use function Atmosphere\is_connected;
+
 /**
  * Creates, protects, and exposes this site's OAuth client signing key.
  */
@@ -129,6 +133,13 @@ class Client_Authentication {
 	/**
 	 * Decrypt the stored signing key.
 	 *
+	 * A key that no longer decrypts (rotated salts, a regenerated
+	 * `wp-config.php`) or fails validation is unusable. While a live session
+	 * still matches the current key material, it stays put and the error is
+	 * reported, because the session is bound to that key's `kid`. Once no
+	 * such session exists, the row is discarded so the caller mints a fresh
+	 * key and the site can connect again.
+	 *
 	 * @return array|\WP_Error|null The key, an error for an unreadable row, or null when none is stored.
 	 */
 	private static function stored_key(): array|\WP_Error|null {
@@ -138,16 +149,38 @@ class Client_Authentication {
 		}
 
 		$json = Encryption::decrypt( $stored );
-		if ( false === $json ) {
-			return new \WP_Error( 'atmosphere_client_authentication_key', \__( 'The saved OAuth client-authentication key could not be read. Restore your previous ATMOSPHERE_ENCRYPTION_KEY or reconnect after repairing the configuration.', 'atmosphere' ) );
+		$key  = false === $json ? null : \json_decode( $json, true );
+
+		if ( self::valid_key( $key ) ) {
+			return $key;
 		}
 
-		$key = \json_decode( $json, true );
-		if ( ! self::valid_key( $key ) ) {
-			return new \WP_Error( 'atmosphere_client_authentication_key', \__( 'The saved OAuth client-authentication key is malformed.', 'atmosphere' ) );
+		if ( self::session_bound_to_key() ) {
+			return new \WP_Error( 'atmosphere_client_authentication_key', \__( 'The site’s Bluesky signing key could not be read. Disconnect and connect again to create a new one.', 'atmosphere' ) );
 		}
 
-		return $key;
+		debug_log( 'client-authentication key is unreadable and no live session uses it; generating a new one.' );
+		\delete_option( self::KEY_OPTION );
+
+		return null;
+	}
+
+	/**
+	 * Whether a live session was minted under the current key material.
+	 *
+	 * A connection whose tokens were encrypted under a different key is
+	 * already lost, so nothing is left for the signing key to protect.
+	 *
+	 * @return bool
+	 */
+	private static function session_bound_to_key(): bool {
+		if ( ! is_connected() ) {
+			return false;
+		}
+
+		$fingerprint = (string) ( get_connection()['key_fingerprint'] ?? '' );
+
+		return '' === $fingerprint || \hash_equals( Encryption::key_fingerprint(), $fingerprint );
 	}
 
 	/**

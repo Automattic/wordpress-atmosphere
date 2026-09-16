@@ -17,6 +17,7 @@ namespace Atmosphere\Tests\Rest;
 use WP_UnitTestCase;
 use Atmosphere\OAuth\Client;
 use Atmosphere\OAuth\Client_Authentication;
+use Atmosphere\OAuth\Encryption;
 use Atmosphere\Rest\Client_Metadata_Controller;
 use Atmosphere\Rest\Legacy_Client_Metadata_Controller;
 
@@ -32,6 +33,8 @@ class Test_Client_Metadata_Filter extends WP_UnitTestCase {
 		\remove_all_filters( 'atmosphere_client_metadata' );
 		\remove_all_filters( 'pre_option_blogname' );
 		\delete_option( Client_Authentication::KEY_OPTION );
+		\delete_option( 'atmosphere_identity' );
+		\delete_option( 'atmosphere_connection' );
 		parent::tear_down();
 	}
 
@@ -110,9 +113,28 @@ class Test_Client_Metadata_Filter extends WP_UnitTestCase {
 	}
 
 	/**
-	 * An unreadable signing key must not serve a document without a key.
+	 * An unreadable signing key that a live session still depends on must
+	 * not serve a document without a key.
 	 */
 	public function test_unreadable_signing_key_is_a_server_error() {
+		\update_option(
+			'atmosphere_identity',
+			array(
+				'did'    => 'did:plc:test',
+				'handle' => 'example.com',
+			),
+			false
+		);
+		\update_option(
+			'atmosphere_connection',
+			array(
+				'did'             => 'did:plc:test',
+				'access_token'    => Encryption::encrypt( 'access-token' ),
+				'needs_reauth'    => false,
+				'key_fingerprint' => Encryption::key_fingerprint(),
+			),
+			false
+		);
 		\update_option( Client_Authentication::KEY_OPTION, 'not-a-ciphertext', false );
 
 		$response = ( new Client_Metadata_Controller() )->get_metadata();
