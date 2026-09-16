@@ -282,7 +282,7 @@ function makeCard( Shell ) {
 								__( 'Disconnect', 'atmosphere' )
 							)
 						)
-				  )
+					)
 				: null;
 		} else {
 			actionArea = el(

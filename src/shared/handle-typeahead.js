@@ -133,7 +133,7 @@ export function HandleTypeahead( {
 								'atmosphere'
 							),
 							actors.length
-					  )
+						)
 					: __( 'No matching handles found.', 'atmosphere' )
 			);
 		} );

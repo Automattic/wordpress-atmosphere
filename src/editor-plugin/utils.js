@@ -47,11 +47,11 @@ export function shareHelpText( enabled, canShare, sharingEnabled = true ) {
 			? __(
 					'Automatic sharing is off for this site. This post is set to be shared if sharing is turned back on, or if the site is backfilled.',
 					'atmosphere'
-			  )
+				)
 			: __(
 					'Automatic sharing is off for this site. This post is set not to be shared, even if sharing is turned back on or the site is backfilled.',
 					'atmosphere'
-			  );
+				);
 	}
 
 	if ( ! enabled ) {
@@ -157,11 +157,11 @@ export function panelMessage(
 				? __(
 						'This post is on Bluesky. Saving this change will remove it from there, and that cannot be undone.',
 						'atmosphere'
-				  )
+					)
 				: __(
 						'This post is still on Bluesky. It will be removed from there the next time your site syncs, and that cannot be undone.',
 						'atmosphere'
-				  ),
+					),
 			action: false,
 		};
 	}
