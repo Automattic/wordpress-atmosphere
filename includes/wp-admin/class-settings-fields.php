@@ -656,7 +656,7 @@ class Settings_Fields {
 	 * is a longer story, so it sits behind a disclosure, styled as a link
 	 * the way the ActivityPub plugin styles its own.
 	 *
-	 * @since unreleased
+	 * @since 2.3.0
 	 */
 	public static function render_shortlink_field(): void {
 		// A made-up record id, only here to give the example address a real shape.
@@ -787,7 +787,7 @@ class Settings_Fields {
 	/**
 	 * Strip the scheme from a URL so an example reads as an address.
 	 *
-	 * @since unreleased
+	 * @since 2.3.0
 	 *
 	 * @param string $url Absolute URL.
 	 * @return string The URL without its scheme.

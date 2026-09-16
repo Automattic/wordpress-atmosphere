@@ -28,7 +28,7 @@
  * which is already unique and already stored.
  *
  * @package Atmosphere
- * @since unreleased
+ * @since 2.3.0
  */
 
 namespace Atmosphere;
@@ -47,7 +47,7 @@ class Link {
 	/**
 	 * Register the hooks.
 	 *
-	 * @since unreleased
+	 * @since 2.3.0
 	 */
 	public static function register(): void {
 		\add_action( 'template_redirect', array( self::class, 'maybe_redirect' ), 0 );
@@ -77,7 +77,7 @@ class Link {
 	 * when rewrite rules exist, so like the well-known endpoints this
 	 * needs pretty permalinks.
 	 *
-	 * @since unreleased
+	 * @since 2.3.0
 	 */
 	public static function maybe_redirect(): void {
 		global $wp;
@@ -116,7 +116,7 @@ class Link {
 	 * can only come from a hand-edited meta row or a partially restored
 	 * backup, and picking either one is as good an answer as exists.
 	 *
-	 * @since unreleased
+	 * @since 2.3.0
 	 *
 	 * @param string $tid A TID, already validated.
 	 * @return int|null Post ID, or null when nothing owns it.
@@ -165,7 +165,7 @@ class Link {
 	/**
 	 * The short link for a post, when it has a record to build one from.
 	 *
-	 * @since unreleased
+	 * @since 2.3.0
 	 *
 	 * @param int $post_id Post ID.
 	 * @return string Short link URL, or an empty string.
@@ -191,7 +191,7 @@ class Link {
 		 * without unhooking anything. Return an empty string to fall
 		 * through to WordPress's own `?p=` short link.
 		 *
-		 * @since unreleased
+		 * @since 2.3.0
 		 *
 		 * @param string $url     The rkey short link.
 		 * @param int    $post_id Post the link points at.
@@ -218,7 +218,7 @@ class Link {
 	 * Falling back to "the current post" there would advertise one post's
 	 * short link on every archive that happened to list it first.
 	 *
-	 * @since unreleased
+	 * @since 2.3.0
 	 *
 	 * @param false|string $shortlink   Short-circuit value from a prior filter.
 	 * @param int          $id          Post ID, or 0 to resolve from context.

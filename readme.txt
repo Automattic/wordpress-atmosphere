@@ -4,7 +4,7 @@ Tags: at-protocol, bluesky, connector, atproto, crossposting
 Requires at least: 6.5
 Tested up to: 7.1
 Requires PHP: 8.2
-Stable tag: 2.2.0
+Stable tag: 2.3.0
 License: GPL-2.0-or-later
 License URI: https://spdx.org/licenses/GPL-2.0-or-later.html
 
@@ -119,6 +119,16 @@ These addresses need pretty permalinks turned on under **Settings → Permalinks
 Not at this time. ATmosphere is designed for a single WordPress site. On a Network-activated install only the current site's data is read and written, and uninstall only cleans the current site — credentials and records on other sites in the network are left intact.
 
 == Changelog ==
+
+### 2.3.0 - 2026-09-11
+#### Added
+- Posts shared to Bluesky are now also reachable on your own site at the address Bluesky uses for them, so swapping the domain on a Bluesky link lands on your own copy. A new setting can offer these as your posts' short links.
+- Site Health now shows when ATmosphere last renewed its Bluesky login, and what went wrong if the renewal failed.
+
+#### Fixed
+- Content restricted to subscribers is no longer shared to Bluesky. This covers whole posts, paywalled sections, and paid-content blocks.
+- Fixed the custom Bluesky text, the share toggle, and the reply restriction silently not saving on custom post types.
+- Posts that fail to share because your Bluesky session has expired now offer a reconnect link, instead of showing a technical error message.
 
 ### 2.2.0 - 2026-08-31
 #### Security
