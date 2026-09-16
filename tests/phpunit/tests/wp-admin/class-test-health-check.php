@@ -125,6 +125,29 @@ class Test_Health_Check extends \WP_UnitTestCase {
 	}
 
 	/**
+	 * A failed renewal is reported as such, not as a cron problem, even when
+	 * the failures have aged the last success past the staleness window.
+	 */
+	public function test_failing_renewal_is_recommended_without_blaming_cron() {
+		$this->seed_connection();
+		\update_option(
+			Client::REFRESH_STATUS_OPTION,
+			array(
+				'last_success' => \time() - 3 * DAY_IN_SECONDS,
+				'last_failure' => \time() - HOUR_IN_SECONDS,
+				'last_error'   => 'http_503',
+			),
+			false
+		);
+
+		$result = Health_Check::test_connection();
+
+		$this->assertSame( 'recommended', $result['status'] );
+		$this->assertStringContainsString( 'could not renew', $result['label'] );
+		$this->assertStringNotContainsString( 'server cron', $result['description'] );
+	}
+
+	/**
 	 * A rejected client configuration is actionable without reconnecting, so it
 	 * remains a live connection and Site Health identifies the real problem.
 	 */

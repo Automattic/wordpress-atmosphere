@@ -96,6 +96,79 @@ class Test_Client_Authentication extends WP_UnitTestCase {
 	}
 
 	/**
+	 * The assertion verifies against the published key, under the published
+	 * key ID. If the two ever drift, every connect and refresh fails.
+	 */
+	public function test_assertion_verifies_against_the_published_jwks() {
+		$body = Client_Authentication::sign_request( array( 'client_id' => Client::client_id() ), 'https://auth.example.com' );
+		$jwk  = Client_Authentication::jwks()['keys'][0];
+
+		list( $header_b64, $payload_b64, $signature_b64 ) = \explode( '.', $body['client_assertion'] );
+
+		$header = (array) \json_decode( $this->base64url_decode( $header_b64 ), true );
+		$this->assertSame( 'ES256', $header['alg'] );
+		$this->assertSame( $jwk['kid'], $header['kid'], 'The assertion must name the published key.' );
+
+		$verified = \openssl_verify(
+			$header_b64 . '.' . $payload_b64,
+			$this->raw_to_der( $this->base64url_decode( $signature_b64 ) ),
+			$this->public_key_pem( $jwk ),
+			OPENSSL_ALGO_SHA256
+		);
+		$this->assertSame( 1, $verified, 'The assertion signature must verify against the published public key.' );
+	}
+
+	/**
+	 * Build a PEM public key from a P-256 JWK.
+	 *
+	 * @param array $jwk Public JWK with `x` and `y`.
+	 * @return string
+	 */
+	private function public_key_pem( array $jwk ): string {
+		// SubjectPublicKeyInfo prefix for an uncompressed P-256 point.
+		$der = \hex2bin( '3059301306072a8648ce3d020106082a8648ce3d030107034200' )
+			. "\x04" . $this->base64url_decode( $jwk['x'] ) . $this->base64url_decode( $jwk['y'] );
+
+		return "-----BEGIN PUBLIC KEY-----\n" . \chunk_split( \base64_encode( $der ), 64, "\n" ) . "-----END PUBLIC KEY-----\n"; // phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.obfuscation_base64_encode
+	}
+
+	/**
+	 * Convert a raw R||S ECDSA signature into the DER form OpenSSL verifies.
+	 *
+	 * @param string $raw 64-byte signature.
+	 * @return string
+	 */
+	private function raw_to_der( string $raw ): string {
+		$this->assertSame( 64, \strlen( $raw ), 'ES256 signatures are 64 raw bytes.' );
+
+		$integer = static function ( string $bytes ): string {
+			$bytes = \ltrim( $bytes, "\x00" );
+			if ( '' === $bytes || \ord( $bytes[0] ) > 0x7f ) {
+				$bytes = "\x00" . $bytes;
+			}
+
+			return "\x02" . \chr( \strlen( $bytes ) ) . $bytes;
+		};
+
+		$sequence = $integer( \substr( $raw, 0, 32 ) ) . $integer( \substr( $raw, 32 ) );
+
+		return "\x30" . \chr( \strlen( $sequence ) ) . $sequence;
+	}
+
+	/**
+	 * Decode base64url.
+	 *
+	 * @param string $data Encoded value.
+	 * @return string
+	 */
+	private function base64url_decode( string $data ): string {
+		$decoded = \base64_decode( \strtr( $data, '-_', '+/' ), true ); // phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.obfuscation_base64_decode
+		$this->assertIsString( $decoded );
+
+		return $decoded;
+	}
+
+	/**
 	 * While a live session matches the current key material, a key that no
 	 * longer decrypts is reported and left in place.
 	 */

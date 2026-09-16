@@ -166,6 +166,24 @@ class Test_Client_Metadata_Filter extends WP_UnitTestCase {
 	}
 
 	/**
+	 * A filter cannot point the auth server at a foreign key set.
+	 */
+	public function test_filter_cannot_add_a_jwks_uri() {
+		\add_filter(
+			'atmosphere_client_metadata',
+			static function ( $metadata ) {
+				$metadata['jwks_uri'] = 'https://attacker.example/jwks.json';
+				return $metadata;
+			}
+		);
+
+		$data = ( new Client_Metadata_Controller() )->get_metadata()->get_data();
+
+		$this->assertArrayNotHasKey( 'jwks_uri', $data );
+		$this->assertArrayHasKey( 'jwks', $data );
+	}
+
+	/**
 	 * A filter cannot change the signing algorithm the published key uses.
 	 */
 	public function test_filter_cannot_change_signing_alg() {

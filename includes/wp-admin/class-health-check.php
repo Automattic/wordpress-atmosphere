@@ -28,9 +28,9 @@ use function Atmosphere\get_supported_post_types;
 use function Atmosphere\has_identity;
 use function Atmosphere\is_auto_publish_enabled;
 use function Atmosphere\is_connected;
+use function Atmosphere\is_legacy_connection;
 use function Atmosphere\is_operator_disconnected;
 use function Atmosphere\reauth_reason_lead;
-use function Atmosphere\is_legacy_connection;
 use function Atmosphere\reconnect_url;
 use function Atmosphere\settings_url;
 use function Atmosphere\threadgate_needs_reconnect;
@@ -162,6 +162,14 @@ class Health_Check {
 				$result['description']    = \sprintf(
 					'<p>%s</p>',
 					\__( 'The saved login remains available, but Bluesky rejected its latest renewal. Run the ATmosphere Bluesky Reachability Test on this screen and make sure security or caching software allows the client-metadata endpoint.', 'atmosphere' )
+				);
+			} elseif ( self::renewal_is_failing( $status ) ) {
+				$result['status']         = 'recommended';
+				$result['badge']['color'] = 'orange';
+				$result['label']          = \__( 'ATmosphere could not renew its Bluesky login recently', 'atmosphere' );
+				$result['description']    = \sprintf(
+					'<p>%s</p>',
+					\__( 'This site is still connected, but its latest attempt to renew the saved Bluesky login failed. If this keeps happening the login will expire. The Info tab lists the error under Last Login Renewal.', 'atmosphere' )
 				);
 			} elseif ( self::renewal_is_stale( $status ) ) {
 				$result['status']         = 'recommended';
@@ -522,6 +530,21 @@ class Health_Check {
 			\esc_url( $reconnect_url ),
 			\esc_html__( 'Manage your Bluesky connection', 'atmosphere' )
 		);
+	}
+
+	/**
+	 * Whether the latest renewal attempt failed, whatever the reason.
+	 *
+	 * Checked before the staleness test: a run of failed attempts also ages
+	 * the last success out, and the advice for "cannot reach Bluesky" is
+	 * not "fix your cron".
+	 *
+	 * @param array $status Refresh status as read from `Client::refresh_status()`.
+	 * @return bool
+	 */
+	private static function renewal_is_failing( array $status ): bool {
+		return ! empty( $status['last_failure'] )
+			&& (int) $status['last_failure'] > (int) ( $status['last_success'] ?? 0 );
 	}
 
 	/**

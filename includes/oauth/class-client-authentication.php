@@ -118,9 +118,11 @@ class Client_Authentication {
 		\add_option( self::KEY_OPTION, Encryption::encrypt( (string) \wp_json_encode( $generated ) ), '', false );
 
 		/*
-		 * Re-read rather than trusting the in-memory key: two first-time
-		 * callers can both insert, and only the row that won is the key
-		 * whose public half the JWKS will publish.
+		 * Re-read rather than trusting the in-memory key: `add_option()`
+		 * inserts with ON DUPLICATE KEY UPDATE, so when two first-time
+		 * callers race the last write wins. Whichever row is stored now is
+		 * the key whose public half the JWKS publishes, and every caller
+		 * has to sign with that one.
 		 */
 		\wp_cache_delete( self::KEY_OPTION, 'options' );
 

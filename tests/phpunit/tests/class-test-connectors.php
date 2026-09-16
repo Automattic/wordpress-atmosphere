@@ -14,6 +14,7 @@
 namespace Atmosphere\Tests;
 
 use Atmosphere\Connectors;
+use Atmosphere\OAuth\Client;
 use WP_UnitTestCase;
 
 use function Atmosphere\settings_url;
@@ -168,6 +169,25 @@ class Test_Connectors extends WP_UnitTestCase {
 		$this->assertFalse( $data['needsReauth'] );
 		$this->assertSame( 'alice.example.com', $data['handle'] );
 		$this->assertStringContainsString( 'did:plc:test123', $data['profileUrl'] );
+	}
+
+	/**
+	 * The card learns whether the session still uses the older login, so it
+	 * can ask for the one-time reconnect where the settings page is hidden.
+	 *
+	 * @covers ::get_connector_data
+	 */
+	public function test_get_connector_data_flags_a_legacy_session() {
+		$this->connect();
+
+		$conn = \get_option( 'atmosphere_connection' );
+		unset( $conn['client_id'] );
+		\update_option( 'atmosphere_connection', $conn );
+		$this->assertTrue( Connectors::get_connector_data( array() )['isLegacy'] );
+
+		$conn['client_id'] = Client::client_id();
+		\update_option( 'atmosphere_connection', $conn );
+		$this->assertFalse( Connectors::get_connector_data( array() )['isLegacy'] );
 	}
 
 	/**

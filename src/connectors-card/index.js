@@ -230,6 +230,18 @@ function makeCard( Shell ) {
 							id: DETAILS_PANEL_ID,
 							className: 'atmosphere-connector-card__expanded',
 						},
+						data.isLegacy &&
+							el(
+								'p',
+								{
+									className:
+										'atmosphere-connector-card__status',
+								},
+								__(
+									'This login expires every two weeks. Disconnect and connect again once to switch to the longer-lasting Bluesky login.',
+									'atmosphere'
+								)
+							),
 						( data.handle || data.profileUrl ) &&
 							el(
 								VStack,

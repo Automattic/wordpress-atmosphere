@@ -194,6 +194,11 @@ class Client_Metadata_Controller extends \WP_REST_Controller {
 		// See pinned_fields(): the client identity is not filterable.
 		$metadata = \array_merge( $metadata, $pinned );
 
+		// A client supplies `jwks` or `jwks_uri`, never both; the key is ours.
+		if ( isset( $pinned['jwks'] ) ) {
+			unset( $metadata['jwks_uri'] );
+		}
+
 		$response = new WP_REST_Response( $metadata, 200 );
 
 		// Cap intermediate-cache TTL well under the AT Protocol auth

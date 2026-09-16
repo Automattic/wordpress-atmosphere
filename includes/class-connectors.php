@@ -290,6 +290,9 @@ class Connectors {
 			(array) $data,
 			array(
 				'isConnected'    => is_connected(),
+				// A session from before confidential authentication expires
+				// every two weeks; one reconnect switches it to the long one.
+				'isLegacy'       => is_legacy_connection(),
 				'needsReauth'    => needs_reauth(),
 				'handle'         => $identity['handle'] ?? '',
 				'profileUrl'     => '' !== $did

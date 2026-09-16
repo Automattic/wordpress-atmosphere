@@ -2814,6 +2814,8 @@ class Atmosphere {
 		}
 
 		$permanent_codes = array(
+			'atmosphere_client_authentication',
+			'atmosphere_client_authentication_key',
 			'atmosphere_client_configuration',
 			'atmosphere_post_not_publishable',
 			'atmosphere_missing_tid',
