@@ -215,6 +215,147 @@ class Test_Client_Refresh extends WP_UnitTestCase {
 	}
 
 	/**
+	 * A confidential session revokes as its own client, with an assertion
+	 * addressed to the authorization server, on the first attempt and on
+	 * the DPoP nonce retry alike.
+	 */
+	public function test_revoke_refresh_token_authenticates_a_confidential_session() {
+		$bodies   = array();
+		$dpop_jwk = DPoP::generate_key();
+
+		\add_filter(
+			'pre_http_request',
+			static function ( $response, $args, $url ) use ( &$bodies ) {
+				if ( false !== \strpos( $url, 'oauth/revoke' ) ) {
+					$bodies[] = (array) $args['body'];
+
+					if ( 1 === \count( $bodies ) ) {
+						return array(
+							'response' => array( 'code' => 401 ),
+							'headers'  => new \WpOrg\Requests\Utility\CaseInsensitiveDictionary( array( 'dpop-nonce' => 'server-nonce' ) ),
+							'body'     => '{"error":"use_dpop_nonce"}',
+						);
+					}
+
+					return array(
+						'response' => array( 'code' => 200 ),
+						'headers'  => new \WpOrg\Requests\Utility\CaseInsensitiveDictionary( array() ),
+						'body'     => '{}',
+					);
+				}
+
+				return $response;
+			},
+			10,
+			3
+		);
+
+		Client::revoke_refresh_token(
+			Encryption::encrypt( 'refresh-token' ),
+			Encryption::encrypt( (string) \wp_json_encode( $dpop_jwk ) ),
+			'https://auth.example.com/oauth/revoke',
+			'https://auth.example.com',
+			Client::client_id()
+		);
+
+		$this->assertCount( 2, $bodies, 'The nonce retry must be sent.' );
+
+		$assertions = array();
+		foreach ( $bodies as $body ) {
+			$this->assertSame( Client::client_id(), $body['client_id'] );
+			$this->assertSame( Client_Authentication::ASSERTION_TYPE, $body['client_assertion_type'] );
+
+			$claims = $this->jwt_payload( $body['client_assertion'] );
+			$this->assertSame( 'https://auth.example.com', $claims['aud'] );
+			$this->assertSame( Client::client_id(), $claims['iss'] );
+			$assertions[] = $body['client_assertion'];
+		}
+
+		$this->assertNotSame( $assertions[0], $assertions[1], 'The retry must carry a fresh assertion.' );
+	}
+
+	/**
+	 * A legacy session, and any revocation queued before the client_id
+	 * argument existed, revokes as the public client without an assertion.
+	 */
+	public function test_revoke_refresh_token_uses_the_legacy_client_by_default() {
+		$captured_body = null;
+		$dpop_jwk      = DPoP::generate_key();
+
+		\add_filter(
+			'pre_http_request',
+			static function ( $response, $args, $url ) use ( &$captured_body ) {
+				if ( false !== \strpos( $url, 'oauth/revoke' ) ) {
+					$captured_body = (array) $args['body'];
+					return array(
+						'response' => array( 'code' => 200 ),
+						'headers'  => new \WpOrg\Requests\Utility\CaseInsensitiveDictionary( array() ),
+						'body'     => '{}',
+					);
+				}
+
+				return $response;
+			},
+			10,
+			3
+		);
+
+		Client::revoke_refresh_token(
+			Encryption::encrypt( 'refresh-token' ),
+			Encryption::encrypt( (string) \wp_json_encode( $dpop_jwk ) ),
+			'https://auth.example.com/oauth/revoke',
+			'https://auth.example.com'
+		);
+
+		$this->assertSame( Client::legacy_client_id(), $captured_body['client_id'] );
+		$this->assertArrayNotHasKey( 'client_assertion', $captured_body );
+		$this->assertArrayNotHasKey( 'client_assertion_type', $captured_body );
+	}
+
+	/**
+	 * Disconnect hands the session's client_id to the revocation worker.
+	 *
+	 * @dataProvider provide_session_client_ids
+	 *
+	 * @param string|null $stored   client_id stored on the connection, or null for a legacy row.
+	 * @param string      $expected client_id the queued event must carry.
+	 */
+	public function test_disconnect_queues_revocation_with_the_session_client_id( ?string $stored, string $expected ) {
+		$conn                        = \get_option( 'atmosphere_connection' );
+		$conn['revocation_endpoint'] = 'https://auth.example.com/oauth/revoke';
+		$conn['auth_server']         = 'https://auth.example.com';
+		if ( null !== $stored ) {
+			$conn['client_id'] = $stored;
+		}
+		\update_option( 'atmosphere_connection', $conn );
+
+		Client::disconnect();
+
+		$queued = null;
+		foreach ( \_get_cron_array() as $events ) {
+			foreach ( $events['atmosphere_revoke_refresh_token'] ?? array() as $event ) {
+				$queued = $event['args'];
+			}
+		}
+
+		$this->assertIsArray( $queued, 'A revocation must be queued.' );
+		$this->assertSame( 'https://auth.example.com', $queued[3] );
+		$this->assertSame( $expected, $queued[4] );
+	}
+
+	/**
+	 * Stored client_id and the value the worker must receive.
+	 *
+	 * @return array<string, array{0: string|null, 1: string}>
+	 */
+	public function provide_session_client_ids(): array {
+		return array(
+			'confidential session' => array( 'https://example.com/wp-json/atmosphere/v2/client-metadata', 'https://example.com/wp-json/atmosphere/v2/client-metadata' ),
+			'legacy session'       => array( null, '' ),
+		);
+	}
+
+	/**
 	 * Test that invalid_grant marks the connection for reauth without
 	 * deleting it, and preserves the identity option for the public
 	 * verification headers.

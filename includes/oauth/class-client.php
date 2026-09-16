@@ -2005,12 +2005,18 @@ class Client {
 			 * issuer-binding). Including the issuer here lets the
 			 * worker reject endpoint↔issuer mismatches before the
 			 * decryption step.
+			 *
+			 * The session's own client_id rides along too: the token was
+			 * minted for that client, and a confidential session has to
+			 * authenticate the revocation as it. Empty means a legacy
+			 * public-client session.
 			 */
 			$revoke_args = array(
 				(string) $conn['refresh_token'],
 				(string) $conn['dpop_jwk'],
 				(string) $conn['revocation_endpoint'],
 				(string) $conn['auth_server'],
+				(string) ( $conn['client_id'] ?? '' ),
 			);
 		}
 
@@ -2103,12 +2109,18 @@ class Client {
 	 * @param string $auth_server_issuer       Auth server issuer URL the
 	 *                                         revocation endpoint must
 	 *                                         share an origin with.
+	 * @param string $client_id                Client the session was minted
+	 *                                         for. Empty for a legacy
+	 *                                         public-client session, and for
+	 *                                         events queued before this
+	 *                                         argument existed.
 	 */
 	public static function revoke_refresh_token(
 		string $refresh_token_ciphertext,
 		string $dpop_jwk_ciphertext,
 		string $revocation_endpoint,
-		string $auth_server_issuer = ''
+		string $auth_server_issuer = '',
+		string $client_id = ''
 	): void {
 		if ( '' === $revocation_endpoint ) {
 			return;
@@ -2175,11 +2187,26 @@ class Client {
 			return;
 		}
 
+		/*
+		 * Revoke as the client the token belongs to. RFC 7009 defers
+		 * client authentication to RFC 6749, so a confidential session
+		 * signs the request; a legacy session revokes as the public client.
+		 */
+		$confidential = '' !== $client_id;
+
 		$body = array(
 			'token'           => $refresh_token,
 			'token_type_hint' => 'refresh_token',
-			'client_id'       => self::client_id(),
+			'client_id'       => $confidential ? $client_id : self::legacy_client_id(),
 		);
+
+		if ( $confidential ) {
+			$body = Client_Authentication::sign_request( $body, $auth_server_issuer );
+			if ( \is_wp_error( $body ) ) {
+				debug_log( \sprintf( 'refresh-token revocation skipped: %s', $body->get_error_message() ) );
+				return;
+			}
+		}
 
 		$dpop_proof = DPoP::create_proof( $dpop_jwk, 'POST', $revocation_endpoint );
 		if ( false === $dpop_proof ) {
@@ -2227,6 +2254,14 @@ class Client {
 			$dpop_proof = DPoP::create_proof( $dpop_jwk, 'POST', $revocation_endpoint, $nonce );
 			if ( false === $dpop_proof ) {
 				return;
+			}
+
+			if ( $confidential ) {
+				$body = Client_Authentication::sign_request( $body, $auth_server_issuer );
+				if ( \is_wp_error( $body ) ) {
+					debug_log( \sprintf( 'refresh-token revocation retry skipped: %s', $body->get_error_message() ) );
+					return;
+				}
 			}
 
 			$response = \wp_safe_remote_post(
