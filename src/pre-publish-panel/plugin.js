@@ -144,11 +144,11 @@ function PrePublishPanel() {
 					? __(
 							'You don’t have permission to preview this post.',
 							'atmosphere'
-					  )
+						)
 					: __(
 							'Could not load the Bluesky preview. Please try again.',
 							'atmosphere'
-					  ) }
+						) }
 			</p>
 		);
 	}

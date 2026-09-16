@@ -236,11 +236,11 @@ const EditorPlugin = () => {
 		? __(
 				'Sharing to Bluesky failed. Your site will retry automatically.',
 				'atmosphere'
-		  )
+			)
 		: __(
 				'Sharing to Bluesky failed. Update the post to try again.',
 				'atmosphere'
-		  );
+			);
 
 	/*
 	 * Sharing forced off from outside, with no record to link to: a host
