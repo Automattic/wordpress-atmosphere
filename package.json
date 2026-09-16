@@ -24,7 +24,7 @@
 		"@wordpress/core-data": "^8.0.0",
 		"@wordpress/data": "^10.48.0",
 		"@wordpress/edit-post": "^8.48.0",
-		"@wordpress/editor": "^14.48.0",
+		"@wordpress/editor": "^15.0.0",
 		"@wordpress/element": "^8.0.0",
 		"@wordpress/env": "^11.4.0",
 		"@wordpress/i18n": "^6.21.0",
