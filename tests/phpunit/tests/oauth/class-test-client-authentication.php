@@ -227,6 +227,38 @@ class Test_Client_Authentication extends WP_UnitTestCase {
 	}
 
 	/**
+	 * A key with the right shape but corrupt members is unusable and must
+	 * not be published; without a session it is replaced.
+	 *
+	 * @dataProvider provide_corrupt_members
+	 *
+	 * @param array $overrides Members to corrupt on an otherwise valid key.
+	 */
+	public function test_corrupt_key_members_are_rejected( array $overrides ) {
+		$key = \array_merge( \Atmosphere\OAuth\DPoP::generate_key(), $overrides );
+		\update_option( Client_Authentication::KEY_OPTION, Encryption::encrypt( (string) \wp_json_encode( $key ) ), false );
+
+		$jwks = Client_Authentication::jwks();
+
+		$this->assertIsArray( $jwks );
+		$this->assertNotSame( $key['x'], $jwks['keys'][0]['x'], 'The corrupt key must not be published.' );
+	}
+
+	/**
+	 * Corruptions a decryptable row can carry.
+	 *
+	 * @return array<string, array{0: array}>
+	 */
+	public function provide_corrupt_members(): array {
+		return array(
+			'empty coordinate'     => array( array( 'x' => '' ) ),
+			'not base64url'        => array( array( 'y' => 'not*base64url' ) ),
+			'short private scalar' => array( array( 'd' => 'AAAA' ) ),
+			'coordinate too long'  => array( array( 'x' => \rtrim( \strtr( \base64_encode( \str_repeat( 'a', 33 ) ), '+/', '-_' ), '=' ) ) ), // phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.obfuscation_base64_encode
+		);
+	}
+
+	/**
 	 * Without a session a malformed row is replaced too.
 	 */
 	public function test_malformed_key_is_regenerated_without_a_session() {

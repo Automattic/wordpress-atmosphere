@@ -188,18 +188,31 @@ class Client_Authentication {
 	/**
 	 * Validate the required P-256 private JWK members.
 	 *
-	 * Byte-level checks happen when DPoP converts the key to PEM.
+	 * Each coordinate and the private scalar must be base64url for exactly
+	 * 32 bytes, so a decryptable but corrupt row is treated as unusable
+	 * instead of being published and failing at signing time.
 	 *
 	 * @param mixed $key Candidate key.
 	 * @return bool
 	 */
 	private static function valid_key( $key ): bool {
-		return \is_array( $key )
-			&& 'EC' === ( $key['kty'] ?? '' )
-			&& 'P-256' === ( $key['crv'] ?? '' )
-			&& \is_string( $key['x'] ?? null )
-			&& \is_string( $key['y'] ?? null )
-			&& \is_string( $key['d'] ?? null );
+		if ( ! \is_array( $key ) || 'EC' !== ( $key['kty'] ?? '' ) || 'P-256' !== ( $key['crv'] ?? '' ) ) {
+			return false;
+		}
+
+		foreach ( array( 'x', 'y', 'd' ) as $member ) {
+			$value = $key[ $member ] ?? null;
+			if ( ! \is_string( $value ) || '' === $value ) {
+				return false;
+			}
+
+			$bytes = \base64_decode( \strtr( $value, '-_', '+/' ), true ); // phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.obfuscation_base64_decode
+			if ( false === $bytes || 32 !== \strlen( $bytes ) ) {
+				return false;
+			}
+		}
+
+		return true;
 	}
 
 	/**
