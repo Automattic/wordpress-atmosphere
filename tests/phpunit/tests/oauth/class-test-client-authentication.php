@@ -29,15 +29,17 @@ class Test_Client_Authentication extends WP_UnitTestCase {
 		\delete_option( Client_Authentication::KEY_OPTION );
 		\delete_option( 'atmosphere_identity' );
 		\delete_option( 'atmosphere_connection' );
+		\delete_transient( 'atmosphere_oauth_resolved' );
 		parent::tear_down();
 	}
 
 	/**
 	 * Seed a live session.
 	 *
-	 * @param string $fingerprint Key fingerprint stored on the connection.
+	 * @param string      $fingerprint Key fingerprint stored on the connection.
+	 * @param string|null $client_id   Stored client_id; null seeds a legacy session.
 	 */
-	private function seed_connection( string $fingerprint ): void {
+	private function seed_connection( string $fingerprint, ?string $client_id = 'confidential' ): void {
 		\update_option(
 			'atmosphere_identity',
 			array(
@@ -53,6 +55,7 @@ class Test_Client_Authentication extends WP_UnitTestCase {
 				'access_token'    => Encryption::encrypt( 'access-token' ),
 				'needs_reauth'    => false,
 				'key_fingerprint' => $fingerprint,
+				'client_id'       => 'confidential' === $client_id ? Client::client_id() : $client_id,
 			),
 			false
 		);
@@ -195,6 +198,29 @@ class Test_Client_Authentication extends WP_UnitTestCase {
 		$this->assertIsArray( $jwks );
 		$this->assertNotSame( 'not-a-ciphertext', \get_option( Client_Authentication::KEY_OPTION ) );
 		$this->assertSame( $jwks['keys'][0]['kid'], Client_Authentication::jwks()['keys'][0]['kid'], 'The new key must persist.' );
+	}
+
+	/**
+	 * An authorization in flight has already announced this key, so it must
+	 * not be rotated before the callback lands.
+	 */
+	public function test_unreadable_key_is_kept_while_an_authorization_is_pending() {
+		\set_transient( 'atmosphere_oauth_resolved', array( 'client_id' => Client::client_id() ), HOUR_IN_SECONDS );
+		\update_option( Client_Authentication::KEY_OPTION, 'not-a-ciphertext', false );
+
+		$this->assertWPError( Client_Authentication::jwks() );
+		$this->assertSame( 'not-a-ciphertext', \get_option( Client_Authentication::KEY_OPTION ) );
+	}
+
+	/**
+	 * A legacy session never signs with this key, so it must not keep a
+	 * broken one alive: the reconnect it is asked for has to work.
+	 */
+	public function test_unreadable_key_is_regenerated_under_a_legacy_session() {
+		$this->seed_connection( Encryption::key_fingerprint(), null );
+		\update_option( Client_Authentication::KEY_OPTION, 'not-a-ciphertext', false );
+
+		$this->assertIsArray( Client_Authentication::jwks() );
 	}
 
 	/**

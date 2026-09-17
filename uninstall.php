@@ -150,6 +150,8 @@ $atmosphere_transients = array(
 	'atmosphere_oauth_state',
 	'atmosphere_oauth_dpop_jwk',
 	'atmosphere_oauth_resolved',
+	// Canonical value: `\Atmosphere\OAuth\Client::REFRESH_HOLD_TRANSIENT`.
+	'atmosphere_refresh_hold',
 	'atmosphere_invalid_long_form_composition_logged',
 );
 

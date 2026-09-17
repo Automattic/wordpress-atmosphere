@@ -184,6 +184,41 @@ class Client {
 	public const REAUTH_REASON_DECRYPT_FAILED = 'decrypt_failed';
 
 	/**
+	 * Reauth reason: the site's own client_id URL no longer matches the one
+	 * the session was minted under (domain move, permalink change).
+	 *
+	 * @since unreleased
+	 *
+	 * @var string
+	 */
+	public const REAUTH_REASON_CLIENT_ID_CHANGED = 'client_id_changed';
+
+	/**
+	 * Transient that pauses refresh attempts after a failure that will not
+	 * clear on its own.
+	 *
+	 * Without it every API call past the access token's expiry would make
+	 * a synchronous token request and hold the refresh lock, because such
+	 * a failure neither moves `expires_at` nor flags a reconnect.
+	 *
+	 * @since unreleased
+	 *
+	 * @var string
+	 */
+	public const REFRESH_HOLD_TRANSIENT = 'atmosphere_refresh_hold';
+
+	/**
+	 * Failure codes that put refreshing on hold.
+	 *
+	 * @var string[]
+	 */
+	private const REFRESH_HOLD_CODES = array(
+		'atmosphere_client_configuration',
+		'atmosphere_client_authentication',
+		'atmosphere_client_authentication_key',
+	);
+
+	/**
 	 * Get the client_id URL (= confidential client metadata endpoint).
 	 *
 	 * Forces the `https` scheme, mirroring redirect_uri(). AT Protocol
@@ -919,6 +954,21 @@ class Client {
 			return new \WP_Error( 'atmosphere_no_refresh', \__( 'No refresh token available.', 'atmosphere' ) );
 		}
 
+		/*
+		 * Its own code, deliberately absent from the permanent list in
+		 * `Atmosphere::is_transient_publish_error()`: the hold is shorter
+		 * than the publish retry ladder, so a post that lands inside it is
+		 * retried instead of dropped. The cause rides along for triage.
+		 */
+		$hold = \get_transient( self::REFRESH_HOLD_TRANSIENT );
+		if ( \is_array( $hold ) && ! empty( $hold['code'] ) ) {
+			return new \WP_Error(
+				'atmosphere_refresh_on_hold',
+				(string) ( $hold['message'] ?? '' ),
+				array( 'cause' => (string) $hold['code'] )
+			);
+		}
+
 		if ( ! self::lock() ) {
 			$fresh = \get_option( 'atmosphere_connection', array() );
 
@@ -971,6 +1021,27 @@ class Client {
 					: (string) $result->get_error_code(),
 				$conn
 			);
+
+			/*
+			 * Same row check as the recorder above: a worker that was in
+			 * flight when the operator disconnected must not leave a hold
+			 * behind for the session that replaces it.
+			 */
+			$current = \get_option( 'atmosphere_connection', array() );
+			if ( \in_array( (string) $result->get_error_code(), self::REFRESH_HOLD_CODES, true )
+				&& \is_array( $current )
+				&& ! empty( $conn['refresh_token'] )
+				&& self::connection_row_matches( $conn, $current, 'refresh_token' )
+			) {
+				\set_transient(
+					self::REFRESH_HOLD_TRANSIENT,
+					array(
+						'code'    => (string) $result->get_error_code(),
+						'message' => $result->get_error_message(),
+					),
+					5 * MINUTE_IN_SECONDS
+				);
+			}
 
 			return $result;
 		} finally {
@@ -1212,6 +1283,26 @@ class Client {
 			 * a blocked client-metadata endpoint, or a provider-side policy.
 			 */
 			if ( self::is_client_configuration_error( $error ) ) {
+				/*
+				 * The rejected registration is the stored client_id. When the
+				 * site's own client_id URL has moved (domain change, permalink
+				 * switch, a `rest_url` filter), that document is gone and only
+				 * a reconnect under the current URL repairs it.
+				 */
+				if ( $confidential && self::client_id() !== $client_id ) {
+					self::mark_needs_reauth( $conn, 'refresh_token', self::REAUTH_REASON_CLIENT_ID_CHANGED );
+					debug_log( \sprintf( 'refresh rejected (%s): stored client_id %s no longer matches %s', $error, $client_id, self::client_id() ) );
+
+					return new \WP_Error(
+						'atmosphere_needs_reauth',
+						\__( 'AT Protocol session expired. Reconnect to resume publishing.', 'atmosphere' ),
+						array(
+							'status'        => $status,
+							'refresh_error' => $error,
+						)
+					);
+				}
+
 				debug_log( \sprintf( 'refresh rejected client configuration (%s): %s', $error, $msg ) );
 
 				return new \WP_Error(
@@ -1380,6 +1471,9 @@ class Client {
 	 */
 	private const CLIENT_CONFIGURATION_ERRORS = array(
 		'invalid_client',
+		// What the reference server answers when it cannot fetch, or does
+		// not accept, the client metadata document behind the client_id.
+		'invalid_client_metadata',
 		'unauthorized_client',
 	);
 
@@ -1533,6 +1627,7 @@ class Client {
 	 * @since 2.3.0
 	 */
 	private static function record_refresh_success(): void {
+		\delete_transient( self::REFRESH_HOLD_TRANSIENT );
 		self::update_refresh_status( array( 'last_success' => \time() ) );
 	}
 
@@ -2052,6 +2147,7 @@ class Client {
 		 * previous one's last failure.
 		 */
 		\delete_option( self::REFRESH_STATUS_OPTION );
+		\delete_transient( self::REFRESH_HOLD_TRANSIENT );
 
 		/*
 		 * Sweep a stale option from 1.0.0 installs. `atmosphere_publication_uri`
@@ -2193,6 +2289,11 @@ class Client {
 		 * signs the request; a legacy session revokes as the public client.
 		 */
 		$confidential = '' !== $client_id;
+
+		// Same call-time distrust as the endpoint above: the row may have been restored or tampered with.
+		if ( $confidential && ! Resolver::is_safe_https_url( $client_id ) ) {
+			return;
+		}
 
 		$body = array(
 			'token'           => $refresh_token,

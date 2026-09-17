@@ -125,6 +125,45 @@ class Test_Health_Check extends \WP_UnitTestCase {
 	}
 
 	/**
+	 * The debug panel names the moved-address cause like the status tab does.
+	 */
+	public function test_debug_information_names_a_moved_site_address() {
+		$this->seed_connection(
+			array(
+				'needs_reauth'  => true,
+				'reauth_reason' => Client::REAUTH_REASON_CLIENT_ID_CHANGED,
+			)
+		);
+
+		$fields = Health_Check::debug_information( array() )['atmosphere']['fields'];
+
+		$this->assertStringContainsString( 'site address changed', $fields['connection_status']['value'] );
+	}
+
+	/**
+	 * An unreadable signing key does not clear on its own and has a specific
+	 * fix, so it gets its own critical state with the reconnect link.
+	 */
+	public function test_unreadable_signing_key_is_critical() {
+		$this->seed_connection();
+		\update_option(
+			Client::REFRESH_STATUS_OPTION,
+			array(
+				'last_error'   => 'atmosphere_client_authentication_key',
+				'last_failure' => \time(),
+			),
+			false
+		);
+
+		$result = Health_Check::test_connection();
+
+		$this->assertSame( 'critical', $result['status'] );
+		$this->assertStringContainsString( 'signing key', $result['label'] );
+		$this->assertStringContainsString( 'Disconnect and connect again', $result['description'] );
+		$this->assertStringContainsString( 'options-general.php?page=atmosphere', $result['actions'] );
+	}
+
+	/**
 	 * A failed renewal is reported as such, not as a cron problem, even when
 	 * the failures have aged the last success past the staleness window.
 	 */

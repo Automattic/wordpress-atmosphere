@@ -4242,6 +4242,8 @@ class Test_Atmosphere extends WP_UnitTestCase {
 		$this->assertFalse( $method->invoke( null, new \WP_Error( 'atmosphere_key_changed', 'nope' ) ) );
 		$this->assertFalse( $method->invoke( null, new \WP_Error( 'atmosphere_client_authentication', 'nope' ) ), 'A signing failure repeats on retry.' );
 		$this->assertFalse( $method->invoke( null, new \WP_Error( 'atmosphere_client_authentication_key', 'nope' ) ), 'An unreadable signing key repeats on retry.' );
+		$this->assertFalse( $method->invoke( null, new \WP_Error( 'atmosphere_dpop_keygen_failed', 'nope' ) ), 'A runtime without EC key support repeats on retry.' );
+		$this->assertTrue( $method->invoke( null, new \WP_Error( 'atmosphere_refresh_on_hold', 'nope', array( 'cause' => 'atmosphere_client_configuration' ) ) ), 'A hold is shorter than the retry ladder, so the post must be retried.' );
 	}
 
 	/**

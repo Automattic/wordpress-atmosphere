@@ -80,6 +80,7 @@ class Test_Client_Refresh extends WP_UnitTestCase {
 		\delete_option( Client::DISCONNECTED_OPTION );
 		\delete_option( Client::REFRESH_STATUS_OPTION );
 		\delete_option( Client_Authentication::KEY_OPTION );
+		\delete_transient( Client::REFRESH_HOLD_TRANSIENT );
 		\remove_all_filters( 'pre_http_request' );
 		\remove_all_actions( 'atmosphere_reauth_required' );
 
@@ -427,8 +428,8 @@ class Test_Client_Refresh extends WP_UnitTestCase {
 	}
 
 	/**
-	 * Test that invalid_client preserves the session because reconnecting
-	 * cannot repair a rejected client registration.
+	 * Test that invalid_client preserves a legacy (public-client) session
+	 * because reconnecting cannot repair a rejected client registration.
 	 */
 	public function test_invalid_client_preserves_connection() {
 		$this->mock_token_response(
@@ -455,8 +456,127 @@ class Test_Client_Refresh extends WP_UnitTestCase {
 	}
 
 	/**
-	 * Test that unauthorized_client preserves the session because reconnecting
-	 * cannot repair a rejected client registration.
+	 * A confidential session whose stored client_id no longer matches the
+	 * site's current one cannot be repaired by keeping it: the metadata
+	 * document the server wants is gone, so a reconnect is required.
+	 *
+	 * @dataProvider provide_client_configuration_rejections
+	 *
+	 * @param int    $status HTTP status the auth server answers with.
+	 * @param string $error  OAuth error code in the body.
+	 */
+	public function test_invalid_client_marks_reauth_when_the_client_id_moved( int $status, string $error ) {
+		$conn                = \get_option( 'atmosphere_connection' );
+		$conn['client_id']   = 'https://old.example/wp-json/atmosphere/v2/client-metadata';
+		$conn['auth_server'] = 'https://auth.example.com';
+		\update_option( 'atmosphere_connection', $conn );
+
+		$this->mock_token_response( $status, array( 'error' => $error ) );
+
+		$result = Client::refresh();
+
+		$this->assertWPError( $result );
+		$this->assertSame( 'atmosphere_needs_reauth', $result->get_error_code() );
+		$this->assertTrue( ! empty( \get_option( 'atmosphere_connection' )['needs_reauth'] ) );
+		$this->assertSame( Client::REAUTH_REASON_CLIENT_ID_CHANGED, \Atmosphere\get_reauth_reason() );
+	}
+
+	/**
+	 * The codes the reference server uses to reject the client itself: the
+	 * assertion (invalid_client), the grant for this client
+	 * (unauthorized_client), and the metadata document behind the client_id,
+	 * which is what a moved site or a blocked endpoint produces.
+	 *
+	 * @return array<string, array{0: int, 1: string}>
+	 */
+	public function provide_client_configuration_rejections(): array {
+		return array(
+			'invalid_client'          => array( 401, 'invalid_client' ),
+			'invalid_client_metadata' => array( 400, 'invalid_client_metadata' ),
+			'unauthorized_client'     => array( 403, 'unauthorized_client' ),
+		);
+	}
+
+	/**
+	 * A confidential session under the current client_id keeps its tokens on
+	 * invalid_client, like a legacy one: reconnecting the same client would
+	 * not change what the server rejected.
+	 */
+	public function test_invalid_client_preserves_a_confidential_session_under_the_current_client_id() {
+		$conn                = \get_option( 'atmosphere_connection' );
+		$conn['client_id']   = Client::client_id();
+		$conn['auth_server'] = 'https://auth.example.com';
+		\update_option( 'atmosphere_connection', $conn );
+
+		$this->mock_token_response( 401, array( 'error' => 'invalid_client' ) );
+
+		$result = Client::refresh();
+
+		$this->assertSame( 'atmosphere_client_configuration', $result->get_error_code() );
+		$this->assertEmpty( \get_option( 'atmosphere_connection' )['needs_reauth'] );
+	}
+
+	/**
+	 * A rejected client registration pauses further refresh attempts, so a
+	 * publish burst does not turn into a token request per call.
+	 */
+	public function test_client_configuration_failure_holds_further_refreshes() {
+		$requests = 0;
+		\add_filter(
+			'pre_http_request',
+			static function ( $response, $args, $url ) use ( &$requests ) {
+				if ( false !== \strpos( $url, 'oauth/token' ) ) {
+					++$requests;
+				}
+				return $response;
+			},
+			0,
+			3
+		);
+		$this->mock_token_response( 400, array( 'error' => 'invalid_client_metadata' ) );
+
+		$first  = Client::refresh();
+		$second = Client::refresh();
+
+		$this->assertSame( 'atmosphere_client_configuration', $first->get_error_code() );
+		$this->assertSame( 'atmosphere_refresh_on_hold', $second->get_error_code(), 'The hold has its own code so the publish ladder retries.' );
+		$this->assertSame( 'atmosphere_client_configuration', $second->get_error_data()['cause'] );
+		$this->assertSame( 1, $requests, 'The second attempt must not reach the token endpoint.' );
+
+		Client::disconnect();
+		$this->assertFalse( \get_transient( Client::REFRESH_HOLD_TRANSIENT ), 'Disconnect must lift the hold.' );
+	}
+
+	/**
+	 * A transport failure stays on the normal retry path; only failures that
+	 * cannot clear on their own are held.
+	 */
+	public function test_server_errors_are_not_held() {
+		$requests = 0;
+		\add_filter(
+			'pre_http_request',
+			static function ( $response, $args, $url ) use ( &$requests ) {
+				if ( false !== \strpos( $url, 'oauth/token' ) ) {
+					++$requests;
+				}
+				return $response;
+			},
+			0,
+			3
+		);
+		$this->mock_token_response( 503, array( 'error' => 'temporarily_unavailable' ) );
+
+		Client::refresh();
+		Client::refresh();
+
+		$this->assertSame( 2, $requests );
+		$this->assertFalse( \get_transient( Client::REFRESH_HOLD_TRANSIENT ) );
+	}
+
+	/**
+	 * Test that unauthorized_client preserves a legacy (public-client)
+	 * session because reconnecting cannot repair a rejected client
+	 * registration.
 	 */
 	public function test_unauthorized_client_preserves_connection() {
 		$this->mock_token_response(

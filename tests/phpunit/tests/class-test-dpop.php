@@ -21,6 +21,20 @@ use Atmosphere\OAuth\DPoP;
 class Test_DPoP extends WP_UnitTestCase {
 
 	/**
+	 * OpenSSL drops leading zero bytes; the JWK must always carry 32 bytes
+	 * per member or the strict signing-key validation rejects our own key.
+	 */
+	public function test_generate_key_pads_every_member_to_32_bytes() {
+		for ( $i = 0; $i < 200; $i++ ) {
+			$jwk = DPoP::generate_key();
+			foreach ( array( 'x', 'y', 'd' ) as $member ) {
+				$bytes = \base64_decode( \strtr( $jwk[ $member ], '-_', '+/' ), true ); // phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.obfuscation_base64_decode
+				$this->assertSame( 32, \strlen( (string) $bytes ), "Member {$member} must be padded to 32 bytes." );
+			}
+		}
+	}
+
+	/**
 	 * Test that generate_key() produces a valid P-256 JWK.
 	 */
 	public function test_generate_key_produces_valid_jwk() {

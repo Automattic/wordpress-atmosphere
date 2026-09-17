@@ -2817,6 +2817,7 @@ class Atmosphere {
 			'atmosphere_client_authentication',
 			'atmosphere_client_authentication_key',
 			'atmosphere_client_configuration',
+			'atmosphere_dpop_keygen_failed',
 			'atmosphere_post_not_publishable',
 			'atmosphere_missing_tid',
 			'atmosphere_invalid_pre_apply_writes_return',

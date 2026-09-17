@@ -155,7 +155,16 @@ class Health_Check {
 		if ( 'connected' === $state ) {
 			$status = Client::refresh_status();
 
-			if ( self::client_configuration_failed( $status ) ) {
+			if ( self::signing_key_unreadable( $status ) ) {
+				$result['status']         = 'critical';
+				$result['badge']['color'] = 'red';
+				$result['label']          = \__( 'ATmosphere cannot read its Bluesky signing key', 'atmosphere' );
+				$result['description']    = \sprintf(
+					'<p>%s</p>',
+					\__( 'The saved login can no longer be renewed because the key that signs in to Bluesky could not be read. This usually happens after the security keys in wp-config.php changed. Disconnect and connect again to create a new key.', 'atmosphere' )
+				);
+				$result['actions']        = self::reconnect_action();
+			} elseif ( self::client_configuration_failed( $status ) ) {
 				$result['status']         = 'critical';
 				$result['badge']['color'] = 'red';
 				$result['label']          = \__( 'Bluesky rejected ATmosphere’s OAuth client configuration', 'atmosphere' );
@@ -559,6 +568,21 @@ class Health_Check {
 	}
 
 	/**
+	 * Whether the latest renewal failed because the signing key is unreadable.
+	 *
+	 * Unlike a transport failure this does not clear on its own while the
+	 * session is bound to the key, and the fix is specific.
+	 *
+	 * @param array $status Refresh status as read from `Client::refresh_status()`.
+	 * @return bool
+	 */
+	private static function signing_key_unreadable( array $status ): bool {
+		return ! empty( $status['last_failure'] )
+			&& (int) $status['last_failure'] > (int) ( $status['last_success'] ?? 0 )
+			&& 'atmosphere_client_authentication_key' === ( $status['last_error'] ?? '' );
+	}
+
+	/**
 	 * Whether the latest renewal failure is a client-configuration problem.
 	 *
 	 * @param array $status Refresh status as read from `Client::refresh_status()`.
@@ -799,6 +823,8 @@ class Health_Check {
 				return \__( 'Needs reconnect (security keys changed)', 'atmosphere' );
 			case Client::REAUTH_REASON_DECRYPT_FAILED:
 				return \__( 'Needs reconnect (saved login unreadable)', 'atmosphere' );
+			case Client::REAUTH_REASON_CLIENT_ID_CHANGED:
+				return \__( 'Needs reconnect (site address changed)', 'atmosphere' );
 			default:
 				return \__( 'Needs reconnect (session expired)', 'atmosphere' );
 		}

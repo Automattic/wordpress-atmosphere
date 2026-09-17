@@ -15,6 +15,8 @@ use function Atmosphere\is_connected;
 
 /**
  * Creates, protects, and exposes this site's OAuth client signing key.
+ *
+ * @since unreleased
  */
 class Client_Authentication {
 
@@ -22,6 +24,8 @@ class Client_Authentication {
 	 * Option holding the encrypted private JWK.
 	 *
 	 * @var string
+	 *
+	 * @since unreleased
 	 */
 	public const KEY_OPTION = 'atmosphere_oauth_client_authentication_key';
 
@@ -29,6 +33,8 @@ class Client_Authentication {
 	 * Client-assertion type sent alongside a `private_key_jwt` assertion.
 	 *
 	 * @var string
+	 *
+	 * @since unreleased
 	 */
 	public const ASSERTION_TYPE = 'urn:ietf:params:oauth:client-assertion-type:jwt-bearer';
 
@@ -41,6 +47,8 @@ class Client_Authentication {
 	 * @param array  $body   Request body carrying `client_id`.
 	 * @param string $issuer Authorization server issuer URL.
 	 * @return array|\WP_Error Body with the assertion fields, or an actionable error.
+	 *
+	 * @since unreleased
 	 */
 	public static function sign_request( array $body, string $issuer ): array|\WP_Error {
 		$assertion = self::assertion( (string) ( $body['client_id'] ?? '' ), $issuer );
@@ -58,6 +66,8 @@ class Client_Authentication {
 	 * Public JWKS document advertised in OAuth client metadata.
 	 *
 	 * @return array|\WP_Error
+	 *
+	 * @since unreleased
 	 */
 	public static function jwks(): array|\WP_Error {
 		$key = self::key();
@@ -115,16 +125,32 @@ class Client_Authentication {
 			return $generated;
 		}
 
-		\add_option( self::KEY_OPTION, Encryption::encrypt( (string) \wp_json_encode( $generated ) ), '', false );
+		global $wpdb;
 
 		/*
-		 * Re-read rather than trusting the in-memory key: `add_option()`
-		 * inserts with ON DUPLICATE KEY UPDATE, so when two first-time
-		 * callers race the last write wins. Whichever row is stored now is
-		 * the key whose public half the JWKS publishes, and every caller
-		 * has to sign with that one.
+		 * INSERT IGNORE so the first writer wins when two first-time callers
+		 * race (a metadata fetch and an authorize() in the same second).
+		 * `add_option()` would let the second caller overwrite a key the
+		 * first one has already signed with. Then re-read: whichever row is
+		 * stored is the key whose public half the JWKS publishes, and every
+		 * caller has to sign with that one.
 		 */
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching
+		$wpdb->query(
+			$wpdb->prepare(
+				"INSERT IGNORE INTO {$wpdb->options} (option_name, option_value, autoload) VALUES (%s, %s, %s)",
+				self::KEY_OPTION,
+				Encryption::encrypt( (string) \wp_json_encode( $generated ) ),
+				'no'
+			)
+		);
+
 		\wp_cache_delete( self::KEY_OPTION, 'options' );
+		$notoptions = \wp_cache_get( 'notoptions', 'options' );
+		if ( \is_array( $notoptions ) && isset( $notoptions[ self::KEY_OPTION ] ) ) {
+			unset( $notoptions[ self::KEY_OPTION ] );
+			\wp_cache_set( 'notoptions', $notoptions, 'options' );
+		}
 
 		return self::stored_key() ?? new \WP_Error(
 			'atmosphere_client_authentication_key',
@@ -168,19 +194,34 @@ class Client_Authentication {
 	}
 
 	/**
-	 * Whether a live session was minted under the current key material.
+	 * Whether a confidential session, live or being authorized, is bound to
+	 * the current signing key.
 	 *
-	 * A connection whose tokens were encrypted under a different key is
-	 * already lost, so nothing is left for the signing key to protect.
+	 * Only a confidential session signs with this key; a legacy session
+	 * never does, so it must not hold a broken key in place. A connection
+	 * whose tokens were encrypted under a different key is already lost,
+	 * so nothing is left for the signing key to protect either.
 	 *
 	 * @return bool
 	 */
 	private static function session_bound_to_key(): bool {
-		if ( ! is_connected() ) {
+		/*
+		 * An authorization in flight has already published this key's
+		 * `kid` through PAR; rotating it before the callback would fail
+		 * the exchange.
+		 */
+		$pending = \get_transient( 'atmosphere_oauth_resolved' );
+		if ( \is_array( $pending ) && ! empty( $pending['client_id'] ) ) {
+			return true;
+		}
+
+		$conn = get_connection();
+
+		if ( ! is_connected() || empty( $conn['client_id'] ) ) {
 			return false;
 		}
 
-		$fingerprint = (string) ( get_connection()['key_fingerprint'] ?? '' );
+		$fingerprint = (string) ( $conn['key_fingerprint'] ?? '' );
 
 		return '' === $fingerprint || \hash_equals( Encryption::key_fingerprint(), $fingerprint );
 	}

@@ -37,6 +37,8 @@ class Client_Metadata_Controller extends \WP_REST_Controller {
 	 * served by {@see Legacy_Client_Metadata_Controller}.
 	 *
 	 * @var string
+	 *
+	 * @since unreleased
 	 */
 	public const VERSION = 'v2';
 
@@ -86,6 +88,8 @@ class Client_Metadata_Controller extends \WP_REST_Controller {
 	 * document to a different client or downgrade how it authenticates.
 	 *
 	 * @return array|\WP_Error
+	 *
+	 * @since unreleased
 	 */
 	protected function pinned_fields(): array|\WP_Error {
 		$jwks = Client_Authentication::jwks();
@@ -107,12 +111,19 @@ class Client_Metadata_Controller extends \WP_REST_Controller {
 	 *
 	 * This endpoint URL IS the client_id per AT Protocol OAuth spec.
 	 *
-	 * @return WP_REST_Response
+	 * @return WP_REST_Response|\WP_Error
 	 */
-	public function get_metadata(): WP_REST_Response {
+	public function get_metadata(): WP_REST_Response|\WP_Error {
 		$pinned = $this->pinned_fields();
 		if ( \is_wp_error( $pinned ) ) {
-			return new WP_REST_Response( array( 'code' => $pinned->get_error_code() ), 500 );
+			// The route is public: the cause goes to the log, not the response.
+			debug_log( \sprintf( 'client metadata unavailable: %s', $pinned->get_error_code() ) );
+
+			return new \WP_Error(
+				'atmosphere_client_metadata_unavailable',
+				\__( 'The client metadata cannot be served right now.', 'atmosphere' ),
+				array( 'status' => 500 )
+			);
 		}
 
 		$metadata = \array_merge(
@@ -194,10 +205,8 @@ class Client_Metadata_Controller extends \WP_REST_Controller {
 		// See pinned_fields(): the client identity is not filterable.
 		$metadata = \array_merge( $metadata, $pinned );
 
-		// A client supplies `jwks` or `jwks_uri`, never both; the key is ours.
-		if ( isset( $pinned['jwks'] ) ) {
-			unset( $metadata['jwks_uri'] );
-		}
+		// A client supplies `jwks` or `jwks_uri`, never both, and the key is ours. Stripped on both documents so they cannot drift.
+		unset( $metadata['jwks_uri'] );
 
 		$response = new WP_REST_Response( $metadata, 200 );
 

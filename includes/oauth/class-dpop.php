@@ -51,12 +51,17 @@ class DPoP {
 		}
 		$ec = $details['ec'];
 
+		/*
+		 * OpenSSL strips leading zero bytes from the components, so about
+		 * one key in ninety comes back with a 31-byte member. RFC 7518
+		 * requires the full 32 bytes for P-256, so pad on the left.
+		 */
 		return array(
 			'kty' => 'EC',
 			'crv' => 'P-256',
-			'x'   => self::base64url( $ec['x'] ),
-			'y'   => self::base64url( $ec['y'] ),
-			'd'   => self::base64url( $ec['d'] ),
+			'x'   => self::base64url( \str_pad( $ec['x'], 32, "\0", STR_PAD_LEFT ) ),
+			'y'   => self::base64url( \str_pad( $ec['y'], 32, "\0", STR_PAD_LEFT ) ),
+			'd'   => self::base64url( \str_pad( $ec['d'], 32, "\0", STR_PAD_LEFT ) ),
 		);
 	}
 

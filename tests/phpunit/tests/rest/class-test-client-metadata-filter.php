@@ -132,15 +132,18 @@ class Test_Client_Metadata_Filter extends WP_UnitTestCase {
 				'access_token'    => Encryption::encrypt( 'access-token' ),
 				'needs_reauth'    => false,
 				'key_fingerprint' => Encryption::key_fingerprint(),
+				'client_id'       => Client::client_id(),
 			),
 			false
 		);
 		\update_option( Client_Authentication::KEY_OPTION, 'not-a-ciphertext', false );
 
-		$response = ( new Client_Metadata_Controller() )->get_metadata();
+		$result = ( new Client_Metadata_Controller() )->get_metadata();
 
-		$this->assertSame( 500, $response->get_status() );
-		$this->assertArrayNotHasKey( 'jwks', $response->get_data() );
+		$this->assertWPError( $result );
+		$this->assertSame( 'atmosphere_client_metadata_unavailable', $result->get_error_code(), 'A public route must not name the internal failure.' );
+		$this->assertSame( 500, $result->get_error_data()['status'] );
+		$this->assertStringNotContainsString( 'ATMOSPHERE_ENCRYPTION_KEY', $result->get_error_message(), 'A public route must not explain the cause.' );
 	}
 
 	/**

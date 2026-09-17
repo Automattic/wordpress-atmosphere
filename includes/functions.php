@@ -772,9 +772,11 @@ function is_operator_disconnected(): bool {
  *
  * Canonical values are the `Client::REAUTH_REASON_*` constants:
  * `key_changed` (encryption key material changed under the stored
- * tokens) and `decrypt_failed` (tokens unreadable with an unchanged
- * key). An empty string means no specific cause was recorded — legacy
- * rows and plain session expiry.
+ * tokens), `decrypt_failed` (tokens unreadable with an unchanged key)
+ * and `client_id_changed` (the site's own client_id URL moved, so the
+ * authorization server no longer recognizes the session's client). An
+ * empty string means no specific cause was recorded — legacy rows and
+ * plain session expiry.
  *
  * @since 2.1.0
  *
@@ -805,6 +807,8 @@ function reauth_reason_lead(): string {
 			return \__( 'Your site’s security keys have changed, so ATmosphere can no longer read its saved Bluesky login. This happens after a migration, or when a security plugin rotates them on a schedule.', 'atmosphere' );
 		case Client::REAUTH_REASON_DECRYPT_FAILED:
 			return \__( 'ATmosphere can no longer read its saved Bluesky login.', 'atmosphere' );
+		case Client::REAUTH_REASON_CLIENT_ID_CHANGED:
+			return \__( 'Your site’s address has changed, so Bluesky no longer recognizes it.', 'atmosphere' );
 		default:
 			return \__( 'Your Bluesky session has expired.', 'atmosphere' );
 	}

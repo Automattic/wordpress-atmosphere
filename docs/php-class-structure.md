@@ -38,13 +38,15 @@ wordpress-atmosphere/
 │   │
 │   ├── oauth/                      # Native OAuth flow (PKCE + DPoP + PAR).
 │   │   ├── class-client.php        # OAuth lifecycle (authorize, callback, refresh, disconnect).
+│   │   ├── class-client-authentication.php # Persistent ES256 key behind the confidential client (private_key_jwt).
 │   │   ├── class-dpop.php          # ES256 DPoP proof generation.
 │   │   ├── class-encryption.php    # libsodium token / key encryption at rest.
 │   │   ├── class-nonce-storage.php # DPoP nonce persistence.
 │   │   └── class-resolver.php      # handle → DID → PDS → auth server resolution chain.
 │   │
 │   ├── rest/                       # REST API controllers (WP_REST_Controller subclasses).
-│   │   ├── class-client-metadata-controller.php  # Public OAuth client-metadata endpoint.
+│   │   ├── class-client-metadata-controller.php  # Confidential-client metadata document (atmosphere/v2), the client_id.
+│   │   ├── class-legacy-client-metadata-controller.php # Public-client document (atmosphere/v1) kept for older sessions.
 │   │   └── admin/                  # Authenticated, editor-only controllers.
 │   │       └── class-pre-publish-controller.php   # Pre-publish projection for the editor panel.
 │   │
