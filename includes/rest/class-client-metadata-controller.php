@@ -43,6 +43,16 @@ class Client_Metadata_Controller extends \WP_REST_Controller {
 	public const VERSION = 'v2';
 
 	/**
+	 * REST namespace of this document, `atmosphere/` plus the version.
+	 *
+	 * Public so integrations can build the client_id URL from it, as with
+	 * the other controllers.
+	 *
+	 * @var string
+	 */
+	public const ROUTE_NAMESPACE = 'atmosphere/' . self::VERSION;
+
+	/**
 	 * The base of this controller's route.
 	 *
 	 * @var string
@@ -54,7 +64,7 @@ class Client_Metadata_Controller extends \WP_REST_Controller {
 	 *
 	 * @var string
 	 */
-	protected $namespace = 'atmosphere/' . self::VERSION;
+	protected $namespace = self::ROUTE_NAMESPACE;
 
 	/**
 	 * The base of this controller's route.

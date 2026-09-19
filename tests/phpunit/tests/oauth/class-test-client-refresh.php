@@ -428,10 +428,11 @@ class Test_Client_Refresh extends WP_UnitTestCase {
 	}
 
 	/**
-	 * Test that invalid_client preserves a legacy (public-client) session
-	 * because reconnecting cannot repair a rejected client registration.
+	 * A legacy (public-client) session reconnects on invalid_client:
+	 * reconnecting moves it to the confidential client, which is the fix
+	 * whatever the server objected to.
 	 */
-	public function test_invalid_client_preserves_connection() {
+	public function test_invalid_client_marks_a_legacy_session_for_reauth() {
 		$this->mock_token_response(
 			401,
 			array(
@@ -446,8 +447,8 @@ class Test_Client_Refresh extends WP_UnitTestCase {
 
 		$conn = \get_option( 'atmosphere_connection' );
 		$this->assertNotFalse( $conn );
-		$this->assertEmpty( $conn['needs_reauth'] );
-		$this->assertSame( 'atmosphere_client_configuration', $result->get_error_code() );
+		$this->assertTrue( ! empty( $conn['needs_reauth'] ) );
+		$this->assertSame( 'atmosphere_needs_reauth', $result->get_error_code() );
 		$this->assertNotFalse( \get_option( 'atmosphere_identity' ) );
 		$this->assertFalse(
 			\get_option( Client::DISCONNECTED_OPTION ),
@@ -521,6 +522,11 @@ class Test_Client_Refresh extends WP_UnitTestCase {
 	 * publish burst does not turn into a token request per call.
 	 */
 	public function test_client_configuration_failure_holds_further_refreshes() {
+		$conn                = \get_option( 'atmosphere_connection' );
+		$conn['client_id']   = Client::client_id();
+		$conn['auth_server'] = 'https://auth.example.com';
+		\update_option( 'atmosphere_connection', $conn );
+
 		$requests = 0;
 		\add_filter(
 			'pre_http_request',
@@ -545,6 +551,57 @@ class Test_Client_Refresh extends WP_UnitTestCase {
 
 		Client::disconnect();
 		$this->assertFalse( \get_transient( Client::REFRESH_HOLD_TRANSIENT ), 'Disconnect must lift the hold.' );
+	}
+
+	/**
+	 * A hold belongs to the session whose refresh failed. A session that
+	 * replaced it in the meantime is not held back.
+	 */
+	public function test_hold_is_ignored_by_a_replacement_session() {
+		\set_transient(
+			Client::REFRESH_HOLD_TRANSIENT,
+			array(
+				'code'    => 'atmosphere_client_configuration',
+				'message' => 'stale',
+				'session' => \hash( 'sha256', 'a-previous-refresh-token-ciphertext' ),
+			),
+			5 * MINUTE_IN_SECONDS
+		);
+		$this->mock_successful_refresh();
+
+		$this->assertTrue( Client::refresh() );
+		$this->assertFalse( \get_transient( Client::REFRESH_HOLD_TRANSIENT ) );
+	}
+
+	/**
+	 * The revocation worker distrusts its client_id argument like the
+	 * endpoint: a row restored with a non-HTTPS client_id sends nothing.
+	 */
+	public function test_revoke_refresh_token_refuses_an_unsafe_client_id() {
+		$requests = 0;
+		$dpop_jwk = DPoP::generate_key();
+
+		\add_filter(
+			'pre_http_request',
+			static function ( $response, $args, $url ) use ( &$requests ) {
+				if ( false !== \strpos( $url, 'oauth/revoke' ) ) {
+					++$requests;
+				}
+				return $response;
+			},
+			0,
+			3
+		);
+
+		Client::revoke_refresh_token(
+			Encryption::encrypt( 'refresh-token' ),
+			Encryption::encrypt( (string) \wp_json_encode( $dpop_jwk ) ),
+			'https://auth.example.com/oauth/revoke',
+			'https://auth.example.com',
+			'http://insecure.example/wp-json/atmosphere/v2/client-metadata'
+		);
+
+		$this->assertSame( 0, $requests );
 	}
 
 	/**
@@ -574,11 +631,9 @@ class Test_Client_Refresh extends WP_UnitTestCase {
 	}
 
 	/**
-	 * Test that unauthorized_client preserves a legacy (public-client)
-	 * session because reconnecting cannot repair a rejected client
-	 * registration.
+	 * Same for unauthorized_client on a legacy session.
 	 */
-	public function test_unauthorized_client_preserves_connection() {
+	public function test_unauthorized_client_marks_a_legacy_session_for_reauth() {
 		$this->mock_token_response(
 			403,
 			array(
@@ -593,8 +648,8 @@ class Test_Client_Refresh extends WP_UnitTestCase {
 
 		$conn = \get_option( 'atmosphere_connection' );
 		$this->assertNotFalse( $conn );
-		$this->assertEmpty( $conn['needs_reauth'] );
-		$this->assertSame( 'atmosphere_client_configuration', $result->get_error_code() );
+		$this->assertTrue( ! empty( $conn['needs_reauth'] ) );
+		$this->assertSame( 'atmosphere_needs_reauth', $result->get_error_code() );
 		$this->assertNotFalse( \get_option( 'atmosphere_identity' ) );
 		$this->assertFalse(
 			\get_option( Client::DISCONNECTED_OPTION ),

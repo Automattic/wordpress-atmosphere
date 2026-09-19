@@ -21,17 +21,30 @@ use Atmosphere\OAuth\DPoP;
 class Test_DPoP extends WP_UnitTestCase {
 
 	/**
-	 * OpenSSL drops leading zero bytes; the JWK must always carry 32 bytes
-	 * per member or the strict signing-key validation rejects our own key.
+	 * OpenSSL drops leading zero bytes; the JWK must carry 32 bytes per
+	 * member or the strict signing-key validation rejects our own key.
+	 * Pinned with a 31-byte vector rather than by sampling generated keys.
 	 */
-	public function test_generate_key_pads_every_member_to_32_bytes() {
-		for ( $i = 0; $i < 200; $i++ ) {
-			$jwk = DPoP::generate_key();
-			foreach ( array( 'x', 'y', 'd' ) as $member ) {
-				$bytes = \base64_decode( \strtr( $jwk[ $member ], '-_', '+/' ), true ); // phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.obfuscation_base64_decode
-				$this->assertSame( 32, \strlen( (string) $bytes ), "Member {$member} must be padded to 32 bytes." );
-			}
-		}
+	public function test_jwk_from_ec_pads_short_components() {
+		$method = new \ReflectionMethod( DPoP::class, 'jwk_from_ec' );
+		$method->setAccessible( true );
+
+		$short = \str_repeat( "\x11", 31 );
+		$full  = \str_repeat( "\x22", 32 );
+		$jwk   = $method->invoke(
+			null,
+			array(
+				'x' => $short,
+				'y' => $full,
+				'd' => $short,
+			)
+		);
+
+		$decode = static fn( string $value ): string => (string) \base64_decode( \strtr( $value, '-_', '+/' ), true ); // phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.obfuscation_base64_decode
+
+		$this->assertSame( "\0" . $short, $decode( $jwk['x'] ) );
+		$this->assertSame( $full, $decode( $jwk['y'] ) );
+		$this->assertSame( "\0" . $short, $decode( $jwk['d'] ) );
 	}
 
 	/**

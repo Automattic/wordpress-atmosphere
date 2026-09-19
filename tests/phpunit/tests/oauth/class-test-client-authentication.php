@@ -29,7 +29,6 @@ class Test_Client_Authentication extends WP_UnitTestCase {
 		\delete_option( Client_Authentication::KEY_OPTION );
 		\delete_option( 'atmosphere_identity' );
 		\delete_option( 'atmosphere_connection' );
-		\delete_transient( 'atmosphere_oauth_resolved' );
 		parent::tear_down();
 	}
 
@@ -198,18 +197,6 @@ class Test_Client_Authentication extends WP_UnitTestCase {
 		$this->assertIsArray( $jwks );
 		$this->assertNotSame( 'not-a-ciphertext', \get_option( Client_Authentication::KEY_OPTION ) );
 		$this->assertSame( $jwks['keys'][0]['kid'], Client_Authentication::jwks()['keys'][0]['kid'], 'The new key must persist.' );
-	}
-
-	/**
-	 * An authorization in flight has already announced this key, so it must
-	 * not be rotated before the callback lands.
-	 */
-	public function test_unreadable_key_is_kept_while_an_authorization_is_pending() {
-		\set_transient( 'atmosphere_oauth_resolved', array( 'client_id' => Client::client_id() ), HOUR_IN_SECONDS );
-		\update_option( Client_Authentication::KEY_OPTION, 'not-a-ciphertext', false );
-
-		$this->assertWPError( Client_Authentication::jwks() );
-		$this->assertSame( 'not-a-ciphertext', \get_option( Client_Authentication::KEY_OPTION ) );
 	}
 
 	/**

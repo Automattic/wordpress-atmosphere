@@ -194,27 +194,18 @@ class Client_Authentication {
 	}
 
 	/**
-	 * Whether a confidential session, live or being authorized, is bound to
-	 * the current signing key.
+	 * Whether a live confidential session is bound to the current signing key.
 	 *
 	 * Only a confidential session signs with this key; a legacy session
 	 * never does, so it must not hold a broken key in place. A connection
 	 * whose tokens were encrypted under a different key is already lost,
-	 * so nothing is left for the signing key to protect either.
+	 * so nothing is left for the signing key to protect either. A pending
+	 * authorization is no reason to keep it: an unreadable key cannot sign
+	 * the callback's token exchange, so that flow fails either way.
 	 *
 	 * @return bool
 	 */
 	private static function session_bound_to_key(): bool {
-		/*
-		 * An authorization in flight has already published this key's
-		 * `kid` through PAR; rotating it before the callback would fail
-		 * the exchange.
-		 */
-		$pending = \get_transient( 'atmosphere_oauth_resolved' );
-		if ( \is_array( $pending ) && ! empty( $pending['client_id'] ) ) {
-			return true;
-		}
-
 		$conn = get_connection();
 
 		if ( ! is_connected() || empty( $conn['client_id'] ) ) {

@@ -49,19 +49,29 @@ class DPoP {
 		if ( false === $details || ! isset( $details['ec'] ) ) {
 			return self::keygen_error();
 		}
-		$ec = $details['ec'];
 
-		/*
-		 * OpenSSL strips leading zero bytes from the components, so about
-		 * one key in ninety comes back with a 31-byte member. RFC 7518
-		 * requires the full 32 bytes for P-256, so pad on the left.
-		 */
+		return self::jwk_from_ec( $details['ec'] );
+	}
+
+	/**
+	 * Build a P-256 private JWK from OpenSSL's raw EC components.
+	 *
+	 * OpenSSL strips leading zero bytes from the components, so about one
+	 * key in ninety comes back with a 31-byte member. RFC 7518 requires the
+	 * full 32 bytes for P-256, so pad on the left.
+	 *
+	 * @param array $ec `x`, `y` and `d` as raw big-endian bytes.
+	 * @return array
+	 */
+	private static function jwk_from_ec( array $ec ): array {
+		$pad = static fn( string $bytes ): string => \str_pad( $bytes, 32, "\0", STR_PAD_LEFT );
+
 		return array(
 			'kty' => 'EC',
 			'crv' => 'P-256',
-			'x'   => self::base64url( \str_pad( $ec['x'], 32, "\0", STR_PAD_LEFT ) ),
-			'y'   => self::base64url( \str_pad( $ec['y'], 32, "\0", STR_PAD_LEFT ) ),
-			'd'   => self::base64url( \str_pad( $ec['d'], 32, "\0", STR_PAD_LEFT ) ),
+			'x'   => self::base64url( $pad( $ec['x'] ) ),
+			'y'   => self::base64url( $pad( $ec['y'] ) ),
+			'd'   => self::base64url( $pad( $ec['d'] ) ),
 		);
 	}
 

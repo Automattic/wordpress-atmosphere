@@ -302,74 +302,7 @@ class Test_Client_Authorize extends WP_UnitTestCase {
 	public function test_authorize_par_request_disables_redirection() {
 		$captured_args = null;
 
-		\add_filter(
-			'pre_http_request',
-			static function ( $response, $args, $url ) use ( &$captured_args ) {
-				if ( false !== \strpos( $url, '/.well-known/atproto-did' ) ) {
-					return array(
-						'response' => array( 'code' => 200 ),
-						'headers'  => new \WpOrg\Requests\Utility\CaseInsensitiveDictionary( array() ),
-						'body'     => 'did:plc:test',
-					);
-				}
-
-				if ( false !== \strpos( $url, 'plc.directory/did:plc:test' ) ) {
-					return array(
-						'response' => array( 'code' => 200 ),
-						'headers'  => new \WpOrg\Requests\Utility\CaseInsensitiveDictionary( array() ),
-						'body'     => (string) \wp_json_encode(
-							array(
-								'id'      => 'did:plc:test',
-								'service' => array(
-									array(
-										'id'              => '#atproto_pds',
-										'type'            => 'AtprotoPersonalDataServer',
-										'serviceEndpoint' => 'https://pds.example.com',
-									),
-								),
-							)
-						),
-					);
-				}
-
-				if ( false !== \strpos( $url, 'oauth-protected-resource' ) ) {
-					return array(
-						'response' => array( 'code' => 200 ),
-						'headers'  => new \WpOrg\Requests\Utility\CaseInsensitiveDictionary( array() ),
-						'body'     => (string) \wp_json_encode(
-							array( 'authorization_servers' => array( 'https://auth.example.com' ) )
-						),
-					);
-				}
-
-				if ( false !== \strpos( $url, 'oauth-authorization-server' ) ) {
-					return array(
-						'response' => array( 'code' => 200 ),
-						'headers'  => new \WpOrg\Requests\Utility\CaseInsensitiveDictionary( array() ),
-						'body'     => (string) \wp_json_encode(
-							array(
-								'token_endpoint'         => 'https://auth.example.com/oauth/token',
-								'authorization_endpoint' => 'https://auth.example.com/oauth/authorize',
-								'pushed_authorization_request_endpoint' => 'https://auth.example.com/oauth/par',
-							)
-						),
-					);
-				}
-
-				if ( false !== \strpos( $url, 'oauth/par' ) ) {
-					$captured_args = $args;
-					return array(
-						'response' => array( 'code' => 200 ),
-						'headers'  => new \WpOrg\Requests\Utility\CaseInsensitiveDictionary( array() ),
-						'body'     => (string) \wp_json_encode( array( 'request_uri' => 'urn:ietf:params:oauth:request_uri:test' ) ),
-					);
-				}
-
-				return $response;
-			},
-			10,
-			3
-		);
+		$this->mock_resolution_and_par( $captured_args );
 
 		$result = Client::authorize( 'alice.atmosphere-test.io' );
 
@@ -381,6 +314,25 @@ class Test_Client_Authorize extends WP_UnitTestCase {
 		$this->assertSame( 'https://auth.example.com', $claims['aud'], 'PAR assertion audience must be the issuer, not the PAR endpoint.' );
 		$this->assertSame( Client::client_id(), $claims['iss'] );
 		$this->assertSame( Client::client_id(), $claims['sub'] );
+	}
+
+	/**
+	 * A connect attempt is not a flow that pins the signing key. With an
+	 * unreadable key and no live session, connecting replaces the key and
+	 * goes through; before, "Disconnect and connect again" looped.
+	 */
+	public function test_authorize_replaces_an_unreadable_signing_key() {
+		\update_option( Client_Authentication::KEY_OPTION, 'not-a-ciphertext', false );
+		$captured_args = null;
+		$this->mock_resolution_and_par( $captured_args );
+
+		$result = Client::authorize( 'alice.atmosphere-test.io' );
+
+		$this->assertIsString( $result, 'Connecting must succeed with a fresh key.' );
+		$this->assertNotSame( 'not-a-ciphertext', \get_option( Client_Authentication::KEY_OPTION ) );
+
+		$claims = $this->jwt_payload( (string) ( $captured_args['body']['client_assertion'] ?? '' ) );
+		$this->assertSame( Client::client_id(), $claims['iss'] );
 	}
 
 	/**
@@ -621,5 +573,81 @@ class Test_Client_Authorize extends WP_UnitTestCase {
 		$this->assertArrayNotHasKey( 'client_assertion', $captured_body );
 		$this->assertArrayNotHasKey( 'client_assertion_type', $captured_body );
 		$this->assertArrayNotHasKey( 'client_id', \get_option( 'atmosphere_connection' ) );
+	}
+
+	/**
+	 * Mock the resolution chain and the PAR endpoint for a connect attempt.
+	 *
+	 * @param array|null $captured_args Filled with the PAR request arguments.
+	 */
+	private function mock_resolution_and_par( ?array &$captured_args ): void {
+		\add_filter(
+			'pre_http_request',
+			static function ( $response, $args, $url ) use ( &$captured_args ) {
+				if ( false !== \strpos( $url, '/.well-known/atproto-did' ) ) {
+					return array(
+						'response' => array( 'code' => 200 ),
+						'headers'  => new \WpOrg\Requests\Utility\CaseInsensitiveDictionary( array() ),
+						'body'     => 'did:plc:test',
+					);
+				}
+
+				if ( false !== \strpos( $url, 'plc.directory/did:plc:test' ) ) {
+					return array(
+						'response' => array( 'code' => 200 ),
+						'headers'  => new \WpOrg\Requests\Utility\CaseInsensitiveDictionary( array() ),
+						'body'     => (string) \wp_json_encode(
+							array(
+								'id'      => 'did:plc:test',
+								'service' => array(
+									array(
+										'id'              => '#atproto_pds',
+										'type'            => 'AtprotoPersonalDataServer',
+										'serviceEndpoint' => 'https://pds.example.com',
+									),
+								),
+							)
+						),
+					);
+				}
+
+				if ( false !== \strpos( $url, 'oauth-protected-resource' ) ) {
+					return array(
+						'response' => array( 'code' => 200 ),
+						'headers'  => new \WpOrg\Requests\Utility\CaseInsensitiveDictionary( array() ),
+						'body'     => (string) \wp_json_encode(
+							array( 'authorization_servers' => array( 'https://auth.example.com' ) )
+						),
+					);
+				}
+
+				if ( false !== \strpos( $url, 'oauth-authorization-server' ) ) {
+					return array(
+						'response' => array( 'code' => 200 ),
+						'headers'  => new \WpOrg\Requests\Utility\CaseInsensitiveDictionary( array() ),
+						'body'     => (string) \wp_json_encode(
+							array(
+								'token_endpoint'         => 'https://auth.example.com/oauth/token',
+								'authorization_endpoint' => 'https://auth.example.com/oauth/authorize',
+								'pushed_authorization_request_endpoint' => 'https://auth.example.com/oauth/par',
+							)
+						),
+					);
+				}
+
+				if ( false !== \strpos( $url, 'oauth/par' ) ) {
+					$captured_args = $args;
+					return array(
+						'response' => array( 'code' => 200 ),
+						'headers'  => new \WpOrg\Requests\Utility\CaseInsensitiveDictionary( array() ),
+						'body'     => (string) \wp_json_encode( array( 'request_uri' => 'urn:ietf:params:oauth:request_uri:test' ) ),
+					);
+				}
+
+				return $response;
+			},
+			10,
+			3
+		);
 	}
 }

@@ -962,11 +962,16 @@ class Client {
 		 */
 		$hold = \get_transient( self::REFRESH_HOLD_TRANSIENT );
 		if ( \is_array( $hold ) && ! empty( $hold['code'] ) ) {
-			return new \WP_Error(
-				'atmosphere_refresh_on_hold',
-				(string) ( $hold['message'] ?? '' ),
-				array( 'cause' => (string) $hold['code'] )
-			);
+			// A hold left by a session that has since been replaced is void.
+			if ( ( $hold['session'] ?? '' ) !== self::session_fingerprint( $conn ) ) {
+				\delete_transient( self::REFRESH_HOLD_TRANSIENT );
+			} else {
+				return new \WP_Error(
+					'atmosphere_refresh_on_hold',
+					(string) ( $hold['message'] ?? '' ),
+					array( 'cause' => (string) $hold['code'] )
+				);
+			}
 		}
 
 		if ( ! self::lock() ) {
@@ -1038,6 +1043,7 @@ class Client {
 					array(
 						'code'    => (string) $result->get_error_code(),
 						'message' => $result->get_error_message(),
+						'session' => self::session_fingerprint( $conn ),
 					),
 					5 * MINUTE_IN_SECONDS
 				);
@@ -1287,11 +1293,20 @@ class Client {
 				 * The rejected registration is the stored client_id. When the
 				 * site's own client_id URL has moved (domain change, permalink
 				 * switch, a `rest_url` filter), that document is gone and only
-				 * a reconnect under the current URL repairs it.
+				 * a reconnect under the current URL repairs it. A legacy
+				 * session reconnects for any such rejection: reconnecting
+				 * moves it to the confidential client, which is the fix
+				 * whatever the server objected to.
 				 */
-				if ( $confidential && self::client_id() !== $client_id ) {
-					self::mark_needs_reauth( $conn, 'refresh_token', self::REAUTH_REASON_CLIENT_ID_CHANGED );
-					debug_log( \sprintf( 'refresh rejected (%s): stored client_id %s no longer matches %s', $error, $client_id, self::client_id() ) );
+				$moved = $confidential && self::client_id() !== $client_id;
+
+				if ( ! $confidential || $moved ) {
+					self::mark_needs_reauth( $conn, 'refresh_token', $moved ? self::REAUTH_REASON_CLIENT_ID_CHANGED : '' );
+					debug_log(
+						$moved
+							? \sprintf( 'refresh rejected (%s): stored client_id %s no longer matches %s', $error, $client_id, self::client_id() )
+							: \sprintf( 'refresh rejected (%s) on the legacy client; reconnect required', $error )
+					);
 
 					return new \WP_Error(
 						'atmosphere_needs_reauth',
@@ -1614,6 +1629,19 @@ class Client {
 	 */
 	private static function update_refresh_status( array $fields ): void {
 		\update_option( self::REFRESH_STATUS_OPTION, \array_merge( self::refresh_status(), $fields ), false );
+	}
+
+	/**
+	 * Identify a session by its refresh-token ciphertext without storing it.
+	 *
+	 * The hold is written after the row check and the two are not atomic;
+	 * a reconnect landing in between would otherwise inherit the hold.
+	 *
+	 * @param array $conn Connection row.
+	 * @return string
+	 */
+	private static function session_fingerprint( array $conn ): string {
+		return \hash( 'sha256', (string) ( $conn['refresh_token'] ?? '' ) );
 	}
 
 	/**
