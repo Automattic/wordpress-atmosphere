@@ -28,6 +28,7 @@ use function Atmosphere\get_supported_post_types;
 use function Atmosphere\has_identity;
 use function Atmosphere\is_auto_publish_enabled;
 use function Atmosphere\is_connected;
+use function Atmosphere\is_legacy_connection;
 use function Atmosphere\is_operator_disconnected;
 use function Atmosphere\reauth_reason_lead;
 use function Atmosphere\reconnect_url;
@@ -41,6 +42,18 @@ use function Atmosphere\truncate_text;
  * @since 2.1.0
  */
 class Health_Check {
+
+	/**
+	 * Age at which a connected site's missing credential renewal becomes a
+	 * Site Health recommendation.
+	 *
+	 * Public AT Protocol clients can receive short refresh-token inactivity
+	 * windows. Twenty-four hours gives a production site time to repair a
+	 * stalled WP-Cron runner before the provider expires the session.
+	 *
+	 * @var int
+	 */
+	private const RENEWAL_STALE_AFTER = DAY_IN_SECONDS;
 
 	/**
 	 * Async test identifier for the reachability test.
@@ -140,6 +153,52 @@ class Health_Check {
 		$state = self::connection_state();
 
 		if ( 'connected' === $state ) {
+			$status = Client::refresh_status();
+
+			if ( self::signing_key_unreadable( $status ) ) {
+				$result['status']         = 'critical';
+				$result['badge']['color'] = 'red';
+				$result['label']          = \__( 'ATmosphere cannot read its Bluesky signing key', 'atmosphere' );
+				$result['description']    = \sprintf(
+					'<p>%s</p>',
+					\__( 'The saved login can no longer be renewed because the key that signs in to Bluesky could not be read. This usually happens after the security keys in wp-config.php changed. Disconnect and connect again to create a new key.', 'atmosphere' )
+				);
+				$result['actions']        = self::reconnect_action();
+			} elseif ( self::client_configuration_failed( $status ) ) {
+				$result['status']         = 'critical';
+				$result['badge']['color'] = 'red';
+				$result['label']          = \__( 'Bluesky rejected ATmosphere’s OAuth client configuration', 'atmosphere' );
+				$result['description']    = \sprintf(
+					'<p>%s</p>',
+					\__( 'The saved login remains available, but Bluesky rejected its latest renewal. Run the ATmosphere Bluesky Reachability Test on this screen and make sure security or caching software allows the client-metadata endpoint.', 'atmosphere' )
+				);
+			} elseif ( self::renewal_is_failing( $status ) ) {
+				$result['status']         = 'recommended';
+				$result['badge']['color'] = 'orange';
+				$result['label']          = \__( 'ATmosphere could not renew its Bluesky login recently', 'atmosphere' );
+				$result['description']    = \sprintf(
+					'<p>%s</p>',
+					\__( 'This site is still connected, but its latest attempt to renew the saved Bluesky login failed. If this keeps happening the login will expire. The Info tab lists the error under Last Login Renewal.', 'atmosphere' )
+				);
+			} elseif ( self::renewal_is_stale( $status ) ) {
+				$result['status']         = 'recommended';
+				$result['badge']['color'] = 'orange';
+				$result['label']          = \__( 'ATmosphere has not renewed its Bluesky login recently', 'atmosphere' );
+				$result['description']    = \sprintf(
+					'<p>%s</p>',
+					\__( 'This site is still connected, but its saved Bluesky login has not been renewed for more than 24 hours. Configure a real server cron to run WordPress scheduled tasks so the connection does not expire while the site has little traffic.', 'atmosphere' )
+				);
+			} elseif ( is_legacy_connection() ) {
+				$result['status']         = 'recommended';
+				$result['badge']['color'] = 'orange';
+				$result['label']          = \__( 'ATmosphere still uses the older Bluesky login', 'atmosphere' );
+				$result['description']    = \sprintf(
+					'<p>%s</p>',
+					\__( 'This login expires every two weeks. Disconnect and connect again once to switch to the longer-lasting Bluesky login.', 'atmosphere' )
+				);
+				$result['actions']        = self::reconnect_action();
+			}
+
 			return $result;
 		}
 
@@ -149,15 +208,7 @@ class Health_Check {
 		 * the resolver falls back to the Connectors screen (or, with
 		 * neither available, an empty string — no action link to show).
 		 */
-		$reconnect_url = reconnect_url();
-
-		if ( '' !== $reconnect_url ) {
-			$result['actions'] = \sprintf(
-				'<p><a href="%s">%s</a></p>',
-				\esc_url( $reconnect_url ),
-				\esc_html__( 'Manage your Bluesky connection', 'atmosphere' )
-			);
-		}
+		$result['actions'] = self::reconnect_action();
 
 		if ( 'never_connected' === $state ) {
 			$result['status']      = 'recommended';
@@ -471,6 +522,79 @@ class Health_Check {
 	}
 
 	/**
+	 * Link to the screen where the connection can be (re)made, or '' when
+	 * there is none to send the reader to.
+	 *
+	 * @return string
+	 */
+	private static function reconnect_action(): string {
+		$reconnect_url = reconnect_url();
+
+		if ( '' === $reconnect_url ) {
+			return '';
+		}
+
+		return \sprintf(
+			'<p><a href="%s">%s</a></p>',
+			\esc_url( $reconnect_url ),
+			\esc_html__( 'Manage your Bluesky connection', 'atmosphere' )
+		);
+	}
+
+	/**
+	 * Whether the latest renewal attempt failed, whatever the reason.
+	 *
+	 * Checked before the staleness test: a run of failed attempts also ages
+	 * the last success out, and the advice for "cannot reach Bluesky" is
+	 * not "fix your cron".
+	 *
+	 * @param array $status Refresh status as read from `Client::refresh_status()`.
+	 * @return bool
+	 */
+	private static function renewal_is_failing( array $status ): bool {
+		return ! empty( $status['last_failure'] )
+			&& (int) $status['last_failure'] > (int) ( $status['last_success'] ?? 0 );
+	}
+
+	/**
+	 * Whether the current connection has missed its renewal heartbeat.
+	 *
+	 * @param array $status Refresh status as read from `Client::refresh_status()`.
+	 * @return bool
+	 */
+	private static function renewal_is_stale( array $status ): bool {
+		return ! empty( $status['last_success'] )
+			&& (int) $status['last_success'] < \time() - self::RENEWAL_STALE_AFTER;
+	}
+
+	/**
+	 * Whether the latest renewal failed because the signing key is unreadable.
+	 *
+	 * Unlike a transport failure this does not clear on its own while the
+	 * session is bound to the key, and the fix is specific.
+	 *
+	 * @param array $status Refresh status as read from `Client::refresh_status()`.
+	 * @return bool
+	 */
+	private static function signing_key_unreadable( array $status ): bool {
+		return ! empty( $status['last_failure'] )
+			&& (int) $status['last_failure'] > (int) ( $status['last_success'] ?? 0 )
+			&& 'atmosphere_client_authentication_key' === ( $status['last_error'] ?? '' );
+	}
+
+	/**
+	 * Whether the latest renewal failure is a client-configuration problem.
+	 *
+	 * @param array $status Refresh status as read from `Client::refresh_status()`.
+	 * @return bool
+	 */
+	private static function client_configuration_failed( array $status ): bool {
+		return ! empty( $status['last_failure'] )
+			&& (int) $status['last_failure'] > (int) ( $status['last_success'] ?? 0 )
+			&& Client::is_client_configuration_error( (string) ( $status['last_error'] ?? '' ) );
+	}
+
+	/**
 	 * Build the cause-specific description for the needs-reauth state.
 	 *
 	 * @return string HTML paragraphs.
@@ -584,10 +708,30 @@ class Health_Check {
 					'value'   => self::last_refresh_debug_value(),
 					'private' => false,
 				),
+				'login_type'        => array(
+					'label'   => \__( 'Login Type', 'atmosphere' ),
+					'value'   => self::login_type_debug_value(),
+					'private' => false,
+				),
 			),
 		);
 
 		return $info;
+	}
+
+	/**
+	 * Which OAuth client the saved login belongs to, for the debug panel.
+	 *
+	 * @return string
+	 */
+	private static function login_type_debug_value(): string {
+		if ( ! is_connected() ) {
+			return \__( 'Not connected', 'atmosphere' );
+		}
+
+		return is_legacy_connection()
+			? \__( 'Older login (expires every two weeks)', 'atmosphere' )
+			: \__( 'Long-lasting login', 'atmosphere' );
 	}
 
 	/**
@@ -679,6 +823,8 @@ class Health_Check {
 				return \__( 'Needs reconnect (security keys changed)', 'atmosphere' );
 			case Client::REAUTH_REASON_DECRYPT_FAILED:
 				return \__( 'Needs reconnect (saved login unreadable)', 'atmosphere' );
+			case Client::REAUTH_REASON_CLIENT_ID_CHANGED:
+				return \__( 'Needs reconnect (site address changed)', 'atmosphere' );
 			default:
 				return \__( 'Needs reconnect (session expired)', 'atmosphere' );
 		}

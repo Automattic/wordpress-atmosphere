@@ -18,7 +18,7 @@ includes/
 ├── class-*.php                 # Core classes (Atmosphere, API, Publisher, Backfill, Handle, Post_Types, Reaction_Sync, Connectors).
 ├── functions.php               # Helper functions.
 ├── content-parser/             # Pluggable content formats for site.standard.document (interface only by default).
-├── oauth/                      # OAuth flow (Client, DPoP, Encryption, Resolver, Nonce).
+├── oauth/                      # OAuth flow (Client, Client_Authentication, DPoP, Encryption, Resolver, Nonce).
 ├── rest/                       # REST controllers (public + admin-only under rest/admin/).
 ├── transformer/                # AT Protocol record transformers (Post, Document, Publication, Comment, Facet, TID).
 └── wp-admin/                   # Admin UI (settings page, sidebar panel, posts-list column).

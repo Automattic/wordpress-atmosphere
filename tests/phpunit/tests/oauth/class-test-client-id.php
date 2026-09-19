@@ -38,11 +38,17 @@ class Test_Client_Id extends WP_UnitTestCase {
 	public function test_client_id_forces_https_on_http_rest_url() {
 		\add_filter(
 			'rest_url',
-			static fn() => 'http://proxied.example/wp-json/atmosphere/v1/client-metadata'
+			static fn( $url, $path ) => 'http://proxied.example/wp-json/' . \ltrim( $path, '/' ),
+			10,
+			2
 		);
 
 		$this->assertSame(
 			'https://proxied.example/wp-json/atmosphere/v1/client-metadata',
+			Client::legacy_client_id()
+		);
+		$this->assertSame(
+			'https://proxied.example/wp-json/atmosphere/v2/client-metadata',
 			Client::client_id()
 		);
 	}
@@ -54,11 +60,17 @@ class Test_Client_Id extends WP_UnitTestCase {
 	public function test_client_id_forces_https_on_plain_permalink_url() {
 		\add_filter(
 			'rest_url',
-			static fn() => 'http://proxied.example/index.php?rest_route=/atmosphere/v1/client-metadata'
+			static fn( $url, $path ) => 'http://proxied.example/index.php?rest_route=/' . \ltrim( $path, '/' ),
+			10,
+			2
 		);
 
 		$this->assertSame(
 			'https://proxied.example/index.php?rest_route=/atmosphere/v1/client-metadata',
+			Client::legacy_client_id()
+		);
+		$this->assertSame(
+			'https://proxied.example/index.php?rest_route=/atmosphere/v2/client-metadata',
 			Client::client_id()
 		);
 	}
@@ -69,11 +81,17 @@ class Test_Client_Id extends WP_UnitTestCase {
 	public function test_client_id_keeps_https_rest_url() {
 		\add_filter(
 			'rest_url',
-			static fn() => 'https://proxied.example/wp-json/atmosphere/v1/client-metadata'
+			static fn( $url, $path ) => 'https://proxied.example/wp-json/' . \ltrim( $path, '/' ),
+			10,
+			2
 		);
 
 		$this->assertSame(
 			'https://proxied.example/wp-json/atmosphere/v1/client-metadata',
+			Client::legacy_client_id()
+		);
+		$this->assertSame(
+			'https://proxied.example/wp-json/atmosphere/v2/client-metadata',
 			Client::client_id()
 		);
 	}

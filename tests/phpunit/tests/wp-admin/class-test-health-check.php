@@ -61,6 +61,7 @@ class Test_Health_Check extends \WP_UnitTestCase {
 					'pds_endpoint' => 'https://pds.example.com',
 					'access_token' => Encryption::encrypt( 'access-token' ),
 					'needs_reauth' => false,
+					'client_id'    => Client::client_id(),
 				),
 				$overrides
 			),
@@ -102,6 +103,135 @@ class Test_Health_Check extends \WP_UnitTestCase {
 		$result = Health_Check::test_connection();
 
 		$this->assertSame( 'good', $result['status'] );
+	}
+
+	/**
+	 * A live session whose renewal heartbeat is older than one day warns before
+	 * a public OAuth refresh-token inactivity window can expire.
+	 */
+	public function test_stale_renewal_is_recommended() {
+		$this->seed_connection();
+		\update_option(
+			Client::REFRESH_STATUS_OPTION,
+			array( 'last_success' => \time() - DAY_IN_SECONDS - 1 ),
+			false
+		);
+
+		$result = Health_Check::test_connection();
+
+		$this->assertSame( 'recommended', $result['status'] );
+		$this->assertStringContainsString( 'not renewed', $result['label'] );
+		$this->assertStringContainsString( 'server cron', $result['description'] );
+	}
+
+	/**
+	 * The debug panel names the moved-address cause like the status tab does.
+	 */
+	public function test_debug_information_names_a_moved_site_address() {
+		$this->seed_connection(
+			array(
+				'needs_reauth'  => true,
+				'reauth_reason' => Client::REAUTH_REASON_CLIENT_ID_CHANGED,
+			)
+		);
+
+		$fields = Health_Check::debug_information( array() )['atmosphere']['fields'];
+
+		$this->assertStringContainsString( 'site address changed', $fields['connection_status']['value'] );
+	}
+
+	/**
+	 * An unreadable signing key does not clear on its own and has a specific
+	 * fix, so it gets its own critical state with the reconnect link.
+	 */
+	public function test_unreadable_signing_key_is_critical() {
+		$this->seed_connection();
+		\update_option(
+			Client::REFRESH_STATUS_OPTION,
+			array(
+				'last_error'   => 'atmosphere_client_authentication_key',
+				'last_failure' => \time(),
+			),
+			false
+		);
+
+		$result = Health_Check::test_connection();
+
+		$this->assertSame( 'critical', $result['status'] );
+		$this->assertStringContainsString( 'signing key', $result['label'] );
+		$this->assertStringContainsString( 'Disconnect and connect again', $result['description'] );
+		$this->assertStringContainsString( 'options-general.php?page=atmosphere', $result['actions'] );
+	}
+
+	/**
+	 * A failed renewal is reported as such, not as a cron problem, even when
+	 * the failures have aged the last success past the staleness window.
+	 */
+	public function test_failing_renewal_is_recommended_without_blaming_cron() {
+		$this->seed_connection();
+		\update_option(
+			Client::REFRESH_STATUS_OPTION,
+			array(
+				'last_success' => \time() - 3 * DAY_IN_SECONDS,
+				'last_failure' => \time() - HOUR_IN_SECONDS,
+				'last_error'   => 'http_503',
+			),
+			false
+		);
+
+		$result = Health_Check::test_connection();
+
+		$this->assertSame( 'recommended', $result['status'] );
+		$this->assertStringContainsString( 'could not renew', $result['label'] );
+		$this->assertStringNotContainsString( 'server cron', $result['description'] );
+	}
+
+	/**
+	 * A rejected client configuration is actionable without reconnecting, so it
+	 * remains a live connection and Site Health identifies the real problem.
+	 */
+	public function test_client_configuration_failure_is_critical_without_reconnect() {
+		$this->seed_connection();
+		\update_option(
+			Client::REFRESH_STATUS_OPTION,
+			array(
+				'last_error'   => 'invalid_client',
+				'last_failure' => \time(),
+			),
+			false
+		);
+
+		$result = Health_Check::test_connection();
+
+		$this->assertSame( 'critical', $result['status'] );
+		$this->assertStringContainsString( 'rejected', $result['label'] );
+		$this->assertStringContainsString( 'Reachability Test', $result['description'] );
+		$this->assertSame( '', $result['actions'] );
+	}
+
+	/**
+	 * A session from before confidential authentication still works but is
+	 * capped at two weeks, so Site Health asks for one reconnect.
+	 */
+	public function test_legacy_login_is_recommended_with_a_reconnect_link() {
+		$this->seed_connection( array( 'client_id' => '' ) );
+
+		$result = Health_Check::test_connection();
+
+		$this->assertSame( 'recommended', $result['status'] );
+		$this->assertStringContainsString( 'older Bluesky login', $result['label'] );
+		$this->assertStringContainsString( 'options-general.php?page=atmosphere', $result['actions'] );
+	}
+
+	/**
+	 * The debug panel names the login type for both session generations.
+	 */
+	public function test_debug_information_reports_login_type() {
+		$this->seed_connection();
+		$this->assertSame( 'Long-lasting login', Health_Check::debug_information( array() )['atmosphere']['fields']['login_type']['value'] );
+
+		$this->seed_connection( array( 'client_id' => '' ) );
+		$this->assertStringContainsString( 'two weeks', Health_Check::debug_information( array() )['atmosphere']['fields']['login_type']['value'] );
 	}
 
 	/**
