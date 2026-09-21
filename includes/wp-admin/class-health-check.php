@@ -155,7 +155,9 @@ class Health_Check {
 		if ( 'connected' === $state ) {
 			$status = Client::refresh_status();
 
-			if ( self::signing_key_unreadable( $status ) ) {
+			$blocker = self::renewal_blocker( $status );
+
+			if ( 'signing_key' === $blocker ) {
 				$result['status']         = 'critical';
 				$result['badge']['color'] = 'red';
 				$result['label']          = \__( 'ATmosphere cannot read its Bluesky signing key', 'atmosphere' );
@@ -164,7 +166,7 @@ class Health_Check {
 					\__( 'The saved login can no longer be renewed because the key that signs in to Bluesky could not be read. This usually happens after the security keys in wp-config.php changed. Disconnect and connect again to create a new key.', 'atmosphere' )
 				);
 				$result['actions']        = self::reconnect_action();
-			} elseif ( self::client_configuration_failed( $status ) ) {
+			} elseif ( 'client_configuration' === $blocker ) {
 				$result['status']         = 'critical';
 				$result['badge']['color'] = 'red';
 				$result['label']          = \__( 'Bluesky rejected ATmosphere’s OAuth client configuration', 'atmosphere' );
@@ -186,7 +188,11 @@ class Health_Check {
 				$result['label']          = \__( 'ATmosphere has not renewed its Bluesky login recently', 'atmosphere' );
 				$result['description']    = \sprintf(
 					'<p>%s</p>',
-					\__( 'This site is still connected, but its saved Bluesky login has not been renewed for more than 24 hours. Configure a real server cron to run WordPress scheduled tasks so the connection does not expire while the site has little traffic.', 'atmosphere' )
+					\sprintf(
+						/* translators: %s: human-readable duration, e.g. "1 day". */
+						\__( 'This site is still connected, but its saved Bluesky login has not been renewed for more than %s. Configure a real server cron to run WordPress scheduled tasks so the connection does not expire while the site has little traffic.', 'atmosphere' ),
+						\human_time_diff( \time() - self::RENEWAL_STALE_AFTER )
+					)
 				);
 			} elseif ( is_legacy_connection() ) {
 				$result['status']         = 'recommended';
@@ -565,6 +571,37 @@ class Health_Check {
 	private static function renewal_is_stale( array $status ): bool {
 		return ! empty( $status['last_success'] )
 			&& (int) $status['last_success'] < \time() - self::RENEWAL_STALE_AFTER;
+	}
+
+	/**
+	 * Which renewal failure, if any, will not clear without a person acting.
+	 *
+	 * Two states keep the session but stop it from renewing: a signing key
+	 * that can no longer be read, and a client registration Bluesky rejects.
+	 * Neither flags a reconnect, so the reauth notice stays silent; this is
+	 * the single source the Site Health test and the admin notice share.
+	 *
+	 * @since unreleased
+	 *
+	 * @param array|null $status Refresh status, or null to read it.
+	 * @return string `signing_key`, `client_configuration`, or '' when renewal is not blocked.
+	 */
+	public static function renewal_blocker( ?array $status = null ): string {
+		if ( ! is_connected() ) {
+			return '';
+		}
+
+		$status = $status ?? Client::refresh_status();
+
+		if ( self::signing_key_unreadable( $status ) ) {
+			return 'signing_key';
+		}
+
+		if ( self::client_configuration_failed( $status ) ) {
+			return 'client_configuration';
+		}
+
+		return '';
 	}
 
 	/**

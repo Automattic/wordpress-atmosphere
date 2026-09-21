@@ -162,8 +162,12 @@ class Client_Metadata_Controller extends \WP_REST_Controller {
 		 *
 		 * Filters MUST return an array containing:
 		 *
-		 *  - `client_id`: non-empty string (advertised as the OAuth client
-		 *    identifier; should match `Client::client_id()`).
+		 *  - `client_id`: non-empty string. It is validated, but the served
+		 *    document always carries this controller's own `client_id`,
+		 *    `token_endpoint_auth_method` and, for the confidential client,
+		 *    `token_endpoint_auth_signing_alg` and `jwks`: those fields are
+		 *    reset after the filter runs, and any `jwks_uri` is dropped. A
+		 *    filter can shape the display fields, scopes and redirect URIs.
 		 *  - `redirect_uris`: non-empty list of non-empty strings, where
 		 *    every entry is rooted at this site's admin over HTTPS
 		 *    (`admin_url('', 'https')` prefix). Off-site / empty /
