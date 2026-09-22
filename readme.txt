@@ -223,5 +223,4 @@ See full Changelog on [GitHub](https://github.com/Automattic/wordpress-atmospher
 
 = 2.4.0 =
 
-Your Bluesky login no longer expires every two weeks. Reconnect once after updating to switch to the longer-lasting login. Site Health will tell you if the reconnect
-
+Your Bluesky login no longer expires every two weeks. Reconnect once after updating to switch to the longer-lasting login. Site Health will tell you if the reconnect is still pending.
