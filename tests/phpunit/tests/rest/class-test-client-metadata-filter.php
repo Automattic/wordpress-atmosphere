@@ -16,7 +16,10 @@ namespace Atmosphere\Tests\Rest;
 
 use WP_UnitTestCase;
 use Atmosphere\OAuth\Client;
+use Atmosphere\OAuth\Client_Authentication;
+use Atmosphere\OAuth\Encryption;
 use Atmosphere\Rest\Client_Metadata_Controller;
+use Atmosphere\Rest\Legacy_Client_Metadata_Controller;
 
 /**
  * Client metadata filter validation tests.
@@ -29,6 +32,9 @@ class Test_Client_Metadata_Filter extends WP_UnitTestCase {
 	public function tear_down(): void {
 		\remove_all_filters( 'atmosphere_client_metadata' );
 		\remove_all_filters( 'pre_option_blogname' );
+		\delete_option( Client_Authentication::KEY_OPTION );
+		\delete_option( 'atmosphere_identity' );
+		\delete_option( 'atmosphere_connection' );
 		parent::tear_down();
 	}
 
@@ -45,6 +51,12 @@ class Test_Client_Metadata_Filter extends WP_UnitTestCase {
 		$this->assertNotEmpty( $data['client_id'] );
 		$this->assertIsArray( $data['redirect_uris'] );
 		$this->assertNotEmpty( $data['redirect_uris'] );
+		$this->assertSame( Client::client_id(), $data['client_id'] );
+		$this->assertSame( 'private_key_jwt', $data['token_endpoint_auth_method'] );
+		$this->assertSame( 'ES256', $data['token_endpoint_auth_signing_alg'] );
+		$this->assertIsArray( $data['jwks'] );
+		$this->assertCount( 1, $data['jwks']['keys'] );
+		$this->assertArrayNotHasKey( 'd', $data['jwks']['keys'][0] );
 		$this->assertSame( Client::scopes(), $data['scope'] );
 		$this->assertStringNotContainsString( 'transition:generic', $data['scope'] );
 		$this->assertStringContainsString( 'repo:app.bsky.feed.post', $data['scope'] );
@@ -66,6 +78,129 @@ class Test_Client_Metadata_Filter extends WP_UnitTestCase {
 		);
 		$this->assertStringContainsString( 'identity:handle', $data['scope'] );
 		$this->assertStringContainsString( 'include:site.standard.authFull', $data['scope'] );
+	}
+
+	/**
+	 * Existing public-client sessions keep their immutable v1 metadata while
+	 * all newly authorized sessions use the confidential v2 client.
+	 */
+	public function test_legacy_metadata_remains_a_public_client() {
+		$response = ( new Legacy_Client_Metadata_Controller() )->get_metadata();
+		$data     = $response->get_data();
+
+		$this->assertSame( Client::legacy_client_id(), $data['client_id'] );
+		$this->assertSame( 'none', $data['token_endpoint_auth_method'] );
+		$this->assertArrayNotHasKey( 'jwks', $data );
+		$this->assertArrayNotHasKey( 'token_endpoint_auth_signing_alg', $data );
+	}
+
+	/**
+	 * Both metadata URLs must answer through the REST server, which hands
+	 * the request object to the callback as its first argument.
+	 */
+	public function test_both_routes_dispatch_through_the_rest_server() {
+		\do_action( 'rest_api_init' );
+		( new Client_Metadata_Controller() )->register_routes();
+		( new Legacy_Client_Metadata_Controller() )->register_routes();
+
+		$v2 = \rest_do_request( new \WP_REST_Request( 'GET', '/atmosphere/v2/client-metadata' ) );
+		$this->assertSame( 200, $v2->get_status() );
+		$this->assertSame( Client::client_id(), $v2->get_data()['client_id'] );
+
+		$legacy = \rest_do_request( new \WP_REST_Request( 'GET', '/atmosphere/v1/client-metadata' ) );
+		$this->assertSame( 200, $legacy->get_status() );
+		$this->assertSame( Client::legacy_client_id(), $legacy->get_data()['client_id'] );
+	}
+
+	/**
+	 * An unreadable signing key that a live session still depends on must
+	 * not serve a document without a key.
+	 */
+	public function test_unreadable_signing_key_is_a_server_error() {
+		\update_option(
+			'atmosphere_identity',
+			array(
+				'did'    => 'did:plc:test',
+				'handle' => 'example.com',
+			),
+			false
+		);
+		\update_option(
+			'atmosphere_connection',
+			array(
+				'did'             => 'did:plc:test',
+				'access_token'    => Encryption::encrypt( 'access-token' ),
+				'needs_reauth'    => false,
+				'key_fingerprint' => Encryption::key_fingerprint(),
+				'client_id'       => Client::client_id(),
+			),
+			false
+		);
+		\update_option( Client_Authentication::KEY_OPTION, 'not-a-ciphertext', false );
+
+		$result = ( new Client_Metadata_Controller() )->get_metadata();
+
+		$this->assertWPError( $result );
+		$this->assertSame( 'atmosphere_client_metadata_unavailable', $result->get_error_code(), 'A public route must not name the internal failure.' );
+		$this->assertSame( 500, $result->get_error_data()['status'] );
+		$this->assertStringNotContainsString( 'ATMOSPHERE_ENCRYPTION_KEY', $result->get_error_message(), 'A public route must not explain the cause.' );
+	}
+
+	/**
+	 * The filter receives the document version so a callback can tell the
+	 * two documents apart.
+	 */
+	public function test_filter_receives_the_document_namespace() {
+		$seen = array();
+		\add_filter(
+			'atmosphere_client_metadata',
+			static function ( $metadata, $version ) use ( &$seen ) {
+				$seen[] = $version;
+				return $metadata;
+			},
+			10,
+			2
+		);
+
+		( new Client_Metadata_Controller() )->get_metadata();
+		( new Legacy_Client_Metadata_Controller() )->get_metadata();
+
+		$this->assertSame( array( 'v2', 'v1' ), $seen );
+	}
+
+	/**
+	 * A filter cannot point the auth server at a foreign key set.
+	 */
+	public function test_filter_cannot_add_a_jwks_uri() {
+		\add_filter(
+			'atmosphere_client_metadata',
+			static function ( $metadata ) {
+				$metadata['jwks_uri'] = 'https://attacker.example/jwks.json';
+				return $metadata;
+			}
+		);
+
+		$data = ( new Client_Metadata_Controller() )->get_metadata()->get_data();
+
+		$this->assertArrayNotHasKey( 'jwks_uri', $data );
+		$this->assertArrayHasKey( 'jwks', $data );
+	}
+
+	/**
+	 * A filter cannot change the signing algorithm the published key uses.
+	 */
+	public function test_filter_cannot_change_signing_alg() {
+		\add_filter(
+			'atmosphere_client_metadata',
+			static function ( $metadata ) {
+				$metadata['token_endpoint_auth_signing_alg'] = 'RS256';
+				return $metadata;
+			}
+		);
+
+		$data = ( new Client_Metadata_Controller() )->get_metadata()->get_data();
+
+		$this->assertSame( 'ES256', $data['token_endpoint_auth_signing_alg'] );
 	}
 
 	/**

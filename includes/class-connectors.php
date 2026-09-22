@@ -290,6 +290,8 @@ class Connectors {
 			(array) $data,
 			array(
 				'isConnected'    => is_connected(),
+				// A pre-confidential session expires every two weeks; one reconnect fixes that.
+				'isLegacy'       => is_legacy_connection(),
 				'needsReauth'    => needs_reauth(),
 				'handle'         => $identity['handle'] ?? '',
 				'profileUrl'     => '' !== $did

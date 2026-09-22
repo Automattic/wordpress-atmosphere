@@ -61,6 +61,7 @@ class Admin {
 		\add_action( 'admin_init', array( self::class, 'maybe_set_domain_handle' ) );
 		\add_action( 'admin_enqueue_scripts', array( self::class, 'enqueue_assets' ) );
 		\add_action( 'admin_notices', array( self::class, 'maybe_render_reauth_notice' ) );
+		\add_action( 'admin_notices', array( self::class, 'maybe_render_renewal_blocker_notice' ) );
 		\add_action( 'admin_notices', array( self::class, 'maybe_render_oauth_notice' ) );
 		\add_action( 'admin_notices', array( self::class, 'maybe_render_threadgate_scope_notice' ) );
 		\add_action( 'load-settings_page_atmosphere', array( self::class, 'maybe_warn_missing_post_types' ) );
@@ -584,6 +585,85 @@ class Admin {
 	}
 
 	/**
+	 * What stops working while the connection is down.
+	 *
+	 * Naming posts and comments is wrong when both outgoing lanes are
+	 * already off, which is exactly connection-only mode: there the host
+	 * plugin's features are what break.
+	 *
+	 * @return string
+	 */
+	private static function connection_consequence(): string {
+		if ( is_auto_publish_enabled() || is_comment_publishing_enabled() ) {
+			return \__( 'New posts and comments will not publish until the connection is restored.', 'atmosphere' );
+		}
+
+		return \__( 'Anything on this site that uses your Bluesky connection will stop working until it is restored.', 'atmosphere' );
+	}
+
+	/**
+	 * Render a global admin notice when the login cannot be renewed and no
+	 * reconnect prompt will appear.
+	 *
+	 * A rejected client registration and an unreadable signing key keep the
+	 * session, so `needs_reauth()` stays false and the reauth notice never
+	 * fires, while every publish fails permanently. Without this, the only
+	 * signs are a Site Health row and a log line. Same audience as the
+	 * reauth notice: everyone who publishes, with the action swapped for
+	 * readers who cannot act.
+	 *
+	 * @since unreleased
+	 */
+	public static function maybe_render_renewal_blocker_notice(): void {
+		if ( needs_reauth() || ! \current_user_can( 'edit_posts' ) ) {
+			return;
+		}
+
+		$blocker = Health_Check::renewal_blocker();
+		if ( '' === $blocker ) {
+			return;
+		}
+
+		$can_manage = \current_user_can( 'manage_options' );
+
+		if ( 'signing_key' === $blocker ) {
+			$lead = \__( 'ATmosphere cannot read the key it uses to sign in to Bluesky, so the saved login cannot be renewed. This usually happens after the security keys in wp-config.php changed.', 'atmosphere' );
+			$fix  = \__( 'Disconnect and connect again to create a new key.', 'atmosphere' );
+		} else {
+			$lead = \__( 'Bluesky rejected this site’s login setup when ATmosphere tried to renew the saved login.', 'atmosphere' );
+			$fix  = \__( 'Site Health explains what Bluesky objected to.', 'atmosphere' );
+		}
+
+		if ( ! $can_manage ) {
+			$action = \__( 'Ask an administrator to check Site Health.', 'atmosphere' );
+		} else {
+			$action = $fix . ' ' . \sprintf(
+				/* translators: %s: URL of the Site Health screen. */
+				\__( '<a href="%s">Open Site Health</a> for details.', 'atmosphere' ),
+				\esc_url( \admin_url( 'site-health.php' ) )
+			);
+		}
+
+		$message = $lead . ' ' . self::connection_consequence() . ' ' . $action;
+
+		?>
+		<div class="notice notice-warning is-dismissible">
+			<p>
+				<strong><?php \esc_html_e( 'ATmosphere: Bluesky login cannot be renewed', 'atmosphere' ); ?></strong>
+			</p>
+			<p>
+				<?php
+				echo \wp_kses(
+					$message,
+					array( 'a' => array( 'href' => array() ) )
+				);
+				?>
+			</p>
+		</div>
+		<?php
+	}
+
+	/**
 	 * Render a global admin notice when the OAuth session needs reauth.
 	 *
 	 * Surfaced on every admin screen, because the publish, comment, and
@@ -654,17 +734,7 @@ class Admin {
 			$lead = \__( 'Your site’s Bluesky connection needs attention.', 'atmosphere' );
 		}
 
-		/*
-		 * What actually stops working depends on what this site uses the
-		 * connection for. Naming posts and comments is wrong when both
-		 * outgoing lanes are already off, which is exactly connection-only
-		 * mode: there the host plugin's features are what break.
-		 */
-		if ( is_auto_publish_enabled() || is_comment_publishing_enabled() ) {
-			$consequence = \__( 'New posts and comments will not publish until the connection is restored.', 'atmosphere' );
-		} else {
-			$consequence = \__( 'Anything on this site that uses your Bluesky connection will stop working until it is restored.', 'atmosphere' );
-		}
+		$consequence = self::connection_consequence();
 
 		/*
 		 * Only the action sentence goes through sprintf: a lead or

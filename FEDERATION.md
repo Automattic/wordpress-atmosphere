@@ -54,7 +54,7 @@ include:site.standard.authFull
 
 - `/.well-known/atproto-did` — domain handle verification
 - `/.well-known/site.standard.publication` — the publication's AT-URI
-- `/wp-json/atmosphere/v1/client-metadata` — the OAuth client metadata document, doubling as the `client_id`
+- `/wp-json/atmosphere/v2/client-metadata` — the OAuth client metadata document, doubling as the `client_id` (`/wp-json/atmosphere/v1/client-metadata` keeps serving the public-client document for sessions created before confidential client authentication was introduced)
 
 **Consumed:**
 

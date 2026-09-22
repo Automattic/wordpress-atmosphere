@@ -23,6 +23,7 @@ use function Atmosphere\get_identity;
 use function Atmosphere\get_supported_post_types;
 use function Atmosphere\has_identity;
 use function Atmosphere\is_connected;
+use function Atmosphere\is_legacy_connection;
 
 /**
  * Settings page UI assembly.
@@ -272,6 +273,9 @@ class Settings_Fields {
 					<a href="<?php echo \esc_url( $disconnect_url ); ?>" class="button">
 						<?php \esc_html_e( 'Disconnect', 'atmosphere' ); ?>
 					</a>
+					<?php if ( is_legacy_connection() ) : ?>
+						<p class="description"><?php \esc_html_e( 'This login expires every two weeks. Disconnect and connect again once to switch to the longer-lasting Bluesky login.', 'atmosphere' ); ?></p>
+					<?php endif; ?>
 				</td>
 			</tr>
 		</table>

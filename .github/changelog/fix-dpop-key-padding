@@ -1,0 +1,4 @@
+Significance: patch
+Type: fixed
+
+Connecting to Bluesky no longer fails at random for a small share of attempts.

@@ -3,8 +3,10 @@
  * OAuth client-metadata REST controller.
  *
  * Serves the AT Protocol OAuth client metadata document. The endpoint URL
- * itself IS the `client_id` per the spec, so the route is a stable public
- * contract and must stay on the `atmosphere/v1` namespace.
+ * itself IS the `client_id` per the spec, so every route that has ever
+ * served one is a stable public contract: `atmosphere/v2` for the
+ * confidential client, and `atmosphere/v1` (see
+ * `Legacy_Client_Metadata_Controller`) for sessions created before it.
  *
  * @package Atmosphere
  */
@@ -14,6 +16,7 @@ namespace Atmosphere\Rest;
 \defined( 'ABSPATH' ) || exit;
 
 use Atmosphere\OAuth\Client;
+use Atmosphere\OAuth\Client_Authentication;
 use WP_REST_Response;
 use WP_REST_Server;
 use function Atmosphere\debug_log;
@@ -25,15 +28,29 @@ use function Atmosphere\sanitize_text;
 class Client_Metadata_Controller extends \WP_REST_Controller {
 
 	/**
-	 * REST namespace for this controller's route.
+	 * Version of the client metadata document this controller serves.
 	 *
-	 * The metadata URL is the OAuth `client_id`, an external contract, so
-	 * this stays on the original public `atmosphere/v1` namespace — it is
-	 * deliberately *not* moved to the admin `atmosphere/1.0` namespace.
+	 * It is the version of the REST namespace. The metadata URL is the
+	 * OAuth `client_id`, an external contract: every namespace that has
+	 * ever served one must keep serving it unchanged while sessions minted
+	 * under it exist. The public-client document for legacy sessions is
+	 * served by {@see Legacy_Client_Metadata_Controller}.
+	 *
+	 * @var string
+	 *
+	 * @since unreleased
+	 */
+	public const VERSION = 'v2';
+
+	/**
+	 * REST namespace of this document, `atmosphere/` plus the version.
+	 *
+	 * Public so integrations can build the client_id URL from it, as with
+	 * the other controllers.
 	 *
 	 * @var string
 	 */
-	public const ROUTE_NAMESPACE = 'atmosphere/v1';
+	public const ROUTE_NAMESPACE = 'atmosphere/' . self::VERSION;
 
 	/**
 	 * The base of this controller's route.
@@ -74,31 +91,70 @@ class Client_Metadata_Controller extends \WP_REST_Controller {
 	}
 
 	/**
+	 * Fields that identify and authenticate the client.
+	 *
+	 * Served before the filter and re-applied after it, so a filter can
+	 * shape the display fields, scopes and redirect URIs but never move a
+	 * document to a different client or downgrade how it authenticates.
+	 *
+	 * @return array|\WP_Error
+	 *
+	 * @since unreleased
+	 */
+	protected function pinned_fields(): array|\WP_Error {
+		$jwks = Client_Authentication::jwks();
+		if ( \is_wp_error( $jwks ) ) {
+			return $jwks;
+		}
+
+		return array(
+			'client_id'                       => Client::client_id(),
+			'token_endpoint_auth_method'      => 'private_key_jwt',
+			// Required by the auth server whenever the method is private_key_jwt.
+			'token_endpoint_auth_signing_alg' => 'ES256',
+			'jwks'                            => $jwks,
+		);
+	}
+
+	/**
 	 * Serve the OAuth client metadata JSON.
 	 *
 	 * This endpoint URL IS the client_id per AT Protocol OAuth spec.
 	 *
-	 * @return WP_REST_Response
+	 * @return WP_REST_Response|\WP_Error
 	 */
-	public function get_metadata(): WP_REST_Response {
-		$metadata = array(
-			'client_id'                  => Client::client_id(),
-			'client_name'                => sanitize_text( \get_bloginfo( 'name' ) ) . ' (ATmosphere)',
-			'client_uri'                 => \home_url( '/' ),
-			'redirect_uris'              => array( Client::redirect_uri() ),
-			'grant_types'                => array( 'authorization_code', 'refresh_token' ),
-			'response_types'             => array( 'code' ),
-			'token_endpoint_auth_method' => 'none',
+	public function get_metadata(): WP_REST_Response|\WP_Error {
+		$pinned = $this->pinned_fields();
+		if ( \is_wp_error( $pinned ) ) {
+			// The route is public: the cause goes to the log, not the response.
+			debug_log( \sprintf( 'client metadata unavailable: %s', $pinned->get_error_code() ) );
 
-			/*
-			 * MUST match the scope string requested by
-			 * Client::authorize(). The auth server validates the
-			 * request scope against the metadata; a drift here
-			 * silently downgrades to the smaller of the two.
-			 */
-			'scope'                      => Client::scopes(),
-			'dpop_bound_access_tokens'   => true,
-			'application_type'           => 'web',
+			return new \WP_Error(
+				'atmosphere_client_metadata_unavailable',
+				\__( 'The client metadata cannot be served right now.', 'atmosphere' ),
+				array( 'status' => 500 )
+			);
+		}
+
+		$metadata = \array_merge(
+			$pinned,
+			array(
+				'client_name'              => sanitize_text( \get_bloginfo( 'name' ) ) . ' (ATmosphere)',
+				'client_uri'               => \home_url( '/' ),
+				'redirect_uris'            => array( Client::redirect_uri() ),
+				'grant_types'              => array( 'authorization_code', 'refresh_token' ),
+				'response_types'           => array( 'code' ),
+
+				/*
+				 * MUST match the scope string requested by
+				 * Client::authorize(). The auth server validates the
+				 * request scope against the metadata; a drift here
+				 * silently downgrades to the smaller of the two.
+				 */
+				'scope'                    => Client::scopes(),
+				'dpop_bound_access_tokens' => true,
+				'application_type'         => 'web',
+			)
 		);
 
 		/**
@@ -106,8 +162,12 @@ class Client_Metadata_Controller extends \WP_REST_Controller {
 		 *
 		 * Filters MUST return an array containing:
 		 *
-		 *  - `client_id`: non-empty string (advertised as the OAuth client
-		 *    identifier; should match `Client::client_id()`).
+		 *  - `client_id`: non-empty string. It is validated, but the served
+		 *    document always carries this controller's own `client_id`,
+		 *    `token_endpoint_auth_method` and, for the confidential client,
+		 *    `token_endpoint_auth_signing_alg` and `jwks`: those fields are
+		 *    reset after the filter runs, and any `jwks_uri` is dropped. A
+		 *    filter can shape the display fields, scopes and redirect URIs.
 		 *  - `redirect_uris`: non-empty list of non-empty strings, where
 		 *    every entry is rooted at this site's admin over HTTPS
 		 *    (`admin_url('', 'https')` prefix). Off-site / empty /
@@ -115,17 +175,20 @@ class Client_Metadata_Controller extends \WP_REST_Controller {
 		 *    entire filter result to be rejected.
 		 *
 		 * Anything else falls back to the unfiltered metadata. The
-		 * metadata endpoint is public and the document advertises
-		 * `token_endpoint_auth_method: 'none'` (public client), so an
-		 * attacker-supplied `redirect_uris` entry would let them drive
-		 * this site's `client_id` with their own redirect target. Gate
+		 * metadata endpoint is public, so an attacker-supplied
+		 * `redirect_uris` entry would let them drive this site's
+		 * `client_id` with their own redirect target. Gate
 		 * entries individually, matching the validation
 		 * {@see \Atmosphere\OAuth\Client::redirect_uri()} applies to
 		 * the inbound `atmosphere_oauth_redirect_uri` filter.
 		 *
-		 * @param array $metadata Client metadata.
+		 * @since unreleased The `$version` parameter was added.
+		 *
+		 * @param array  $metadata Client metadata.
+		 * @param string $version  Document version: `v2` for the confidential
+		 *                         client, `v1` for the public client of legacy sessions.
 		 */
-		$filtered = \apply_filters( 'atmosphere_client_metadata', $metadata );
+		$filtered = \apply_filters( 'atmosphere_client_metadata', $metadata, static::VERSION );
 
 		if ( self::filter_is_valid( $filtered ) ) {
 			$metadata = $filtered;
@@ -152,6 +215,12 @@ class Client_Metadata_Controller extends \WP_REST_Controller {
 			 */
 			debug_log( 'atmosphere_client_metadata filter returned an invalid value; using the unfiltered metadata.' );
 		}
+
+		// See pinned_fields(): the client identity is not filterable.
+		$metadata = \array_merge( $metadata, $pinned );
+
+		// A client supplies `jwks` or `jwks_uri`, never both, and the key is ours. Stripped on both documents so they cannot drift.
+		unset( $metadata['jwks_uri'] );
 
 		$response = new WP_REST_Response( $metadata, 200 );
 

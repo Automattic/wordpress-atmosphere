@@ -24,6 +24,9 @@ require_once __DIR__ . '/includes/functions.php';
 // Remove options.
 $atmosphere_options = array(
 	'atmosphere_connection',
+	// Canonical value: `\Atmosphere\OAuth\Client_Authentication::KEY_OPTION`.
+	// Hardcoded for the same reason as `_atmosphere_refresh_lock`.
+	'atmosphere_oauth_client_authentication_key',
 	'atmosphere_identity',
 	'atmosphere_publication_tid',
 	'atmosphere_publication_cid',
@@ -147,6 +150,8 @@ $atmosphere_transients = array(
 	'atmosphere_oauth_state',
 	'atmosphere_oauth_dpop_jwk',
 	'atmosphere_oauth_resolved',
+	// Canonical value: `\Atmosphere\OAuth\Client::REFRESH_HOLD_TRANSIENT`.
+	'atmosphere_refresh_hold',
 	'atmosphere_invalid_long_form_composition_logged',
 );
 

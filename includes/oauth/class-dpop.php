@@ -49,14 +49,29 @@ class DPoP {
 		if ( false === $details || ! isset( $details['ec'] ) ) {
 			return self::keygen_error();
 		}
-		$ec = $details['ec'];
+
+		return self::jwk_from_ec( $details['ec'] );
+	}
+
+	/**
+	 * Build a P-256 private JWK from OpenSSL's raw EC components.
+	 *
+	 * OpenSSL strips leading zero bytes from the components, so about one
+	 * key in ninety comes back with a 31-byte member. RFC 7518 requires the
+	 * full 32 bytes for P-256, so pad on the left.
+	 *
+	 * @param array $ec `x`, `y` and `d` as raw big-endian bytes.
+	 * @return array
+	 */
+	private static function jwk_from_ec( array $ec ): array {
+		$pad = static fn( string $bytes ): string => \str_pad( $bytes, 32, "\0", STR_PAD_LEFT );
 
 		return array(
 			'kty' => 'EC',
 			'crv' => 'P-256',
-			'x'   => self::base64url( $ec['x'] ),
-			'y'   => self::base64url( $ec['y'] ),
-			'd'   => self::base64url( $ec['d'] ),
+			'x'   => self::base64url( $pad( $ec['x'] ) ),
+			'y'   => self::base64url( $pad( $ec['y'] ) ),
+			'd'   => self::base64url( $pad( $ec['d'] ) ),
 		);
 	}
 
@@ -167,6 +182,44 @@ class DPoP {
 	 */
 	public static function persist_nonce( array $jwk, string $url, string $nonce ): void {
 		Nonce_Storage::set( $url, $nonce );
+	}
+
+	/**
+	 * Create a private_key_jwt client assertion for a token endpoint.
+	 *
+	 * The client-authentication key is deliberately separate from the DPoP
+	 * key: AT Protocol requires those key pairs to have distinct purposes.
+	 *
+	 * The audience is the authorization server's issuer URL, not the
+	 * endpoint being called: RFC 7523 allows either, but the AT Protocol
+	 * profile narrows it to the issuer and the reference server rejects
+	 * any other value.
+	 *
+	 * @param array  $jwk       Client-authentication JWK.
+	 * @param string $client_id OAuth client identifier.
+	 * @param string $audience  Authorization server issuer URL.
+	 * @param string $key_id    Public JWKS key identifier.
+	 * @return string|false Compact JWT, or false on signing failure.
+	 */
+	public static function create_client_assertion( array $jwk, string $client_id, string $audience, string $key_id ): string|false {
+		$now = \time();
+
+		return self::sign_es256(
+			array(
+				'alg' => 'ES256',
+				'typ' => 'JWT',
+				'kid' => $key_id,
+			),
+			array(
+				'iss' => $client_id,
+				'sub' => $client_id,
+				'aud' => $audience,
+				'jti' => self::base64url( \random_bytes( 16 ) ),
+				'iat' => $now,
+				'exp' => $now + 60,
+			),
+			$jwk
+		);
 	}
 
 	/**
