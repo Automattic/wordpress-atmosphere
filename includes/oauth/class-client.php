@@ -187,7 +187,7 @@ class Client {
 	 * Reauth reason: the site's own client_id URL no longer matches the one
 	 * the session was minted under (domain move, permalink change).
 	 *
-	 * @since unreleased
+	 * @since 2.4.0
 	 *
 	 * @var string
 	 */
@@ -201,7 +201,7 @@ class Client {
 	 * a synchronous token request and hold the refresh lock, because such
 	 * a failure neither moves `expires_at` nor flags a reconnect.
 	 *
-	 * @since unreleased
+	 * @since 2.4.0
 	 *
 	 * @var string
 	 */
@@ -1495,7 +1495,7 @@ class Client {
 	/**
 	 * Whether an auth-server error code means the client registration was rejected.
 	 *
-	 * @since unreleased
+	 * @since 2.4.0
 	 *
 	 * @param string $error OAuth error code as returned by the authorization server.
 	 * @return bool

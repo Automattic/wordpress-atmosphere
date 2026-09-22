@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.4.0] - 2026-09-22
+### Added
+- Site Health warns when the Bluesky login has not been renewed for a day, when Bluesky rejects the site's login setup, and when a one-time reconnect is needed for the longer-lasting login. An admin notice points to Site Health when the login can no longer be renewed. [#272]
+
+### Changed
+- Your Bluesky login no longer expires after two weeks. Reconnect once after this update to switch to the longer login. [#272]
+
+### Fixed
+- Connecting to Bluesky no longer fails at random for a small share of attempts. [#272]
+
 ## [2.3.0] - 2026-09-11
 ### Added
 - Posts shared to Bluesky are now also reachable on your own site at the address Bluesky uses for them, so swapping the domain on a Bluesky link lands on your own copy. A new setting can offer these as your posts' short links. [#265]
@@ -200,6 +210,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Remove a comment reply from Bluesky if the comment was deleted or unapproved while it was being published, instead of leaving an orphan reply behind. [#32]
 - Short posts under the long-form teaser-thread strategy no longer ship a redundant "continue reading" reply when the entire body already fits in a single Bluesky post. The link-back is preserved as a card on the same post. [#51]
 
+[2.4.0]: https://github.com/Automattic/wordpress-atmosphere/compare/2.3.0...2.4.0
 [2.3.0]: https://github.com/Automattic/wordpress-atmosphere/compare/2.2.0...2.3.0
 [2.2.0]: https://github.com/Automattic/wordpress-atmosphere/compare/2.1.0...2.2.0
 [2.1.0]: https://github.com/Automattic/wordpress-atmosphere/compare/2.0.0...2.1.0

@@ -581,7 +581,7 @@ class Health_Check {
 	 * Neither flags a reconnect, so the reauth notice stays silent; this is
 	 * the single source the Site Health test and the admin notice share.
 	 *
-	 * @since unreleased
+	 * @since 2.4.0
 	 *
 	 * @param array|null $status Refresh status, or null to read it.
 	 * @return string `signing_key`, `client_configuration`, or '' when renewal is not blocked.
