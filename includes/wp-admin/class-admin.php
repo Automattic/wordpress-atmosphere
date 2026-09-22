@@ -612,7 +612,7 @@ class Admin {
 	 * reauth notice: everyone who publishes, with the action swapped for
 	 * readers who cannot act.
 	 *
-	 * @since unreleased
+	 * @since 2.4.0
 	 */
 	public static function maybe_render_renewal_blocker_notice(): void {
 		if ( needs_reauth() || ! \current_user_can( 'edit_posts' ) ) {

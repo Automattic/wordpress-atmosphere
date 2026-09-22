@@ -616,7 +616,7 @@ function is_connected(): bool {
  * `client_id`. Bluesky caps such sessions at two weeks, so the user has to
  * reconnect once to get the long-lived login.
  *
- * @since unreleased
+ * @since 2.4.0
  *
  * @return bool
  */

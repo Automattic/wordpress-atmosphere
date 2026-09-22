@@ -18,7 +18,7 @@ use Atmosphere\OAuth\Client;
  * Its URL is the `client_id` stored on those sessions, so it must keep
  * answering, unchanged, until every one of them has been reconnected.
  *
- * @since unreleased
+ * @since 2.4.0
  */
 class Legacy_Client_Metadata_Controller extends Client_Metadata_Controller {
 
@@ -27,14 +27,14 @@ class Legacy_Client_Metadata_Controller extends Client_Metadata_Controller {
 	 *
 	 * @var string
 	 *
-	 * @since unreleased
+	 * @since 2.4.0
 	 */
 	public const VERSION = 'v1';
 
 	/**
 	 * REST namespace of the public-client document.
 	 *
-	 * @since unreleased
+	 * @since 2.4.0
 	 *
 	 * @var string
 	 */
@@ -52,7 +52,7 @@ class Legacy_Client_Metadata_Controller extends Client_Metadata_Controller {
 	 *
 	 * @return array
 	 *
-	 * @since unreleased
+	 * @since 2.4.0
 	 */
 	protected function pinned_fields(): array {
 		return array(

@@ -38,7 +38,7 @@ class Client_Metadata_Controller extends \WP_REST_Controller {
 	 *
 	 * @var string
 	 *
-	 * @since unreleased
+	 * @since 2.4.0
 	 */
 	public const VERSION = 'v2';
 
@@ -99,7 +99,7 @@ class Client_Metadata_Controller extends \WP_REST_Controller {
 	 *
 	 * @return array|\WP_Error
 	 *
-	 * @since unreleased
+	 * @since 2.4.0
 	 */
 	protected function pinned_fields(): array|\WP_Error {
 		$jwks = Client_Authentication::jwks();
@@ -182,7 +182,7 @@ class Client_Metadata_Controller extends \WP_REST_Controller {
 		 * {@see \Atmosphere\OAuth\Client::redirect_uri()} applies to
 		 * the inbound `atmosphere_oauth_redirect_uri` filter.
 		 *
-		 * @since unreleased The `$version` parameter was added.
+		 * @since 2.4.0 The `$version` parameter was added.
 		 *
 		 * @param array  $metadata Client metadata.
 		 * @param string $version  Document version: `v2` for the confidential

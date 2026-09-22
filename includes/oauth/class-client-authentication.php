@@ -16,7 +16,7 @@ use function Atmosphere\is_connected;
 /**
  * Creates, protects, and exposes this site's OAuth client signing key.
  *
- * @since unreleased
+ * @since 2.4.0
  */
 class Client_Authentication {
 
@@ -25,7 +25,7 @@ class Client_Authentication {
 	 *
 	 * @var string
 	 *
-	 * @since unreleased
+	 * @since 2.4.0
 	 */
 	public const KEY_OPTION = 'atmosphere_oauth_client_authentication_key';
 
@@ -34,7 +34,7 @@ class Client_Authentication {
 	 *
 	 * @var string
 	 *
-	 * @since unreleased
+	 * @since 2.4.0
 	 */
 	public const ASSERTION_TYPE = 'urn:ietf:params:oauth:client-assertion-type:jwt-bearer';
 
@@ -48,7 +48,7 @@ class Client_Authentication {
 	 * @param string $issuer Authorization server issuer URL.
 	 * @return array|\WP_Error Body with the assertion fields, or an actionable error.
 	 *
-	 * @since unreleased
+	 * @since 2.4.0
 	 */
 	public static function sign_request( array $body, string $issuer ): array|\WP_Error {
 		$assertion = self::assertion( (string) ( $body['client_id'] ?? '' ), $issuer );
@@ -67,7 +67,7 @@ class Client_Authentication {
 	 *
 	 * @return array|\WP_Error
 	 *
-	 * @since unreleased
+	 * @since 2.4.0
 	 */
 	public static function jwks(): array|\WP_Error {
 		$key = self::key();

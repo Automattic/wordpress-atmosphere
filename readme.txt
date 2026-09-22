@@ -4,7 +4,7 @@ Tags: at-protocol, bluesky, connector, atproto, crossposting
 Requires at least: 6.5
 Tested up to: 7.1
 Requires PHP: 8.2
-Stable tag: 2.3.0
+Stable tag: 2.4.0
 License: GPL-2.0-or-later
 License URI: https://spdx.org/licenses/GPL-2.0-or-later.html
 
@@ -120,6 +120,16 @@ Not at this time. ATmosphere is designed for a single WordPress site. On a Netwo
 
 == Changelog ==
 
+### 2.4.0 - 2026-09-22
+#### Added
+- Site Health warns when the Bluesky login has not been renewed for a day, when Bluesky rejects the site's login setup, and when a one-time reconnect is needed for the longer-lasting login. An admin notice points to Site Health when the login can no longer be renewed.
+
+#### Changed
+- Your Bluesky login no longer expires after two weeks. Reconnect once after this update to switch to the longer login.
+
+#### Fixed
+- Connecting to Bluesky no longer fails at random for a small share of attempts.
+
 ### 2.3.0 - 2026-09-11
 #### Added
 - Posts shared to Bluesky are now also reachable on your own site at the address Bluesky uses for them, so swapping the domain on a Bluesky link lands on your own copy. A new setting can offer these as your posts' short links.
@@ -211,7 +221,7 @@ See full Changelog on [GitHub](https://github.com/Automattic/wordpress-atmospher
 
 == Upgrade Notice ==
 
-= 2.2.0 =
+= 2.4.0 =
 
-This release adds reply restrictions for Bluesky posts — sites connected before this update need to reconnect once to enable them. It also hardens how imported Bluesky replies and display names are rendered on your site.
+Your Bluesky login no longer expires every two weeks. Reconnect once after updating to switch to the longer-lasting login. Site Health will tell you if the reconnect
 
