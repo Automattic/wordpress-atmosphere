@@ -1,6 +1,6 @@
 /**
- * Jest setup: expose the `window.wp.*` globals that admin pages load as classic
- * scripts.
+ * Jest setup: add the testing-library matchers and expose the `window.wp.*`
+ * globals that admin pages load as classic scripts.
  *
  * The shared `HandleTypeahead` module (and the connectors card) read
  * `@wordpress/*` from `window.wp.*` rather than importing them, because a script
@@ -8,6 +8,11 @@
  * those globals, so stub them here — using the real `@wordpress/element` and
  * `@wordpress/i18n` plus a lightweight `components` shim — so the modules load.
  */
+
+/**
+ * External dependencies
+ */
+import '@testing-library/jest-dom';
 
 /**
  * WordPress dependencies
