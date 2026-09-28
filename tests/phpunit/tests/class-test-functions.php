@@ -12,6 +12,7 @@ use function Atmosphere\reconnect_url;
 use function Atmosphere\share_status;
 use function Atmosphere\reauth_reason_lead;
 use function Atmosphere\parse_at_uri;
+use function Atmosphere\record_origin_did;
 use function Atmosphere\post_web_url;
 use function Atmosphere\build_at_uri;
 use function Atmosphere\appview_url;
@@ -51,6 +52,33 @@ class Test_Functions extends \WP_UnitTestCase {
 		$this->assertSame( 'did:plc:abc123', $result['did'] );
 		$this->assertSame( 'app.bsky.feed.post', $result['collection'] );
 		$this->assertSame( '3k2la7b2zoq2s', $result['rkey'] );
+	}
+
+	/**
+	 * The origin DID comes from the stored AT-URI, which names the repo the
+	 * last successful write landed in, even when the DID meta says otherwise.
+	 */
+	public function test_record_origin_did_prefers_the_uri() {
+		$this->assertSame(
+			'did:plc:old',
+			record_origin_did( 'at://did:plc:old/site.standard.document/3k2la7', 'did:plc:new' )
+		);
+	}
+
+	/**
+	 * Without a usable URI the stored DID meta is the only source left.
+	 */
+	public function test_record_origin_did_falls_back_to_the_stored_did() {
+		$this->assertSame( 'did:plc:old', record_origin_did( '', 'did:plc:old' ) );
+		$this->assertSame( 'did:plc:old', record_origin_did( 'not-an-at-uri', 'did:plc:old' ) );
+		$this->assertSame( 'did:plc:old', record_origin_did( 'at://alice.bsky.social/app.bsky.feed.post/3k2la7', 'did:plc:old' ) );
+	}
+
+	/**
+	 * Nothing to go on means an unknown origin.
+	 */
+	public function test_record_origin_did_is_empty_without_provenance() {
+		$this->assertSame( '', record_origin_did( '', '' ) );
 	}
 
 	/**

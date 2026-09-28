@@ -1,0 +1,4 @@
+Significance: patch
+Type: fixed
+
+Deleting a post that was shared from a previous Bluesky account no longer pretends to succeed. The post stays marked as shared, so it can still be removed after reconnecting that account.

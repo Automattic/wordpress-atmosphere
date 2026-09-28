@@ -1848,11 +1848,27 @@ class Publisher {
 		$stored  = self::stored_thread_records( $post->ID, true );
 		$doc_tid = \get_post_meta( $post->ID, Document::META_TID, true );
 
-		$comment_tids = is_comment_publishing_enabled()
-			? self::collect_published_comment_tids( $post->ID )
+		$foreign_comments = array();
+		$comment_tids     = is_comment_publishing_enabled()
+			? self::collect_published_comment_tids( $post->ID, $foreign_comments )
 			: array();
 
 		if ( empty( $stored ) && ! $doc_tid && empty( $comment_tids ) ) {
+			/*
+			 * Replies from a previous account are the only records left
+			 * (a comment-only retry after reconnecting). Say so, rather
+			 * than claiming the post has nothing published.
+			 */
+			if ( ! empty( $foreign_comments ) ) {
+				return self::did_mismatch_error(
+					array(
+						'post_id'          => $post->ID,
+						'current_did'      => get_did(),
+						'foreign_comments' => $foreign_comments,
+					)
+				);
+			}
+
 			return new \WP_Error(
 				'atmosphere_not_published',
 				\__( 'Post has no AT Protocol records.', 'atmosphere' )
@@ -1869,8 +1885,14 @@ class Publisher {
 		 * operator-visible error so the situation is at least logged
 		 * rather than masked behind a successful-looking cleanup.
 		 */
-		$bsky_origin_did = (string) \get_post_meta( $post->ID, Post::META_DID, true );
-		$doc_origin_did  = (string) \get_post_meta( $post->ID, Document::META_DID, true );
+		$bsky_origin_did = record_origin_did(
+			(string) \get_post_meta( $post->ID, Post::META_URI, true ),
+			(string) \get_post_meta( $post->ID, Post::META_DID, true )
+		);
+		$doc_origin_did  = record_origin_did(
+			(string) \get_post_meta( $post->ID, Document::META_URI, true ),
+			(string) \get_post_meta( $post->ID, Document::META_DID, true )
+		);
 
 		$bsky_skip = self::record_is_foreign( $bsky_origin_did );
 		$doc_skip  = self::record_is_foreign( $doc_origin_did );
@@ -1970,14 +1992,26 @@ class Publisher {
 	 * publish would refer to a non-existent record and the delete would
 	 * fail.
 	 *
+	 * Replies that live in a different account's repo are left out too.
+	 * The post cascade deletes against the connected repo, where such a
+	 * reply does not exist, so including it would issue a pointless
+	 * write and, on the trash path, clear its meta while the record
+	 * stays on the old account. Skipping it leaves the meta in place for
+	 * a reconnect to that account, and on permanent deletion the reply's
+	 * own guarded cleanup event logs the mismatch (see #215). Each skipped
+	 * reply is logged here as well, because trashing a post does not
+	 * delete its comments and so never reaches that event.
+	 *
 	 * Public so the permanent-delete path (`on_before_delete`) can
 	 * collect the same TIDs while comments still exist, before WP's
 	 * natural cascade removes them.
 	 *
-	 * @param int $post_id Post ID.
+	 * @param int        $post_id Post ID.
+	 * @param array|null $foreign Optional. Receives the skipped replies as
+	 *                            { comment_id, origin_did } pairs.
 	 * @return array<int, array{comment_id:int, tid:string}>
 	 */
-	public static function collect_published_comment_tids( int $post_id ): array {
+	public static function collect_published_comment_tids( int $post_id, ?array &$foreign = null ): array {
 		$comments = \get_comments(
 			array(
 				'post_id'    => $post_id,
@@ -2003,16 +2037,43 @@ class Publisher {
 			)
 		);
 
-		$out = array();
+		$out     = array();
+		$foreign = array();
 
 		foreach ( $comments as $comment_id ) {
-			$tid = \get_comment_meta( (int) $comment_id, Comment::META_TID, true );
-			if ( ! empty( $tid ) ) {
-				$out[] = array(
-					'comment_id' => (int) $comment_id,
-					'tid'        => (string) $tid,
-				);
+			$comment_id = (int) $comment_id;
+			$tid        = \get_comment_meta( $comment_id, Comment::META_TID, true );
+
+			if ( empty( $tid ) ) {
+				continue;
 			}
+
+			$origin_did = record_origin_did(
+				(string) \get_comment_meta( $comment_id, Comment::META_URI, true ),
+				(string) \get_comment_meta( $comment_id, Comment::META_DID, true )
+			);
+
+			if ( self::record_is_foreign( $origin_did ) ) {
+				$foreign[] = array(
+					'comment_id' => $comment_id,
+					'origin_did' => $origin_did,
+				);
+
+				debug_log(
+					\sprintf(
+						'Skipped deleting comment %d with its post: its reply lives in the repo of %s, not the connected %s.',
+						$comment_id,
+						$origin_did,
+						get_did()
+					)
+				);
+				continue;
+			}
+
+			$out[] = array(
+				'comment_id' => $comment_id,
+				'tid'        => (string) $tid,
+			);
 		}
 
 		return $out;
@@ -2518,7 +2579,10 @@ class Publisher {
 		 * delete against the current repo would no-op remotely while
 		 * clearing local meta, orphaning the reply on the old PDS.
 		 */
-		$origin_did = (string) \get_comment_meta( $comment_id, Comment::META_DID, true );
+		$origin_did = record_origin_did(
+			(string) $uri,
+			(string) \get_comment_meta( $comment_id, Comment::META_DID, true )
+		);
 		if ( self::record_is_foreign( $origin_did ) ) {
 			return self::did_mismatch_error(
 				array(
