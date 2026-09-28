@@ -9,7 +9,9 @@
 		"start": "wp-scripts start --experimental-modules",
 		"lint:js": "wp-scripts lint-js src",
 		"format:js": "wp-scripts format src",
-		"test:unit:js": "wp-scripts test-unit-js",
+		"test:unit": "wp-scripts test-unit-jest",
+		"test:unit:watch": "wp-scripts test-unit-jest --watch",
+		"test:unit:debug": "wp-scripts --inspect-brk test-unit-jest --runInBand --no-cache",
 		"env-start": "wp-env start",
 		"env-stop": "wp-env stop",
 		"preenv-test": "wp-env start",
@@ -17,7 +19,9 @@
 		"release": "node bin/release.js"
 	},
 	"devDependencies": {
+		"@babel/core": "^7.29.7",
 		"@wordpress/api-fetch": "^7.48.0",
+		"@wordpress/babel-preset-default": "^8.56.0",
 		"@wordpress/block-editor": "^17.0.0",
 		"@wordpress/blocks": "^16.0.0",
 		"@wordpress/components": "^40.0.0",
@@ -29,7 +33,11 @@
 		"@wordpress/env": "^11.4.0",
 		"@wordpress/i18n": "^6.21.0",
 		"@wordpress/interactivity": "^6.48.0",
+		"@wordpress/jest-preset-default": "^14.2.0",
 		"@wordpress/plugins": "^7.48.0",
-		"@wordpress/scripts": "^36.0.0"
+		"@wordpress/scripts": "^36.0.0",
+		"babel-jest": "^30.5.2",
+		"jest": "^30.5.2",
+		"jest-environment-jsdom": "^30.5.2"
 	}
 }
