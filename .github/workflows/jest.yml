@@ -10,6 +10,7 @@ on:
       - '**/*.ts'
       - '**/*.tsx'
       - 'package.json'
+      - 'package-lock.json'
       - '.github/workflows/jest.yml'
       - '!build/**'
   pull_request:
@@ -19,6 +20,7 @@ on:
       - '**/*.ts'
       - '**/*.tsx'
       - 'package.json'
+      - 'package-lock.json'
       - '.github/workflows/jest.yml'
       - '!build/**'
 
@@ -34,9 +36,10 @@ jobs:
         uses: actions/setup-node@v7
         with:
           node-version: lts/*
+          cache: 'npm'
 
       - name: Install dependencies
-        run: npm install --no-package-lock
+        run: npm ci
 
       - name: Run JavaScript unit tests
         run: npm run test:unit
