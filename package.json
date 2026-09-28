@@ -25,7 +25,7 @@
 		"@testing-library/user-event": "^14.6.7",
 		"@wordpress/api-fetch": "^7.48.0",
 		"@wordpress/babel-preset-default": "^8.56.0",
-		"@wordpress/block-editor": "^17.0.0",
+		"@wordpress/block-editor": "^18.0.0",
 		"@wordpress/blocks": "^16.0.0",
 		"@wordpress/components": "^41.0.0",
 		"@wordpress/core-data": "^8.0.0",
