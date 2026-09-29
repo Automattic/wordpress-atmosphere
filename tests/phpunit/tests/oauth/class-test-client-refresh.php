@@ -74,6 +74,9 @@ class Test_Client_Refresh extends WP_UnitTestCase {
 	 * Tear down each test.
 	 */
 	public function tear_down(): void {
+		// The time-limit tests change it; PHPUnit runs without one.
+		\set_time_limit( 0 );
+
 		\delete_option( 'atmosphere_connection' );
 		\delete_option( 'atmosphere_identity' );
 		\delete_option( Client::REFRESH_LOCK_OPTION );
@@ -178,6 +181,99 @@ class Test_Client_Refresh extends WP_UnitTestCase {
 
 		$this->assertTrue( $result );
 		$this->assertSame( 0, $captured_args['redirection'] ?? null );
+	}
+
+	/**
+	 * A refresh request waits long enough for a slow auth server to answer.
+	 *
+	 * The auth server rotates the refresh token as soon as it handles the
+	 * request. Giving up on a slow answer loses the new token, and sending
+	 * the old one again makes the server end the whole session.
+	 */
+	public function test_refresh_request_waits_for_a_slow_auth_server() {
+		$captured_args = null;
+
+		\add_filter(
+			'pre_http_request',
+			static function ( $response, $args, $url ) use ( &$captured_args ) {
+				if ( false !== \strpos( $url, 'oauth/token' ) ) {
+					$captured_args = $args;
+					return array(
+						'response' => array( 'code' => 200 ),
+						'headers'  => new \WpOrg\Requests\Utility\CaseInsensitiveDictionary( array() ),
+						'body'     => (string) \wp_json_encode(
+							array(
+								'access_token'  => 'new-access-token',
+								'refresh_token' => 'new-refresh-token',
+								'expires_in'    => 3600,
+							)
+						),
+					);
+				}
+
+				return $response;
+			},
+			10,
+			3
+		);
+
+		$this->assertTrue( Client::refresh() );
+		$this->assertSame( 30, $captured_args['timeout'] ?? null );
+	}
+
+	/**
+	 * A refresh must not lower an unlimited PHP execution time.
+	 */
+	public function test_refresh_keeps_an_unlimited_execution_time() {
+		\set_time_limit( 0 );
+
+		$this->mock_token_response(
+			200,
+			array(
+				'access_token'  => 'new-access-token',
+				'refresh_token' => 'new-refresh-token',
+				'expires_in'    => 3600,
+			)
+		);
+
+		$this->assertTrue( Client::refresh() );
+		$this->assertSame( '0', \ini_get( 'max_execution_time' ) );
+	}
+
+	/**
+	 * A refresh raises a short PHP time limit and keeps a longer one.
+	 *
+	 * @dataProvider time_limit_provider
+	 *
+	 * @param int $limit    Configured limit.
+	 * @param int $expected Limit while the refresh runs.
+	 */
+	public function test_refresh_raises_a_short_execution_time( int $limit, int $expected ) {
+		\set_time_limit( $limit );
+
+		$this->mock_token_response(
+			200,
+			array(
+				'access_token'  => 'new-access-token',
+				'refresh_token' => 'new-refresh-token',
+				'expires_in'    => 3600,
+			)
+		);
+
+		$this->assertTrue( Client::refresh() );
+		$this->assertSame( (string) $expected, \ini_get( 'max_execution_time' ) );
+	}
+
+	/**
+	 * Configured limits and the limit a refresh leaves in place.
+	 *
+	 * @return array
+	 */
+	public function time_limit_provider(): array {
+		return array(
+			'short limit is raised' => array( 30, 90 ),
+			'longer limit is kept'  => array( 300, 300 ),
+		);
 	}
 
 	/**
@@ -797,6 +893,32 @@ class Test_Client_Refresh extends WP_UnitTestCase {
 		$result = Client::refresh();
 
 		$this->assertTrue( $result );
+	}
+
+	/**
+	 * A lock taken a minute ago still belongs to a running refresh.
+	 *
+	 * Taking it over would send the same refresh token twice, and the
+	 * auth server ends the session on a replayed refresh token.
+	 */
+	public function test_refresh_lock_is_not_stolen_from_a_slow_refresh() {
+		$before = \time();
+		$this->assertTrue( Client::lock() );
+
+		global $wpdb;
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching
+		$expires_at = (int) $wpdb->get_var(
+			$wpdb->prepare(
+				"SELECT option_value FROM {$wpdb->options} WHERE option_name = %s",
+				Client::REFRESH_LOCK_OPTION
+			)
+		);
+
+		// Two 30-second requests fit inside the lock with room to spare.
+		$this->assertGreaterThanOrEqual( $before + 90, $expires_at );
+		$this->assertFalse( Client::lock() );
+
+		Client::unlock();
 	}
 
 	/**

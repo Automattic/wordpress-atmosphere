@@ -873,26 +873,39 @@ class Client {
 	}
 
 	/**
+	 * Timeout (seconds) of each refresh POST to the token endpoint.
+	 *
+	 * The auth server rotates the refresh token as soon as it handles
+	 * the request, so a response the site gives up on is a lost token:
+	 * the next attempt sends the old one, which the reference server
+	 * treats as a replay and answers by deleting the whole session. A
+	 * slow host or a slow client-metadata fetch on the server's side
+	 * can push a legitimate answer past 15 seconds, so the refresh
+	 * waits longer than the other OAuth requests.
+	 *
+	 * @var int
+	 */
+	private const REFRESH_TIMEOUT = 30;
+
+	/**
 	 * Maximum lifetime (seconds) of the refresh lock before it is
 	 * presumed stale and reclaimed.
 	 *
 	 * `refresh_locked()` can issue up to two sequential HTTP POSTs on
-	 * the `use_dpop_nonce` retry path, each with a 15s
-	 * `wp_safe_remote_post` timeout. The first call typically returns
-	 * the nonce error in well under a second (the auth server rejects
-	 * before any real work) — but on a degraded auth server that
-	 * actually hangs on every call, both legs can run the full 15s
-	 * timeout, yielding a worst-case ~30s + encryption + option I/O
-	 * overhead. 45 seconds covers that pathological case plus a small
-	 * margin so a slow-but-legitimate refresh isn't stomped by a
-	 * second worker's CAS-steal. Going lower than the actual worst
-	 * case reintroduces the concurrent-refresh race the lock exists
-	 * to close; going much higher keeps a crashed worker's lock alive
-	 * for proportionally longer before any successor can take over.
+	 * the `use_dpop_nonce` retry path, each with a
+	 * {@see self::REFRESH_TIMEOUT} timeout. The first call typically
+	 * returns the nonce error in well under a second, but on a degraded
+	 * auth server both legs can run the full timeout, yielding a
+	 * worst-case ~60s + encryption + option I/O overhead. 90 seconds
+	 * covers that case plus a margin so a slow-but-legitimate refresh
+	 * isn't stomped by a second worker's CAS-steal, which would send
+	 * the same refresh token twice and get the session deleted as a
+	 * replay. Going much higher keeps a crashed worker's lock alive for
+	 * proportionally longer before any successor can take over.
 	 *
 	 * @var int
 	 */
-	private const REFRESH_LOCK_TTL = 45;
+	private const REFRESH_LOCK_TTL = 90;
 
 	/**
 	 * Option holding the outcome of the most recent refresh attempt.
@@ -1004,6 +1017,8 @@ class Client {
 				$conn = array();
 			}
 
+			self::extend_time_limit();
+
 			$result = self::refresh_locked( $conn );
 
 			if ( true === $result ) {
@@ -1053,6 +1068,26 @@ class Client {
 		} finally {
 			self::unlock();
 		}
+	}
+
+	/**
+	 * Give the locked refresh enough time to store the rotated token.
+	 *
+	 * Once the auth server answers, the old refresh token is spent. A
+	 * PHP time limit that ends the request between that answer and the
+	 * option write loses the new token for good, and the next refresh
+	 * gets the session deleted as a replay. The limit is only ever
+	 * raised: an unlimited run (WP-CLI, `0`) stays unlimited, and a
+	 * longer configured limit restarts at its own value.
+	 */
+	private static function extend_time_limit(): void {
+		$limit = (int) \ini_get( 'max_execution_time' );
+
+		if ( 0 === $limit || ! \function_exists( 'set_time_limit' ) ) {
+			return;
+		}
+
+		\set_time_limit( \max( $limit, self::REFRESH_LOCK_TTL ) );
 	}
 
 	/**
@@ -1123,7 +1158,7 @@ class Client {
 					'DPoP'         => $dpop_proof,
 				),
 				'body'        => $body,
-				'timeout'     => 15,
+				'timeout'     => self::REFRESH_TIMEOUT,
 				'redirection' => 0,
 			)
 		);
@@ -1176,7 +1211,7 @@ class Client {
 						'DPoP'         => $dpop_proof,
 					),
 					'body'        => $body,
-					'timeout'     => 15,
+					'timeout'     => self::REFRESH_TIMEOUT,
 					'redirection' => 0,
 				)
 			);
@@ -1946,10 +1981,10 @@ class Client {
 	 * holder to write a fresh access token (or to flip
 	 * `needs_reauth` on a permanent failure).
 	 *
-	 * The deadline matches `REFRESH_LOCK_TTL` (45s) rather than a
+	 * The deadline matches `REFRESH_LOCK_TTL` (90s) rather than a
 	 * conservative few-seconds wait. The previous 5-second budget
 	 * was shorter than the realistic worst case — two sequential
-	 * `wp_safe_remote_post` calls at 15-second timeouts on the
+	 * `wp_safe_remote_post` calls at `REFRESH_TIMEOUT` on the
 	 * `use_dpop_nonce` retry path plus encryption overhead — which
 	 * meant single-shot publish / comment cron events that arrived
 	 * mid-refresh would silently drop their content even though the

@@ -1,0 +1,4 @@
+Significance: patch
+Type: fixed
+
+Sites with a slow connection to Bluesky no longer have to reconnect every week or so.
