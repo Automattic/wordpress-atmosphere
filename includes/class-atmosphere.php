@@ -592,10 +592,8 @@ class Atmosphere {
 	 * claiming the current account while `META_URI` still points at the
 	 * old one. Parsing the URI also covers pre-`META_DID` rows, which a
 	 * meta comparison has to wave through for lack of anything to
-	 * compare. This is why the check does not mirror the mismatch guard
-	 * in `Publisher::delete_post()`: that one decides which repo to
-	 * issue a delete against and has only the rkey meta to go on, while
-	 * here the full AT-URI is in hand.
+	 * compare. The delete guards read the origin the same way, through
+	 * {@see \Atmosphere\record_origin_did()}.
 	 *
 	 * @return string AT-URI, or '' when the page has no Bluesky record
 	 *                belonging to the connected account.
@@ -1526,8 +1524,14 @@ class Atmosphere {
 		 * repo the records never lived in (disconnect + reconnect-to-a-new
 		 * account).
 		 */
-		$bsky_origin_did = (string) \get_post_meta( $post_id, Transformer\Post::META_DID, true );
-		$doc_origin_did  = (string) \get_post_meta( $post_id, Transformer\Document::META_DID, true );
+		$bsky_origin_did = record_origin_did(
+			(string) \get_post_meta( $post_id, Transformer\Post::META_URI, true ),
+			(string) \get_post_meta( $post_id, Transformer\Post::META_DID, true )
+		);
+		$doc_origin_did  = record_origin_did(
+			(string) \get_post_meta( $post_id, Transformer\Document::META_URI, true ),
+			(string) \get_post_meta( $post_id, Transformer\Document::META_DID, true )
+		);
 
 		// A written threadgate shares the root post's rkey. Capture it now
 		// while the meta still exists so the async delete can remove it after
@@ -1649,7 +1653,10 @@ class Atmosphere {
 		 * its meta are removed, so the async worker can refuse to delete
 		 * against a repo the record never lived in.
 		 */
-		$origin_did = (string) \get_comment_meta( $comment_id, Comment::META_DID, true );
+		$origin_did = record_origin_did(
+			(string) \get_comment_meta( $comment_id, Comment::META_URI, true ),
+			(string) \get_comment_meta( $comment_id, Comment::META_DID, true )
+		);
 
 		$tid  = (string) $tid;
 		$args = array( $tid, $origin_did );
@@ -2906,7 +2913,10 @@ class Atmosphere {
 		$tid = (string) \get_comment_meta( $comment_id, Comment::META_TID, true );
 		// Capture the origin DID before clearing meta so the TID-only
 		// cleanup event can guard against a wrong-repo delete.
-		$origin_did = (string) \get_comment_meta( $comment_id, Comment::META_DID, true );
+		$origin_did = record_origin_did(
+			(string) \get_comment_meta( $comment_id, Comment::META_URI, true ),
+			(string) \get_comment_meta( $comment_id, Comment::META_DID, true )
+		);
 
 		Publisher::clear_comment_record_meta( $comment_id );
 
