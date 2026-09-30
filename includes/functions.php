@@ -50,6 +50,31 @@ function build_at_uri( string $did, string $collection, string $rkey ): string {
 }
 
 /**
+ * The DID of the repo a stored record lives in.
+ *
+ * The stored AT-URI is the one value written only after a write to the
+ * PDS succeeded, so the DID in it names the repo the record actually
+ * landed in. The separate DID meta is refreshed by `get_rkey()` before
+ * the write, so a republish that fails after a reconnect leaves it
+ * pointing at the new account while the record still lives on the old
+ * one (see #217). The DID meta is only used when there is no usable
+ * URI, and an empty result means the origin is unknown.
+ *
+ * @param string $uri        Stored AT-URI of the record (may be empty).
+ * @param string $stored_did Stored DID meta of the record (may be empty).
+ * @return string The origin DID, or '' when unknown.
+ */
+function record_origin_did( string $uri, string $stored_did ): string {
+	$parsed = parse_at_uri( $uri );
+
+	if ( false !== $parsed && \str_starts_with( $parsed['did'], 'did:' ) ) {
+		return $parsed['did'];
+	}
+
+	return $stored_did;
+}
+
+/**
  * Build a web URL pointing at an AT Protocol appview.
  *
  * Returns an UNESCAPED URL. Callers MUST escape at the point of use

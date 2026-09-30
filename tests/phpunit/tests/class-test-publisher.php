@@ -3533,6 +3533,115 @@ class Test_Publisher extends WP_UnitTestCase {
 	}
 
 	/**
+	 * A document-only post whose DID meta was moved to the current account
+	 * (a failed republish after reconnecting) still lives in the old repo,
+	 * as its stored URI says. The delete must be refused, not no-op'd.
+	 */
+	public function test_delete_post_bails_when_document_uri_names_previous_account() {
+		$post = self::factory()->post->create_and_get( array( 'post_status' => 'trash' ) );
+		\update_post_meta( $post->ID, Document::META_TID, 'doc-tid' );
+		\update_post_meta( $post->ID, Document::META_URI, 'at://did:plc:old/site.standard.document/doc-tid' );
+		\update_post_meta( $post->ID, Document::META_DID, 'did:plc:test123' );
+
+		$get_body = $this->stub_apply_writes( '', '' );
+		$result   = Publisher::delete_post( $post );
+		\remove_all_filters( 'pre_http_request' );
+
+		$this->assertWPError( $result );
+		$this->assertSame( 'atmosphere_did_mismatch', $result->get_error_code() );
+		$this->assertNull( $get_body(), 'No applyWrites should be issued against the wrong repo.' );
+		$this->assertSame( 'doc-tid', \get_post_meta( $post->ID, Document::META_TID, true ) );
+	}
+
+	/**
+	 * Same for the Bluesky post: its stored URI outranks the DID meta.
+	 */
+	public function test_delete_post_bails_when_bsky_uri_names_previous_account() {
+		$post = self::factory()->post->create_and_get( array( 'post_status' => 'trash' ) );
+		\update_post_meta( $post->ID, Post::META_TID, 'post-tid' );
+		\update_post_meta( $post->ID, Post::META_URI, 'at://did:plc:old/app.bsky.feed.post/post-tid' );
+		\update_post_meta( $post->ID, Post::META_DID, 'did:plc:test123' );
+
+		$get_body = $this->stub_apply_writes( '', '' );
+		$result   = Publisher::delete_post( $post );
+		\remove_all_filters( 'pre_http_request' );
+
+		$this->assertWPError( $result );
+		$this->assertSame( 'atmosphere_did_mismatch', $result->get_error_code() );
+		$this->assertNull( $get_body(), 'No applyWrites should be issued against the wrong repo.' );
+		$this->assertSame( 'post-tid', \get_post_meta( $post->ID, Post::META_TID, true ) );
+	}
+
+	/**
+	 * A reply published under a previous account is left out of the trash
+	 * cascade and keeps its meta, while the replies in the connected repo
+	 * are deleted as usual.
+	 */
+	public function test_delete_post_skips_comment_replies_from_previous_account() {
+		$post = self::factory()->post->create_and_get( array( 'post_status' => 'trash' ) );
+		\update_post_meta( $post->ID, Post::META_TID, 'post-tid' );
+		\update_post_meta( $post->ID, Post::META_URI, 'at://did:plc:test123/app.bsky.feed.post/post-tid' );
+
+		$current = self::factory()->comment->create( array( 'comment_post_ID' => $post->ID ) );
+		\update_comment_meta( $current, Comment::META_TID, 'reply-current' );
+		\update_comment_meta( $current, Comment::META_URI, 'at://did:plc:test123/app.bsky.feed.post/reply-current' );
+
+		$foreign = self::factory()->comment->create( array( 'comment_post_ID' => $post->ID ) );
+		\update_comment_meta( $foreign, Comment::META_TID, 'reply-foreign' );
+		\update_comment_meta( $foreign, Comment::META_URI, 'at://did:plc:old/app.bsky.feed.post/reply-foreign' );
+		\update_comment_meta( $foreign, Comment::META_DID, 'did:plc:old' );
+
+		$this->register_capture( $post->ID );
+		$result = Publisher::delete_post( $post );
+
+		$this->assertNotWPError( $result );
+		$this->assertCount( 2, $this->captured_calls, 'Root and comment deletes must be separate batches.' );
+		$this->assertSame( array( 'reply-current' ), \array_column( $this->captured_calls[1]['writes'], 'rkey' ) );
+		$this->assertSame( '', \get_comment_meta( $current, Comment::META_TID, true ) );
+		$this->assertSame( 'reply-foreign', \get_comment_meta( $foreign, Comment::META_TID, true ), 'The skipped reply keeps its meta.' );
+	}
+
+	/**
+	 * When the only records left on a post are replies from a previous
+	 * account (a comment-only retry after reconnecting), the delete reports
+	 * the account mismatch instead of claiming nothing was published.
+	 */
+	public function test_delete_post_reports_mismatch_when_only_foreign_replies_remain() {
+		$post = self::factory()->post->create_and_get( array( 'post_status' => 'trash' ) );
+
+		$foreign = self::factory()->comment->create( array( 'comment_post_ID' => $post->ID ) );
+		\update_comment_meta( $foreign, Comment::META_TID, 'reply-foreign' );
+		\update_comment_meta( $foreign, Comment::META_URI, 'at://did:plc:old/app.bsky.feed.post/reply-foreign' );
+
+		$this->register_capture( $post->ID );
+		$result = Publisher::delete_post( $post );
+
+		$this->assertWPError( $result );
+		$this->assertSame( 'atmosphere_did_mismatch', $result->get_error_code() );
+		$this->assertCount( 0, $this->captured_calls, 'No applyWrites should be issued against the wrong repo.' );
+		$this->assertSame( 'reply-foreign', \get_comment_meta( $foreign, Comment::META_TID, true ) );
+	}
+
+	/**
+	 * A reply's stored URI outranks its DID meta in the single-comment delete.
+	 */
+	public function test_delete_comment_bails_when_uri_names_previous_account() {
+		$post_id    = $this->seed_root_post();
+		$comment_id = self::factory()->comment->create( array( 'comment_post_ID' => $post_id ) );
+		\update_comment_meta( $comment_id, Comment::META_TID, 'reply-tid' );
+		\update_comment_meta( $comment_id, Comment::META_URI, 'at://did:plc:old/app.bsky.feed.post/reply-tid' );
+		\update_comment_meta( $comment_id, Comment::META_DID, 'did:plc:test123' );
+
+		$get_body = $this->stub_apply_writes( '', '' );
+		$result   = Publisher::delete_comment( \get_comment( $comment_id ) );
+		\remove_all_filters( 'pre_http_request' );
+
+		$this->assertWPError( $result );
+		$this->assertSame( 'atmosphere_did_mismatch', $result->get_error_code() );
+		$this->assertNull( $get_body(), 'No applyWrites should be issued against the wrong repo.' );
+	}
+
+	/**
 	 * The hard-delete path refuses to delete Bluesky records minted under a
 	 * different account and issues no write, aborting the whole cascade.
 	 */

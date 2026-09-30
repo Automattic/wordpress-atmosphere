@@ -912,8 +912,8 @@ class Test_Atmosphere extends WP_UnitTestCase {
 		$this->assertNotFalse( \wp_next_scheduled( 'atmosphere_publish_comment', array( $comment_id ) ) );
 		$this->assertNotFalse( \wp_next_scheduled( 'atmosphere_update_comment', array( $comment_id ) ) );
 		$this->assertNotFalse( \wp_next_scheduled( 'atmosphere_delete_comment', array( $comment_id ) ) );
-		// Seeded without META_DID, so the captured origin DID is empty.
-		$this->assertNotFalse( \wp_next_scheduled( 'atmosphere_delete_comment_record', array( 'reply-tid', '' ) ) );
+		// Seeded without META_DID, so the captured origin DID comes from the stored URI.
+		$this->assertNotFalse( \wp_next_scheduled( 'atmosphere_delete_comment_record', array( 'reply-tid', 'did:plc:test123' ) ) );
 
 		\update_option( 'atmosphere_publish_comments', '' );
 
@@ -1603,6 +1603,52 @@ class Test_Atmosphere extends WP_UnitTestCase {
 		$this->assertNotFalse(
 			\wp_next_scheduled( 'atmosphere_delete_records', $expected_args ),
 			'Expected atmosphere_delete_records to be scheduled with the published comment TIDs.'
+		);
+	}
+
+	/**
+	 * The hard-delete capture takes the document's origin from its stored
+	 * URI, and leaves replies that live in a previous account's repo out of
+	 * the cascade (their own guarded event logs the mismatch).
+	 */
+	public function test_on_before_delete_uses_uri_origin_and_skips_foreign_replies() {
+		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		\update_post_meta( $post_id, Document::META_TID, 'doc-tid-root' );
+		\update_post_meta( $post_id, Document::META_URI, 'at://did:plc:old/site.standard.document/doc-tid-root' );
+		\update_post_meta( $post_id, Document::META_DID, 'did:plc:test123' );
+
+		$current = self::factory()->comment->create(
+			array(
+				'comment_post_ID'  => $post_id,
+				'comment_approved' => '1',
+			)
+		);
+		\update_comment_meta( $current, Comment::META_TID, 'reply-current' );
+		\update_comment_meta( $current, Comment::META_URI, 'at://did:plc:test123/app.bsky.feed.post/reply-current' );
+
+		$foreign = self::factory()->comment->create(
+			array(
+				'comment_post_ID'  => $post_id,
+				'comment_approved' => '1',
+			)
+		);
+		\update_comment_meta( $foreign, Comment::META_TID, 'reply-foreign' );
+		\update_comment_meta( $foreign, Comment::META_URI, 'at://did:plc:old/app.bsky.feed.post/reply-foreign' );
+
+		$this->atmosphere->on_before_delete( $post_id );
+
+		$expected_args = array(
+			array(),
+			'doc-tid-root',
+			array( 'reply-current' ),
+			'',
+			'',
+			'did:plc:old',
+		);
+
+		$this->assertNotFalse(
+			\wp_next_scheduled( 'atmosphere_delete_records', $expected_args ),
+			'Expected the URI origin and only the connected-repo reply in the scheduled cascade.'
 		);
 	}
 
