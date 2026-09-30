@@ -9,6 +9,8 @@ namespace Atmosphere;
 
 \defined( 'ABSPATH' ) || exit;
 
+use Atmosphere\OAuth\Client;
+
 /**
  * Coordinates the "use my domain as my Bluesky handle" feature.
  *
@@ -289,11 +291,21 @@ class Handle {
 	 * @param string $handle New handle to record locally.
 	 */
 	private static function sync_connection_handle( string $handle ): void {
-		$connection = get_connection();
-		if ( ! empty( $connection ) ) {
-			$connection['handle'] = $handle;
-			\update_option( 'atmosphere_connection', $connection, false );
-		}
+		/*
+		 * Through the compare-and-swap writer: the PDS call above can take a
+		 * minute, and a token refresh landing meanwhile must not be
+		 * overwritten with the tokens this request read before it.
+		 */
+		Client::update_connection(
+			static function ( array $connection ) use ( $handle ): ?array {
+				if ( empty( $connection ) ) {
+					return null;
+				}
+
+				$connection['handle'] = $handle;
+				return $connection;
+			}
+		);
 
 		/*
 		 * Mirror to the durable identity option as well — that is now

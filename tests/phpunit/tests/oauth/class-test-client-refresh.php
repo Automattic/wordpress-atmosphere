@@ -57,7 +57,8 @@ class Test_Client_Refresh extends WP_UnitTestCase {
 				'token_endpoint' => self::TOKEN_ENDPOINT,
 				'expires_at'     => \time() + 3600,
 				'needs_reauth'   => false,
-			)
+			),
+			false // Not autoloaded, as the plugin stores it.
 		);
 
 		\update_option(
@@ -1117,6 +1118,293 @@ class Test_Client_Refresh extends WP_UnitTestCase {
 			$polls,
 			'Wait must poll at least twice: first sees the stale snapshot, second sees the rotation.'
 		);
+	}
+
+	/**
+	 * Write the connection row the way another process would: straight
+	 * to the database, leaving this request's options cache stale.
+	 *
+	 * @param array $conn Connection row.
+	 */
+	private function write_connection_behind_cache( array $conn ): void {
+		global $wpdb;
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		$wpdb->update(
+			$wpdb->options,
+			array( 'option_value' => \maybe_serialize( $conn ) ),
+			array( 'option_name' => 'atmosphere_connection' )
+		);
+	}
+
+	/**
+	 * The waiter must see the token another process saved, not the copy
+	 * this request cached on its first read.
+	 */
+	public function test_wait_for_token_refresh_sees_another_process_write() {
+		$this->hold_refresh_lock();
+
+		// Primes the options cache.
+		$conn     = \get_option( 'atmosphere_connection' );
+		$snapshot = (string) $conn['access_token'];
+
+		$rotated                 = $conn;
+		$rotated['access_token'] = Encryption::encrypt( 'holder-rotated-token' );
+		$this->write_connection_behind_cache( $rotated );
+
+		$this->assertTrue( Client::wait_for_token_refresh( $snapshot ) );
+	}
+
+	/**
+	 * The re-read after taking the lock must send the refresh token
+	 * another process rotated, not the one this request cached earlier.
+	 */
+	public function test_refresh_sends_the_refresh_token_another_process_rotated() {
+		// Primes the options cache.
+		$conn                  = \get_option( 'atmosphere_connection' );
+		$conn['refresh_token'] = Encryption::encrypt( 'rotated-refresh-token' );
+		$this->write_connection_behind_cache( $conn );
+
+		$sent = null;
+		\add_filter(
+			'pre_http_request',
+			static function ( $response, $args, $url ) use ( &$sent ) {
+				if ( false !== \strpos( $url, 'oauth/token' ) ) {
+					$sent = $args['body']['refresh_token'] ?? null;
+				}
+				return $response;
+			},
+			0,
+			3
+		);
+
+		$this->mock_token_response(
+			200,
+			array(
+				'access_token'  => 'new-access-token',
+				'refresh_token' => 'new-refresh-token',
+				'expires_in'    => 3600,
+			)
+		);
+
+		$this->assertTrue( Client::refresh() );
+		$this->assertSame( 'rotated-refresh-token', $sent );
+	}
+
+	/**
+	 * The revocation arguments queued for the refresh token hook, if any.
+	 *
+	 * @return array|null
+	 */
+	private function queued_revocation(): ?array {
+		$queued = null;
+		foreach ( \_get_cron_array() as $events ) {
+			foreach ( $events['atmosphere_revoke_refresh_token'] ?? array() as $event ) {
+				$queued = $event['args'];
+			}
+		}
+
+		return $queued;
+	}
+
+	/**
+	 * Add the fields a revocation needs to the stored connection.
+	 *
+	 * @return array The stored connection.
+	 */
+	private function make_revocable(): array {
+		$conn                        = \get_option( 'atmosphere_connection' );
+		$conn['revocation_endpoint'] = 'https://auth.example.com/oauth/revoke';
+		$conn['auth_server']         = 'https://auth.example.com';
+		\update_option( 'atmosphere_connection', $conn );
+
+		return $conn;
+	}
+
+	/**
+	 * A reconnect landing while the token request is in flight wins: the
+	 * new session stays, and the tokens minted for the old one are revoked
+	 * instead of left valid at the auth server.
+	 */
+	public function test_refresh_revokes_its_tokens_when_a_reconnect_lands_mid_request() {
+		$this->make_revocable();
+
+		$reconnected                  = \get_option( 'atmosphere_connection' );
+		$reconnected['refresh_token'] = Encryption::encrypt( 'new-session-refresh-token' );
+
+		\add_filter(
+			'pre_http_request',
+			function ( $response, $args, $url ) use ( $reconnected ) {
+				if ( false !== \strpos( $url, 'oauth/token' ) ) {
+					$this->write_connection_behind_cache( $reconnected );
+				}
+				return $response;
+			},
+			0,
+			3
+		);
+
+		$this->mock_token_response(
+			200,
+			array(
+				'access_token'  => 'old-session-access-token',
+				'refresh_token' => 'old-session-refresh-token',
+				'expires_in'    => 3600,
+			)
+		);
+
+		$result = Client::refresh();
+
+		$this->assertWPError( $result );
+		$this->assertSame( 'atmosphere_disconnected_mid_refresh', $result->get_error_code() );
+		$this->assertSame(
+			'new-session-refresh-token',
+			Encryption::decrypt( \get_option( 'atmosphere_connection' )['refresh_token'] )
+		);
+
+		$queued = $this->queued_revocation();
+		$this->assertIsArray( $queued, 'The discarded refresh token must be revoked.' );
+		$this->assertSame( 'old-session-refresh-token', Encryption::decrypt( $queued[0] ) );
+	}
+
+	/**
+	 * A write landing between the read and the write of a connection
+	 * change is kept, and the change is applied on top of it.
+	 */
+	public function test_update_connection_reapplies_a_change_on_top_of_a_concurrent_write() {
+		$rotated                  = \get_option( 'atmosphere_connection' );
+		$rotated['refresh_token'] = Encryption::encrypt( 'rotated-refresh-token' );
+
+		$calls  = 0;
+		$before = Client::update_connection(
+			function ( array $conn ) use ( &$calls, $rotated ) {
+				if ( 0 === $calls++ ) {
+					$this->write_connection_behind_cache( $rotated );
+				}
+
+				$conn['handle'] = 'example.com';
+				return $conn;
+			}
+		);
+
+		$this->assertSame( 2, $calls );
+		$this->assertSame( $rotated['refresh_token'], $before['refresh_token'] );
+
+		$stored = \get_option( 'atmosphere_connection' );
+		$this->assertSame( 'example.com', $stored['handle'] );
+		$this->assertSame( 'rotated-refresh-token', Encryption::decrypt( $stored['refresh_token'] ) );
+	}
+
+	/**
+	 * A connection row still autoloaded from before autoload was switched
+	 * off is read fresh too, and the first write stops autoloading it.
+	 */
+	public function test_autoloaded_row_is_read_fresh_and_flipped_on_write() {
+		global $wpdb;
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		$wpdb->update( $wpdb->options, array( 'autoload' => 'yes' ), array( 'option_name' => 'atmosphere_connection' ) );
+		\wp_cache_delete( 'alloptions', 'options' );
+		\wp_cache_delete( 'atmosphere_connection', 'options' );
+		$this->assertArrayHasKey( 'atmosphere_connection', \wp_load_alloptions() );
+
+		$this->hold_refresh_lock();
+
+		$conn                    = \get_option( 'atmosphere_connection' );
+		$snapshot                = (string) $conn['access_token'];
+		$rotated                 = $conn;
+		$rotated['access_token'] = Encryption::encrypt( 'holder-rotated-token' );
+		$this->write_connection_behind_cache( $rotated );
+
+		$this->assertTrue( Client::wait_for_token_refresh( $snapshot ) );
+
+		Client::update_connection(
+			static function ( array $current ): array {
+				$current['handle'] = 'example.com';
+				return $current;
+			}
+		);
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		$autoload = $wpdb->get_var( "SELECT autoload FROM {$wpdb->options} WHERE option_name = 'atmosphere_connection'" );
+		$this->assertSame( 'off', $autoload );
+		$this->assertSame( 'example.com', \get_option( 'atmosphere_connection' )['handle'] );
+	}
+
+	/**
+	 * Disconnect revokes the token stored when the row was deleted, not a
+	 * copy this request cached before a concurrent rotation.
+	 */
+	public function test_disconnect_revokes_the_token_stored_at_deletion() {
+		$conn                  = $this->make_revocable();
+		$conn['refresh_token'] = Encryption::encrypt( 'rotated-refresh-token' );
+		$this->write_connection_behind_cache( $conn );
+
+		Client::disconnect();
+
+		$this->assertFalse( \get_option( 'atmosphere_connection' ) );
+		$this->assertSame( 'rotated-refresh-token', Encryption::decrypt( $this->queued_revocation()[0] ) );
+	}
+
+	/**
+	 * A holder that overran its lock must not release the lock a
+	 * successor took over from it.
+	 */
+	public function test_unlock_leaves_a_successor_lock_in_place() {
+		global $wpdb;
+
+		$this->assertTrue( Client::lock() );
+
+		$successor = (string) ( \time() + 200 );
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		$wpdb->update( $wpdb->options, array( 'option_value' => $successor ), array( 'option_name' => Client::REFRESH_LOCK_OPTION ) );
+
+		Client::unlock();
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		$stored = $wpdb->get_var( $wpdb->prepare( "SELECT option_value FROM {$wpdb->options} WHERE option_name = %s", Client::REFRESH_LOCK_OPTION ) );
+		$this->assertSame( $successor, $stored );
+	}
+
+	/**
+	 * The nonce retry is not sent when it could still be running after the
+	 * lock expires, because a successor would then send the same token.
+	 */
+	public function test_refresh_does_not_send_a_request_that_could_outlive_the_lock() {
+		$requests = 0;
+		\add_filter(
+			'pre_http_request',
+			static function ( $response, $args, $url ) use ( &$requests ) {
+				if ( false === \strpos( $url, 'oauth/token' ) ) {
+					return $response;
+				}
+
+				++$requests;
+
+				// The first request ate most of the lock.
+				global $wpdb;
+				$expires_at = \time() + 10;
+				$expires    = new \ReflectionProperty( Client::class, 'lock_expires_at' );
+				$expires->setValue( null, $expires_at );
+				// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+				$wpdb->update( $wpdb->options, array( 'option_value' => (string) $expires_at ), array( 'option_name' => Client::REFRESH_LOCK_OPTION ) );
+
+				return array(
+					'response' => array( 'code' => 400 ),
+					'headers'  => new \WpOrg\Requests\Utility\CaseInsensitiveDictionary( array( 'dpop-nonce' => 'nonce-1' ) ),
+					'body'     => \wp_json_encode( array( 'error' => 'use_dpop_nonce' ) ),
+				);
+			},
+			10,
+			3
+		);
+
+		$result = Client::refresh();
+
+		$this->assertWPError( $result );
+		$this->assertSame( 'atmosphere_refresh_lock_expiring', $result->get_error_code() );
+		$this->assertSame( 1, $requests );
+		$this->assertFalse( Client::locked(), 'The holder still releases its own lock.' );
 	}
 
 	/**

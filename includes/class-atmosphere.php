@@ -1854,6 +1854,9 @@ class Atmosphere {
 	 * strictly more reliable on a healthy session.
 	 */
 	public function cron_refresh_token(): void {
+		// WP-Cron runs several events per request; another process may have renewed since.
+		\wp_cache_delete( 'atmosphere_connection', 'options' );
+
 		if ( ! is_connected() ) {
 			return;
 		}
