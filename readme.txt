@@ -4,7 +4,7 @@ Tags: at-protocol, bluesky, connector, atproto, crossposting
 Requires at least: 6.5
 Tested up to: 7.1
 Requires PHP: 8.2
-Stable tag: 2.4.0
+Stable tag: 2.4.1
 License: GPL-2.0-or-later
 License URI: https://spdx.org/licenses/GPL-2.0-or-later.html
 
@@ -119,6 +119,11 @@ These addresses need pretty permalinks turned on under **Settings → Permalinks
 Not at this time. ATmosphere is designed for a single WordPress site. On a Network-activated install only the current site's data is read and written, and uninstall only cleans the current site — credentials and records on other sites in the network are left intact.
 
 == Changelog ==
+
+### 2.4.1 - 2026-10-01
+#### Fixed
+- Deleting a post that was shared from a previous Bluesky account no longer pretends to succeed. The post stays marked as shared, so it can still be removed after reconnecting that account.
+- Sites with a slow connection to Bluesky no longer have to reconnect every week or so.
 
 ### 2.4.0 - 2026-09-22
 #### Added
