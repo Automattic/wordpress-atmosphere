@@ -1117,7 +1117,7 @@ class Client {
 	 * is not started; the renewal is retried on the next run instead. The
 	 * margin covers storing the result after the response arrives.
 	 *
-	 * @since unreleased
+	 * @since 2.4.1
 	 *
 	 * @return true|\WP_Error
 	 */
@@ -1702,7 +1702,7 @@ class Client {
 	 *
 	 * A missing row stays missing; `$change` is not called for it.
 	 *
-	 * @since unreleased
+	 * @since 2.4.1
 	 *
 	 * @param callable $change Receives the stored row and returns the row
 	 *                         to store, an empty array to delete it, or
@@ -2415,7 +2415,7 @@ class Client {
 	 * for that client, and a confidential session has to authenticate the
 	 * revocation as it. Empty means a legacy public-client session.
 	 *
-	 * @since unreleased
+	 * @since 2.4.1
 	 *
 	 * @param array  $conn               Connection the token belongs to.
 	 * @param string $refresh_ciphertext Encrypted refresh token to revoke.
