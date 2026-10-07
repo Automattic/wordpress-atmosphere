@@ -164,11 +164,20 @@ class Admin {
 	}
 
 	/**
-	 * Enqueue admin CSS/JS on our settings page only.
+	 * Enqueue dashboard styles and settings-page CSS/JS.
 	 *
 	 * @param string $hook_suffix Current admin page.
 	 */
 	public static function enqueue_assets( string $hook_suffix ): void {
+		if ( 'index.php' === $hook_suffix ) {
+			\wp_enqueue_style(
+				'atmosphere-dashboard',
+				ATMOSPHERE_PLUGIN_URL . 'assets/css/dashboard.css',
+				array(),
+				ATMOSPHERE_VERSION
+			);
+		}
+
 		if ( 'settings_page_atmosphere' !== $hook_suffix ) {
 			return;
 		}

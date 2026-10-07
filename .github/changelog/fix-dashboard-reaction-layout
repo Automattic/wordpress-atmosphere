@@ -1,0 +1,4 @@
+Significance: patch
+Type: fixed
+
+Fix the alignment of Bluesky likes and reposts beside their avatars in the dashboard Activity widget.

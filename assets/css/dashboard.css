@@ -1,0 +1,13 @@
+/**
+ * Dashboard activity widget styles.
+ *
+ * WordPress omits has-avatar from custom comment types, even when it renders
+ * their avatar. Match the spacing used for ordinary comments when one exists.
+ */
+#activity-widget #the-comment-list .avatar ~ .dashboard-comment-wrap {
+	padding-inline-start: 63px;
+}
+
+#activity-widget #the-comment-list .dashboard-comment-wrap p.comment-author {
+	margin-block: 0;
+}
