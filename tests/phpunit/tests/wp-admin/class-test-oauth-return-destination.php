@@ -97,7 +97,6 @@ class Test_OAuth_Return_Destination extends WP_UnitTestCase {
 	 */
 	private function resolve( string $origin ): string {
 		$method = new ReflectionMethod( Admin::class, 'oauth_return_destination' );
-		$method->setAccessible( true );
 
 		return (string) $method->invoke( null, $origin );
 	}

@@ -27,7 +27,6 @@ class Test_DPoP extends WP_UnitTestCase {
 	 */
 	public function test_jwk_from_ec_pads_short_components() {
 		$method = new \ReflectionMethod( DPoP::class, 'jwk_from_ec' );
-		$method->setAccessible( true );
 
 		$short = \str_repeat( "\x11", 31 );
 		$full  = \str_repeat( "\x22", 32 );

@@ -29,7 +29,6 @@ class Test_Post_Custom_Text extends WP_UnitTestCase {
 		\remove_all_filters( 'pre_http_request' );
 
 		$cache = new \ReflectionProperty( \Atmosphere\Transformer\Facet::class, 'resolution_cache' );
-		$cache->setAccessible( true );
 		$cache->setValue( null, array() );
 
 		parent::tear_down();

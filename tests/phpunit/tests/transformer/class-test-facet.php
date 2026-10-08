@@ -26,7 +26,6 @@ class Test_Facet extends WP_UnitTestCase {
 		\remove_all_filters( 'pre_http_request' );
 
 		$cache = new \ReflectionProperty( Facet::class, 'resolution_cache' );
-		$cache->setAccessible( true );
 		$cache->setValue( null, array() );
 
 		parent::tear_down();

@@ -645,6 +645,9 @@ class Test_Functions extends \WP_UnitTestCase {
 			return false;
 		};
 
+		// The bootstrap silences logging; drop that so the default reaches $capture.
+		\remove_filter( 'atmosphere_debug_log', '__return_false' );
+
 		$this->capture_debug_log(
 			function () use ( $capture ) {
 				\add_filter( 'atmosphere_debug_log', $capture, 10, 2 );

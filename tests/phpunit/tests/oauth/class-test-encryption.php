@@ -69,7 +69,6 @@ class Test_Encryption extends WP_UnitTestCase {
 	public function test_key_returns_sodium_sized_key() {
 		$reflection = new \ReflectionClass( Encryption::class );
 		$method     = $reflection->getMethod( 'key' );
-		$method->setAccessible( true );
 
 		$key = $method->invoke( null );
 
@@ -97,7 +96,6 @@ class Test_Encryption extends WP_UnitTestCase {
 	public function test_key_fingerprint_is_not_a_plain_key_hash() {
 		$reflection = new \ReflectionClass( Encryption::class );
 		$method     = $reflection->getMethod( 'key' );
-		$method->setAccessible( true );
 
 		$key = $method->invoke( null );
 
