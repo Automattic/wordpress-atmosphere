@@ -50,6 +50,14 @@ function http_disable_request( $response, $args, $url ) {
 }
 \tests_add_filter( 'pre_http_request', 'http_disable_request', 99, 3 );
 
+/*
+ * Silence ATmosphere's debug log in tests. The test suite runs with
+ * WP_DEBUG on, so every deliberately triggered failure path would
+ * otherwise write to the error log. Tests that exercise debug_log()
+ * add their own filter after this one, which wins.
+ */
+\tests_add_filter( 'atmosphere_debug_log', '__return_false' );
+
 require_once __DIR__ . '/trait-jwt-claims.php';
 require_once __DIR__ . '/class-wp-cli-command.php';
 require_once __DIR__ . '/class-wp-cli-halt.php';

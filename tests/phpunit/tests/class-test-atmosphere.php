@@ -4282,7 +4282,6 @@ class Test_Atmosphere extends WP_UnitTestCase {
 	public function test_decrypt_failures_are_not_retried() {
 		$reflection = new \ReflectionClass( Atmosphere::class );
 		$method     = $reflection->getMethod( 'is_transient_publish_error' );
-		$method->setAccessible( true );
 
 		$this->assertFalse( $method->invoke( null, new \WP_Error( 'atmosphere_decrypt', 'nope' ) ) );
 		$this->assertFalse( $method->invoke( null, new \WP_Error( 'atmosphere_key_changed', 'nope' ) ) );
@@ -4305,7 +4304,6 @@ class Test_Atmosphere extends WP_UnitTestCase {
 	public function test_refresh_failure_classes_split_across_the_retry_ladder() {
 		$reflection = new \ReflectionClass( Atmosphere::class );
 		$method     = $reflection->getMethod( 'is_transient_publish_error' );
-		$method->setAccessible( true );
 
 		$this->assertFalse(
 			$method->invoke( null, new \WP_Error( 'atmosphere_needs_reauth', 'nope', array( 'status' => 400 ) ) ),

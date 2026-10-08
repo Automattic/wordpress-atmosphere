@@ -40,7 +40,6 @@ class Test_Post extends WP_UnitTestCase {
 
 		// Mention resolution memoizes into a static; clear it between tests.
 		$cache = new \ReflectionProperty( Facet::class, 'resolution_cache' );
-		$cache->setAccessible( true );
 		$cache->setValue( null, array() );
 
 		parent::tear_down();
