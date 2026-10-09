@@ -1384,9 +1384,21 @@ class Reaction_Sync {
 
 			if ( $parent_comment_id ) {
 				$parent_comment = \get_comment( $parent_comment_id );
+				$parent_post    = $parent_comment ? \get_post( (int) $parent_comment->comment_post_ID ) : null;
 
-				if ( $parent_comment ) {
-					$post_id        = (int) $parent_comment->comment_post_ID;
+				/*
+				 * Apply the same post rules as a direct reply: the parent
+				 * comment was imported while its post was public, but the
+				 * post may have been password protected, unpublished, or
+				 * moved to an unsupported type since.
+				 */
+				if (
+					$parent_post
+					&& 'publish' === $parent_post->post_status
+					&& '' === (string) $parent_post->post_password
+					&& is_supported_post_type( $parent_post->post_type )
+				) {
+					$post_id        = $parent_post->ID;
 					$comment_parent = $parent_comment_id;
 				}
 			}
