@@ -1047,6 +1047,72 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 	}
 
 	/**
+	 * Data provider for posts a nested reply must not reach.
+	 *
+	 * @return array[]
+	 */
+	public function data_hidden_parent_posts(): array {
+		return array(
+			'password protected' => array( array( 'post_password' => 'secret' ) ),
+			'private'            => array( array( 'post_status' => 'private' ) ),
+			'draft'              => array( array( 'post_status' => 'draft' ) ),
+			'trash'              => array( array( 'post_status' => 'trash' ) ),
+		);
+	}
+
+	/**
+	 * A nested reply must not land on a post that is no longer public,
+	 * even though its parent comment was imported while it was.
+	 *
+	 * @dataProvider data_hidden_parent_posts
+	 *
+	 * @param array $post_changes Changes applied to the post after the parent was imported.
+	 */
+	public function test_process_reply_drops_nested_reply_on_hidden_post( $post_changes ) {
+		$post_id  = self::factory()->post->create();
+		$post_uri = 'at://did:plc:me/app.bsky.feed.post/mypost';
+
+		\update_post_meta( $post_id, BskyPost::META_URI, $post_uri );
+
+		$parent_comment_id = self::factory()->comment->create(
+			array( 'comment_post_ID' => $post_id )
+		);
+		$parent_reply_uri  = 'at://did:plc:first/app.bsky.feed.post/oldreply';
+
+		\update_comment_meta( $parent_comment_id, 'source_id', $parent_reply_uri );
+
+		\wp_update_post( \array_merge( array( 'ID' => $post_id ), $post_changes ) );
+
+		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_reply' );
+
+		$result = $method->invoke(
+			null,
+			array(
+				'uri'    => 'at://did:plc:second/app.bsky.feed.post/hiddenreply',
+				'cid'    => 'bafyhiddenreply',
+				'record' => array(
+					'text'      => 'Reply to an old comment.',
+					'createdAt' => '2026-03-21T13:00:00.000Z',
+					'reply'     => array(
+						'parent' => array( 'uri' => $parent_reply_uri ),
+						'root'   => array( 'uri' => $post_uri ),
+					),
+				),
+				'author' => array(
+					'did'    => 'did:plc:second',
+					'handle' => 'second.bsky.social',
+				),
+			)
+		);
+
+		$this->assertFalse( $result );
+		$this->assertFalse(
+			$this->find_comment_id_by_source_uri( 'at://did:plc:second/app.bsky.feed.post/hiddenreply' ),
+			'A nested reply must not be imported into a post that is no longer public.'
+		);
+	}
+
+	/**
 	 * A reply whose parent the admin moderated away must be dropped as an
 	 * orphan, not imported under the suppressed parent — dedup sees
 	 * spam/trash rows, parent resolution deliberately does not.
