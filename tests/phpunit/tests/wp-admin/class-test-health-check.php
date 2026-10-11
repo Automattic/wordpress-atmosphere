@@ -205,7 +205,7 @@ class Test_Health_Check extends \WP_UnitTestCase {
 
 		$this->assertSame( 'critical', $result['status'] );
 		$this->assertStringContainsString( 'rejected', $result['label'] );
-		$this->assertStringContainsString( 'Reachability Test', $result['description'] );
+		$this->assertStringContainsString( 'Bluesky can reach ATmosphere on this site', $result['description'] );
 		$this->assertSame( '', $result['actions'] );
 	}
 
