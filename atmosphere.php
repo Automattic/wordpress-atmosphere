@@ -57,6 +57,9 @@ Autoloader::register_path( __NAMESPACE__, ATMOSPHERE_PLUGIN_DIR . 'includes' );
 // Helper functions.
 require_once ATMOSPHERE_PLUGIN_DIR . 'includes/functions.php';
 
+// Comment type API polyfill (Trac #35214), shared with ActivityPub and Webmention.
+require_once ATMOSPHERE_PLUGIN_DIR . 'includes/polyfill/comment-types.php';
+
 /**
  * Initialize the plugin.
  */
