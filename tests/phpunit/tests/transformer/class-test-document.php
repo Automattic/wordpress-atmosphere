@@ -765,4 +765,51 @@ class Test_Document extends \WP_UnitTestCase {
 		$this->assertSame( $reserved, $transformer->get_rkey() );
 		$this->assertSame( $reserved, \get_post_meta( $post_id, Document::META_TID, true ) );
 	}
+
+	/**
+	 * Test that the record shows what a logged-out visitor sees.
+	 */
+	public function test_renders_as_logged_out_visitor() {
+		$user_id = self::factory()->user->create( array( 'role' => 'administrator' ) );
+		\wp_set_current_user( $user_id );
+
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_content' => 'Public part.',
+				'post_excerpt' => '',
+			)
+		);
+
+		$filter = static fn( $content ) => \is_user_logged_in() ? $content . ' Members only.' : $content;
+		\add_filter( 'the_content', $filter );
+
+		$record = ( new Document( $post ) )->transform();
+
+		\remove_filter( 'the_content', $filter );
+
+		$this->assertSame( 'Public part.', $record['textContent'] );
+		$this->assertSame( 'Public part.', $record['description'] );
+		$this->assertSame( $user_id, \get_current_user_id() );
+	}
+
+	/**
+	 * Test that the derived description is built from the filtered content.
+	 */
+	public function test_description_uses_filtered_content() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_content' => 'Visible text. [hidden]Removed text.[/hidden]',
+				'post_excerpt' => '',
+			)
+		);
+
+		$filter = static fn( $content ) => \preg_replace( '/\[hidden\].*?\[\/hidden\]/s', '', $content );
+		\add_filter( 'the_content', $filter, 1 );
+
+		$record = ( new Document( $post ) )->transform();
+
+		\remove_filter( 'the_content', $filter, 1 );
+
+		$this->assertSame( 'Visible text.', $record['description'] );
+	}
 }

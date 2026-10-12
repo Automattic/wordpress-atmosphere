@@ -1395,8 +1395,8 @@ function is_post_gated( \WP_Post $post ): bool {
  * Wraps the render in a pair of actions so membership/paywall integrations can
  * step their own `the_content` gating aside for its duration. Those callbacks
  * key off the current viewer, but ATmosphere already narrowed the body to the
- * publicly readable portion via {@see get_publishable_content()} and publishes
- * from a logged-out context (WP-Cron); left in place, a membership gate would
+ * publicly readable portion via {@see get_publishable_content()} and renders
+ * as a logged-out visitor; left in place, a membership gate would
  * re-render the *global* post as a "subscribe to keep reading" form and
  * overwrite the safe body. The actions always fire in pairs around the
  * render, so an integration can restore its own state in the `post` hook.
@@ -1444,8 +1444,19 @@ function render_publishable_content( \WP_Post $post ): string {
 	 */
 	\do_action( 'atmosphere_pre_render_publishable_content', $post );
 
+	/*
+	 * Render as a logged-out visitor. The record is public, so it must not
+	 * show what plugins only show the current user. Publishing runs in
+	 * WP-Cron, but the preview, the pre-publish panel, and a backfill with
+	 * `--user` render inside a logged-in session.
+	 */
+	$current_user_id = \get_current_user_id();
+	\wp_set_current_user( 0 );
+
 	// phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Core WordPress filter.
 	$html = (string) \apply_filters( 'the_content', $content );
+
+	\wp_set_current_user( $current_user_id );
 
 	/**
 	 * Fires after ATmosphere renders a post's publishable content.

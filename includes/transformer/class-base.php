@@ -15,7 +15,6 @@ namespace Atmosphere\Transformer;
 use Atmosphere\Mention;
 use function Atmosphere\build_at_uri;
 use function Atmosphere\get_did;
-use function Atmosphere\get_publishable_content;
 use function Atmosphere\publishable_content_cache_key;
 use function Atmosphere\render_publishable_content;
 use function Atmosphere\sanitize_text;
@@ -373,9 +372,9 @@ abstract class Base {
 	 * A stored `post_excerpt` is an author-provided public teaser and is used
 	 * verbatim — this is the same string Jetpack surfaces as the public preview
 	 * of a gated post, so it stays public here too. Only the *derived* excerpt,
-	 * generated when no excerpt was written, is pulled from the body, and it
-	 * reads through {@see get_publishable_content()} so a gated body never leaks
-	 * into it.
+	 * generated when no excerpt was written, is pulled from the rendered body
+	 * ({@see self::render_post_content_plain()}), so a gated body never leaks
+	 * into it and plugins that change or hide parts of the content apply.
 	 *
 	 * @param \WP_Post $post      Post object.
 	 * @param int      $word_limit Words to keep.
@@ -386,7 +385,7 @@ abstract class Base {
 			return sanitize_text( $post->post_excerpt );
 		}
 
-		return \wp_trim_words( sanitize_text( get_publishable_content( $post ) ), $word_limit, '...' );
+		return \wp_trim_words( $this->render_post_content_plain( $post ), $word_limit, '...' );
 	}
 
 	/**
