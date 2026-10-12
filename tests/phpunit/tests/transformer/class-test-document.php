@@ -793,22 +793,17 @@ class Test_Document extends \WP_UnitTestCase {
 	}
 
 	/**
-	 * Test that the derived description is built from the filtered content.
+	 * Test that the derived description removes shortcodes instead of showing them as text.
 	 */
-	public function test_description_uses_filtered_content() {
+	public function test_description_strips_shortcodes() {
 		$post = self::factory()->post->create_and_get(
 			array(
-				'post_content' => 'Visible text. [hidden]Removed text.[/hidden]',
+				'post_content' => 'Visible text. [caption id="attachment_1"]Caption text.[/caption]',
 				'post_excerpt' => '',
 			)
 		);
 
-		$filter = static fn( $content ) => \preg_replace( '/\[hidden\].*?\[\/hidden\]/s', '', $content );
-		\add_filter( 'the_content', $filter, 1 );
-
 		$record = ( new Document( $post ) )->transform();
-
-		\remove_filter( 'the_content', $filter, 1 );
 
 		$this->assertSame( 'Visible text.', $record['description'] );
 	}

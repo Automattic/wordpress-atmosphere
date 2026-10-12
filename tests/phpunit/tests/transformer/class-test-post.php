@@ -148,6 +148,34 @@ class Test_Post extends WP_UnitTestCase {
 	}
 
 	/**
+	 * Without a manual excerpt, the link-card text is built from the post body,
+	 * not from what `the_content` filters append to it.
+	 *
+	 * @covers ::transform
+	 */
+	public function test_long_form_text_ignores_content_filters() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'A Titled Post',
+				'post_content' => 'A short post body.',
+				'post_excerpt' => '',
+			)
+		);
+
+		$filter = static fn( $content ) => 'Reading time: 1 minute' . $content . ' Share this: Facebook X';
+		\add_filter( 'the_content', $filter );
+
+		$record = ( new Post( $post ) )->transform();
+
+		\remove_filter( 'the_content', $filter );
+
+		$this->assertStringContainsString( 'A short post body.', $record['text'] );
+		$this->assertStringNotContainsString( 'Reading time', $record['text'] );
+		$this->assertStringNotContainsString( 'Share this', $record['text'] );
+		$this->assertStringNotContainsString( 'Share this', $record['embed']['external']['description'] );
+	}
+
+	/**
 	 * When the composed title + excerpt + permalink overflows 300 characters,
 	 * the link-card text is truncated to fit and still ends with the full
 	 * permalink. Exercises `build_text()`'s overflow/reservation branch.
