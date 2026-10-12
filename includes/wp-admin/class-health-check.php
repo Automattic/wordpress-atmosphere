@@ -172,7 +172,7 @@ class Health_Check {
 				$result['label']          = \__( 'Bluesky rejected ATmosphere’s OAuth client configuration', 'atmosphere' );
 				$result['description']    = \sprintf(
 					'<p>%s</p>',
-					\__( 'The saved login remains available, but Bluesky rejected its latest renewal. Further down this screen, check whether Bluesky can reach ATmosphere on this site. If that check passed, it is listed under Passed tests. Make sure security or caching software allows the client-metadata endpoint.', 'atmosphere' )
+					\__( 'The saved login remains available, but Bluesky rejected its latest renewal. Further down this screen, check whether Bluesky can reach ATmosphere on this site. If that check passed, it is listed under Passed tests. Make sure security or caching software allows the client-metadata endpoint. ATmosphere tries again on its own, and this message goes away after the next successful renewal.', 'atmosphere' )
 				);
 			} elseif ( self::renewal_is_failing( $status ) ) {
 				$result['status']         = 'recommended';
