@@ -1,0 +1,4 @@
+Significance: patch
+Type: fixed
+
+Fix the Site Health message about a rejected Bluesky login renewal pointing to a check that is not shown on the screen.
