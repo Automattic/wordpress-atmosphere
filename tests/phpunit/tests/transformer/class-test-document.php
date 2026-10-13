@@ -807,4 +807,28 @@ class Test_Document extends \WP_UnitTestCase {
 
 		$this->assertSame( 'Visible text.', $record['description'] );
 	}
+
+	/**
+	 * Test that the derived description keeps the narrowed content for a
+	 * post object that is not raw, instead of reloading the full body.
+	 */
+	public function test_description_keeps_narrowed_content_for_non_raw_post() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_content' => 'Public part. Members only part.',
+				'post_excerpt' => '',
+			)
+		);
+
+		$post->filter = 'display';
+
+		$narrow = static fn() => 'Public part.';
+		\add_filter( 'atmosphere_publishable_content', $narrow );
+
+		$record = ( new Document( $post ) )->transform();
+
+		\remove_filter( 'atmosphere_publishable_content', $narrow );
+
+		$this->assertSame( 'Public part.', $record['description'] );
+	}
 }
