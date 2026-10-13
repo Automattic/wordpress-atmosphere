@@ -387,18 +387,24 @@ abstract class Base {
 			return sanitize_text( $post->post_excerpt );
 		}
 
-		$length = static fn() => $word_limit;
-		$more   = static fn() => '...';
+		$key = publishable_content_cache_key( $post );
 
-		\add_filter( 'excerpt_length', $length, PHP_INT_MAX );
-		\add_filter( 'excerpt_more', $more, PHP_INT_MAX );
+		if ( ! isset( $this->excerpt_cache[ $key ] ) ) {
+			/*
+			 * Render the excerpt once, untrimmed, and trim it per word limit
+			 * below. One less than PHP_INT_MAX, because `wp_trim_words()`
+			 * adds one to the limit.
+			 */
+			$length = static fn() => PHP_INT_MAX - 1;
 
-		$excerpt = render_publishable_content( $post, true );
+			\add_filter( 'excerpt_length', $length, PHP_INT_MAX );
 
-		\remove_filter( 'excerpt_length', $length, PHP_INT_MAX );
-		\remove_filter( 'excerpt_more', $more, PHP_INT_MAX );
+			$this->excerpt_cache[ $key ] = sanitize_text( render_publishable_content( $post, true ) );
 
-		return sanitize_text( $excerpt );
+			\remove_filter( 'excerpt_length', $length, PHP_INT_MAX );
+		}
+
+		return \wp_trim_words( $this->excerpt_cache[ $key ], $word_limit, '...' );
 	}
 
 	/**
@@ -445,6 +451,14 @@ abstract class Base {
 	 * @var array<string,string>
 	 */
 	private array $html_content_cache = array();
+
+	/**
+	 * Per-instance memoization of the untrimmed excerpt, keyed like
+	 * {@see self::$plain_content_cache}.
+	 *
+	 * @var array<string,string>
+	 */
+	private array $excerpt_cache = array();
 
 	/**
 	 * Render a post's content to HTML, with mention linkification suppressed.

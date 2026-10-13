@@ -2079,14 +2079,11 @@ class Post extends Base {
 
 		/*
 		 * Fast path: no anchors, so the plain render is the whole story.
-		 * Match `<a ` / `<a>` only, not `<article>` / `<aside>`. Sanitize the
-		 * already-rendered $html rather than calling render_post_content_plain(),
-		 * which would run `the_content` a second time — doubling any shortcode
-		 * or filter side effect and risking text that differs from $html.
+		 * Match `<a ` / `<a>` only, not `<article>` / `<aside>`.
 		 */
 		if ( ! \preg_match( '/<a[\s>]/i', $html ) ) {
 			return array(
-				'text'   => truncate_text( sanitize_text( $html ), self::BLUESKY_MAX_GRAPHEMES ),
+				'text'   => truncate_text( $this->render_post_content_plain( $this->object ), self::BLUESKY_MAX_GRAPHEMES ),
 				'facets' => array(),
 			);
 		}
