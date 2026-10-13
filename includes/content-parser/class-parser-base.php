@@ -17,6 +17,7 @@ use Atmosphere\Transformer\Post;
 use function Atmosphere\get_publishable_content;
 use function Atmosphere\publishable_content_cache_key;
 use function Atmosphere\render_publishable_content;
+use function Atmosphere\rendered_html_contains_image;
 use function Atmosphere\sanitize_text;
 use function Atmosphere\to_iso8601;
 use function Atmosphere\truncate_graphemes;
@@ -429,7 +430,7 @@ abstract class Parser_Base implements Content_Parser {
 
 				if ( 'core/image' === $name ) {
 					$attachment_id = $this->image_attachment_id( $block );
-					if ( null !== $attachment_id && ! $this->rendered_html_contains_image( $rendered_html, $attachment_id ) ) {
+					if ( null !== $attachment_id && ! rendered_html_contains_image( $rendered_html, $attachment_id ) ) {
 						$visible = false;
 					}
 					return;
@@ -460,23 +461,6 @@ abstract class Parser_Base implements Content_Parser {
 		);
 
 		return $visible;
-	}
-
-	/**
-	 * Whether rendered HTML still contains an attachment image block.
-	 *
-	 * @param string $html          Rendered HTML.
-	 * @param int    $attachment_id Attachment ID.
-	 * @return bool
-	 */
-	private function rendered_html_contains_image( string $html, int $attachment_id ): bool {
-		if ( \str_contains( $html, 'wp-image-' . $attachment_id ) ) {
-			return true;
-		}
-
-		$url = (string) \wp_get_attachment_url( $attachment_id );
-
-		return '' !== $url && \str_contains( $html, $url );
 	}
 
 	/**

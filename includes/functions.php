@@ -1401,12 +1401,18 @@ function is_post_gated( \WP_Post $post ): bool {
  * overwrite the safe body. The actions always fire in pairs around the
  * render, so an integration can restore its own state in the `post` hook.
  *
+ * With `$excerpt`, the publishable content goes through `get_the_excerpt()`
+ * instead, the same way WordPress builds the excerpt for archives: shortcodes
+ * and dynamic blocks are removed, and plugins that keep their output (sharing
+ * links, related posts, paywall forms) out of excerpts do so here as well.
+ *
  * @since 2.3.0
  *
- * @param \WP_Post $post Post object.
- * @return string The rendered HTML.
+ * @param \WP_Post $post    Post object.
+ * @param bool     $excerpt Optional. Render the excerpt instead of the content. Default false.
+ * @return string The rendered HTML, or the excerpt text.
  */
-function render_publishable_content( \WP_Post $post ): string {
+function render_publishable_content( \WP_Post $post, bool $excerpt = false ): string {
 	$content = get_publishable_content( $post );
 
 	/*
@@ -1453,8 +1459,21 @@ function render_publishable_content( \WP_Post $post ): string {
 	$current_user_id = \get_current_user_id();
 	\wp_set_current_user( 0 );
 
-	// phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Core WordPress filter.
-	$html = (string) \apply_filters( 'the_content', $content );
+	if ( $excerpt ) {
+		/*
+		 * `get_the_excerpt()` reads the post object, so hand it a copy that
+		 * carries the narrowed content. The copy keeps the ID, so the
+		 * integrations still see the post they suspended their gating for.
+		 */
+		$excerpt_post               = clone $post;
+		$excerpt_post->post_content = $content;
+		$excerpt_post->post_excerpt = '';
+
+		$html = \get_the_excerpt( $excerpt_post );
+	} else {
+		// phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Core WordPress filter.
+		$html = (string) \apply_filters( 'the_content', $content );
+	}
 
 	\wp_set_current_user( $current_user_id );
 
@@ -1476,6 +1495,27 @@ function render_publishable_content( \WP_Post $post ): string {
 	}
 
 	return $html;
+}
+
+/**
+ * Whether rendered HTML still contains an attachment image.
+ *
+ * Matches core's `wp-image-{id}` class, or the attachment URL.
+ *
+ * @since unreleased
+ *
+ * @param string $html          Rendered HTML.
+ * @param int    $attachment_id Attachment ID.
+ * @return bool
+ */
+function rendered_html_contains_image( string $html, int $attachment_id ): bool {
+	if ( \str_contains( $html, 'wp-image-' . $attachment_id ) ) {
+		return true;
+	}
+
+	$url = (string) \wp_get_attachment_url( $attachment_id );
+
+	return '' !== $url && \str_contains( $html, $url );
 }
 
 /**

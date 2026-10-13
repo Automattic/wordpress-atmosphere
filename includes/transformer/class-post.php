@@ -21,6 +21,7 @@ use function Atmosphere\debug_log;
 use function Atmosphere\get_did;
 use function Atmosphere\get_publishable_content;
 use function Atmosphere\render_publishable_content;
+use function Atmosphere\rendered_html_contains_image;
 use function Atmosphere\grapheme_length;
 use function Atmosphere\sanitize_text;
 use function Atmosphere\truncate_graphemes;
@@ -1298,7 +1299,17 @@ class Post extends Base {
 
 		$walker( $blocks, 0 );
 
-		return \array_values( \array_unique( $ids ) );
+		/*
+		 * Only keep images a logged-out visitor sees. An image in a part of
+		 * the post that a plugin hides through `the_content` is not public.
+		 */
+		$html = $this->render_post_content_html( $this->object );
+		$ids  = \array_filter(
+			\array_unique( $ids ),
+			static fn( int $id ) => rendered_html_contains_image( $html, $id )
+		);
+
+		return \array_values( $ids );
 	}
 
 	/**

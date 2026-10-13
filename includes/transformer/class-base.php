@@ -15,7 +15,6 @@ namespace Atmosphere\Transformer;
 use Atmosphere\Mention;
 use function Atmosphere\build_at_uri;
 use function Atmosphere\get_did;
-use function Atmosphere\get_publishable_content;
 use function Atmosphere\publishable_content_cache_key;
 use function Atmosphere\render_publishable_content;
 use function Atmosphere\sanitize_text;
@@ -373,11 +372,11 @@ abstract class Base {
 	 * A stored `post_excerpt` is an author-provided public teaser and is used
 	 * verbatim — this is the same string Jetpack surfaces as the public preview
 	 * of a gated post, so it stays public here too. Only the *derived* excerpt,
-	 * generated when no excerpt was written, is pulled from the body, and it
-	 * reads through {@see get_publishable_content()} so a gated body never leaks
-	 * into it. Shortcodes are removed instead of rendered, and the body does not
-	 * run through `the_content`, so nothing plugins append (sharing links,
-	 * reading time) ends up in the post text or the link card.
+	 * generated when no excerpt was written, is built like the excerpt
+	 * WordPress shows a logged-out visitor on an archive page
+	 * ({@see render_publishable_content()}). It starts from the publishable
+	 * content, so a gated body never leaks into it, and plugins that hide
+	 * parts of the content or keep their output out of excerpts apply.
 	 *
 	 * @param \WP_Post $post      Post object.
 	 * @param int      $word_limit Words to keep.
@@ -388,7 +387,18 @@ abstract class Base {
 			return sanitize_text( $post->post_excerpt );
 		}
 
-		return \wp_trim_words( sanitize_text( \strip_shortcodes( get_publishable_content( $post ) ) ), $word_limit, '...' );
+		$length = static fn() => $word_limit;
+		$more   = static fn() => '...';
+
+		\add_filter( 'excerpt_length', $length, PHP_INT_MAX );
+		\add_filter( 'excerpt_more', $more, PHP_INT_MAX );
+
+		$excerpt = render_publishable_content( $post, true );
+
+		\remove_filter( 'excerpt_length', $length, PHP_INT_MAX );
+		\remove_filter( 'excerpt_more', $more, PHP_INT_MAX );
+
+		return sanitize_text( $excerpt );
 	}
 
 	/**
