@@ -20,7 +20,6 @@ use function Atmosphere\build_at_uri;
 use function Atmosphere\debug_log;
 use function Atmosphere\get_did;
 use function Atmosphere\get_publishable_content;
-use function Atmosphere\render_publishable_content;
 use function Atmosphere\rendered_html_contains_image;
 use function Atmosphere\grapheme_length;
 use function Atmosphere\sanitize_text;
@@ -1299,6 +1298,10 @@ class Post extends Base {
 
 		$walker( $blocks, 0 );
 
+		if ( empty( $ids ) ) {
+			return array();
+		}
+
 		/*
 		 * Only keep images a logged-out visitor sees. An image in a part of
 		 * the post that a plugin hides through `the_content` is not public.
@@ -2072,9 +2075,7 @@ class Post extends Base {
 			);
 		}
 
-		$html = Mention::without_links(
-			fn() => render_publishable_content( $this->object )
-		);
+		$html = $this->render_post_content_html( $this->object );
 
 		/*
 		 * Fast path: no anchors, so the plain render is the whole story.
