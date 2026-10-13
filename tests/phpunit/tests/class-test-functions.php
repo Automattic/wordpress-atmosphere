@@ -36,6 +36,7 @@ use function Atmosphere\debug_log;
 use function Atmosphere\is_comment_publishing_enabled;
 use function Atmosphere\is_bluesky_post_enabled;
 use function Atmosphere\reauth_lead_for_current_user;
+use function Atmosphere\rendered_html_contains_image;
 
 /**
  * Function tests.
@@ -1609,6 +1610,17 @@ class Test_Functions extends \WP_UnitTestCase {
 		$this->assertTrue( $status['action'] );
 		$this->assertFalse( $status['can_share'] );
 		$this->assertTrue( $status['sharing_enabled'] );
+	}
+
+	/**
+	 * An image ID only matches its own `wp-image-` class, not a longer ID
+	 * that starts with the same digits.
+	 */
+	public function test_rendered_html_contains_image_matches_whole_id() {
+		$html = '<img src="https://example.com/a.jpg" class="wp-image-123"/>';
+
+		$this->assertTrue( rendered_html_contains_image( $html, 123 ) );
+		$this->assertFalse( rendered_html_contains_image( $html, 12 ) );
 	}
 
 	/**

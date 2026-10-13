@@ -1464,10 +1464,13 @@ function render_publishable_content( \WP_Post $post, bool $excerpt = false ): st
 		 * `get_the_excerpt()` reads the post object, so hand it a copy that
 		 * carries the narrowed content. The copy keeps the ID, so the
 		 * integrations still see the post they suspended their gating for.
+		 * `get_post()` reloads a post from the database unless it is raw,
+		 * which would drop the narrowed content.
 		 */
 		$excerpt_post               = clone $post;
 		$excerpt_post->post_content = $content;
 		$excerpt_post->post_excerpt = '';
+		$excerpt_post->filter       = 'raw';
 
 		$html = \get_the_excerpt( $excerpt_post );
 	} else {
@@ -1509,7 +1512,7 @@ function render_publishable_content( \WP_Post $post, bool $excerpt = false ): st
  * @return bool
  */
 function rendered_html_contains_image( string $html, int $attachment_id ): bool {
-	if ( \str_contains( $html, 'wp-image-' . $attachment_id ) ) {
+	if ( \preg_match( '/\bwp-image-' . $attachment_id . '\b/', $html ) ) {
 		return true;
 	}
 
