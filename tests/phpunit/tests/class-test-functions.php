@@ -37,6 +37,7 @@ use function Atmosphere\is_comment_publishing_enabled;
 use function Atmosphere\is_bluesky_post_enabled;
 use function Atmosphere\reauth_lead_for_current_user;
 use function Atmosphere\rendered_html_contains_image;
+use function Atmosphere\render_publishable_content;
 
 /**
  * Function tests.
@@ -1621,6 +1622,242 @@ class Test_Functions extends \WP_UnitTestCase {
 
 		$this->assertTrue( rendered_html_contains_image( $html, 123 ) );
 		$this->assertFalse( rendered_html_contains_image( $html, 12 ) );
+	}
+
+	/**
+	 * An image without the `wp-image-` class matches by its attachment URL.
+	 */
+	public function test_rendered_html_contains_image_matches_url() {
+		$image_id = self::factory()->attachment->create_object(
+			array(
+				'file'           => 'visible.jpg',
+				'post_mime_type' => 'image/jpeg',
+			)
+		);
+		$url      = \wp_get_attachment_url( $image_id );
+
+		$this->assertTrue( rendered_html_contains_image( '<img src="' . $url . '" alt=""/>', $image_id ) );
+		$this->assertFalse( rendered_html_contains_image( '<img src="https://example.com/other.jpg" alt=""/>', $image_id ) );
+	}
+
+	/**
+	 * Content and excerpt both render as a logged-out visitor, and the
+	 * current user is restored afterwards.
+	 *
+	 * @dataProvider data_render_modes
+	 *
+	 * @param bool $excerpt Render the excerpt.
+	 */
+	public function test_render_publishable_content_renders_as_logged_out_visitor( bool $excerpt ) {
+		$user_id = self::factory()->user->create( array( 'role' => 'administrator' ) );
+		\wp_set_current_user( $user_id );
+
+		$post = self::factory()->post->create_and_get( array( 'post_content' => 'Public part.' ) );
+
+		$filter = static fn( $content ) => \is_user_logged_in() ? $content . ' Members only.' : $content;
+		\add_filter( 'the_content', $filter );
+
+		$html = render_publishable_content( $post, $excerpt );
+
+		\remove_filter( 'the_content', $filter );
+
+		$this->assertStringContainsString( 'Public part.', $html );
+		$this->assertStringNotContainsString( 'Members only.', $html );
+		$this->assertSame( $user_id, \get_current_user_id() );
+	}
+
+	/**
+	 * The render actions fire once each, in order, and the global post is
+	 * restored, for content and excerpt alike.
+	 *
+	 * @dataProvider data_render_modes
+	 *
+	 * @param bool $excerpt Render the excerpt.
+	 */
+	public function test_render_publishable_content_fires_actions_and_restores_global_post( bool $excerpt ) {
+		$previous        = self::factory()->post->create_and_get();
+		$GLOBALS['post'] = $previous; // phpcs:ignore WordPress.WP.GlobalVariablesOverride.Prohibited -- Test setup.
+
+		$post   = self::factory()->post->create_and_get( array( 'post_content' => 'Body.' ) );
+		$events = array();
+		$pre    = static function ( $p ) use ( &$events ) {
+			$events[] = array( 'pre', $p->ID, $GLOBALS['post']->ID );
+		};
+		$after  = static function ( $p ) use ( &$events ) {
+			$events[] = array( 'post', $p->ID, $GLOBALS['post']->ID );
+		};
+		\add_action( 'atmosphere_pre_render_publishable_content', $pre );
+		\add_action( 'atmosphere_post_render_publishable_content', $after );
+
+		render_publishable_content( $post, $excerpt );
+
+		\remove_action( 'atmosphere_pre_render_publishable_content', $pre );
+		\remove_action( 'atmosphere_post_render_publishable_content', $after );
+
+		$this->assertSame(
+			array(
+				array( 'pre', $post->ID, $post->ID ),
+				array( 'post', $post->ID, $post->ID ),
+			),
+			$events
+		);
+		$this->assertSame( $previous, $GLOBALS['post'] );
+	}
+
+	/**
+	 * Render modes: content and excerpt.
+	 *
+	 * @return array[]
+	 */
+	public function data_render_modes(): array {
+		return array(
+			'content' => array( false ),
+			'excerpt' => array( true ),
+		);
+	}
+
+	/**
+	 * The excerpt stops at the more tag, in every form of the tag, both in a
+	 * cron-like context and on the post's own permalink (the preview).
+	 *
+	 * @dataProvider data_more_tags
+	 *
+	 * @param string $content      Post content.
+	 * @param bool   $on_permalink Render on the post's permalink.
+	 */
+	public function test_render_publishable_content_excerpt_stops_at_more_tag( string $content, bool $on_permalink ) {
+		$post = self::factory()->post->create_and_get( array( 'post_content' => $content ) );
+
+		if ( $on_permalink ) {
+			$this->go_to( \get_permalink( $post ) );
+		}
+
+		$excerpt = render_publishable_content( $post, true );
+
+		$this->assertStringContainsString( 'Teaser text.', $excerpt );
+		$this->assertStringNotContainsString( 'Hidden text.', $excerpt );
+		$this->assertStringNotContainsString( 'Read on', $excerpt );
+	}
+
+	/**
+	 * More tag variants, each off and on the permalink.
+	 *
+	 * @return array[]
+	 */
+	public function data_more_tags(): array {
+		$variants = array(
+			'classic'     => 'Teaser text.<!--more-->Hidden text.',
+			'custom text' => 'Teaser text.<!--more Read on-->Hidden text.',
+			'noteaser'    => 'Teaser text.<!--more--><!--noteaser-->Hidden text.',
+			'block'       => "<!-- wp:paragraph --><p>Teaser text.</p><!-- /wp:paragraph -->\n<!-- wp:more --><!--more--><!-- /wp:more -->\n<!-- wp:paragraph --><p>Hidden text.</p><!-- /wp:paragraph -->",
+		);
+
+		$data = array();
+		foreach ( $variants as $name => $content ) {
+			$data[ $name ]                   = array( $content, false );
+			$data[ $name . ' on permalink' ] = array( $content, true );
+		}
+
+		return $data;
+	}
+
+	/**
+	 * The full content still renders past the more tag.
+	 */
+	public function test_render_publishable_content_keeps_text_after_more_tag() {
+		$post = self::factory()->post->create_and_get( array( 'post_content' => 'Teaser text.<!--more-->Hidden text.' ) );
+
+		$this->assertStringContainsString( 'Hidden text.', render_publishable_content( $post ) );
+	}
+
+	/**
+	 * The excerpt drops shortcodes and dynamic blocks, like WordPress does on
+	 * archive pages, while the full content keeps them.
+	 */
+	public function test_render_publishable_content_excerpt_drops_shortcodes_and_dynamic_blocks() {
+		\add_shortcode( 'atmosphere_test', static fn() => 'Shortcode output.' );
+		\register_block_type( 'atmosphere-test/dynamic', array( 'render_callback' => static fn() => '<p>Dynamic output.</p>' ) );
+
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_content' => "<!-- wp:paragraph --><p>Body text. [atmosphere_test]</p><!-- /wp:paragraph -->\n<!-- wp:atmosphere-test/dynamic /-->",
+			)
+		);
+
+		$excerpt = render_publishable_content( $post, true );
+		$content = render_publishable_content( $post );
+
+		\remove_shortcode( 'atmosphere_test' );
+		\unregister_block_type( 'atmosphere-test/dynamic' );
+
+		$this->assertStringContainsString( 'Body text.', $excerpt );
+		$this->assertStringNotContainsString( 'Shortcode output.', $excerpt );
+		$this->assertStringNotContainsString( 'Dynamic output.', $excerpt );
+		$this->assertStringContainsString( 'Shortcode output.', $content );
+		$this->assertStringContainsString( 'Dynamic output.', $content );
+	}
+
+	/**
+	 * The excerpt is built from the content, even when the post has a manual
+	 * excerpt, and from the narrowed content only.
+	 */
+	public function test_render_publishable_content_excerpt_uses_narrowed_content() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_content' => 'Public part. Members only part.',
+				'post_excerpt' => 'Manual excerpt.',
+			)
+		);
+
+		$narrow = static fn() => 'Public part.';
+		\add_filter( 'atmosphere_publishable_content', $narrow );
+
+		$excerpt = render_publishable_content( $post, true );
+
+		\remove_filter( 'atmosphere_publishable_content', $narrow );
+		flush_publishable_content_cache();
+
+		$this->assertSame( 'Public part.', \trim( $excerpt ) );
+	}
+
+	/**
+	 * Rendering the excerpt does not change the post object it gets.
+	 */
+	public function test_render_publishable_content_excerpt_keeps_post_unchanged() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_content' => 'Teaser text.<!--more-->Hidden text.',
+				'post_excerpt' => 'Manual excerpt.',
+			)
+		);
+
+		render_publishable_content( $post, true );
+
+		$this->assertSame( 'Teaser text.<!--more-->Hidden text.', $post->post_content );
+		$this->assertSame( 'Manual excerpt.', $post->post_excerpt );
+	}
+
+	/**
+	 * A fully gated post has an empty excerpt, and filters that add to every
+	 * render do not fill it.
+	 */
+	public function test_render_publishable_content_excerpt_empty_for_gated_post() {
+		$post = self::factory()->post->create_and_get( array( 'post_content' => 'Secret body.' ) );
+
+		$gate     = static fn() => '';
+		$appender = static fn( $content ) => $content . 'Share this: Facebook X';
+		\add_filter( 'atmosphere_publishable_content', $gate );
+		\add_filter( 'the_content', $appender );
+		\add_filter( 'get_the_excerpt', $appender );
+
+		$excerpt = render_publishable_content( $post, true );
+
+		\remove_filter( 'atmosphere_publishable_content', $gate );
+		\remove_filter( 'the_content', $appender );
+		\remove_filter( 'get_the_excerpt', $appender );
+		flush_publishable_content_cache();
+
+		$this->assertSame( '', $excerpt );
 	}
 
 	/**

@@ -230,6 +230,85 @@ class Test_Post extends WP_UnitTestCase {
 	}
 
 	/**
+	 * The link-card text and description share one excerpt render.
+	 *
+	 * @covers ::transform
+	 */
+	public function test_long_form_renders_excerpt_once() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'A Titled Post',
+				'post_content' => 'A short post body.',
+				'post_excerpt' => '',
+			)
+		);
+
+		$renders = 0;
+		$counter = static function ( $excerpt ) use ( &$renders ) {
+			++$renders;
+			return $excerpt;
+		};
+		\add_filter( 'get_the_excerpt', $counter );
+
+		$record = ( new Post( $post ) )->transform();
+
+		\remove_filter( 'get_the_excerpt', $counter );
+
+		$this->assertStringContainsString( 'A short post body.', $record['text'] );
+		$this->assertSame( 'A short post body.', $record['embed']['external']['description'] );
+		$this->assertSame( 1, $renders );
+	}
+
+	/**
+	 * An in-body image without the `wp-image-` class is still attached when
+	 * the rendered content shows it by URL.
+	 *
+	 * @covers ::transform
+	 */
+	public function test_short_form_keeps_inbody_image_matched_by_url() {
+		$image_id = self::factory()->attachment->create_object(
+			array(
+				'file'           => 'visible.jpg',
+				'post_mime_type' => 'image/jpeg',
+			)
+		);
+
+		\update_post_meta(
+			$image_id,
+			'_atmosphere_blob_ref',
+			array(
+				'cid'      => 'bafyvisible',
+				'mimeType' => 'image/jpeg',
+				'size'     => 1,
+			)
+		);
+
+		$content = '<!-- wp:paragraph --><p>Just an aside.</p><!-- /wp:paragraph -->'
+			. "\n\n"
+			. '<!-- wp:image {"id":' . $image_id . '} -->'
+			. '<figure class="wp-block-image"><img src="' . \wp_get_attachment_url( $image_id ) . '" alt="" class="wp-image-' . $image_id . '"/></figure>'
+			. '<!-- /wp:image -->';
+
+		$post_id = self::factory()->post->create(
+			array(
+				'post_title'   => 'Aside with image',
+				'post_content' => $content,
+			)
+		);
+		\set_post_format( $post_id, 'aside' );
+
+		// Like an image plugin that rewrites the markup and drops the class.
+		$strip_class = static fn( $html ) => \str_replace( 'wp-image-' . $image_id, '', $html );
+		\add_filter( 'the_content', $strip_class, 99 );
+
+		$record = ( new Post( \get_post( $post_id ) ) )->transform();
+
+		\remove_filter( 'the_content', $strip_class, 99 );
+
+		$this->assertSame( 'bafyvisible', $record['embed']['images'][0]['image']['cid'] );
+	}
+
+	/**
 	 * A custom text keeps hidden content out of the link-card description.
 	 *
 	 * @covers ::transform

@@ -831,4 +831,45 @@ class Test_Document extends \WP_UnitTestCase {
 
 		$this->assertSame( 'Public part.', $record['description'] );
 	}
+
+	/**
+	 * Test that a theme's excerpt length and "Continue reading" text do not
+	 * change the derived description.
+	 */
+	public function test_description_ignores_theme_excerpt_filters() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_content' => 'One two three four five six seven eight.',
+				'post_excerpt' => '',
+			)
+		);
+
+		$length = static fn() => 3;
+		$more   = static fn() => ' Continue reading';
+		\add_filter( 'excerpt_length', $length );
+		\add_filter( 'excerpt_more', $more );
+
+		$record = ( new Document( $post ) )->transform();
+
+		\remove_filter( 'excerpt_length', $length );
+		\remove_filter( 'excerpt_more', $more );
+
+		$this->assertSame( 'One two three four five six seven eight.', $record['description'] );
+	}
+
+	/**
+	 * Test that the derived description is trimmed to 55 words.
+	 */
+	public function test_description_is_trimmed_to_55_words() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_content' => \trim( \str_repeat( 'word ', 60 ) ),
+				'post_excerpt' => '',
+			)
+		);
+
+		$record = ( new Document( $post ) )->transform();
+
+		$this->assertSame( \trim( \str_repeat( 'word ', 55 ) ) . '...', $record['description'] );
+	}
 }
