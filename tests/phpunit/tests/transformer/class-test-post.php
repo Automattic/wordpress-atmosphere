@@ -206,6 +206,30 @@ class Test_Post extends WP_UnitTestCase {
 	}
 
 	/**
+	 * The link-card text stops at the more tag, even on the post's own
+	 * permalink, where WordPress would show the full content (the preview).
+	 *
+	 * @covers ::transform
+	 */
+	public function test_long_form_text_stops_at_more_tag_on_permalink() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'A Titled Post',
+				'post_content' => 'The teaser part.<!--more-->The part after the more tag.',
+				'post_excerpt' => '',
+			)
+		);
+
+		$this->go_to( \get_permalink( $post ) );
+
+		$record = ( new Post( $post ) )->transform();
+
+		$this->assertStringContainsString( 'The teaser part.', $record['text'] );
+		$this->assertStringNotContainsString( 'after the more tag', $record['text'] );
+		$this->assertStringNotContainsString( 'after the more tag', $record['embed']['external']['description'] );
+	}
+
+	/**
 	 * A custom text keeps hidden content out of the link-card description.
 	 *
 	 * @covers ::transform
