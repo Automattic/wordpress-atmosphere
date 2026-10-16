@@ -1,0 +1,4 @@
+Significance: patch
+Type: fixed
+
+Posts shared to Bluesky now always show what a logged-out visitor sees, not the version shown to the logged-in author.

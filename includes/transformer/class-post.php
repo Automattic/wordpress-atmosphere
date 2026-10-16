@@ -20,7 +20,7 @@ use function Atmosphere\build_at_uri;
 use function Atmosphere\debug_log;
 use function Atmosphere\get_did;
 use function Atmosphere\get_publishable_content;
-use function Atmosphere\render_publishable_content;
+use function Atmosphere\rendered_html_contains_image;
 use function Atmosphere\grapheme_length;
 use function Atmosphere\sanitize_text;
 use function Atmosphere\truncate_graphemes;
@@ -1298,7 +1298,21 @@ class Post extends Base {
 
 		$walker( $blocks, 0 );
 
-		return \array_values( \array_unique( $ids ) );
+		if ( empty( $ids ) ) {
+			return array();
+		}
+
+		/*
+		 * Only keep images a logged-out visitor sees. An image in a part of
+		 * the post that a plugin hides through `the_content` is not public.
+		 */
+		$html = $this->render_post_content_html( $this->object );
+		$ids  = \array_filter(
+			\array_unique( $ids ),
+			static fn( int $id ) => rendered_html_contains_image( $html, $id )
+		);
+
+		return \array_values( $ids );
 	}
 
 	/**
@@ -2061,20 +2075,15 @@ class Post extends Base {
 			);
 		}
 
-		$html = Mention::without_links(
-			fn() => render_publishable_content( $this->object )
-		);
+		$html = $this->render_post_content_html( $this->object );
 
 		/*
 		 * Fast path: no anchors, so the plain render is the whole story.
-		 * Match `<a ` / `<a>` only, not `<article>` / `<aside>`. Sanitize the
-		 * already-rendered $html rather than calling render_post_content_plain(),
-		 * which would run `the_content` a second time — doubling any shortcode
-		 * or filter side effect and risking text that differs from $html.
+		 * Match `<a ` / `<a>` only, not `<article>` / `<aside>`.
 		 */
 		if ( ! \preg_match( '/<a[\s>]/i', $html ) ) {
 			return array(
-				'text'   => truncate_text( sanitize_text( $html ), self::BLUESKY_MAX_GRAPHEMES ),
+				'text'   => truncate_text( $this->render_post_content_plain( $this->object ), self::BLUESKY_MAX_GRAPHEMES ),
 				'facets' => array(),
 			);
 		}
