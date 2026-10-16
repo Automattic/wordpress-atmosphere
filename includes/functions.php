@@ -1507,7 +1507,7 @@ function render_publishable_content( \WP_Post $post, bool $excerpt = false ): st
  *
  * Matches core's `wp-image-{id}` class, or the attachment URL.
  *
- * @since unreleased
+ * @since 2.4.2
  *
  * @param string $html          Rendered HTML.
  * @param int    $attachment_id Attachment ID.

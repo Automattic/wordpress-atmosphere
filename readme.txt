@@ -4,7 +4,7 @@ Tags: at-protocol, bluesky, connector, atproto, crossposting
 Requires at least: 6.5
 Tested up to: 7.1
 Requires PHP: 8.2
-Stable tag: 2.4.1
+Stable tag: 2.4.2
 License: GPL-2.0-or-later
 License URI: https://spdx.org/licenses/GPL-2.0-or-later.html
 
@@ -119,6 +119,14 @@ These addresses need pretty permalinks turned on under **Settings → Permalinks
 Not at this time. ATmosphere is designed for a single WordPress site. On a Network-activated install only the current site's data is read and written, and uninstall only cleans the current site — credentials and records on other sites in the network are left intact.
 
 == Changelog ==
+
+### 2.4.2 - 2026-10-16
+#### Fixed
+- Fix the alignment of Bluesky likes and reposts beside their avatars in the dashboard Activity widget.
+- Fix the Site Health message about a rejected Bluesky login renewal pointing to a check that is not shown on the screen.
+- Posts shared to Bluesky now always show what a logged-out visitor sees, not the version shown to the logged-in author.
+- Replies on Bluesky no longer show up as comments on posts that are no longer public.
+- Text and images that plugins hide from visitors no longer show up in posts shared to Bluesky.
 
 ### 2.4.1 - 2026-10-01
 #### Fixed
