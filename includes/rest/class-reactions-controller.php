@@ -83,7 +83,8 @@ class Reactions_Controller extends \WP_REST_Controller {
 		$post_id = (int) $request['id'];
 
 		// Don't leak reaction metadata for posts that aren't publicly viewable.
-		if ( ! \is_post_publicly_viewable( $post_id ) ) {
+		// A password-protected post counts as not viewable, like in is_post_publishable().
+		if ( ! \is_post_publicly_viewable( $post_id ) || '' !== (string) \get_post_field( 'post_password', $post_id ) ) {
 			return new WP_Error(
 				'atmosphere_post_not_viewable',
 				\__( 'Reactions are not available for this post.', 'atmosphere' ),

@@ -119,4 +119,21 @@ class Test_Reactions_Controller extends WP_UnitTestCase {
 
 		$this->assertSame( 404, $response->get_status() );
 	}
+
+	/**
+	 * A password-protected post is not exposed.
+	 */
+	public function test_password_protected_post_is_404() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_status'   => 'publish',
+				'post_password' => 'secret',
+			)
+		);
+		$this->add_reaction( $post->ID, 'like', 'Alice' );
+
+		$response = $this->get_reactions( $post->ID );
+
+		$this->assertSame( 404, $response->get_status() );
+	}
 }
