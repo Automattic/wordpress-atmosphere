@@ -131,6 +131,62 @@ class Admin {
 		 * {@see Atmosphere::maybe_flush_wellknown_rewrites()} for detail.
 		 */
 		\add_action( "load-{$hook}", array( Atmosphere::class, 'maybe_flush_wellknown_rewrites' ) );
+		\add_action( "load-{$hook}", array( self::class, 'add_help_tabs' ) );
+	}
+
+	/**
+	 * Add the ATmosphere tabs to the settings screen's Help panel.
+	 */
+	public static function add_help_tabs(): void {
+		// The hidden page renders only a short notice, so there is nothing to explain.
+		if ( ! self::is_settings_page_visible() ) {
+			return;
+		}
+
+		$screen = \get_current_screen();
+
+		$tabs = array(
+			'overview'        => \__( 'Overview', 'atmosphere' ),
+			'standard-site'   => \__( 'Full Articles', 'atmosphere' ),
+			'settings'        => \__( 'Settings', 'atmosphere' ),
+			'error-messages'  => \__( 'Error Messages', 'atmosphere' ),
+			'troubleshooting' => \__( 'Troubleshooting', 'atmosphere' ),
+			'site-health'     => \__( 'Site Health', 'atmosphere' ),
+		);
+
+		foreach ( $tabs as $template_name => $title ) {
+			$screen->add_help_tab(
+				array(
+					'id'      => 'atmosphere-' . $template_name,
+					'title'   => $title,
+					'content' => self::get_help_tab_template( $template_name ),
+				)
+			);
+		}
+
+		$screen->set_help_sidebar(
+			'<p><strong>' . \esc_html__( 'For more information:', 'atmosphere' ) . '</strong></p>' .
+			'<p><a href="https://wordpress.org/support/plugin/atmosphere/">' . \esc_html__( 'Get support', 'atmosphere' ) . '</a></p>' .
+			'<p><a href="https://github.com/Automattic/wordpress-atmosphere/issues">' . \esc_html__( 'Report an issue', 'atmosphere' ) . '</a></p>' .
+			'<p><a href="https://github.com/Automattic/wordpress-atmosphere/blob/trunk/CHANGELOG.md">' . \esc_html__( 'View latest changes', 'atmosphere' ) . '</a></p>'
+		);
+	}
+
+	/**
+	 * Render a Help tab template into a string.
+	 *
+	 * @param string $template_name Template file name in `templates/help-tab/`, without `.php`.
+	 * @return string The rendered template, or an empty string if it does not exist.
+	 */
+	private static function get_help_tab_template( string $template_name ): string {
+		$template_path = ATMOSPHERE_PLUGIN_DIR . 'templates/help-tab/' . $template_name . '.php';
+		if ( ! \file_exists( $template_path ) ) {
+			return '';
+		}
+
+		\ob_start();
+		\load_template( $template_path, false );
+		return \ob_get_clean();
 	}
 
 	/**
