@@ -37,7 +37,7 @@
 		"@wordpress/i18n": "^6.21.0",
 		"@wordpress/interactivity": "^6.48.0",
 		"@wordpress/jest-preset-default": "^14.2.0",
-		"@wordpress/plugins": "^7.48.0",
+		"@wordpress/plugins": "^7.57.0",
 		"@wordpress/scripts": "^37.0.0",
 		"babel-jest": "^30.5.2",
 		"jest": "^30.5.2",
