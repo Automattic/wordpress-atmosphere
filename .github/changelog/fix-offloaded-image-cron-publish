@@ -1,0 +1,4 @@
+Significance: patch
+Type: fixed
+
+Featured images stored on a CDN or offloaded media service no longer stop scheduled posts from being shared to Bluesky.
