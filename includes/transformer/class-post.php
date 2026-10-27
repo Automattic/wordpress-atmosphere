@@ -1716,13 +1716,11 @@ class Post extends Base {
 			}
 
 			/*
-			 * Derive the temp-file hint from the URL path only — CDN /
-			 * offload URLs often carry a query string, and the raw
-			 * basename (`photo.jpg?w=769`) makes a messy/invalid filename.
+			 * Not `wp_tempnam()`: it lives in `wp-admin/includes/file.php`,
+			 * which isn't loaded in cron, WP-CLI, or REST requests — the
+			 * contexts this publish path runs in.
 			 */
-			$path_part = (string) \wp_parse_url( $url, \PHP_URL_PATH );
-			$hint      = '' !== $path_part ? \basename( $path_part ) : 'image';
-			$temp      = \wp_tempnam( $hint );
+			$temp = \tempnam( \get_temp_dir(), 'atmosphere-' );
 			if ( ! $temp ) {
 				continue;
 			}
