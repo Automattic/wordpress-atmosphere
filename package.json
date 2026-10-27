@@ -32,7 +32,7 @@
 		"@wordpress/data": "^10.48.0",
 		"@wordpress/edit-post": "^8.48.0",
 		"@wordpress/editor": "^16.0.0",
-		"@wordpress/element": "^8.0.0",
+		"@wordpress/element": "^10.0.0",
 		"@wordpress/env": "^11.17.0",
 		"@wordpress/i18n": "^7.0.0",
 		"@wordpress/interactivity": "^8.0.0",
