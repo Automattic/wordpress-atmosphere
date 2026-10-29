@@ -1479,7 +1479,32 @@ class Test_Client_Refresh extends WP_UnitTestCase {
 
 		$this->assertWPError( Client::refresh() );
 
-		$this->assertSame( 'http_request_failed', \get_option( Client::REFRESH_STATUS_OPTION )['last_error'] );
+		$this->assertSame( 'http_request_failed: Connection timed out.', \get_option( Client::REFRESH_STATUS_OPTION )['last_error'] );
+	}
+
+	/**
+	 * The transport message is bounded too, the code before it stays intact.
+	 */
+	public function test_unreachable_auth_server_message_is_bounded() {
+		\add_filter(
+			'pre_http_request',
+			static function ( $response, $args, $url ) {
+				if ( false !== \strpos( $url, 'oauth/token' ) ) {
+					return new \WP_Error( 'http_request_failed', '<b>cURL error 28:</b> ' . \str_repeat( 'x', 300 ) );
+				}
+
+				return $response;
+			},
+			1,
+			3
+		);
+
+		$this->assertWPError( Client::refresh() );
+
+		$recorded = \get_option( Client::REFRESH_STATUS_OPTION )['last_error'];
+
+		$this->assertStringStartsWith( 'http_request_failed: cURL error 28: x', $recorded );
+		$this->assertSame( \strlen( 'http_request_failed: ' ) + 200, \strlen( $recorded ) );
 	}
 
 	/**
