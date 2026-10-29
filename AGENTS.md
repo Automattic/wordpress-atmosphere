@@ -66,7 +66,7 @@ npm run release                 # Interactive release: bumps version, regenerate
 ## Common Pitfalls
 
 - **Custom autoloader, NOT Composer.** Runtime classes are loaded by `includes/class-autoloader.php` (PSR-4-ish with WordPress `class-{name}.php` filenames); `composer.json`'s `autoload` is empty. `composer install`/`update` only refreshes dev dependencies (PHPUnit, PHPCS, Changelogger) and cannot break the running plugin. New classes work as soon as the file is in place — no `composer dump-autoload` step.
-- **Changelog entries MUST be end-user friendly and end with punctuation.** Users see these in the WordPress update screen. Describe what changed from their perspective — no jargon, class names, or method names.
+- **Changelog entries are end-user friendly and end with punctuation.** Users see these in the WordPress update screen. Describe what changed from their perspective — no jargon, class names, or method names.
 
 ## PHP Conventions
 
@@ -76,11 +76,11 @@ Namespaces: `Atmosphere`, `Atmosphere\{OAuth,Transformer,WP_Admin}`
 
 Text domain: always `'atmosphere'`.
 
-**MUST** backslash-prefix all WordPress/PHP global functions in namespaced code: `\get_option()`, `\add_action()`, `\apply_filters()`, `\strlen()`, `\time()`, etc.
+Backslash-prefix all WordPress/PHP global functions in namespaced code: `\get_option()`, `\add_action()`, `\apply_filters()`, `\strlen()`, `\time()`, etc.
 
-**MUST** use `use` imports for cross-namespace references — no inline `\Namespace\Class`.
+Use `use` imports for cross-namespace references — no inline `\Namespace\Class`.
 
-**MUST** build any front-end-displayed Bluesky/appview web link (`profile`, `post`, `hashtag`, `mention`) through `Atmosphere\appview_url( $path, $context )` in `includes/functions.php` — never hardcode `https://bsky.app/...`. The helper centralizes the host and makes it filterable (`atmosphere_appview_host` / `atmosphere_appview_url`). Keep escaping at the call site (`\esc_url()` for HTML, `\esc_url_raw()` for storage); the helper returns an unescaped URL on purpose. This applies to display links only, not to AT Protocol records being published.
+Build any front-end-displayed Bluesky/appview web link (`profile`, `post`, `hashtag`, `mention`) through `Atmosphere\appview_url( $path, $context )` in `includes/functions.php` — never hardcode `https://bsky.app/...`. The helper centralizes the host and makes it filterable (`atmosphere_appview_host` / `atmosphere_appview_url`). Keep escaping at the call site (`\esc_url()` for HTML, `\esc_url_raw()` for storage); the helper returns an unescaped URL on purpose. This applies to display links only, not to AT Protocol records being published.
 
 ## Autoloading
 
@@ -112,7 +112,7 @@ Test files live in `tests/phpunit/tests/` mirroring `includes/` structure. Files
 - **Reconnect destination.** Every reconnect prompt (the admin notice, both editor surfaces, Site Health) resolves through `Atmosphere\reconnect_url()`: the settings page while visible, else the Connectors screen when one exists, else nothing. The `atmosphere_reconnect_url` filter runs last, so a host plugin with its own connect UI can redirect all four at once; returning `''` drops the link and leaves plain text.
 - **Handle typeahead.** The card's handle field uses the `atmosphere_handle_typeahead_url` filter (default `public.api.bsky.app`; `''` disables). Shared with the plugin's own Settings connect field via `Atmosphere\handle_typeahead_url()` and `src/shared/handle-typeahead.js`.
 
-**Icon library** — Progressive-enhancement registration with the WordPress 7.1 icon library. `Atmosphere\Icons` (`includes/class-icons.php`), gated on `function_exists( 'wp_register_icon_collection' )` (same shape as Connectors; the plugin's floor is 6.5). Registers the `atmosphere` collection with the ATmosphere mark and the Bluesky butterfly, monochrome, from `assets/svg/`. Those SVGs MUST stay within the library sanitizer's allow-list (`svg`/`path`/`polygon` elements only, no `stroke`); a test pins that property, so redraw assets accordingly.
+**Icon library** — Progressive-enhancement registration with the WordPress 7.1 icon library. `Atmosphere\Icons` (`includes/class-icons.php`), gated on `function_exists( 'wp_register_icon_collection' )` (same shape as Connectors; the plugin's floor is 6.5). Registers the `atmosphere` collection with the ATmosphere mark and the Bluesky butterfly, monochrome, from `assets/svg/`. Those SVGs stay within the library sanitizer's allow-list (`svg`/`path`/`polygon` elements only, no `stroke`); a test pins that property, so redraw assets accordingly.
 
 **Embedding as a connection layer** — one filter lets a host plugin reuse just the connection:
 
@@ -169,8 +169,9 @@ Skills are complex procedures loaded on demand. Canonical files live in `.agents
 | **code-style** | Writing PHP code, creating classes, implementing hooks. |
 | **dev** | Setting up environment, running tests, linting. |
 | **test** | Writing tests, debugging failures, test patterns. |
-| **pr** | Creating or reviewing pull requests. MUST invoke before any PR creation. |
+| **pr** | Creating or reviewing pull requests. Invoke before any PR creation. |
 | **release** | Creating releases, bumping versions, managing changelogs. |
+| **review** | Shared base for the code-review and security-audit agents: how to read a diff, and the per-area guidelines in `.agents/skills/review/guidelines/` to load for the changed paths. |
 
 | Agent | Trigger |
 |-------|---------|
