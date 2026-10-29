@@ -4,7 +4,7 @@ Tags: at-protocol, bluesky, connector, atproto, crossposting
 Requires at least: 6.5
 Tested up to: 7.1
 Requires PHP: 8.2
-Stable tag: 2.4.2
+Stable tag: 2.5.0
 License: GPL-2.0-or-later
 License URI: https://spdx.org/licenses/GPL-2.0-or-later.html
 
@@ -119,6 +119,17 @@ These addresses need pretty permalinks turned on under **Settings → Permalinks
 Not at this time. ATmosphere is designed for a single WordPress site. On a Network-activated install only the current site's data is read and written, and uninstall only cleans the current site — credentials and records on other sites in the network are left intact.
 
 == Changelog ==
+
+### 2.5.0 - 2026-10-29
+#### Added
+- The ATmosphere settings page now has a Help tab that explains the plugin, common error messages, and where to find its Site Health checks.
+
+#### Changed
+- Site Health now shows the full error message when the site could not reach Bluesky to renew its login, so a timeout, DNS or SSL problem can be told apart.
+
+#### Fixed
+- Featured images stored on a CDN or offloaded media service no longer stop scheduled posts from being shared to Bluesky.
+- The reactions block and the reactions REST route no longer show likes and reposts of password-protected posts.
 
 ### 2.4.2 - 2026-10-16
 #### Fixed
