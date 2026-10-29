@@ -1,0 +1,4 @@
+Significance: patch
+Type: changed
+
+Site Health now shows the full error message when the site could not reach Bluesky to renew its login, so a timeout, DNS or SSL problem can be told apart.
