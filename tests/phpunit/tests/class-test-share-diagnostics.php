@@ -352,6 +352,94 @@ class Test_Share_Diagnostics extends \WP_UnitTestCase {
 	}
 
 	/**
+	 * A save made while the first share's job is running does not queue a
+	 * second share, which would race the first for the same record key. It
+	 * gets an update instead, as it would on trunk.
+	 */
+	public function test_saving_while_the_first_share_runs_queues_an_update() {
+		$post = $this->unshared_published_post();
+		\update_post_meta(
+			$post->ID,
+			'_atmosphere_share_pending',
+			array(
+				'state' => 'running',
+				'time'  => \time(),
+			)
+		);
+
+		$this->atmosphere->on_status_change( 'publish', 'publish', $post );
+
+		$this->assertFalse( \wp_next_scheduled( 'atmosphere_publish_post', array( $post->ID ) ) );
+		$this->assertNotFalse( \wp_next_scheduled( 'atmosphere_update_post', array( $post->ID ) ) );
+	}
+
+	/**
+	 * A save does not add a second publish job next to one already waiting,
+	 * such as a pending retry; the waiting one reads the post when it runs.
+	 */
+	public function test_saving_does_not_queue_alongside_a_waiting_publish_job() {
+		$post  = $this->unshared_published_post();
+		$retry = \time() + 15 * MINUTE_IN_SECONDS;
+		\wp_schedule_single_event( $retry, 'atmosphere_publish_post', array( $post->ID ) );
+		\update_post_meta(
+			$post->ID,
+			'_atmosphere_share_pending',
+			array(
+				'state' => 'queued',
+				'time'  => \time(),
+			)
+		);
+
+		$this->atmosphere->on_status_change( 'publish', 'publish', $post );
+
+		$this->assertSame(
+			$retry,
+			\wp_next_scheduled( 'atmosphere_publish_post', array( $post->ID ) ),
+			'Only the waiting job may be queued.'
+		);
+		$this->assertTrue( Atmosphere::is_share_pending( $post->ID ) );
+	}
+
+	/**
+	 * Sharing from the posts list replaces an old reason with "Sharing…".
+	 */
+	public function test_manual_share_clears_an_earlier_reason() {
+		$this->lose_connection();
+		$post_id = self::factory()->post->create( array( 'post_status' => 'draft' ) );
+		\wp_publish_post( $post_id );
+
+		$conn = \get_option( 'atmosphere_connection' );
+		unset( $conn['needs_reauth'] );
+		\update_option( 'atmosphere_connection', $conn );
+
+		$this->assertTrue( Atmosphere::queue_post_share( $post_id ) );
+		$this->assertNull( Atmosphere::get_publish_error( $post_id ) );
+		$this->assertTrue( Atmosphere::is_share_pending( $post_id ) );
+	}
+
+	/**
+	 * A share already queued when the connection dropped runs anyway and
+	 * records its own outcome, so a save in between records no skip.
+	 */
+	public function test_skip_not_recorded_while_a_publish_job_is_queued() {
+		$post = $this->unshared_published_post();
+		\wp_schedule_single_event( \time(), 'atmosphere_publish_post', array( $post->ID ) );
+		\update_post_meta(
+			$post->ID,
+			'_atmosphere_share_pending',
+			array(
+				'state' => 'queued',
+				'time'  => \time(),
+			)
+		);
+		$this->lose_connection();
+
+		$this->atmosphere->on_status_change( 'publish', 'publish', $post );
+
+		$this->assertSame( '', \get_post_meta( $post->ID, '_atmosphere_last_publish_error', true ) );
+	}
+
+	/**
 	 * Publishing marks the share as queued.
 	 */
 	public function test_publishing_marks_the_share_as_queued() {
@@ -528,6 +616,25 @@ class Test_Share_Diagnostics extends \WP_UnitTestCase {
 		$this->assertSame( 'atmosphere_share_not_run', $error['code'] );
 		$this->assertNotSame( '', $error['message'] );
 		$this->assertFalse( Atmosphere::is_share_pending( $post->ID ) );
+	}
+
+	/**
+	 * WP-Cron removes an event just before running it, so a marker that was
+	 * just queued and has no event is a job starting, not a lost one.
+	 */
+	public function test_fresh_queued_marker_without_its_event_is_pending() {
+		$post = $this->unshared_published_post();
+		\update_post_meta(
+			$post->ID,
+			'_atmosphere_share_pending',
+			array(
+				'state' => 'queued',
+				'time'  => \time(),
+			)
+		);
+
+		$this->assertNull( Atmosphere::get_publish_error( $post->ID ) );
+		$this->assertTrue( Atmosphere::is_share_pending( $post->ID ) );
 	}
 
 	/**

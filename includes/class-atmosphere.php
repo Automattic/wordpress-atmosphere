@@ -1235,11 +1235,24 @@ class Atmosphere {
 		);
 
 		/*
+		 * A save made while the first share's job is running is an edit of
+		 * a post that is being shared right now. Queueing a second share
+		 * would race the first one for the same record key, so it gets the
+		 * update a save normally gets: it carries the edit across once the
+		 * first share has finished.
+		 */
+		if ( $is_new_publish && self::is_share_running( $post->ID ) ) {
+			$is_new_publish = false;
+		}
+
+		/*
 		 * A post that left public view owes nothing, whatever was queued for
 		 * it. Limited to supported types, which also keeps revisions out:
 		 * publishing saves one, and `delete_post_meta()` maps a revision ID
 		 * to its parent, so the revision's own transition would wipe the
-		 * parent's marker.
+		 * parent's marker. A marker this misses (auto-publish turned off
+		 * first, say) is harmless: `share_progress()` ignores markers on
+		 * posts that are not publishable.
 		 */
 		if ( ! $is_publishable && is_supported_post_type( $post->post_type ) ) {
 			\delete_post_meta( $post->ID, self::META_SHARE_PENDING );
@@ -1305,7 +1318,14 @@ class Atmosphere {
 			}
 
 			if ( $is_new_publish ) {
-				\wp_schedule_single_event( \time(), 'atmosphere_publish_post', array( $post->ID ) );
+				/*
+				 * A publish job already waiting (a retry, or a share queued
+				 * from the posts list) reads the post when it runs, so it
+				 * covers this save too. A second one would race it.
+				 */
+				if ( ! \wp_next_scheduled( 'atmosphere_publish_post', array( $post->ID ) ) ) {
+					\wp_schedule_single_event( \time(), 'atmosphere_publish_post', array( $post->ID ) );
+				}
 				self::mark_share_pending( $post->ID, 'queued' );
 			} elseif ( $is_update ) {
 				\wp_schedule_single_event( \time(), 'atmosphere_update_post', array( $post->ID ) );
@@ -2230,6 +2250,13 @@ class Atmosphere {
 			return false;
 		}
 
+		/*
+		 * Same fresh start a status transition gives: an old failure or
+		 * skip reason would otherwise keep showing instead of "Sharing…"
+		 * while this attempt is under way.
+		 */
+		\delete_post_meta( $post_id, self::META_PUBLISH_RETRIES );
+		\delete_post_meta( $post_id, self::META_LAST_PUBLISH_ERROR );
 		self::mark_share_pending( $post_id, 'queued' );
 
 		return true;
@@ -2391,6 +2418,23 @@ class Atmosphere {
 	}
 
 	/**
+	 * Whether a first share's job is running right now.
+	 *
+	 * A running marker older than the stall limit belongs to a job that
+	 * died, so it no longer counts.
+	 *
+	 * @param int $post_id Post ID.
+	 * @return bool
+	 */
+	private static function is_share_running( int $post_id ): bool {
+		$pending = \get_post_meta( $post_id, self::META_SHARE_PENDING, true );
+
+		return \is_array( $pending )
+			&& 'running' === ( $pending['state'] ?? '' )
+			&& \time() - (int) ( $pending['time'] ?? 0 ) <= self::SHARE_RUNNING_STALL_AFTER;
+	}
+
+	/**
 	 * Whether a post with no records still owes its first share.
 	 *
 	 * True when a share was queued and has not finished, or when the last
@@ -2429,6 +2473,11 @@ class Atmosphere {
 		 * replaced by one that is only true of the moment of publishing.
 		 */
 		if ( '' !== \get_post_meta( $post->ID, self::META_LAST_PUBLISH_ERROR, true ) ) {
+			return;
+		}
+
+		// A queued publish job will run anyway and record its own outcome.
+		if ( \wp_next_scheduled( 'atmosphere_publish_post', array( $post->ID ) ) ) {
 			return;
 		}
 
