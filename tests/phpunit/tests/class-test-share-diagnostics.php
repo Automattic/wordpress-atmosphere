@@ -184,6 +184,129 @@ class Test_Share_Diagnostics extends \WP_UnitTestCase {
 	}
 
 	/**
+	 * Publish a draft over REST, the way the block editor does, with the
+	 * share toggle set in the same request.
+	 *
+	 * @param int  $post_id  Draft to publish.
+	 * @param bool $disabled Share toggle value sent with the save.
+	 * @return \WP_REST_Response
+	 */
+	private function publish_over_rest( int $post_id, bool $disabled ): \WP_REST_Response {
+		\wp_set_current_user( self::factory()->user->create( array( 'role' => 'administrator' ) ) );
+
+		// Registered meta is reset between tests; the toggle needs it to save over REST.
+		$this->atmosphere->register_share_meta();
+
+		$request = new \WP_REST_Request( 'POST', '/wp/v2/posts/' . $post_id );
+		$request->set_body_params(
+			array(
+				'status' => 'publish',
+				'meta'   => array( ATMOSPHERE_META_DISABLED => $disabled ),
+			)
+		);
+
+		return \rest_do_request( $request );
+	}
+
+	/**
+	 * A draft saved with sharing off, then published with sharing switched
+	 * on in the same save, is shared. The status change runs before the
+	 * toggle is saved, so it is the toggle change that queues the share.
+	 */
+	public function test_publishing_with_sharing_switched_on_in_the_same_save_queues_a_share() {
+		$post_id = self::factory()->post->create( array( 'post_status' => 'draft' ) );
+		\update_post_meta( $post_id, ATMOSPHERE_META_DISABLED, '1' );
+
+		$response = $this->publish_over_rest( $post_id, false );
+
+		$this->assertSame( 200, $response->get_status() );
+		$this->assertNotSame( '1', \get_post_meta( $post_id, ATMOSPHERE_META_DISABLED, true ), 'The toggle must have been saved.' );
+		$this->assertNotFalse(
+			\wp_next_scheduled( 'atmosphere_publish_post', array( $post_id ) ),
+			'The first share must be queued.'
+		);
+		$this->assertTrue( Atmosphere::is_share_pending( $post_id ) );
+	}
+
+	/**
+	 * The same save while the login needs reconnecting records the skip,
+	 * like any other post published while disconnected.
+	 */
+	public function test_publishing_while_disconnected_with_sharing_switched_on_in_the_same_save_records_a_skip() {
+		$this->lose_connection();
+
+		$post_id = self::factory()->post->create( array( 'post_status' => 'draft' ) );
+		\update_post_meta( $post_id, ATMOSPHERE_META_DISABLED, '1' );
+
+		$response = $this->publish_over_rest( $post_id, false );
+
+		$this->assertSame( 200, $response->get_status() );
+
+		$error = Atmosphere::get_publish_error( $post_id );
+
+		$this->assertIsArray( $error, 'The skip must leave a reason behind.' );
+		$this->assertSame( 'atmosphere_share_skipped_disconnected', $error['code'] );
+	}
+
+	/**
+	 * Switching sharing on for a published post that was never shared
+	 * queues a first share. The update job would skip it.
+	 */
+	public function test_share_toggle_on_for_unshared_post_queues_publish() {
+		$post = $this->unshared_published_post();
+		\update_post_meta( $post->ID, ATMOSPHERE_META_DISABLED, '1' );
+		\wp_unschedule_hook( 'atmosphere_update_post' );
+
+		\delete_post_meta( $post->ID, ATMOSPHERE_META_DISABLED );
+
+		$this->assertNotFalse(
+			\wp_next_scheduled( 'atmosphere_publish_post', array( $post->ID ) ),
+			'Switching sharing on for a never-shared post must queue a first publish.'
+		);
+		$this->assertFalse(
+			\wp_next_scheduled( 'atmosphere_update_post', array( $post->ID ) ),
+			'The update job would skip the post, so it must not be queued.'
+		);
+	}
+
+	/**
+	 * Other share settings on a never-shared post keep the update path, so
+	 * a routine edit of an older post does not share it.
+	 */
+	public function test_custom_text_on_unshared_post_does_not_queue_publish() {
+		$post = $this->unshared_published_post();
+		\wp_unschedule_hook( 'atmosphere_update_post' );
+
+		\update_post_meta( $post->ID, ATMOSPHERE_META_CUSTOM_TEXT, 'Some words.' );
+
+		$this->assertFalse( \wp_next_scheduled( 'atmosphere_publish_post', array( $post->ID ) ) );
+		$this->assertNotFalse( \wp_next_scheduled( 'atmosphere_update_post', array( $post->ID ) ) );
+	}
+
+	/**
+	 * Switching sharing on while the first share is running does not queue
+	 * a second one next to it.
+	 */
+	public function test_share_toggle_on_while_the_first_share_runs_queues_an_update() {
+		$post = $this->unshared_published_post();
+		\update_post_meta( $post->ID, ATMOSPHERE_META_DISABLED, '1' );
+		\update_post_meta(
+			$post->ID,
+			'_atmosphere_share_pending',
+			array(
+				'state' => 'running',
+				'time'  => \time(),
+			)
+		);
+		\wp_unschedule_hook( 'atmosphere_update_post' );
+
+		\delete_post_meta( $post->ID, ATMOSPHERE_META_DISABLED );
+
+		$this->assertFalse( \wp_next_scheduled( 'atmosphere_publish_post', array( $post->ID ) ) );
+		$this->assertNotFalse( \wp_next_scheduled( 'atmosphere_update_post', array( $post->ID ) ) );
+	}
+
+	/**
 	 * A skip reason stops showing once the post is switched off, since it
 	 * no longer owes a share.
 	 */

@@ -1241,11 +1241,12 @@ class Atmosphere {
 
 		$is_publishable = is_post_publishable( $post );
 		$has_records    = self::has_post_records( $post );
-		$is_new_publish = $is_publishable && ! $has_records && (
+		$owes_share     = ! $has_records && (
 			'publish' !== $old_status
 			|| self::has_visibility_cleanup_marker( $post )
 			|| self::owes_first_share( $post->ID )
 		);
+		$is_new_publish = $is_publishable && $owes_share;
 
 		/*
 		 * A save made while the first share's job is running is an edit of
@@ -1278,10 +1279,17 @@ class Atmosphere {
 		if ( ! is_connected() ) {
 			/*
 			 * Decided once the save is complete: the block editor saves the
-			 * share toggle after this transition fires, so a post switched
-			 * off in the same save still looks shareable here.
+			 * share toggle after this transition fires, so the same save can
+			 * still switch sharing off, or on for a draft that had it off.
+			 * The post's type and status are final here, so only those
+			 * narrow the list.
 			 */
-			if ( $is_new_publish ) {
+			if (
+				$owes_share
+				&& 'publish' === $new_status
+				&& is_supported_post_type( $post->post_type )
+				&& ! self::is_share_starting( $post->ID )
+			) {
 				self::$skipped_while_disconnected[ $post->ID ] = true;
 			}
 
@@ -2073,7 +2081,29 @@ class Atmosphere {
 			return;
 		}
 
-		if ( ! \get_post( (int) $post_id ) instanceof \WP_Post ) {
+		$post = \get_post( (int) $post_id );
+		if ( ! $post instanceof \WP_Post ) {
+			return;
+		}
+
+		/*
+		 * Switching sharing on for a public post that was never shared asks
+		 * for it to be shared. The update job skips posts with no Bluesky
+		 * history, so this queues the first share instead. It is also how a
+		 * draft saved with sharing off gets shared when the save that
+		 * publishes it switches sharing on: the status change ran first,
+		 * while the post was still switched off. A share already under way
+		 * keeps the update path, for the same reason a save does in
+		 * `on_status_change()`.
+		 */
+		if (
+			ATMOSPHERE_META_DISABLED === $meta_key
+			&& is_post_publishable( $post )
+			&& ! self::has_post_records( $post )
+			&& ! self::is_share_starting( $post->ID )
+		) {
+			self::queue_post_share( $post->ID );
+
 			return;
 		}
 
@@ -2531,8 +2561,8 @@ class Atmosphere {
 	 * Record the disconnected skips held back during this request's saves.
 	 *
 	 * Runs on `wp_after_insert_post`, which the REST API fires after it
-	 * writes post meta. The post is checked again here, so one whose share
-	 * toggle was switched off in the same save is not reported.
+	 * writes post meta. The post is checked again here, against the share
+	 * toggle as the same save left it.
 	 *
 	 * @since unreleased
 	 *
