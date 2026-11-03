@@ -93,7 +93,12 @@ class Atmosphere {
 	private const META_SHARE_QUEUED = '_atmosphere_share_queued';
 
 	/**
-	 * How long a queued share may be overdue before it is reported as stalled.
+	 * How long a share marker may outlive its event before it is reported.
+	 *
+	 * WP-Cron removes an event before running it, so while the worker is
+	 * talking to the PDS the marker has no pending event behind it. The
+	 * grace keeps a share that is running right now from reading as one
+	 * that never ran.
 	 *
 	 * @since unreleased
 	 *
@@ -118,6 +123,29 @@ class Atmosphere {
 	 * @var string
 	 */
 	public const ERROR_SHARE_STALLED = 'atmosphere_share_stalled';
+
+	/**
+	 * Error code reported when a share started but never finished.
+	 *
+	 * @since unreleased
+	 *
+	 * @var string
+	 */
+	public const ERROR_SHARE_UNFINISHED = 'atmosphere_share_unfinished';
+
+	/**
+	 * Error code recorded when a post was published while the login needed
+	 * renewing.
+	 *
+	 * Deliberately not a reconnect-class code: those are hidden once the
+	 * site is connected again ({@see Atmosphere::get_publish_error()}), and
+	 * that is exactly when the author needs to see this one.
+	 *
+	 * @since unreleased
+	 *
+	 * @var string
+	 */
+	public const ERROR_NOT_CONNECTED = 'atmosphere_published_while_disconnected';
 
 	/**
 	 * Backoff ladder for transient publish/update failures, in seconds.
@@ -1207,6 +1235,28 @@ class Atmosphere {
 	 */
 	public function on_status_change( string $new_status, string $old_status, \WP_Post $post ): void {
 		if ( ! is_connected() ) {
+			/*
+			 * Nothing can be queued without a login, but a post published
+			 * while the login needs renewing would otherwise be missed with
+			 * no trace once the site reconnects. Record it. A site that was
+			 * never connected (no identity) is not expected to share.
+			 */
+			if (
+				has_identity()
+				&& is_auto_publish_enabled()
+				&& 'publish' !== $old_status
+				&& is_post_publishable( $post )
+				&& ! self::has_post_records( $post )
+			) {
+				self::record_skip(
+					$post->ID,
+					new \WP_Error(
+						self::ERROR_NOT_CONNECTED,
+						\__( 'This post was published while your site was not connected to Bluesky, so it was not shared. Use "Share to Bluesky" in the posts list to share it.', 'atmosphere' )
+					)
+				);
+			}
+
 			return;
 		}
 
@@ -2157,7 +2207,7 @@ class Atmosphere {
 					'update_callback' => null,
 					'schema'          => array(
 						'type'        => array( 'object', 'null' ),
-						'description' => \__( 'The most recent Bluesky sharing failure for this post, null when the last attempt succeeded.', 'atmosphere' ),
+						'description' => \__( 'Why this post is not on Bluesky: the most recent sharing failure, a skipped share, or a share that did not run or finish. Null when there is nothing to report.', 'atmosphere' ),
 						'context'     => array( 'edit' ),
 						'properties'  => array(
 							'code'            => array(
@@ -2242,6 +2292,31 @@ class Atmosphere {
 	}
 
 	/**
+	 * Whether a share for the post is queued or running right now.
+	 *
+	 * Queued: a publish or update event is still in the cron queue. Running:
+	 * WP-Cron has already removed the event, but the worker has not cleared
+	 * the marker yet, and the marker is recent enough for that to be a run
+	 * in progress rather than one that died.
+	 *
+	 * @since unreleased
+	 *
+	 * @param int $post_id Post ID.
+	 * @return bool
+	 */
+	public static function is_share_pending( int $post_id ): bool {
+		$args = array( $post_id );
+
+		if ( \wp_next_scheduled( 'atmosphere_publish_post', $args ) || \wp_next_scheduled( 'atmosphere_update_post', $args ) ) {
+			return true;
+		}
+
+		$queued = (int) \get_post_meta( $post_id, self::META_SHARE_QUEUED, true );
+
+		return $queued > 0 && $queued + self::SHARE_STALL_GRACE > \time();
+	}
+
+	/**
 	 * Shape the stored publish failure for display.
 	 *
 	 * Shared by the editor panel's `atmosphere_publish_error` REST field
@@ -2265,23 +2340,36 @@ class Atmosphere {
 
 		if ( ! \is_array( $error ) || empty( $error['code'] ) ) {
 			/*
-			 * No attempt has failed, but one may never have run. The marker
-			 * holds the event's due time, so a retry deliberately parked in
-			 * the future (a rate limit, say) is not reported.
+			 * No attempt has failed, but one may not have run, or may not
+			 * have finished. Only a post that should be on Bluesky right now
+			 * is worth a word, and only while nothing is still on its way.
 			 */
+			$post = \get_post( $post_id );
+
+			if ( ! $post instanceof \WP_Post || ! is_post_publishable( $post ) || self::is_share_pending( $post_id ) ) {
+				return null;
+			}
+
 			$queued = (int) \get_post_meta( $post_id, self::META_SHARE_QUEUED, true );
 
-			if ( $queued <= 0 || $queued + self::SHARE_STALL_GRACE > \time() ) {
+			/*
+			 * The TID is reserved before the first write and the URI stored
+			 * after the last one, so a TID on its own is a share that died
+			 * halfway (fatal error, timeout).
+			 */
+			if ( \get_post_meta( $post_id, Post::META_TID, true ) && ! \get_post_meta( $post_id, Post::META_URI, true ) ) {
+				$code    = self::ERROR_SHARE_UNFINISHED;
+				$message = \__( 'Sharing to Bluesky started but did not finish. Use "Share to Bluesky" in the posts list to try again.', 'atmosphere' );
+			} elseif ( $queued > 0 ) {
+				$code    = self::ERROR_SHARE_STALLED;
+				$message = \__( 'Sharing to Bluesky was queued but did not run. Use "Share to Bluesky" in the posts list to try again.', 'atmosphere' );
+			} else {
 				return null;
 			}
 
 			return array(
-				'code'            => self::ERROR_SHARE_STALLED,
-				'message'         => \sprintf(
-					/* translators: %s: date and time the share was due. */
-					\__( 'Waiting to be shared to Bluesky since %s. Scheduled tasks on your site may not be running.', 'atmosphere' ),
-					\wp_date( \get_option( 'date_format' ) . ' ' . \get_option( 'time_format' ), $queued )
-				),
+				'code'            => $code,
+				'message'         => $message,
 				'retrying'        => false,
 				'needs_reconnect' => false,
 				'time'            => $queued,
@@ -2790,13 +2878,12 @@ class Atmosphere {
 			 * the author with nothing to go on.
 			 */
 			if ( array() === $result ) {
-				self::record_publish_error(
+				self::record_skip(
 					$post_id,
 					new \WP_Error(
 						self::ERROR_NOT_SHARED,
 						\__( 'This post was never shared to Bluesky, so changes to it are not shared either. Use "Share to Bluesky" in the posts list to share it.', 'atmosphere' )
-					),
-					false
+					)
 				);
 				return;
 			}
@@ -2932,6 +3019,33 @@ class Atmosphere {
 				'time'     => \time(),
 			)
 		);
+	}
+
+	/**
+	 * Record why a publishable post was not shared, and announce it.
+	 *
+	 * @since unreleased
+	 *
+	 * @param int       $post_id Post that was skipped.
+	 * @param \WP_Error $reason  Why it was skipped.
+	 */
+	private static function record_skip( int $post_id, \WP_Error $reason ): void {
+		self::record_publish_error( $post_id, $reason, false );
+
+		/**
+		 * Fires when a post that should be shared to Bluesky is skipped.
+		 *
+		 * `atmosphere_publish_post_result` only fires once a share job has
+		 * run. This one covers the posts that never get that far, so a site
+		 * can send its own alert (email, Slack, ...) for both.
+		 *
+		 * @since unreleased
+		 *
+		 * @param \WP_Post|null $post   The skipped post.
+		 * @param \WP_Error     $reason Why it was skipped. The code is one of
+		 *                              the `Atmosphere::ERROR_*` constants.
+		 */
+		\do_action( 'atmosphere_publish_post_skipped', \get_post( $post_id ), $reason );
 	}
 
 	/**

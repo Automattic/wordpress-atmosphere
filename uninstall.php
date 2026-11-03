@@ -97,6 +97,7 @@ $atmosphere_meta_keys = array(
 	'_atmosphere_visibility_cleanup',
 	'_atmosphere_publish_retries',
 	'_atmosphere_last_publish_error',
+	'_atmosphere_share_queued',
 	'_atmosphere_reply_backfill_checked_at',
 	'_atmosphere_blob_ref',
 	'_atmosphere_threadgate',

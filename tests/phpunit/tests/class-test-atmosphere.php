@@ -4122,7 +4122,17 @@ class Test_Atmosphere extends WP_UnitTestCase {
 		\wp_clear_scheduled_hook( 'atmosphere_publish_post', array( $post->ID ) );
 		\wp_clear_scheduled_hook( 'atmosphere_update_post', array( $post->ID ) );
 
+		$skipped = 0;
+		\add_action(
+			'atmosphere_publish_post_skipped',
+			static function () use ( &$skipped ) {
+				++$skipped;
+			}
+		);
+
 		\do_action( 'atmosphere_update_post', $post->ID );
+
+		\remove_all_actions( 'atmosphere_publish_post_skipped' );
 
 		$error = Atmosphere::get_publish_error( $post->ID );
 
@@ -4130,6 +4140,7 @@ class Test_Atmosphere extends WP_UnitTestCase {
 		$this->assertSame( Atmosphere::ERROR_NOT_SHARED, $error['code'] );
 		$this->assertNotSame( '', $error['message'] );
 		$this->assertFalse( $error['retrying'] );
+		$this->assertSame( 1, $skipped, 'The skip must be announced for site alerts.' );
 	}
 
 	/**
@@ -4174,6 +4185,9 @@ class Test_Atmosphere extends WP_UnitTestCase {
 	 */
 	public function test_overdue_share_is_reported_as_stalled() {
 		$post = self::factory()->post->create_and_get( array( 'post_status' => 'publish' ) );
+
+		// The event is gone (lost, or unscheduled on disconnect), the marker is old.
+		\wp_clear_scheduled_hook( 'atmosphere_publish_post', array( $post->ID ) );
 		\update_post_meta( $post->ID, '_atmosphere_share_queued', \time() - HOUR_IN_SECONDS );
 
 		$error = Atmosphere::get_publish_error( $post->ID );
@@ -4181,6 +4195,124 @@ class Test_Atmosphere extends WP_UnitTestCase {
 		$this->assertIsArray( $error, 'An overdue share must be reported.' );
 		$this->assertSame( Atmosphere::ERROR_SHARE_STALLED, $error['code'] );
 		$this->assertNotSame( '', $error['message'] );
+	}
+
+	/**
+	 * An old marker whose event is still in the queue is pending, not
+	 * stalled: cron is slow, the share has not been lost.
+	 */
+	public function test_overdue_share_with_pending_event_is_not_stalled() {
+		$post = self::factory()->post->create_and_get( array( 'post_status' => 'publish' ) );
+		\update_post_meta( $post->ID, '_atmosphere_share_queued', \time() - HOUR_IN_SECONDS );
+
+		$this->assertNotFalse( \wp_next_scheduled( 'atmosphere_publish_post', array( $post->ID ) ) );
+		$this->assertTrue( Atmosphere::is_share_pending( $post->ID ) );
+		$this->assertNull( Atmosphere::get_publish_error( $post->ID ) );
+	}
+
+	/**
+	 * A post that is no longer public is not reported, whatever marker it
+	 * still carries.
+	 */
+	public function test_stalled_share_is_not_reported_for_unpublished_post() {
+		$post = self::factory()->post->create_and_get( array( 'post_status' => 'draft' ) );
+		\update_post_meta( $post->ID, '_atmosphere_share_queued', \time() - HOUR_IN_SECONDS );
+
+		$this->assertNull( Atmosphere::get_publish_error( $post->ID ) );
+	}
+
+	/**
+	 * A reserved TID with no URI and nothing pending is a share that died
+	 * halfway.
+	 */
+	public function test_reserved_tid_without_uri_is_reported_as_unfinished() {
+		$post = self::factory()->post->create_and_get( array( 'post_status' => 'publish' ) );
+		\wp_clear_scheduled_hook( 'atmosphere_publish_post', array( $post->ID ) );
+		\delete_post_meta( $post->ID, '_atmosphere_share_queued' );
+		\update_post_meta( $post->ID, Post::META_TID, 'bsky-tid-123' );
+
+		$error = Atmosphere::get_publish_error( $post->ID );
+
+		$this->assertIsArray( $error );
+		$this->assertSame( Atmosphere::ERROR_SHARE_UNFINISHED, $error['code'] );
+	}
+
+	/**
+	 * Publishing while the login needs renewing records why the post was not
+	 * shared, and the record stays visible after reconnecting.
+	 */
+	public function test_publish_while_login_needs_renewing_records_skip() {
+		$conn                 = \get_option( 'atmosphere_connection' );
+		$conn['needs_reauth'] = true;
+		\update_option( 'atmosphere_connection', $conn, false );
+
+		$skipped = array();
+		\add_action(
+			'atmosphere_publish_post_skipped',
+			static function ( $post, $reason ) use ( &$skipped ) {
+				$skipped[] = $reason->get_error_code();
+			},
+			10,
+			2
+		);
+
+		$post = self::factory()->post->create_and_get( array( 'post_status' => 'publish' ) );
+
+		$this->assertFalse( \wp_next_scheduled( 'atmosphere_publish_post', array( $post->ID ) ) );
+		$this->assertSame( array( Atmosphere::ERROR_NOT_CONNECTED ), $skipped );
+
+		$conn['needs_reauth'] = false;
+		\update_option( 'atmosphere_connection', $conn, false );
+
+		$error = Atmosphere::get_publish_error( $post->ID );
+
+		$this->assertIsArray( $error, 'The record must survive reconnecting.' );
+		$this->assertSame( Atmosphere::ERROR_NOT_CONNECTED, $error['code'] );
+		$this->assertNotSame( '', $error['message'] );
+
+		\remove_all_actions( 'atmosphere_publish_post_skipped' );
+	}
+
+	/**
+	 * A site that was never connected records nothing: it is not expected
+	 * to share.
+	 */
+	public function test_publish_on_never_connected_site_records_nothing() {
+		\delete_option( 'atmosphere_connection' );
+
+		$post = self::factory()->post->create_and_get( array( 'post_status' => 'publish' ) );
+
+		$this->assertSame( '', \get_post_meta( $post->ID, '_atmosphere_last_publish_error', true ) );
+	}
+
+	/**
+	 * Switching sharing on for a post that already has records keeps the
+	 * update path.
+	 */
+	public function test_share_toggle_on_for_shared_post_queues_update() {
+		$post = self::factory()->post->create_and_get( array( 'post_status' => 'publish' ) );
+		\wp_clear_scheduled_hook( 'atmosphere_publish_post', array( $post->ID ) );
+		\update_post_meta( $post->ID, Post::META_TID, 'bsky-tid-123' );
+		\update_post_meta( $post->ID, ATMOSPHERE_META_DISABLED, '' );
+
+		$this->atmosphere->on_share_meta_changed( 0, $post->ID, ATMOSPHERE_META_DISABLED );
+
+		$this->assertFalse( \wp_next_scheduled( 'atmosphere_publish_post', array( $post->ID ) ) );
+		$this->assertNotFalse( \wp_next_scheduled( 'atmosphere_update_post', array( $post->ID ) ) );
+	}
+
+	/**
+	 * The worker's not-publishable branch clears the marker, so a post that
+	 * went private before its share ran is not left with one.
+	 */
+	public function test_worker_clears_marker_when_post_is_not_publishable() {
+		$post = self::factory()->post->create_and_get( array( 'post_status' => 'publish' ) );
+		\wp_clear_scheduled_hook( 'atmosphere_publish_post', array( $post->ID ) );
+		\update_post_meta( $post->ID, ATMOSPHERE_META_DISABLED, '1' );
+
+		\do_action( 'atmosphere_publish_post', $post->ID );
+
+		$this->assertSame( '', \get_post_meta( $post->ID, '_atmosphere_share_queued', true ) );
 	}
 
 	/**

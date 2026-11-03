@@ -1,4 +1,4 @@
 Significance: patch
 Type: fixed
 
-Turning on "Share this post" for a published post that was never shared now shares it. Posts that were not shared, or whose share never ran, now say so in the Posts list and the editor.
+Turning on "Share this post" for a published post that was never shared now shares it. When a post does not reach Bluesky, the Posts list and the editor now say why: the post was published while the site was not connected, its share did not run or did not finish, or it was never shared. While a share is on its way, the Posts list shows "Sharing…".

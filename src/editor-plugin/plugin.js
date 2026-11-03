@@ -232,14 +232,15 @@ const EditorPlugin = () => {
 			'atmosphere'
 		);
 	}
-	/* A post that was never shared, or a share that never ran, is not a
+	/* A skipped share, or one that did not run or finish, is not a
 	   failed attempt: "update the post to try again" would be wrong for
-	   both. Their stored message already says what to do, so it stands
-	   alone. Codes mirror `Atmosphere::ERROR_NOT_SHARED` and
-	   `Atmosphere::ERROR_SHARE_STALLED`. */
+	   all of them. Their message already says what to do, so it stands
+	   alone. Codes mirror the `Atmosphere::ERROR_*` constants. */
 	const explainsItself = [
 		'atmosphere_post_not_shared',
 		'atmosphere_share_stalled',
+		'atmosphere_share_unfinished',
+		'atmosphere_published_while_disconnected',
 	].includes( publishError?.code );
 	const retryMessage = publishError?.retrying
 		? __(
