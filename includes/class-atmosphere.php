@@ -79,6 +79,47 @@ class Atmosphere {
 	private const META_LAST_PUBLISH_ERROR = '_atmosphere_last_publish_error';
 
 	/**
+	 * Post meta key holding the due time of the queued publish/update event.
+	 *
+	 * Set whenever a publish or update worker is scheduled, removed when the
+	 * worker has talked to the Publisher. A marker whose due time is long
+	 * past means the event never ran (lost from the cron queue, or the
+	 * worker died halfway), a failure that leaves no other trace.
+	 *
+	 * @since unreleased
+	 *
+	 * @var string
+	 */
+	private const META_SHARE_QUEUED = '_atmosphere_share_queued';
+
+	/**
+	 * How long a queued share may be overdue before it is reported as stalled.
+	 *
+	 * @since unreleased
+	 *
+	 * @var int
+	 */
+	private const SHARE_STALL_GRACE = 15 * MINUTE_IN_SECONDS;
+
+	/**
+	 * Error code recorded when an update skipped a post that was never shared.
+	 *
+	 * @since unreleased
+	 *
+	 * @var string
+	 */
+	public const ERROR_NOT_SHARED = 'atmosphere_post_not_shared';
+
+	/**
+	 * Error code reported when a queued share never ran.
+	 *
+	 * @since unreleased
+	 *
+	 * @var string
+	 */
+	public const ERROR_SHARE_STALLED = 'atmosphere_share_stalled';
+
+	/**
 	 * Backoff ladder for transient publish/update failures, in seconds.
 	 *
 	 * `wp_schedule_single_event()` is one-shot: without a re-queue, a
@@ -1230,6 +1271,7 @@ class Atmosphere {
 			 */
 			\delete_post_meta( $post->ID, self::META_PUBLISH_RETRIES );
 			\delete_post_meta( $post->ID, self::META_LAST_PUBLISH_ERROR );
+			\delete_post_meta( $post->ID, self::META_SHARE_QUEUED );
 
 			if ( $is_publishable ) {
 				\wp_clear_scheduled_hook( 'atmosphere_delete_post', array( $post->ID ) );
@@ -1943,7 +1985,22 @@ class Atmosphere {
 			return;
 		}
 
-		if ( ! \get_post( (int) $post_id ) instanceof \WP_Post ) {
+		$post = \get_post( (int) $post_id );
+		if ( ! $post instanceof \WP_Post ) {
+			return;
+		}
+
+		/*
+		 * Switching sharing on for a public post that was never shared is a
+		 * request to share it. The update path would skip it on purpose (it
+		 * never retro-syncs a post on a routine edit), so queue a first
+		 * publish instead. On a regular publish from the editor the status
+		 * transition has already queued that same event, and
+		 * `queue_post_share()` does not add a second one.
+		 */
+		if ( ATMOSPHERE_META_DISABLED === $meta_key && is_post_publishable( $post ) && ! self::has_post_records( $post ) ) {
+			self::queue_post_share( $post->ID );
+
 			return;
 		}
 
@@ -2160,6 +2217,31 @@ class Atmosphere {
 	}
 
 	/**
+	 * Remember when a publish or update worker is due.
+	 *
+	 * Hooked on core's `schedule_event` filter, which every queueing path
+	 * (status transitions, share settings, the posts-list action, the retry
+	 * ladder) goes through, and which core only runs once an event is
+	 * actually going to be stored.
+	 *
+	 * @since unreleased
+	 *
+	 * @param object|false $event Event about to be scheduled.
+	 * @return object|false The unchanged event.
+	 */
+	public static function mark_share_queued( $event ) {
+		if (
+			\is_object( $event )
+			&& \in_array( $event->hook, array( 'atmosphere_publish_post', 'atmosphere_update_post' ), true )
+			&& ! empty( $event->args[0] )
+		) {
+			\update_post_meta( (int) $event->args[0], self::META_SHARE_QUEUED, (int) $event->timestamp );
+		}
+
+		return $event;
+	}
+
+	/**
 	 * Shape the stored publish failure for display.
 	 *
 	 * Shared by the editor panel's `atmosphere_publish_error` REST field
@@ -2182,7 +2264,28 @@ class Atmosphere {
 		$error = \get_post_meta( $post_id, self::META_LAST_PUBLISH_ERROR, true );
 
 		if ( ! \is_array( $error ) || empty( $error['code'] ) ) {
-			return null;
+			/*
+			 * No attempt has failed, but one may never have run. The marker
+			 * holds the event's due time, so a retry deliberately parked in
+			 * the future (a rate limit, say) is not reported.
+			 */
+			$queued = (int) \get_post_meta( $post_id, self::META_SHARE_QUEUED, true );
+
+			if ( $queued <= 0 || $queued + self::SHARE_STALL_GRACE > \time() ) {
+				return null;
+			}
+
+			return array(
+				'code'            => self::ERROR_SHARE_STALLED,
+				'message'         => \sprintf(
+					/* translators: %s: date and time the share was due. */
+					\__( 'Waiting to be shared to Bluesky since %s. Scheduled tasks on your site may not be running.', 'atmosphere' ),
+					\wp_date( \get_option( 'date_format' ) . ' ' . \get_option( 'time_format' ), $queued )
+				),
+				'retrying'        => false,
+				'needs_reconnect' => false,
+				'time'            => $queued,
+			);
 		}
 
 		$reconnect_class = Client::is_reconnect_error( (string) $error['code'] );
@@ -2204,6 +2307,8 @@ class Atmosphere {
 	 * Register async action hooks (called by WP-Cron).
 	 */
 	public static function register_async_hooks(): void {
+		\add_filter( 'schedule_event', array( self::class, 'mark_share_queued' ) );
+
 		/*
 		 * Publish/update cron callbacks re-check post visibility.
 		 * A user (or downstream filter) can password-protect a post,
@@ -2226,12 +2331,20 @@ class Atmosphere {
 						? Publisher::update_post( $post )
 						: Publisher::publish_post( $post );
 					self::log_cron_error( 'publish_post', $post_id, $result );
+
+					/*
+					 * Cleared after the Publisher returned, not before, so a
+					 * worker that dies halfway still leaves the marker
+					 * behind. A retry scheduled below sets it again.
+					 */
+					\delete_post_meta( $post_id, self::META_SHARE_QUEUED );
 					self::maybe_schedule_publish_retry( 'atmosphere_publish_post', $post_id, $result );
 					if ( ! \is_wp_error( $result ) ) {
 						self::clear_visibility_cleanup_marker( $post );
 					}
 					return;
 				}
+				\delete_post_meta( $post_id, self::META_SHARE_QUEUED );
 				if ( self::has_post_records( $post ) ) {
 					self::mark_visibility_cleanup( $post );
 					self::log_cron_error( 'delete_post', $post_id, Publisher::delete_post( $post ) );
@@ -2251,12 +2364,14 @@ class Atmosphere {
 						? Publisher::update_post( $post )
 						: Publisher::publish_post( $post );
 					self::log_cron_error( 'update_post', $post_id, $result );
+					\delete_post_meta( $post_id, self::META_SHARE_QUEUED );
 					self::maybe_schedule_publish_retry( 'atmosphere_update_post', $post_id, $result );
 					if ( ! \is_wp_error( $result ) ) {
 						self::clear_visibility_cleanup_marker( $post );
 					}
 					return;
 				}
+				\delete_post_meta( $post_id, self::META_SHARE_QUEUED );
 				if ( self::has_post_records( $post ) ) {
 					self::mark_visibility_cleanup( $post );
 					self::log_cron_error( 'delete_post', $post_id, Publisher::delete_post( $post ) );
@@ -2667,6 +2782,25 @@ class Atmosphere {
 	private static function maybe_schedule_publish_retry( string $hook, int $post_id, $result ): void {
 		if ( ! \is_wp_error( $result ) ) {
 			\delete_post_meta( $post_id, self::META_PUBLISH_RETRIES );
+
+			/*
+			 * An empty result is `Publisher::update_post()` skipping a post
+			 * that was never shared. It is not a failure, but the post is
+			 * public and still not on Bluesky, so say so instead of leaving
+			 * the author with nothing to go on.
+			 */
+			if ( array() === $result ) {
+				self::record_publish_error(
+					$post_id,
+					new \WP_Error(
+						self::ERROR_NOT_SHARED,
+						\__( 'This post was never shared to Bluesky, so changes to it are not shared either. Use "Share to Bluesky" in the posts list to share it.', 'atmosphere' )
+					),
+					false
+				);
+				return;
+			}
+
 			\delete_post_meta( $post_id, self::META_LAST_PUBLISH_ERROR );
 			return;
 		}

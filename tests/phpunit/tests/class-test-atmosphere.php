@@ -4074,6 +4074,129 @@ class Test_Atmosphere extends WP_UnitTestCase {
 	}
 
 	/**
+	 * Switching sharing on for a public post that was never shared queues a
+	 * first publish. The update path would skip the post on purpose.
+	 */
+	public function test_share_toggle_on_for_unshared_post_queues_publish() {
+		$post = self::factory()->post->create_and_get( array( 'post_status' => 'publish' ) );
+		\wp_clear_scheduled_hook( 'atmosphere_publish_post', array( $post->ID ) );
+		\wp_clear_scheduled_hook( 'atmosphere_update_post', array( $post->ID ) );
+
+		\update_post_meta( $post->ID, ATMOSPHERE_META_DISABLED, '' );
+
+		$this->atmosphere->on_share_meta_changed( 0, $post->ID, ATMOSPHERE_META_DISABLED );
+
+		$this->assertNotFalse(
+			\wp_next_scheduled( 'atmosphere_publish_post', array( $post->ID ) ),
+			'Switching sharing on for a never-shared post must queue a first publish.'
+		);
+		$this->assertFalse(
+			\wp_next_scheduled( 'atmosphere_update_post', array( $post->ID ) ),
+			'The update path would skip the post, so it must not be queued.'
+		);
+	}
+
+	/**
+	 * Other share settings on a never-shared post keep the update path, so a
+	 * routine edit of legacy content is not retro-synced.
+	 */
+	public function test_custom_text_on_unshared_post_does_not_queue_publish() {
+		$post = self::factory()->post->create_and_get( array( 'post_status' => 'publish' ) );
+		\wp_clear_scheduled_hook( 'atmosphere_publish_post', array( $post->ID ) );
+		\wp_clear_scheduled_hook( 'atmosphere_update_post', array( $post->ID ) );
+
+		\update_post_meta( $post->ID, ATMOSPHERE_META_CUSTOM_TEXT, 'Some words.' );
+
+		$this->atmosphere->on_share_meta_changed( 0, $post->ID, ATMOSPHERE_META_CUSTOM_TEXT );
+
+		$this->assertFalse( \wp_next_scheduled( 'atmosphere_publish_post', array( $post->ID ) ) );
+		$this->assertNotFalse( \wp_next_scheduled( 'atmosphere_update_post', array( $post->ID ) ) );
+	}
+
+	/**
+	 * An update that skips a never-shared post records why, instead of
+	 * passing as a success with nothing to show for it.
+	 */
+	public function test_update_worker_records_skip_of_unshared_post() {
+		$post = self::factory()->post->create_and_get( array( 'post_status' => 'publish' ) );
+		\wp_clear_scheduled_hook( 'atmosphere_publish_post', array( $post->ID ) );
+		\wp_clear_scheduled_hook( 'atmosphere_update_post', array( $post->ID ) );
+
+		\do_action( 'atmosphere_update_post', $post->ID );
+
+		$error = Atmosphere::get_publish_error( $post->ID );
+
+		$this->assertIsArray( $error, 'A skipped update must leave a reason behind.' );
+		$this->assertSame( Atmosphere::ERROR_NOT_SHARED, $error['code'] );
+		$this->assertNotSame( '', $error['message'] );
+		$this->assertFalse( $error['retrying'] );
+	}
+
+	/**
+	 * Queueing a publish marks the post, and the worker clears the marker
+	 * once the Publisher has returned.
+	 */
+	public function test_share_queued_marker_is_set_on_schedule_and_cleared_by_worker() {
+		$post = self::factory()->post->create_and_get( array( 'post_status' => 'publish' ) );
+
+		$this->assertGreaterThan(
+			0,
+			(int) \get_post_meta( $post->ID, '_atmosphere_share_queued', true ),
+			'Publishing must mark the post as queued.'
+		);
+
+		\wp_clear_scheduled_hook( 'atmosphere_publish_post', array( $post->ID ) );
+		$this->force_apply_writes_success();
+
+		\do_action( 'atmosphere_publish_post', $post->ID );
+
+		$this->assertSame( '', \get_post_meta( $post->ID, '_atmosphere_share_queued', true ) );
+	}
+
+	/**
+	 * A transient failure keeps the marker, now pointing at the retry.
+	 */
+	public function test_share_queued_marker_follows_the_retry() {
+		$post = self::factory()->post->create_and_get( array( 'post_status' => 'publish' ) );
+		\wp_clear_scheduled_hook( 'atmosphere_publish_post', array( $post->ID ) );
+		$this->force_apply_writes_error( 500 );
+
+		\do_action( 'atmosphere_publish_post', $post->ID );
+
+		$this->assertSame(
+			\wp_next_scheduled( 'atmosphere_publish_post', array( $post->ID ) ),
+			(int) \get_post_meta( $post->ID, '_atmosphere_share_queued', true )
+		);
+	}
+
+	/**
+	 * A share that is long overdue and never ran is reported as stalled.
+	 */
+	public function test_overdue_share_is_reported_as_stalled() {
+		$post = self::factory()->post->create_and_get( array( 'post_status' => 'publish' ) );
+		\update_post_meta( $post->ID, '_atmosphere_share_queued', \time() - HOUR_IN_SECONDS );
+
+		$error = Atmosphere::get_publish_error( $post->ID );
+
+		$this->assertIsArray( $error, 'An overdue share must be reported.' );
+		$this->assertSame( Atmosphere::ERROR_SHARE_STALLED, $error['code'] );
+		$this->assertNotSame( '', $error['message'] );
+	}
+
+	/**
+	 * A share that is due now, or parked in the future, is not stalled.
+	 */
+	public function test_pending_share_is_not_reported_as_stalled() {
+		$post = self::factory()->post->create_and_get( array( 'post_status' => 'publish' ) );
+
+		\update_post_meta( $post->ID, '_atmosphere_share_queued', \time() );
+		$this->assertNull( Atmosphere::get_publish_error( $post->ID ) );
+
+		\update_post_meta( $post->ID, '_atmosphere_share_queued', \time() + DAY_IN_SECONDS );
+		$this->assertNull( Atmosphere::get_publish_error( $post->ID ) );
+	}
+
+	/**
 	 * A successful publish clears a leftover error record.
 	 */
 	public function test_publish_worker_success_clears_error_meta() {

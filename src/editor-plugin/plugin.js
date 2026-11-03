@@ -232,6 +232,15 @@ const EditorPlugin = () => {
 			'atmosphere'
 		);
 	}
+	/* A post that was never shared, or a share that never ran, is not a
+	   failed attempt: "update the post to try again" would be wrong for
+	   both. Their stored message already says what to do, so it stands
+	   alone. Codes mirror `Atmosphere::ERROR_NOT_SHARED` and
+	   `Atmosphere::ERROR_SHARE_STALLED`. */
+	const explainsItself = [
+		'atmosphere_post_not_shared',
+		'atmosphere_share_stalled',
+	].includes( publishError?.code );
 	const retryMessage = publishError?.retrying
 		? __(
 				'Sharing to Bluesky failed. Your site will retry automatically.',
@@ -286,10 +295,12 @@ const EditorPlugin = () => {
 					<Notice status={ message.severity } isDismissible={ false }>
 						{ 'publishError' === message.kind ? (
 							<>
-								{ needsReconnect
-									? reconnectMessage
-									: retryMessage }
-								{ publishError.message && (
+								{ explainsItself && publishError.message }
+								{ ! explainsItself &&
+									( needsReconnect
+										? reconnectMessage
+										: retryMessage ) }
+								{ ! explainsItself && publishError.message && (
 									<p style={ { marginBottom: 0 } }>
 										<small>{ publishError.message }</small>
 									</p>
