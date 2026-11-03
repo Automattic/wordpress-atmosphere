@@ -1122,6 +1122,15 @@ function clear_scheduled_hooks(): void {
 		 */
 		\wp_unschedule_hook( $hook );
 	}
+
+	/*
+	 * The pending-share markers describe publish events that no longer
+	 * exist. Left behind, they would report those posts as "not run" and
+	 * point at WP-Cron. The key is spelled out rather than read from
+	 * `Atmosphere::META_SHARE_PENDING`: uninstall loads this file without
+	 * the autoloader.
+	 */
+	\delete_post_meta_by_key( '_atmosphere_share_pending' );
 }
 
 /**
