@@ -1,0 +1,4 @@
+Significance: minor
+Type: changed
+
+The Bluesky column in the Posts list and the editor panel now explain why a post was not shared, including when the site was disconnected from Bluesky at the time, or when the background task that shares it never ran or did not finish.

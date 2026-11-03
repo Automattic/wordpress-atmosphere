@@ -63,6 +63,7 @@ ATmosphere exposes a small set of filters and actions for plugins to extend beha
 | `atmosphere_appview_host` | filter | Point Bluesky web links at an alternative AT Protocol appview (host or subpath). |
 | `atmosphere_appview_url` | filter | Rewrite the whole assembled appview link, including its route. |
 | `atmosphere_publish_post_result` | action | React to a post-publish outcome (success or `WP_Error`). |
+| `atmosphere_publish_post_skipped` | action | React when a post that would have been shared is skipped before any publish job runs, for example because the login needs reconnecting. Receives the post and a `WP_Error` with the reason. |
 | `atmosphere_publish_comment_result` | action | React to a comment-publish outcome. |
 | `atmosphere_reaction_synced` | action | React when a Bluesky reaction is stored as a WordPress comment. |
 | `atmosphere_connected` | action | React when an AT Protocol account is connected (OAuth callback succeeded). Useful for a host plugin embedding ATmosphere as a connection layer. |
