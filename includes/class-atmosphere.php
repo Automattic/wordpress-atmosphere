@@ -108,12 +108,12 @@ class Atmosphere {
 	 * is reported as not run.
 	 *
 	 * Longer than the running limit because a healthy site can be this
-	 * late: hosts that run WP-Cron from a system cron often do so every 15
-	 * minutes, and sites without one wait for the next visit.
+	 * late: some hosts run WP-Cron from a system cron as rarely as once an
+	 * hour, and sites without one wait for the next visit.
 	 *
 	 * @var int
 	 */
-	private const SHARE_OVERDUE_AFTER = 30 * MINUTE_IN_SECONDS;
+	private const SHARE_OVERDUE_AFTER = HOUR_IN_SECONDS;
 
 	/**
 	 * Failure codes for shares that never produced an error of their own.
@@ -176,6 +176,13 @@ class Atmosphere {
 	 * @var array<int,bool>
 	 */
 	private static array $publishing_post_ids = array();
+
+	/**
+	 * Posts skipped while disconnected, waiting for their save to finish.
+	 *
+	 * @var array<int,bool>
+	 */
+	private static array $skipped_while_disconnected = array();
 
 	/**
 	 * Per-request cache of what the `wp_head` emitters resolve, keyed by
@@ -344,6 +351,7 @@ class Atmosphere {
 
 		// Post lifecycle hooks.
 		\add_action( 'transition_post_status', array( $this, 'on_status_change' ), 10, 3 );
+		\add_action( 'wp_after_insert_post', array( self::class, 'record_skips_after_save' ) );
 
 		/*
 		 * Historical visibility-cleanup migration is queued (not run)
@@ -1215,6 +1223,11 @@ class Atmosphere {
 	 * @param \WP_Post $post       Post object.
 	 */
 	public function on_status_change( string $new_status, string $old_status, \WP_Post $post ): void {
+		// A site that was never connected has nothing to publish or report.
+		if ( ! has_identity() ) {
+			return;
+		}
+
 		/*
 		 * Publish only when auto-publish is effectively on. The gate folds
 		 * together the stored `atmosphere_auto_publish` option (opt-out, off
@@ -1241,7 +1254,7 @@ class Atmosphere {
 		 * update a save normally gets: it carries the edit across once the
 		 * first share has finished.
 		 */
-		if ( $is_new_publish && self::is_share_running( $post->ID ) ) {
+		if ( $is_new_publish && self::is_share_starting( $post->ID ) ) {
 			$is_new_publish = false;
 		}
 
@@ -1254,13 +1267,22 @@ class Atmosphere {
 		 * first, say) is harmless: `share_progress()` ignores markers on
 		 * posts that are not publishable.
 		 */
-		if ( ! $is_publishable && is_supported_post_type( $post->post_type ) ) {
+		if (
+			! $is_publishable
+			&& is_supported_post_type( $post->post_type )
+			&& '' !== \get_post_meta( $post->ID, self::META_SHARE_PENDING, true )
+		) {
 			\delete_post_meta( $post->ID, self::META_SHARE_PENDING );
 		}
 
 		if ( ! is_connected() ) {
+			/*
+			 * Decided once the save is complete: the block editor saves the
+			 * share toggle after this transition fires, so a post switched
+			 * off in the same save still looks shareable here.
+			 */
 			if ( $is_new_publish ) {
-				self::record_disconnected_skip( $post );
+				self::$skipped_while_disconnected[ $post->ID ] = true;
 			}
 
 			return;
@@ -2294,8 +2316,25 @@ class Atmosphere {
 			return null;
 		}
 
-		$reconnect_class = Client::is_reconnect_error( (string) $error['code'] );
-		$needs_reconnect = $reconnect_class && ! is_connected();
+		if ( self::ERROR_SKIPPED_DISCONNECTED === $error['code'] ) {
+			/*
+			 * The skip only explains a post that was meant to be shared;
+			 * one switched off or taken out of public view since owes
+			 * nothing. While the site is still disconnected, reconnecting
+			 * is the fix, so the surfaces get the reconnect prompt; after
+			 * that, the stored message still says what happened.
+			 */
+			$post = \get_post( $post_id );
+			if ( ! $post instanceof \WP_Post || ! is_post_publishable( $post ) ) {
+				return null;
+			}
+
+			$reconnect_class = false;
+			$needs_reconnect = ! is_connected();
+		} else {
+			$reconnect_class = Client::is_reconnect_error( (string) $error['code'] );
+			$needs_reconnect = $reconnect_class && ! is_connected();
+		}
 
 		return array(
 			'code'            => (string) $error['code'],
@@ -2392,10 +2431,18 @@ class Atmosphere {
 
 		$pending = \get_post_meta( $post_id, self::META_SHARE_PENDING, true );
 
+		/*
+		 * A late event is still queued and runs as soon as WP-Cron does, so
+		 * saving the post would not help; one that is gone needs a save or a
+		 * manual share to be queued again.
+		 */
+		$retrying = self::ERROR_SHARE_NOT_RUN === $code
+			&& false !== \wp_next_scheduled( 'atmosphere_publish_post', array( $post_id ) );
+
 		return array(
 			'code'     => $code,
 			'message'  => $message,
-			'retrying' => false,
+			'retrying' => $retrying,
 			'time'     => \is_array( $pending ) ? (int) ( $pending['time'] ?? 0 ) : 0,
 		);
 	}
@@ -2418,20 +2465,32 @@ class Atmosphere {
 	}
 
 	/**
-	 * Whether a first share's job is running right now.
+	 * Whether a first share's job is running, or about to.
 	 *
 	 * A running marker older than the stall limit belongs to a job that
-	 * died, so it no longer counts.
+	 * died, so it no longer counts. A queued marker whose event is gone but
+	 * was written moments ago belongs to a job WP-Cron has just picked up
+	 * and that has not marked itself running yet.
 	 *
 	 * @param int $post_id Post ID.
 	 * @return bool
 	 */
-	private static function is_share_running( int $post_id ): bool {
+	private static function is_share_starting( int $post_id ): bool {
 		$pending = \get_post_meta( $post_id, self::META_SHARE_PENDING, true );
 
-		return \is_array( $pending )
-			&& 'running' === ( $pending['state'] ?? '' )
-			&& \time() - (int) ( $pending['time'] ?? 0 ) <= self::SHARE_RUNNING_STALL_AFTER;
+		if ( ! \is_array( $pending ) ) {
+			return false;
+		}
+
+		$age = \time() - (int) ( $pending['time'] ?? 0 );
+
+		if ( 'running' === ( $pending['state'] ?? '' ) ) {
+			return $age <= self::SHARE_RUNNING_STALL_AFTER;
+		}
+
+		return 'queued' === ( $pending['state'] ?? '' )
+			&& $age <= MINUTE_IN_SECONDS
+			&& ! \wp_next_scheduled( 'atmosphere_publish_post', array( $post_id ) );
 	}
 
 	/**
@@ -2448,6 +2507,34 @@ class Atmosphere {
 	private static function owes_first_share( int $post_id ): bool {
 		return '' !== \get_post_meta( $post_id, self::META_SHARE_PENDING, true )
 			|| '' !== \get_post_meta( $post_id, self::META_LAST_PUBLISH_ERROR, true );
+	}
+
+	/**
+	 * Record the disconnected skips held back during this request's saves.
+	 *
+	 * Runs on `wp_after_insert_post`, which the REST API fires after it
+	 * writes post meta. The post is checked again here, so one whose share
+	 * toggle was switched off in the same save is not reported.
+	 *
+	 * @since unreleased
+	 *
+	 * @param int $post_id Post ID that finished saving.
+	 */
+	public static function record_skips_after_save( $post_id ): void {
+		$post_id = (int) $post_id;
+
+		if ( ! isset( self::$skipped_while_disconnected[ $post_id ] ) ) {
+			return;
+		}
+
+		unset( self::$skipped_while_disconnected[ $post_id ] );
+
+		$post = \get_post( $post_id );
+		if ( ! $post instanceof \WP_Post || ! is_post_publishable( $post ) || is_connected() ) {
+			return;
+		}
+
+		self::record_disconnected_skip( $post );
 	}
 
 	/**
@@ -2989,7 +3076,6 @@ class Atmosphere {
 		if ( ! \is_wp_error( $result ) ) {
 			\delete_post_meta( $post_id, self::META_PUBLISH_RETRIES );
 			\delete_post_meta( $post_id, self::META_LAST_PUBLISH_ERROR );
-			\delete_post_meta( $post_id, self::META_SHARE_PENDING );
 			return;
 		}
 

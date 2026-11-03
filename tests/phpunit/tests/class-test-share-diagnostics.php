@@ -76,6 +76,17 @@ class Test_Share_Diagnostics extends \WP_UnitTestCase {
 	}
 
 	/**
+	 * Run a publish → publish save the way core does: the status change,
+	 * then the end of the save, where held-back skips are recorded.
+	 *
+	 * @param \WP_Post $post Post being saved.
+	 */
+	private function save_while_disconnected( \WP_Post $post ): void {
+		$this->atmosphere->on_status_change( 'publish', 'publish', $post );
+		Atmosphere::record_skips_after_save( $post->ID );
+	}
+
+	/**
 	 * A published post with no Bluesky history, and no queued events.
 	 *
 	 * @return \WP_Post
@@ -132,6 +143,58 @@ class Test_Share_Diagnostics extends \WP_UnitTestCase {
 		$this->assertSame( 'atmosphere_share_skipped_disconnected', $error['code'] );
 		$this->assertNotSame( '', $error['message'] );
 		$this->assertFalse( $error['retrying'] );
+		$this->assertTrue( $error['needs_reconnect'], 'While still disconnected, reconnecting is the fix.' );
+	}
+
+	/**
+	 * Publishing from the block editor with sharing switched off in the same
+	 * save is not a missed share. REST saves the toggle after the status
+	 * change, so the skip is only decided once the save is complete.
+	 */
+	public function test_publishing_with_sharing_switched_off_in_the_same_save_records_nothing() {
+		\wp_set_current_user( self::factory()->user->create( array( 'role' => 'administrator' ) ) );
+		$this->lose_connection();
+
+		// Registered meta is reset between tests; the toggle needs it to save over REST.
+		$this->atmosphere->register_share_meta();
+
+		$fired = 0;
+		\add_action(
+			'atmosphere_publish_post_skipped',
+			static function () use ( &$fired ) {
+				++$fired;
+			}
+		);
+
+		$post_id = self::factory()->post->create( array( 'post_status' => 'draft' ) );
+
+		$request = new \WP_REST_Request( 'POST', '/wp/v2/posts/' . $post_id );
+		$request->set_body_params(
+			array(
+				'status' => 'publish',
+				'meta'   => array( ATMOSPHERE_META_DISABLED => true ),
+			)
+		);
+		$response = \rest_do_request( $request );
+
+		$this->assertSame( 200, $response->get_status() );
+		$this->assertSame( '1', \get_post_meta( $post_id, ATMOSPHERE_META_DISABLED, true ), 'The toggle must have been saved.' );
+		$this->assertSame( 0, $fired );
+		$this->assertNull( Atmosphere::get_publish_error( $post_id ) );
+	}
+
+	/**
+	 * A skip reason stops showing once the post is switched off, since it
+	 * no longer owes a share.
+	 */
+	public function test_skip_reason_is_dropped_once_sharing_is_switched_off() {
+		$this->lose_connection();
+
+		$post_id = self::factory()->post->create( array( 'post_status' => 'draft' ) );
+		\wp_publish_post( $post_id );
+		\update_post_meta( $post_id, ATMOSPHERE_META_DISABLED, '1' );
+
+		$this->assertNull( Atmosphere::get_publish_error( $post_id ) );
 	}
 
 	/**
@@ -200,8 +263,8 @@ class Test_Share_Diagnostics extends \WP_UnitTestCase {
 		\wp_publish_post( $post_id );
 		$first = \get_post_meta( $post_id, '_atmosphere_last_publish_error', true );
 
-		$this->atmosphere->on_status_change( 'publish', 'publish', \get_post( $post_id ) );
-		$this->atmosphere->on_status_change( 'publish', 'publish', \get_post( $post_id ) );
+		$this->save_while_disconnected( \get_post( $post_id ) );
+		$this->save_while_disconnected( \get_post( $post_id ) );
 
 		$this->assertSame( 1, $fired );
 		$this->assertSame( $first, \get_post_meta( $post_id, '_atmosphere_last_publish_error', true ) );
@@ -222,7 +285,7 @@ class Test_Share_Diagnostics extends \WP_UnitTestCase {
 		\update_post_meta( $post->ID, '_atmosphere_last_publish_error', $prior );
 		$this->lose_connection();
 
-		$this->atmosphere->on_status_change( 'publish', 'publish', $post );
+		$this->save_while_disconnected( $post );
 
 		$this->assertSame( $prior, \get_post_meta( $post->ID, '_atmosphere_last_publish_error', true ) );
 	}
@@ -288,7 +351,7 @@ class Test_Share_Diagnostics extends \WP_UnitTestCase {
 		$post = $this->unshared_published_post();
 		$this->lose_connection();
 
-		$this->atmosphere->on_status_change( 'publish', 'publish', $post );
+		$this->save_while_disconnected( $post );
 
 		$this->assertNull( Atmosphere::get_publish_error( $post->ID ) );
 	}
@@ -303,7 +366,7 @@ class Test_Share_Diagnostics extends \WP_UnitTestCase {
 		\update_post_meta( $post->ID, Post::META_URI, 'at://did:plc:test123/app.bsky.feed.post/rkey789' );
 		$this->lose_connection();
 
-		$this->atmosphere->on_status_change( 'publish', 'publish', $post );
+		$this->save_while_disconnected( $post );
 
 		$this->assertSame( '', \get_post_meta( $post->ID, '_atmosphere_last_publish_error', true ) );
 	}
@@ -374,6 +437,66 @@ class Test_Share_Diagnostics extends \WP_UnitTestCase {
 	}
 
 	/**
+	 * A save after a share died part-way queues it again, which is what the
+	 * editor's "update the post to try again" promises.
+	 */
+	public function test_saving_after_an_interrupted_share_queues_it_again() {
+		$post = $this->unshared_published_post();
+		\update_post_meta(
+			$post->ID,
+			'_atmosphere_share_pending',
+			array(
+				'state' => 'running',
+				'time'  => \time() - HOUR_IN_SECONDS,
+			)
+		);
+
+		$this->atmosphere->on_status_change( 'publish', 'publish', $post );
+
+		$this->assertNotFalse( \wp_next_scheduled( 'atmosphere_publish_post', array( $post->ID ) ) );
+	}
+
+	/**
+	 * WP-Cron removes an event just before running its job, so a share
+	 * queued moments ago with no event left is starting, not lost: a save
+	 * then must not queue a second job next to it.
+	 */
+	public function test_saving_while_the_first_share_is_starting_queues_an_update() {
+		$post = $this->unshared_published_post();
+		\update_post_meta(
+			$post->ID,
+			'_atmosphere_share_pending',
+			array(
+				'state' => 'queued',
+				'time'  => \time(),
+			)
+		);
+
+		$this->atmosphere->on_status_change( 'publish', 'publish', $post );
+
+		$this->assertFalse( \wp_next_scheduled( 'atmosphere_publish_post', array( $post->ID ) ) );
+		$this->assertNotFalse( \wp_next_scheduled( 'atmosphere_update_post', array( $post->ID ) ) );
+	}
+
+	/**
+	 * The update job skips a post with no Bluesky history and reports that
+	 * as success. That must not wipe the marker of a first share still
+	 * owed, or the post would never be shared nor explained.
+	 */
+	public function test_update_job_skip_keeps_the_first_share_marker() {
+		$post   = $this->unshared_published_post();
+		$marker = array(
+			'state' => 'running',
+			'time'  => \time(),
+		);
+		\update_post_meta( $post->ID, '_atmosphere_share_pending', $marker );
+
+		\do_action( 'atmosphere_update_post', $post->ID );
+
+		$this->assertSame( $marker, \get_post_meta( $post->ID, '_atmosphere_share_pending', true ) );
+	}
+
+	/**
 	 * A save does not add a second publish job next to one already waiting,
 	 * such as a pending retry; the waiting one reads the post when it runs.
 	 */
@@ -434,7 +557,7 @@ class Test_Share_Diagnostics extends \WP_UnitTestCase {
 		);
 		$this->lose_connection();
 
-		$this->atmosphere->on_status_change( 'publish', 'publish', $post );
+		$this->save_while_disconnected( $post );
 
 		$this->assertSame( '', \get_post_meta( $post->ID, '_atmosphere_last_publish_error', true ) );
 	}
@@ -615,6 +738,7 @@ class Test_Share_Diagnostics extends \WP_UnitTestCase {
 		$this->assertIsArray( $error );
 		$this->assertSame( 'atmosphere_share_not_run', $error['code'] );
 		$this->assertNotSame( '', $error['message'] );
+		$this->assertFalse( $error['retrying'], 'The event is gone; a save queues it again.' );
 		$this->assertFalse( Atmosphere::is_share_pending( $post->ID ) );
 	}
 
@@ -643,18 +767,20 @@ class Test_Share_Diagnostics extends \WP_UnitTestCase {
 	 */
 	public function test_overdue_event_reports_that_sharing_did_not_run() {
 		$post = $this->unshared_published_post();
-		$past = \time() - HOUR_IN_SECONDS;
-		\wp_schedule_single_event( $past, 'atmosphere_publish_post', array( $post->ID ) );
+		\wp_schedule_single_event( \time() - 2 * HOUR_IN_SECONDS, 'atmosphere_publish_post', array( $post->ID ) );
 		\update_post_meta(
 			$post->ID,
 			'_atmosphere_share_pending',
 			array(
 				'state' => 'queued',
-				'time'  => $past,
+				'time'  => \time(),
 			)
 		);
 
-		$this->assertSame( 'atmosphere_share_not_run', Atmosphere::get_publish_error( $post->ID )['code'] );
+		$error = Atmosphere::get_publish_error( $post->ID );
+
+		$this->assertSame( 'atmosphere_share_not_run', $error['code'], 'Judged by the event, not the marker.' );
+		$this->assertTrue( $error['retrying'], 'The event is still queued; saving would not help.' );
 	}
 
 	/**
