@@ -182,6 +182,52 @@ class Test_Share_Diagnostics extends \WP_UnitTestCase {
 	}
 
 	/**
+	 * Saving a skipped post again while still disconnected keeps the first
+	 * record and does not alert again.
+	 */
+	public function test_repeated_saves_while_disconnected_record_and_alert_once() {
+		$this->lose_connection();
+
+		$fired = 0;
+		\add_action(
+			'atmosphere_publish_post_skipped',
+			static function () use ( &$fired ) {
+				++$fired;
+			}
+		);
+
+		$post_id = self::factory()->post->create( array( 'post_status' => 'draft' ) );
+		\wp_publish_post( $post_id );
+		$first = \get_post_meta( $post_id, '_atmosphere_last_publish_error', true );
+
+		$this->atmosphere->on_status_change( 'publish', 'publish', \get_post( $post_id ) );
+		$this->atmosphere->on_status_change( 'publish', 'publish', \get_post( $post_id ) );
+
+		$this->assertSame( 1, $fired );
+		$this->assertSame( $first, \get_post_meta( $post_id, '_atmosphere_last_publish_error', true ) );
+	}
+
+	/**
+	 * An earlier failure is a more specific reason than the disconnect, so a
+	 * save while disconnected leaves it in place.
+	 */
+	public function test_skip_does_not_replace_an_earlier_failure() {
+		$post  = $this->unshared_published_post();
+		$prior = array(
+			'code'     => 'atmosphere_pds',
+			'message'  => 'Upstream failure',
+			'retrying' => false,
+			'time'     => \time() - HOUR_IN_SECONDS,
+		);
+		\update_post_meta( $post->ID, '_atmosphere_last_publish_error', $prior );
+		$this->lose_connection();
+
+		$this->atmosphere->on_status_change( 'publish', 'publish', $post );
+
+		$this->assertSame( $prior, \get_post_meta( $post->ID, '_atmosphere_last_publish_error', true ) );
+	}
+
+	/**
 	 * A site that was never connected has nothing to report.
 	 */
 	public function test_never_connected_site_records_nothing() {
@@ -349,6 +395,65 @@ class Test_Share_Diagnostics extends \WP_UnitTestCase {
 	}
 
 	/**
+	 * A revision's own status change must not touch its parent's marker:
+	 * `delete_post_meta()` maps a revision ID to the parent post.
+	 */
+	public function test_revision_transition_keeps_the_parent_marker() {
+		$post_id = self::factory()->post->create( array( 'post_status' => 'draft' ) );
+		\wp_publish_post( $post_id );
+
+		$revision = self::factory()->post->create_and_get(
+			array(
+				'post_type'   => 'revision',
+				'post_status' => 'inherit',
+				'post_parent' => $post_id,
+				'post_name'   => $post_id . '-revision-v1',
+			)
+		);
+
+		$this->atmosphere->on_status_change( 'inherit', 'new', $revision );
+
+		$this->assertIsArray( \get_post_meta( $post_id, '_atmosphere_share_pending', true ) );
+	}
+
+	/**
+	 * Disconnecting or deactivating removes the queued publish events, so
+	 * their markers go too; otherwise those posts would blame WP-Cron.
+	 */
+	public function test_clearing_scheduled_hooks_drops_pending_markers() {
+		$post_id = self::factory()->post->create( array( 'post_status' => 'draft' ) );
+		\wp_publish_post( $post_id );
+
+		\Atmosphere\clear_scheduled_hooks();
+
+		$this->assertSame( '', \get_post_meta( $post_id, '_atmosphere_share_pending', true ) );
+		$this->assertNull( Atmosphere::get_publish_error( $post_id ) );
+	}
+
+	/**
+	 * The publish job also runs as an update for a post already on
+	 * Bluesky; that is not a first share, so it is not tracked.
+	 */
+	public function test_publish_worker_does_not_track_a_post_already_on_bluesky() {
+		$post = $this->unshared_published_post();
+		\update_post_meta( $post->ID, Post::META_TID, 'rkey789' );
+		\update_post_meta( $post->ID, Post::META_URI, 'at://did:plc:test123/app.bsky.feed.post/rkey789' );
+
+		$seen = 'unset';
+		\add_filter(
+			'atmosphere_pre_apply_writes',
+			static function () use ( $post, &$seen ) {
+				$seen = \get_post_meta( $post->ID, '_atmosphere_share_pending', true );
+
+				return new \WP_Error( 'atmosphere_pds', 'PDS request failed.', array( 'status' => 400 ) );
+			}
+		);
+		\do_action( 'atmosphere_publish_post', $post->ID );
+
+		$this->assertSame( '', $seen );
+	}
+
+	/**
 	 * A finished job removes the marker, whatever the outcome.
 	 */
 	public function test_publish_worker_clears_the_marker_on_success() {
@@ -443,6 +548,27 @@ class Test_Share_Diagnostics extends \WP_UnitTestCase {
 		);
 
 		$this->assertSame( 'atmosphere_share_not_run', Atmosphere::get_publish_error( $post->ID )['code'] );
+	}
+
+	/**
+	 * An event a quarter of an hour late is normal on a host that runs
+	 * WP-Cron from a system cron every 15 minutes, so it is not a failure.
+	 */
+	public function test_event_late_by_one_system_cron_interval_is_still_pending() {
+		$post = $this->unshared_published_post();
+		$late = \time() - 15 * MINUTE_IN_SECONDS;
+		\wp_schedule_single_event( $late, 'atmosphere_publish_post', array( $post->ID ) );
+		\update_post_meta(
+			$post->ID,
+			'_atmosphere_share_pending',
+			array(
+				'state' => 'queued',
+				'time'  => $late,
+			)
+		);
+
+		$this->assertNull( Atmosphere::get_publish_error( $post->ID ) );
+		$this->assertTrue( Atmosphere::is_share_pending( $post->ID ) );
 	}
 
 	/**

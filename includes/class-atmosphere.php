@@ -92,16 +92,28 @@ class Atmosphere {
 	private const META_SHARE_PENDING = '_atmosphere_share_pending';
 
 	/**
-	 * How long a share may sit queued past its due time, or stay running,
-	 * before it is reported as stalled.
+	 * How long a publish job may stay running before it is reported as
+	 * interrupted.
 	 *
-	 * A publish normally takes seconds. The margin covers image uploads on
-	 * a slow PDS and the gap between a cron event coming due and the next
-	 * request that runs it on sites without a real cron.
+	 * A publish normally takes seconds; the margin covers image uploads on
+	 * a slow PDS. A request killed by the server's time limit is long gone
+	 * by then.
 	 *
 	 * @var int
 	 */
-	private const SHARE_STALL_AFTER = 10 * MINUTE_IN_SECONDS;
+	private const SHARE_RUNNING_STALL_AFTER = 10 * MINUTE_IN_SECONDS;
+
+	/**
+	 * How long a queued share's event may sit past its due time before it
+	 * is reported as not run.
+	 *
+	 * Longer than the running limit because a healthy site can be this
+	 * late: hosts that run WP-Cron from a system cron often do so every 15
+	 * minutes, and sites without one wait for the next visit.
+	 *
+	 * @var int
+	 */
+	private const SHARE_OVERDUE_AFTER = 30 * MINUTE_IN_SECONDS;
 
 	/**
 	 * Failure codes for shares that never produced an error of their own.
@@ -1224,11 +1236,12 @@ class Atmosphere {
 
 		/*
 		 * A post that left public view owes nothing, whatever was queued for
-		 * it. Revisions are excluded: publishing saves one, and
-		 * `delete_post_meta()` maps a revision ID to its parent, so the
-		 * revision's own transition would wipe the parent's marker.
+		 * it. Limited to supported types, which also keeps revisions out:
+		 * publishing saves one, and `delete_post_meta()` maps a revision ID
+		 * to its parent, so the revision's own transition would wipe the
+		 * parent's marker.
 		 */
-		if ( ! $is_publishable && ! \wp_is_post_revision( $post ) ) {
+		if ( ! $is_publishable && is_supported_post_type( $post->post_type ) ) {
 			\delete_post_meta( $post->ID, self::META_SHARE_PENDING );
 		}
 
@@ -2102,7 +2115,7 @@ class Atmosphere {
 	 * the post has been shared, without exposing internal AT-URI meta
 	 * keys (empty until the post has a Bluesky record).
 	 * `atmosphere_publish_error` carries the most recent share failure
-	 * (null when the last attempt succeeded) so the panel can tell the
+	 * (null when nothing is wrong) so the panel can tell the
 	 * author a share failed instead of the failure vanishing into a
 	 * WP_DEBUG-gated log line.
 	 * `atmosphere_has_record` answers "is there anything out there to
@@ -2157,7 +2170,7 @@ class Atmosphere {
 					'update_callback' => null,
 					'schema'          => array(
 						'type'        => array( 'object', 'null' ),
-						'description' => \__( 'The most recent Bluesky sharing failure for this post, null when the last attempt succeeded.', 'atmosphere' ),
+						'description' => \__( 'Why this post is not on Bluesky: the most recent sharing failure, or a share that was skipped or never finished. Null when nothing is wrong.', 'atmosphere' ),
 						'context'     => array( 'edit' ),
 						'properties'  => array(
 							'code'            => array(
@@ -2227,6 +2240,8 @@ class Atmosphere {
 	 *
 	 * Shared by the editor panel's `atmosphere_publish_error` REST field
 	 * and the posts-list column, so both describe a failure the same way.
+	 * With nothing stored, a first share that stalled is reported in the
+	 * same shape (see {@see self::stalled_share_error()}).
 	 *
 	 * The stored code says whether the failure was reconnect-class; the
 	 * live connection check drops the flag once the operator has
@@ -2239,7 +2254,7 @@ class Atmosphere {
 	 * @since 2.2.0
 	 *
 	 * @param int $post_id Post ID.
-	 * @return array|null Failure details, or null when the last attempt succeeded.
+	 * @return array|null Failure details, or null when nothing is wrong.
 	 */
 	public static function get_publish_error( int $post_id ): ?array {
 		$error = \get_post_meta( $post_id, self::META_LAST_PUBLISH_ERROR, true );
@@ -2308,13 +2323,13 @@ class Atmosphere {
 		$now = \time();
 
 		if ( 'running' === $pending['state'] ) {
-			return $now - (int) $pending['time'] > self::SHARE_STALL_AFTER ? 'interrupted' : 'pending';
+			return $now - (int) $pending['time'] > self::SHARE_RUNNING_STALL_AFTER ? 'interrupted' : 'pending';
 		}
 
 		$next = \wp_next_scheduled( 'atmosphere_publish_post', array( $post_id ) );
 
 		if ( false !== $next ) {
-			return $now - $next > self::SHARE_STALL_AFTER ? 'not_run' : 'pending';
+			return $now - $next > self::SHARE_OVERDUE_AFTER ? 'not_run' : 'pending';
 		}
 
 		/*
@@ -2339,24 +2354,23 @@ class Atmosphere {
 		$progress = self::share_progress( $post_id );
 
 		if ( 'not_run' === $progress ) {
-			return array(
-				'code'     => self::ERROR_SHARE_NOT_RUN,
-				'message'  => \__( 'Not shared yet: the background task that shares this post has not run. Check that scheduled tasks (WP-Cron) run on your site.', 'atmosphere' ),
-				'retrying' => false,
-				'time'     => (int) \get_post_meta( $post_id, self::META_SHARE_PENDING, true )['time'],
-			);
+			$code    = self::ERROR_SHARE_NOT_RUN;
+			$message = \__( 'Not shared yet: the background task that shares this post has not run. Check that scheduled tasks (WP-Cron) run on your site.', 'atmosphere' );
+		} elseif ( 'interrupted' === $progress ) {
+			$code    = self::ERROR_SHARE_INTERRUPTED;
+			$message = \__( 'Not shared: sharing started but did not finish. Your server’s error log may say why.', 'atmosphere' );
+		} else {
+			return null;
 		}
 
-		if ( 'interrupted' === $progress ) {
-			return array(
-				'code'     => self::ERROR_SHARE_INTERRUPTED,
-				'message'  => \__( 'Not shared: sharing started but did not finish. Your server’s error log may say why.', 'atmosphere' ),
-				'retrying' => false,
-				'time'     => (int) \get_post_meta( $post_id, self::META_SHARE_PENDING, true )['time'],
-			);
-		}
+		$pending = \get_post_meta( $post_id, self::META_SHARE_PENDING, true );
 
-		return null;
+		return array(
+			'code'     => $code,
+			'message'  => $message,
+			'retrying' => false,
+			'time'     => \is_array( $pending ) ? (int) ( $pending['time'] ?? 0 ) : 0,
+		);
 	}
 
 	/**
@@ -2404,6 +2418,17 @@ class Atmosphere {
 	 */
 	private static function record_disconnected_skip( \WP_Post $post ): void {
 		if ( ! needs_reauth() || \get_option( Client::DISCONNECTED_OPTION ) ) {
+			return;
+		}
+
+		/*
+		 * A stored failure already explains why the post is not on Bluesky,
+		 * whether it is this skip recorded on an earlier save or an earlier
+		 * failed attempt. Keeping it means the action fires once per missed
+		 * post, not once per save, and an older, more specific reason is not
+		 * replaced by one that is only true of the moment of publishing.
+		 */
+		if ( '' !== \get_post_meta( $post->ID, self::META_LAST_PUBLISH_ERROR, true ) ) {
 			return;
 		}
 
@@ -2456,12 +2481,15 @@ class Atmosphere {
 				}
 
 				/*
-				 * Cleared on every normal return below, and deliberately not
-				 * in a `finally`: a fatal error or a killed request must
-				 * leave the marker behind, because that is how a share that
-				 * died part-way gets reported.
+				 * Only a first share is tracked; a post with records already
+				 * has its link. Cleared on every normal return below, and
+				 * deliberately not in a `finally`: a fatal error or a killed
+				 * request must leave the marker behind, because that is how a
+				 * share that died part-way gets reported.
 				 */
-				self::mark_share_pending( $post_id, 'running' );
+				if ( ! self::has_post_records( $post ) ) {
+					self::mark_share_pending( $post_id, 'running' );
+				}
 
 				if ( is_post_publishable( $post ) ) {
 					$result = self::has_post_records( $post )
