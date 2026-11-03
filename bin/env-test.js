@@ -20,53 +20,40 @@ const { spawnSync } = require( 'child_process' );
 
 const ROOT = path.resolve( __dirname, '..' );
 
-/**
- * Where wp-env mounts this checkout inside the container.
- *
- * @param {string} root Absolute path to the checkout.
- * @return {string} The plugin directory, relative to the WordPress root.
- */
-const pluginDir = ( root ) => `wp-content/plugins/${ path.basename( root ) }`;
+// wp-env mounts a local plugin under the name of its directory.
+const PLUGIN_DIR = `wp-content/plugins/${ path.basename( ROOT ) }`;
 
-const run = () => {
-	// The package does not export its bin path, so it is read from disk.
-	const wpEnv = path.join(
-		ROOT,
-		'node_modules',
-		'@wordpress',
-		'env',
-		'bin',
-		'wp-env'
-	);
+// The package does not export its bin path, so it is read from disk.
+const WP_ENV = path.join(
+	ROOT,
+	'node_modules',
+	'@wordpress',
+	'env',
+	'bin',
+	'wp-env'
+);
 
-	if ( ! fs.existsSync( wpEnv ) ) {
-		console.error( 'wp-env is not installed. Run `npm install` first.' );
-		process.exit( 1 );
-	}
-
-	const { status, error } = spawnSync(
-		process.execPath,
-		[
-			wpEnv,
-			'run',
-			'tests-cli',
-			`--env-cwd=${ pluginDir( ROOT ) }`,
-			'vendor/bin/phpunit',
-			...process.argv.slice( 2 ),
-		],
-		{ cwd: ROOT, stdio: 'inherit' }
-	);
-
-	if ( error ) {
-		console.error( error.message );
-		process.exit( 1 );
-	}
-
-	process.exit( status ?? 1 );
-};
-
-if ( require.main === module ) {
-	run();
+if ( ! fs.existsSync( WP_ENV ) ) {
+	console.error( 'wp-env is not installed. Run `npm install` first.' );
+	process.exit( 1 );
 }
 
-module.exports = { pluginDir };
+const { status, error } = spawnSync(
+	process.execPath,
+	[
+		WP_ENV,
+		'run',
+		'tests-cli',
+		`--env-cwd=${ PLUGIN_DIR }`,
+		'vendor/bin/phpunit',
+		...process.argv.slice( 2 ),
+	],
+	{ cwd: ROOT, stdio: 'inherit' }
+);
+
+if ( error ) {
+	console.error( error.message );
+	process.exit( 1 );
+}
+
+process.exit( status ?? 1 );
