@@ -166,7 +166,7 @@ npm run env-test -- --group=transformer         # Tests with @group transformer.
 npm run env-test -- tests/phpunit/tests/transformer/class-test-post.php
 ```
 
-`env-test` runs PHPUnit from the plugin folder wp-env mounts, which is named after your checkout's directory. That works the same from a default clone, a renamed one, or a git worktree.
+The tests environment always mounts the plugin at `wp-content/plugins/atmosphere` (see `mappings` in `.wp-env.json`), whatever your checkout's directory is called, so `env-test` works the same from a default clone, a renamed one, or a git worktree.
 
 Common PHPUnit flags:
 

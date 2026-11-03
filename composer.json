@@ -32,7 +32,7 @@
 			"vendor/bin/phpunit"
 		],
 		"test:wp-env": [
-			"node bin/env-test.js"
+			"npm run env-test --"
 		],
 		"lint": [
 			"vendor/bin/phpcs"
