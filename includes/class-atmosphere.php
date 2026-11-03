@@ -79,6 +79,44 @@ class Atmosphere {
 	private const META_LAST_PUBLISH_ERROR = '_atmosphere_last_publish_error';
 
 	/**
+	 * Post meta key tracking a first share that has not finished yet.
+	 *
+	 * Shape: `state` (`queued` once the publish job is scheduled, `running`
+	 * once the job starts) and `time`. The publish job deletes it when it
+	 * returns, whatever the outcome, so a marker that outlives its job means
+	 * the job never ran or died part-way. Nothing else would record either
+	 * case: there is no error to store when no code got to run.
+	 *
+	 * @var string
+	 */
+	private const META_SHARE_PENDING = '_atmosphere_share_pending';
+
+	/**
+	 * How long a share may sit queued past its due time, or stay running,
+	 * before it is reported as stalled.
+	 *
+	 * A publish normally takes seconds. The margin covers image uploads on
+	 * a slow PDS and the gap between a cron event coming due and the next
+	 * request that runs it on sites without a real cron.
+	 *
+	 * @var int
+	 */
+	private const SHARE_STALL_AFTER = 10 * MINUTE_IN_SECONDS;
+
+	/**
+	 * Failure codes for shares that never produced an error of their own.
+	 *
+	 * None of them is reconnect-class (see {@see Client::is_reconnect_error()}):
+	 * their message has to stay readable after the site reconnects, which is
+	 * when the author goes looking for posts that were missed.
+	 *
+	 * @var string
+	 */
+	private const ERROR_SKIPPED_DISCONNECTED = 'atmosphere_share_skipped_disconnected';
+	private const ERROR_SHARE_NOT_RUN        = 'atmosphere_share_not_run';
+	private const ERROR_SHARE_INTERRUPTED    = 'atmosphere_share_interrupted';
+
+	/**
 	 * Backoff ladder for transient publish/update failures, in seconds.
 	 *
 	 * `wp_schedule_single_event()` is one-shot: without a re-queue, a
@@ -1165,10 +1203,6 @@ class Atmosphere {
 	 * @param \WP_Post $post       Post object.
 	 */
 	public function on_status_change( string $new_status, string $old_status, \WP_Post $post ): void {
-		if ( ! is_connected() ) {
-			return;
-		}
-
 		/*
 		 * Publish only when auto-publish is effectively on. The gate folds
 		 * together the stored `atmosphere_auto_publish` option (opt-out, off
@@ -1180,12 +1214,34 @@ class Atmosphere {
 			return;
 		}
 
-		$is_publishable         = is_post_publishable( $post );
-		$has_records            = self::has_post_records( $post );
-		$had_visibility_cleanup = self::has_visibility_cleanup_marker( $post );
-		$is_new_publish         = $is_publishable && ! $has_records && ( 'publish' !== $old_status || $had_visibility_cleanup );
-		$is_update              = $is_publishable && ! $is_new_publish;
-		$is_cleanup             = 'publish' === $old_status && ! $is_publishable && $has_records;
+		$is_publishable = is_post_publishable( $post );
+		$has_records    = self::has_post_records( $post );
+		$is_new_publish = $is_publishable && ! $has_records && (
+			'publish' !== $old_status
+			|| self::has_visibility_cleanup_marker( $post )
+			|| self::owes_first_share( $post->ID )
+		);
+
+		/*
+		 * A post that left public view owes nothing, whatever was queued for
+		 * it. Revisions are excluded: publishing saves one, and
+		 * `delete_post_meta()` maps a revision ID to its parent, so the
+		 * revision's own transition would wipe the parent's marker.
+		 */
+		if ( ! $is_publishable && ! \wp_is_post_revision( $post ) ) {
+			\delete_post_meta( $post->ID, self::META_SHARE_PENDING );
+		}
+
+		if ( ! is_connected() ) {
+			if ( $is_new_publish ) {
+				self::record_disconnected_skip( $post );
+			}
+
+			return;
+		}
+
+		$is_update  = $is_publishable && ! $is_new_publish;
+		$is_cleanup = 'publish' === $old_status && ! $is_publishable && $has_records;
 
 		if ( ! $is_new_publish && ! $is_update && ! $is_cleanup ) {
 			// Transition between two non-publish states; nothing to schedule.
@@ -1237,6 +1293,7 @@ class Atmosphere {
 
 			if ( $is_new_publish ) {
 				\wp_schedule_single_event( \time(), 'atmosphere_publish_post', array( $post->ID ) );
+				self::mark_share_pending( $post->ID, 'queued' );
 			} elseif ( $is_update ) {
 				\wp_schedule_single_event( \time(), 'atmosphere_update_post', array( $post->ID ) );
 			} else {
@@ -2156,7 +2213,13 @@ class Atmosphere {
 			return false;
 		}
 
-		return (bool) \wp_schedule_single_event( \time(), 'atmosphere_publish_post', $args );
+		if ( ! \wp_schedule_single_event( \time(), 'atmosphere_publish_post', $args ) ) {
+			return false;
+		}
+
+		self::mark_share_pending( $post_id, 'queued' );
+
+		return true;
 	}
 
 	/**
@@ -2182,6 +2245,10 @@ class Atmosphere {
 		$error = \get_post_meta( $post_id, self::META_LAST_PUBLISH_ERROR, true );
 
 		if ( ! \is_array( $error ) || empty( $error['code'] ) ) {
+			$error = self::stalled_share_error( $post_id );
+		}
+
+		if ( null === $error ) {
 			return null;
 		}
 
@@ -2197,6 +2264,172 @@ class Atmosphere {
 			'needs_reconnect' => $needs_reconnect,
 			'time'            => (int) ( $error['time'] ?? 0 ),
 		);
+	}
+
+	/**
+	 * Whether a first share of this post is queued or in progress.
+	 *
+	 * Lets the posts list say "Sharing…" instead of a dash between the
+	 * moment a post is published and the moment its job finishes.
+	 *
+	 * @since unreleased
+	 *
+	 * @param int $post_id Post ID.
+	 * @return bool
+	 */
+	public static function is_share_pending( int $post_id ): bool {
+		return 'pending' === self::share_progress( $post_id );
+	}
+
+	/**
+	 * Where a first share stands, judged from its marker.
+	 *
+	 * @param int $post_id Post ID.
+	 * @return string `pending`, `not_run`, `interrupted`, or '' when no first
+	 *                share is outstanding.
+	 */
+	private static function share_progress( int $post_id ): string {
+		$pending = \get_post_meta( $post_id, self::META_SHARE_PENDING, true );
+
+		if ( ! \is_array( $pending ) || empty( $pending['state'] ) || empty( $pending['time'] ) ) {
+			return '';
+		}
+
+		/*
+		 * A marker can outlive its purpose if the post was shared through
+		 * another path, such as a backfill, or left public view without a
+		 * status change. Neither owes a share.
+		 */
+		$post = \get_post( $post_id );
+		if ( ! $post instanceof \WP_Post || ! is_post_publishable( $post ) || self::has_post_records( $post ) ) {
+			return '';
+		}
+
+		$now = \time();
+
+		if ( 'running' === $pending['state'] ) {
+			return $now - (int) $pending['time'] > self::SHARE_STALL_AFTER ? 'interrupted' : 'pending';
+		}
+
+		$next = \wp_next_scheduled( 'atmosphere_publish_post', array( $post_id ) );
+
+		if ( false !== $next ) {
+			return $now - $next > self::SHARE_STALL_AFTER ? 'not_run' : 'pending';
+		}
+
+		/*
+		 * No event, and the job never marked itself running. WP-Cron
+		 * unschedules an event just before running it, so allow a moment
+		 * for a job that is starting right now.
+		 */
+		return $now - (int) $pending['time'] > MINUTE_IN_SECONDS ? 'not_run' : 'pending';
+	}
+
+	/**
+	 * The failure to report for a first share that stalled, if any.
+	 *
+	 * Shaped like the stored failure record so the posts-list column and
+	 * the editor panel describe it the same way, without either one
+	 * knowing where it came from.
+	 *
+	 * @param int $post_id Post ID.
+	 * @return array|null Failure record, or null when nothing stalled.
+	 */
+	private static function stalled_share_error( int $post_id ): ?array {
+		$progress = self::share_progress( $post_id );
+
+		if ( 'not_run' === $progress ) {
+			return array(
+				'code'     => self::ERROR_SHARE_NOT_RUN,
+				'message'  => \__( 'Not shared yet: the background task that shares this post has not run. Check that scheduled tasks (WP-Cron) run on your site.', 'atmosphere' ),
+				'retrying' => false,
+				'time'     => (int) \get_post_meta( $post_id, self::META_SHARE_PENDING, true )['time'],
+			);
+		}
+
+		if ( 'interrupted' === $progress ) {
+			return array(
+				'code'     => self::ERROR_SHARE_INTERRUPTED,
+				'message'  => \__( 'Not shared: sharing started but did not finish. Your server’s error log may say why.', 'atmosphere' ),
+				'retrying' => false,
+				'time'     => (int) \get_post_meta( $post_id, self::META_SHARE_PENDING, true )['time'],
+			);
+		}
+
+		return null;
+	}
+
+	/**
+	 * Record where a first share stands.
+	 *
+	 * @param int    $post_id Post ID.
+	 * @param string $state   `queued` or `running`.
+	 */
+	private static function mark_share_pending( int $post_id, string $state ): void {
+		\update_post_meta(
+			$post_id,
+			self::META_SHARE_PENDING,
+			array(
+				'state' => $state,
+				'time'  => \time(),
+			)
+		);
+	}
+
+	/**
+	 * Whether a post with no records still owes its first share.
+	 *
+	 * True when a share was queued and has not finished, or when the last
+	 * attempt left a failure behind. Either way, the next save has to share
+	 * the post: the update path skips posts with no Bluesky history, so it
+	 * would never get there.
+	 *
+	 * @param int $post_id Post ID.
+	 * @return bool
+	 */
+	private static function owes_first_share( int $post_id ): bool {
+		return '' !== \get_post_meta( $post_id, self::META_SHARE_PENDING, true )
+			|| '' !== \get_post_meta( $post_id, self::META_LAST_PUBLISH_ERROR, true );
+	}
+
+	/**
+	 * Record that a post was not shared because the login needs reconnecting.
+	 *
+	 * Without this the post is skipped before any job is queued, so nothing
+	 * is logged, and the reconnect notice that explained it disappears once
+	 * someone reconnects. A deliberate disconnect is left alone: posts
+	 * published after the operator chose to disconnect were not missed.
+	 *
+	 * @param \WP_Post $post Post that would have been shared.
+	 */
+	private static function record_disconnected_skip( \WP_Post $post ): void {
+		if ( ! needs_reauth() || \get_option( Client::DISCONNECTED_OPTION ) ) {
+			return;
+		}
+
+		$reason = new \WP_Error(
+			self::ERROR_SKIPPED_DISCONNECTED,
+			\__( 'Not shared: your site was not connected to Bluesky when this post was published.', 'atmosphere' )
+		);
+
+		\delete_post_meta( $post->ID, self::META_SHARE_PENDING );
+		self::record_publish_error( $post->ID, $reason, false );
+
+		debug_log( \sprintf( 'post %d not shared: the connection needs reconnecting', $post->ID ) );
+
+		/**
+		 * Fires when a post that would have been shared to Bluesky is skipped.
+		 *
+		 * `atmosphere_publish_post_result` only fires once a publish job
+		 * runs. This covers the case where none was queued, so a site can
+		 * send its own alert for both.
+		 *
+		 * @since unreleased
+		 *
+		 * @param \WP_Post  $post   The post that was not shared.
+		 * @param \WP_Error $reason Why it was skipped.
+		 */
+		\do_action( 'atmosphere_publish_post_skipped', $post, $reason );
 	}
 
 
@@ -2221,6 +2454,15 @@ class Atmosphere {
 				if ( ! $post ) {
 					return;
 				}
+
+				/*
+				 * Cleared on every normal return below, and deliberately not
+				 * in a `finally`: a fatal error or a killed request must
+				 * leave the marker behind, because that is how a share that
+				 * died part-way gets reported.
+				 */
+				self::mark_share_pending( $post_id, 'running' );
+
 				if ( is_post_publishable( $post ) ) {
 					$result = self::has_post_records( $post )
 						? Publisher::update_post( $post )
@@ -2230,12 +2472,14 @@ class Atmosphere {
 					if ( ! \is_wp_error( $result ) ) {
 						self::clear_visibility_cleanup_marker( $post );
 					}
+					\delete_post_meta( $post_id, self::META_SHARE_PENDING );
 					return;
 				}
 				if ( self::has_post_records( $post ) ) {
 					self::mark_visibility_cleanup( $post );
 					self::log_cron_error( 'delete_post', $post_id, Publisher::delete_post( $post ) );
 				}
+				\delete_post_meta( $post_id, self::META_SHARE_PENDING );
 			}
 		);
 
@@ -2668,6 +2912,7 @@ class Atmosphere {
 		if ( ! \is_wp_error( $result ) ) {
 			\delete_post_meta( $post_id, self::META_PUBLISH_RETRIES );
 			\delete_post_meta( $post_id, self::META_LAST_PUBLISH_ERROR );
+			\delete_post_meta( $post_id, self::META_SHARE_PENDING );
 			return;
 		}
 
