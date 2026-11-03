@@ -318,6 +318,21 @@ class Test_Share_Diagnostics extends \WP_UnitTestCase {
 	}
 
 	/**
+	 * A disconnect marker left over from an earlier, deliberate disconnect
+	 * does not hide a session that has since been lost: the connection row
+	 * is still there, so this is a failure, not the operator's choice.
+	 */
+	public function test_stale_disconnect_marker_does_not_hide_a_lost_session() {
+		\update_option( Client::DISCONNECTED_OPTION, \time() - DAY_IN_SECONDS );
+		$this->lose_connection();
+
+		$post_id = self::factory()->post->create( array( 'post_status' => 'draft' ) );
+		\wp_publish_post( $post_id );
+
+		$this->assertSame( 'atmosphere_share_skipped_disconnected', Atmosphere::get_publish_error( $post_id )['code'] );
+	}
+
+	/**
 	 * With automatic sharing off, nothing was going to be shared.
 	 */
 	public function test_skip_not_recorded_when_auto_publish_is_off() {
@@ -843,6 +858,25 @@ class Test_Share_Diagnostics extends \WP_UnitTestCase {
 		$this->assertSame( 'atmosphere_share_interrupted', $error['code'] );
 		$this->assertNotSame( '', $error['message'] );
 		$this->assertFalse( Atmosphere::is_share_pending( $post->ID ) );
+	}
+
+	/**
+	 * A job that died after reserving its record key but before the write
+	 * left nothing on Bluesky, so the share is still reported as unfinished.
+	 */
+	public function test_reserved_rkey_without_a_record_still_reports_an_interrupted_share() {
+		$post = $this->unshared_published_post();
+		\update_post_meta( $post->ID, Post::META_TID, 'rkey789' );
+		\update_post_meta(
+			$post->ID,
+			'_atmosphere_share_pending',
+			array(
+				'state' => 'running',
+				'time'  => \time() - HOUR_IN_SECONDS,
+			)
+		);
+
+		$this->assertSame( 'atmosphere_share_interrupted', Atmosphere::get_publish_error( $post->ID )['code'] );
 	}
 
 	/**

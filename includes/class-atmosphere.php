@@ -1537,6 +1537,24 @@ class Atmosphere {
 	}
 
 	/**
+	 * Whether a publish actually reached the PDS for this post.
+	 *
+	 * Narrower than {@see self::has_post_records()}, which also counts the
+	 * Bluesky rkey `Post::get_rkey()` reserves before the write: a job that
+	 * died between the reservation and the write leaves that rkey behind
+	 * with nothing published, and that is exactly the share the pending
+	 * marker has to keep reporting.
+	 *
+	 * @param \WP_Post $post Post object.
+	 * @return bool
+	 */
+	private static function has_published_records( \WP_Post $post ): bool {
+		return ! empty( \get_post_meta( $post->ID, Transformer\Post::META_URI, true ) )
+			|| ! empty( \get_post_meta( $post->ID, Transformer\Post::META_THREAD_RECORDS, true ) )
+			|| ! empty( \get_post_meta( $post->ID, Transformer\Document::META_URI, true ) );
+	}
+
+	/**
 	 * Whether this post previously had records removed for visibility.
 	 *
 	 * @param \WP_Post $post Post object.
@@ -2382,7 +2400,7 @@ class Atmosphere {
 		 * status change. Neither owes a share.
 		 */
 		$post = \get_post( $post_id );
-		if ( ! $post instanceof \WP_Post || ! is_post_publishable( $post ) || self::has_post_records( $post ) ) {
+		if ( ! $post instanceof \WP_Post || ! is_post_publishable( $post ) || self::has_published_records( $post ) ) {
 			return '';
 		}
 
@@ -2548,7 +2566,7 @@ class Atmosphere {
 	 * @param \WP_Post $post Post that would have been shared.
 	 */
 	private static function record_disconnected_skip( \WP_Post $post ): void {
-		if ( ! needs_reauth() || \get_option( Client::DISCONNECTED_OPTION ) ) {
+		if ( ! needs_reauth() || is_operator_disconnected() ) {
 			return;
 		}
 
@@ -2623,7 +2641,7 @@ class Atmosphere {
 				 * request must leave the marker behind, because that is how a
 				 * share that died part-way gets reported.
 				 */
-				if ( ! self::has_post_records( $post ) ) {
+				if ( ! self::has_published_records( $post ) ) {
 					self::mark_share_pending( $post_id, 'running' );
 				}
 
