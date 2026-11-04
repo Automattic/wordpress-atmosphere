@@ -12,6 +12,7 @@
 		"test:unit": "wp-scripts test-unit-jest",
 		"test:unit:watch": "wp-scripts test-unit-jest --watch",
 		"test:unit:debug": "wp-scripts --inspect-brk test-unit-jest --runInBand --no-cache",
+		"env": "wp-env",
 		"env-start": "wp-env start",
 		"env-stop": "wp-env stop",
 		"preenv-test": "wp-env start",
