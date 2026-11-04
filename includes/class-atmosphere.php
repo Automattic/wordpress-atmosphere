@@ -2057,11 +2057,13 @@ class Atmosphere {
 	 * React to the per-post share toggle or custom text being changed.
 	 *
 	 * Fires on `added_/updated_/deleted_post_meta`, after the value is
-	 * committed, so the reconcile runs against fresh meta. It schedules the
-	 * standard `atmosphere_update_post` reconciliation, which re-checks
-	 * {@see is_post_publishable()} at fire time and either publishes, updates,
-	 * or deletes the remote records accordingly — turning the toggle off on an
-	 * already-shared post removes it from Bluesky.
+	 * committed, so the reconcile runs against fresh meta. Switching sharing
+	 * on for a public post that was never shared queues its first share.
+	 * Every other change schedules the standard `atmosphere_update_post`
+	 * reconciliation, which re-checks {@see is_post_publishable()} at fire
+	 * time and either publishes, updates, or deletes the remote records
+	 * accordingly — turning the toggle off on an already-shared post removes
+	 * it from Bluesky.
 	 *
 	 * This is the robust counterpart to the `transition_post_status` path:
 	 * it covers a meta-only save (no status transition) and the race where a
@@ -2418,9 +2420,9 @@ class Atmosphere {
 	 *                share is outstanding.
 	 */
 	private static function share_progress( int $post_id ): string {
-		$pending = \get_post_meta( $post_id, self::META_SHARE_PENDING, true );
+		$phase = self::share_marker_phase( $post_id );
 
-		if ( ! \is_array( $pending ) || empty( $pending['state'] ) || empty( $pending['time'] ) ) {
+		if ( '' === $phase ) {
 			return '';
 		}
 
@@ -2434,24 +2436,63 @@ class Atmosphere {
 			return '';
 		}
 
+		switch ( $phase ) {
+			case 'interrupted':
+				return 'interrupted';
+			case 'overdue':
+			case 'lost':
+				return 'not_run';
+			default:
+				return 'pending';
+		}
+	}
+
+	/**
+	 * Classify a first share's marker by its state, its age, and its event.
+	 *
+	 * The single place that applies the stall limit, the overdue margin and
+	 * the start-up window, so {@see self::share_progress()} and
+	 * {@see self::is_share_starting()} can't drift apart.
+	 *
+	 * @param int $post_id Post ID.
+	 * @return string One of:
+	 *                - `running`: the job marked itself running, within the stall limit.
+	 *                - `interrupted`: a running marker past the stall limit; the job died.
+	 *                - `queued`: the event is scheduled and not overdue.
+	 *                - `overdue`: the event is scheduled but well past its time.
+	 *                - `starting`: no event, but the marker is only moments old.
+	 *                - `lost`: no event, and the job never marked itself running.
+	 *                - '' when there is no usable marker.
+	 */
+	private static function share_marker_phase( int $post_id ): string {
+		$pending = \get_post_meta( $post_id, self::META_SHARE_PENDING, true );
+
+		if ( ! \is_array( $pending ) || empty( $pending['state'] ) || empty( $pending['time'] ) ) {
+			return '';
+		}
+
 		$now = \time();
+		$age = $now - (int) $pending['time'];
 
 		if ( 'running' === $pending['state'] ) {
-			return $now - (int) $pending['time'] > self::SHARE_RUNNING_STALL_AFTER ? 'interrupted' : 'pending';
+			return $age > self::SHARE_RUNNING_STALL_AFTER ? 'interrupted' : 'running';
+		}
+
+		if ( 'queued' !== $pending['state'] ) {
+			return '';
 		}
 
 		$next = \wp_next_scheduled( 'atmosphere_publish_post', array( $post_id ) );
 
 		if ( false !== $next ) {
-			return $now - $next > self::SHARE_OVERDUE_AFTER ? 'not_run' : 'pending';
+			return $now - $next > self::SHARE_OVERDUE_AFTER ? 'overdue' : 'queued';
 		}
 
 		/*
-		 * No event, and the job never marked itself running. WP-Cron
-		 * unschedules an event just before running it, so allow a moment
-		 * for a job that is starting right now.
+		 * WP-Cron unschedules an event just before running it, so allow a
+		 * moment for a job that is starting right now.
 		 */
-		return $now - (int) $pending['time'] > MINUTE_IN_SECONDS ? 'not_run' : 'pending';
+		return $age > MINUTE_IN_SECONDS ? 'lost' : 'starting';
 	}
 
 	/**
@@ -2524,21 +2565,7 @@ class Atmosphere {
 	 * @return bool
 	 */
 	private static function is_share_starting( int $post_id ): bool {
-		$pending = \get_post_meta( $post_id, self::META_SHARE_PENDING, true );
-
-		if ( ! \is_array( $pending ) ) {
-			return false;
-		}
-
-		$age = \time() - (int) ( $pending['time'] ?? 0 );
-
-		if ( 'running' === ( $pending['state'] ?? '' ) ) {
-			return $age <= self::SHARE_RUNNING_STALL_AFTER;
-		}
-
-		return 'queued' === ( $pending['state'] ?? '' )
-			&& $age <= MINUTE_IN_SECONDS
-			&& ! \wp_next_scheduled( 'atmosphere_publish_post', array( $post_id ) );
+		return \in_array( self::share_marker_phase( $post_id ), array( 'running', 'starting' ), true );
 	}
 
 	/**
