@@ -63,6 +63,7 @@ ATmosphere exposes a small set of filters and actions for plugins to extend beha
 | `atmosphere_appview_host` | filter | Point Bluesky web links at an alternative AT Protocol appview (host or subpath). |
 | `atmosphere_appview_url` | filter | Rewrite the whole assembled appview link, including its route. |
 | `atmosphere_publish_post_result` | action | React to a post-publish outcome (success or `WP_Error`). |
+| `atmosphere_publish_post_skipped` | action | React when a post that would have been shared is skipped before any publish job runs, for example because the login needs reconnecting. Receives the post and a `WP_Error` with the reason. |
 | `atmosphere_publish_comment_result` | action | React to a comment-publish outcome. |
 | `atmosphere_reaction_synced` | action | React when a Bluesky reaction is stored as a WordPress comment. |
 | `atmosphere_connected` | action | React when an AT Protocol account is connected (OAuth callback succeeded). Useful for a host plugin embedding ATmosphere as a connection layer. |
@@ -389,6 +390,25 @@ outcome, and returns the `applyWrites` response(s) or a `WP_Error`.
 `update_post()` doubles as the reconcile — when the post is no longer
 publishable (trashed, unpublished, or opted out via `atmosphere_disabled`)
 it removes the remote records.
+
+### Why a post is not on Bluesky
+
+`\Atmosphere\Atmosphere::get_publish_error( $post_id )` returns why a post
+is not on Bluesky, or `null` when nothing is wrong. The Posts list column and
+the editor panel (through the edit-context `atmosphere_publish_error` REST
+field) both read it. It returns an array with `code`, `message`, `retrying`,
+`needs_reconnect` and `time`. Most codes come from a failed publish job, but
+three describe shares that never got that far:
+
+| Code | Meaning |
+|------|---------|
+| `atmosphere_share_skipped_disconnected` | The login needed reconnecting when the post was published, so it was skipped. `needs_reconnect` stays true until the site is reconnected; the message stays after that. |
+| `atmosphere_share_not_run` | The publish job was queued but has not run: its event is gone, or more than an hour late. `retrying` is true while the late event is still queued. |
+| `atmosphere_share_interrupted` | The publish job started more than ten minutes ago and never finished. |
+
+The skip also fires `atmosphere_publish_post_skipped`, so a site can send its
+own alert. The other two are only noticed when the post is looked at, so no
+action fires for them.
 
 ### Reading back the published record
 

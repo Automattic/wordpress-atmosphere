@@ -2,6 +2,7 @@ import {
 	isSharingEnabled,
 	shareHelpText,
 	panelMessage,
+	publishErrorFollowUp,
 	readReplyRestriction,
 	getReplyMode,
 	getReplyAudiences,
@@ -206,6 +207,62 @@ describe( 'panelMessage', () => {
 		// run yet. Repeating the future tense would read as "it didn't take".
 		expect( pending( false ) ).toContain( 'still on Bluesky' );
 		expect( pending( false ) ).not.toContain( 'Saving this change' );
+	} );
+} );
+
+describe( 'publishErrorFollowUp', () => {
+	const error = ( code, extra = {} ) => ( {
+		code,
+		message: 'Why it happened.',
+		retrying: false,
+		needs_reconnect: false,
+		...extra,
+	} );
+
+	it( 'returns null without an error', () => {
+		expect( publishErrorFollowUp( null ) ).toBeNull();
+		expect( publishErrorFollowUp( undefined ) ).toBeNull();
+	} );
+
+	it( 'leaves a failed attempt to the usual lead', () => {
+		expect(
+			publishErrorFollowUp( error( 'atmosphere_publish_failed' ) )
+		).toBeNull();
+	} );
+
+	it( 'asks for an update after a share that did not run or finish', () => {
+		expect(
+			publishErrorFollowUp( error( 'atmosphere_share_not_run' ) )
+		).toBe( 'update' );
+		expect(
+			publishErrorFollowUp( error( 'atmosphere_share_interrupted' ) )
+		).toBe( 'update' );
+	} );
+
+	it( 'says the site will retry while a late share is still queued', () => {
+		expect(
+			publishErrorFollowUp(
+				error( 'atmosphere_share_not_run', { retrying: true } )
+			)
+		).toBe( 'retrying' );
+	} );
+
+	it( 'asks to reconnect while a skipped post is still disconnected', () => {
+		expect(
+			publishErrorFollowUp(
+				error( 'atmosphere_share_skipped_disconnected', {
+					needs_reconnect: true,
+				} )
+			)
+		).toBe( 'reconnect' );
+	} );
+
+	it( 'asks for an update once a skipped post is reconnected', () => {
+		expect(
+			publishErrorFollowUp(
+				error( 'atmosphere_share_skipped_disconnected' )
+			)
+		).toBe( 'update' );
 	} );
 } );
 
