@@ -1371,9 +1371,10 @@ class Reaction_Sync {
 		 * Skip records the plugin published itself, such as the follow-up
 		 * posts of a teaser thread. They are part of the post, not replies
 		 * to it. A reply the account writes by hand on Bluesky is not in
-		 * the post's record index and still imports.
+		 * the post's record index and still imports. No DID check: the
+		 * index can hold records of a previously connected account.
 		 */
-		if ( get_did() === ( $author['did'] ?? '' ) && self::find_post_by_bsky_uri( $reply_uri ) ) {
+		if ( self::find_post_by_bsky_uri( $reply_uri ) ) {
 			return false;
 		}
 

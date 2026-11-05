@@ -1879,6 +1879,43 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 	}
 
 	/**
+	 * Test that a thread record published under a previously connected
+	 * account is still skipped after the site switched accounts.
+	 */
+	public function test_process_reply_skips_thread_record_of_previous_account() {
+		$this->seed_self_identity( 'did:plc:new', 'new.bsky.social' );
+
+		$post_id   = self::factory()->post->create();
+		$root_uri  = 'at://did:plc:old/app.bsky.feed.post/oldroot';
+		$chunk_uri = 'at://did:plc:old/app.bsky.feed.post/oldchunk';
+		\update_post_meta( $post_id, BskyPost::META_URI, $root_uri );
+		\add_post_meta( $post_id, BskyPost::META_URI_INDEX, $root_uri );
+		\add_post_meta( $post_id, BskyPost::META_URI_INDEX, $chunk_uri );
+
+		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_reply' );
+
+		$notification = array(
+			'uri'    => $chunk_uri,
+			'cid'    => 'bafyoldchunk',
+			'author' => array(
+				'did'    => 'did:plc:old',
+				'handle' => 'old.bsky.social',
+			),
+			'record' => array(
+				'text'      => 'Continue reading: https://example.com/post',
+				'createdAt' => '2026-04-20T15:00:00.000Z',
+				'reply'     => array(
+					'parent' => array( 'uri' => $root_uri ),
+					'root'   => array( 'uri' => $root_uri ),
+				),
+			),
+		);
+
+		$this->assertFalse( $method->invoke( null, $notification ) );
+		$this->assertSame( array(), \get_comments( array( 'post_id' => $post_id ) ) );
+	}
+
+	/**
 	 * Test that a self-authored original post (no reply field) is skipped.
 	 */
 	public function test_process_own_record_original_post_is_skipped() {
