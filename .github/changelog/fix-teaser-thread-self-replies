@@ -1,0 +1,4 @@
+Significance: patch
+Type: fixed
+
+The follow-up posts of a teaser thread no longer show up as comments on your own post. Replies from other people, and replies you write yourself on Bluesky, still arrive as before.
