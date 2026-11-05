@@ -1490,11 +1490,12 @@ class Reaction_Sync {
 		 * being kept (author profile resolution, comment row insert,
 		 * comment-meta writes). Return false to skip the insert.
 		 *
-		 * Use case: consumers publishing multi-record threads from their
-		 * own DID may want to skip the round-tripped self-replies that
-		 * `Reaction_Sync` would otherwise ingest as comments. The filter
-		 * is intentionally policy-free upstream so consumers can express
-		 * whatever discriminator fits their publishing strategy.
+		 * Records the plugin published itself, such as the follow-up posts
+		 * of a teaser thread, are already skipped before this filter runs.
+		 * Use case: a site that does not want replies the connected account
+		 * writes by hand on Bluesky can return false for its own DID. The
+		 * filter is intentionally policy-free upstream so consumers can
+		 * express whatever discriminator fits their publishing strategy.
 		 *
 		 * @param bool  $should         Whether to sync this reply. Default true.
 		 * @param array $notification   Notification or synthesized own-record.
