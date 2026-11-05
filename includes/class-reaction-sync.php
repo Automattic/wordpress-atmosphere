@@ -1367,17 +1367,6 @@ class Reaction_Sync {
 			return false;
 		}
 
-		/*
-		 * Skip records the plugin published itself, such as the follow-up
-		 * posts of a teaser thread. They are part of the post, not replies
-		 * to it. A reply the account writes by hand on Bluesky is not in
-		 * the post's record index and still imports. No DID check: the
-		 * index can hold records of a previously connected account.
-		 */
-		if ( self::find_post_by_bsky_uri( $reply_uri ) ) {
-			return false;
-		}
-
 		$parent_uri = $record['reply']['parent']['uri'] ?? '';
 
 		if ( empty( $parent_uri ) ) {
@@ -1439,6 +1428,19 @@ class Reaction_Sync {
 		 * resolved nested replies are unaffected.
 		 */
 		if ( ! $post_id ) {
+			return false;
+		}
+
+		/*
+		 * Skip records the plugin published itself, such as the follow-up
+		 * posts of a teaser thread. They are part of the post, not replies
+		 * to it. Their parent is the root or an earlier follow-up, so it
+		 * resolves to the same post, and its record index is read from the
+		 * meta cache. A reply the account writes by hand on Bluesky is not
+		 * in the index and still imports. No DID check: the index can hold
+		 * records of a previously connected account.
+		 */
+		if ( \in_array( $reply_uri, \get_post_meta( $post_id, BskyPost::META_URI_INDEX, false ), true ) ) {
 			return false;
 		}
 
