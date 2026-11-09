@@ -4,7 +4,7 @@ Tags: at-protocol, bluesky, connector, atproto, crossposting
 Requires at least: 6.5
 Tested up to: 7.1
 Requires PHP: 8.2
-Stable tag: 2.5.0
+Stable tag: 2.6.0
 License: GPL-2.0-or-later
 License URI: https://spdx.org/licenses/GPL-2.0-or-later.html
 
@@ -119,6 +119,13 @@ These addresses need pretty permalinks turned on under **Settings → Permalinks
 Not at this time. ATmosphere is designed for a single WordPress site. On a Network-activated install only the current site's data is read and written, and uninstall only cleans the current site — credentials and records on other sites in the network are left intact.
 
 == Changelog ==
+
+### 2.6.0 - 2026-11-09
+#### Changed
+- The Bluesky column in the Posts list and the editor panel now explain why a post was not shared, including when the site was disconnected from Bluesky at the time, or when the background task that shares it never ran or did not finish. Switching "Share this post" on for a post that was never shared now shares it.
+
+#### Fixed
+- The follow-up posts of a teaser thread no longer show up as comments on your own post. Replies from other people, and replies you write yourself on Bluesky, still arrive as before.
 
 ### 2.5.0 - 2026-10-29
 #### Added

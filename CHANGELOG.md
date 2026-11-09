@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.6.0] - 2026-11-09
+### Changed
+- The Bluesky column in the Posts list and the editor panel now explain why a post was not shared, including when the site was disconnected from Bluesky at the time, or when the background task that shares it never ran or did not finish. Switching "Share this post" on for a post that was never shared now shares it. [#335]
+
+### Fixed
+- The follow-up posts of a teaser thread no longer show up as comments on your own post. Replies from other people, and replies you write yourself on Bluesky, still arrive as before. [#339]
+
 ## [2.5.0] - 2026-10-29
 ### Added
 - The ATmosphere settings page now has a Help tab that explains the plugin, common error messages, and where to find its Site Health checks. [#300]
@@ -234,6 +241,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Remove a comment reply from Bluesky if the comment was deleted or unapproved while it was being published, instead of leaving an orphan reply behind. [#32]
 - Short posts under the long-form teaser-thread strategy no longer ship a redundant "continue reading" reply when the entire body already fits in a single Bluesky post. The link-back is preserved as a card on the same post. [#51]
 
+[2.6.0]: https://github.com/Automattic/wordpress-atmosphere/compare/2.5.0...2.6.0
 [2.5.0]: https://github.com/Automattic/wordpress-atmosphere/compare/2.4.2...2.5.0
 [2.4.2]: https://github.com/Automattic/wordpress-atmosphere/compare/2.4.1...2.4.2
 [2.4.1]: https://github.com/Automattic/wordpress-atmosphere/compare/2.4.0...2.4.1

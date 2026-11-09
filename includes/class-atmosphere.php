@@ -2403,7 +2403,7 @@ class Atmosphere {
 	 * Lets the posts list say "Sharing…" instead of a dash between the
 	 * moment a post is published and the moment its job finishes.
 	 *
-	 * @since unreleased
+	 * @since 2.6.0
 	 *
 	 * @param int $post_id Post ID.
 	 * @return bool
@@ -2591,7 +2591,7 @@ class Atmosphere {
 	 * writes post meta. The post is checked again here, against the share
 	 * toggle as the same save left it.
 	 *
-	 * @since unreleased
+	 * @since 2.6.0
 	 *
 	 * @param int $post_id Post ID that finished saving.
 	 */
@@ -2660,7 +2660,7 @@ class Atmosphere {
 		 * runs. This covers the case where none was queued, so a site can
 		 * send its own alert for both.
 		 *
-		 * @since unreleased
+		 * @since 2.6.0
 		 *
 		 * @param \WP_Post  $post   The post that was not shared.
 		 * @param \WP_Error $reason Why it was skipped.
