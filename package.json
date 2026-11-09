@@ -34,7 +34,7 @@
 		"@wordpress/edit-post": "^9.0.0",
 		"@wordpress/editor": "^16.1.0",
 		"@wordpress/element": "^10.0.0",
-		"@wordpress/env": "^12.0.0",
+		"@wordpress/env": "^12.1.0",
 		"@wordpress/i18n": "^7.0.0",
 		"@wordpress/interactivity": "^8.0.0",
 		"@wordpress/jest-preset-default": "^14.2.0",
