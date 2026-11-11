@@ -277,7 +277,7 @@ abstract class Base {
 		$post_tags = \get_the_tags( $post->ID );
 		if ( $post_tags ) {
 			foreach ( $post_tags as $t ) {
-				$tags[] = sanitize_text( $t->name );
+				$tags[] = $t->name;
 			}
 		}
 
@@ -285,7 +285,7 @@ abstract class Base {
 		if ( $categories ) {
 			foreach ( $categories as $cat ) {
 				if ( 'uncategorized' !== $cat->slug ) {
-					$tags[] = sanitize_text( $cat->name );
+					$tags[] = $cat->name;
 				}
 			}
 		}
@@ -356,7 +356,15 @@ abstract class Base {
 				continue;
 			}
 
-			$tag = \trim( $tag );
+			/*
+			 * Term names are stored entity-encoded (`&` as `&amp;`), and
+			 * records carry plain text. Decoding here rather than when
+			 * collecting covers names a filter adds from another taxonomy
+			 * too. A plain decode, not sanitize_text(): `pre_term_name`
+			 * already strips markup on save, and stripping again would
+			 * cut `I <3 NY` down to `I`.
+			 */
+			$tag = \trim( \html_entity_decode( $tag, ENT_QUOTES, 'UTF-8' ) );
 
 			if ( '' !== $tag ) {
 				$normalized[] = $tag;
