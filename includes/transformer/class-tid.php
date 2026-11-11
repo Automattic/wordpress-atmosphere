@@ -312,29 +312,6 @@ class TID {
 	}
 
 	/**
-	 * Lazily seed and return the per-process clock identifier.
-	 *
-	 * Shared by {@see self::generate()} and {@see self::generate_for_time()}.
-	 * `random_int` throws on systems without a usable CSPRNG (essentially
-	 * never on a working PHP install, but worth a fallback so a missing
-	 * entropy source can't bring down publishing). `wp_rand` is
-	 * non-cryptographic but the collision space is still 1024.
-	 *
-	 * @return int 10-bit clock identifier.
-	 */
-	private static function ensure_clock_id(): int {
-		if ( null === self::$clock_id ) {
-			try {
-				self::$clock_id = \random_int( 0, 1023 );
-			} catch ( \Throwable $e ) {
-				self::$clock_id = \wp_rand( 0, 1023 );
-			}
-		}
-
-		return self::$clock_id;
-	}
-
-	/**
 	 * Encode a 64-bit integer into a 13-character base-32 string.
 	 *
 	 * @param int $value 64-bit value.

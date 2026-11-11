@@ -12,9 +12,6 @@ use Atmosphere\Transformer\TID;
 
 /**
  * TID tests.
- *
- * @group atmosphere
- * @group transformer
  */
 class Test_TID extends WP_UnitTestCase {
 

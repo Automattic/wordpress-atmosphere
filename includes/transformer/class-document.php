@@ -26,20 +26,6 @@ use function Atmosphere\truncate_graphemes;
 class Document extends Base {
 
 	/**
-	 * Salt prefix passed to {@see TID::generate_for_time()} for documents.
-	 *
-	 * Combined with the post ID it produces the deterministic clock-id
-	 * input for the historical TID path; namespacing by class keeps
-	 * `Document` and `Post` rkeys distinct even though both derive from
-	 * the same `WP_Post`.
-	 *
-	 * @since unreleased
-	 *
-	 * @var string
-	 */
-	public const TID_SALT_PREFIX = 'document:';
-
-	/**
 	 * Post meta key for the document TID.
 	 *
 	 * @var string

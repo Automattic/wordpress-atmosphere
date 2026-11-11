@@ -32,20 +32,6 @@ use function Atmosphere\truncate_text;
 class Post extends Base {
 
 	/**
-	 * Salt prefix passed to {@see TID::generate_for_time()} for posts.
-	 *
-	 * Combined with the post ID it produces the deterministic clock-id
-	 * input for the historical TID path; namespacing by class keeps
-	 * `Post` and `Document` rkeys distinct even though both derive from
-	 * the same `WP_Post`.
-	 *
-	 * @since unreleased
-	 *
-	 * @var string
-	 */
-	public const TID_SALT_PREFIX = 'post:';
-
-	/**
 	 * Post meta key for the bsky post TID.
 	 *
 	 * @var string

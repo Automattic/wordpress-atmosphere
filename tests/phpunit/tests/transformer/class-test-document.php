@@ -10,7 +10,6 @@
 namespace Atmosphere\Tests\Transformer;
 
 require_once __DIR__ . '/class-stub-parser.php';
-require_once __DIR__ . '/class-tid-decoder.php';
 require_once __DIR__ . '/../content-parser/class-fake-parser.php';
 
 use Atmosphere\Atmosphere;
@@ -48,7 +47,6 @@ class Test_Document extends \WP_UnitTestCase {
 		\remove_all_filters( 'atmosphere_document_links' );
 		\remove_all_filters( 'atmosphere_document_labels' );
 		\remove_all_filters( 'atmosphere_document_contributors' );
-		\remove_all_filters( 'atmosphere_use_historical_tid' );
 		Atmosphere::register_default_content_parsers();
 		parent::tear_down();
 	}
@@ -613,40 +611,6 @@ class Test_Document extends \WP_UnitTestCase {
 	}
 
 	/**
-	 * By default, get_rkey() mints a historical TID for the post's
-	 * original publish date, so a 2010 post lands at a 2010 rkey
-	 * regardless of when the backfill runs.
-	 *
-	 * @covers \Atmosphere\Transformer\Document::get_rkey
-	 */
-	public function test_get_rkey_defaults_to_historical_tid() {
-		$post = self::factory()->post->create_and_get(
-			array(
-				'post_date'     => '2010-01-15 12:00:00',
-				'post_date_gmt' => '2010-01-15 12:00:00',
-			)
-		);
-
-		// Capture the historical rkey first so the assertion compares
-		// purely TID encodings rather than the side effect of meta.
-		$historical_rkey = ( new Document( $post ) )->get_rkey();
-		$current_rkey    = TID::generate();
-
-		$this->assertNotEmpty( $historical_rkey );
-		$this->assertTrue( TID::is_valid( $historical_rkey ) );
-		$this->assertLessThan( $current_rkey, $historical_rkey, '2010-anchored rkey must sort before a now-minted TID.' );
-
-		// Lock the encoding contract: decoding the rkey must return the
-		// same microseconds we'd get from the helper for this post.
-		$expected_microseconds = TID::microseconds_from_post_date( '2010-01-15 12:00:00', $post->ID );
-		$this->assertSame(
-			$expected_microseconds,
-			TID_Decoder::tid_to_microseconds( $historical_rkey ),
-			'Decoded rkey microseconds must match microseconds_from_post_date().'
-		);
-	}
-
-	/**
 	 * The standard.site document's rich HTML content keeps @mention links —
 	 * the document parser path renders through the_content and is NOT covered
 	 * by the Bluesky-text suppression guard.
@@ -667,36 +631,6 @@ class Test_Document extends \WP_UnitTestCase {
 			'class="atmosphere-mention"',
 			$record['content']['html']
 		);
-	}
-
-	/**
-	 * Listeners returning false from the atmosphere_use_historical_tid
-	 * filter fall back to the now-based TID::generate() path.
-	 *
-	 * @covers \Atmosphere\Transformer\Document::get_rkey
-	 */
-	public function test_get_rkey_filter_opt_out_uses_current_time() {
-		\add_filter( 'atmosphere_use_historical_tid', '__return_false' );
-
-		$post = self::factory()->post->create_and_get(
-			array(
-				'post_date'     => '2010-01-15 12:00:00',
-				'post_date_gmt' => '2010-01-15 12:00:00',
-			)
-		);
-
-		// A baseline current-time TID minted just before the rkey:
-		// the filter-disabled rkey should sort right next to it,
-		// not anywhere near a 2010 historical TID.
-		$baseline        = TID::generate();
-		$rkey            = ( new Document( $post ) )->get_rkey();
-		$historical_2010 = TID::generate_for_time(
-			TID::microseconds_from_post_date( '2010-01-15 12:00:00', $post->ID ),
-			Document::TID_SALT_PREFIX . $post->ID
-		);
-
-		$this->assertGreaterThan( $baseline, $rkey, 'Opting out via filter must mint a now-based TID.' );
-		$this->assertGreaterThan( $historical_2010, $rkey, 'Opted-out TID must sort after a 2010 historical TID.' );
 	}
 
 	/**
