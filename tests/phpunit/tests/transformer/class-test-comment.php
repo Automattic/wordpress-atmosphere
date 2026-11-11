@@ -397,6 +397,7 @@ class Test_Comment extends WP_UnitTestCase {
 				'user_id'         => 1,
 			)
 		);
+
 		$comment                   = \get_comment( $comment_id );
 		$comment->comment_date_gmt = '0000-00-00 00:00:00';
 
