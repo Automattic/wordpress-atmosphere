@@ -50,6 +50,13 @@ class Test_Wellknown_Rewrite extends WP_UnitTestCase {
 	private array $tracked_filters = array();
 
 	/**
+	 * Snapshot of the admin-menu globals `Admin::add_menu()` mutates.
+	 *
+	 * @var array<string, mixed>
+	 */
+	private array $menu_globals = array();
+
+	/**
 	 * Ensure the rules are registered in the in-memory `$wp_rewrite`
 	 * before each test so a real flush produces an array that contains
 	 * our patterns.
@@ -83,6 +90,21 @@ class Test_Wellknown_Rewrite extends WP_UnitTestCase {
 		$wp_rewrite->init();
 
 		( new Atmosphere() )->register_wellknown_rewrite();
+
+		/*
+		 * `test_add_menu_wires_self_heal_on_settings_page_load()` calls
+		 * `Admin::add_menu()`, which registers the `atmosphere` submenu into
+		 * `$GLOBALS['submenu']`. That mutation is not covered by the harness's
+		 * transactional rollback, so snapshot the menu globals here and restore
+		 * them in tearDown — otherwise the leftover entry pollutes later menu
+		 * assertions (e.g. the settings-page-visibility tests).
+		 */
+		$this->menu_globals = array(
+			'menu'              => $GLOBALS['menu'] ?? null,
+			'submenu'           => $GLOBALS['submenu'] ?? null,
+			'_registered_pages' => $GLOBALS['_registered_pages'] ?? null,
+			'_parent_pages'     => $GLOBALS['_parent_pages'] ?? null,
+		);
 	}
 
 	/**
@@ -99,6 +121,15 @@ class Test_Wellknown_Rewrite extends WP_UnitTestCase {
 		\delete_option( 'atmosphere_identity' );
 
 		\update_option( 'permalink_structure', '' );
+
+		foreach ( $this->menu_globals as $key => $value ) {
+			if ( null === $value ) {
+				unset( $GLOBALS[ $key ] );
+			} else {
+				$GLOBALS[ $key ] = $value;
+			}
+		}
+		$this->menu_globals = array();
 
 		global $wp_rewrite;
 		$wp_rewrite->init();

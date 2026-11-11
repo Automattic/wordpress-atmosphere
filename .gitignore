@@ -1,7 +1,6 @@
 /vendor/
 /node_modules/
 composer.lock
-package-lock.json
 *.zip
 .phpunit.cache
 .phpunit.result.cache
@@ -10,3 +9,6 @@ package-lock.json
 .idea/
 .vscode/
 .DS_Store
+
+# Local UI screenshots, not part of the plugin.
+/.screenshots/

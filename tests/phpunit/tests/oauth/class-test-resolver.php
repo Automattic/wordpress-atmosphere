@@ -36,15 +36,16 @@ class Test_Resolver extends WP_UnitTestCase {
 	 * @param string $url_match Substring to match against the request URL.
 	 * @param int    $status    HTTP status code.
 	 * @param mixed  $body      Response body (array → JSON encoded).
+	 * @param array  $headers   Response headers (e.g. `retry-after`).
 	 */
-	private function stub_response( string $url_match, int $status, $body ): void {
+	private function stub_response( string $url_match, int $status, $body, array $headers = array() ): void {
 		\add_filter(
 			'pre_http_request',
-			static function ( $response, $args, $url ) use ( $url_match, $status, $body ) {
+			static function ( $response, $args, $url ) use ( $url_match, $status, $body, $headers ) {
 				if ( false !== \strpos( $url, $url_match ) ) {
 					return array(
 						'response' => array( 'code' => $status ),
-						'headers'  => new \WpOrg\Requests\Utility\CaseInsensitiveDictionary( array() ),
+						'headers'  => new \WpOrg\Requests\Utility\CaseInsensitiveDictionary( $headers ),
 						'body'     => \is_array( $body ) ? (string) \wp_json_encode( $body ) : (string) $body,
 					);
 				}
@@ -696,5 +697,206 @@ class Test_Resolver extends WP_UnitTestCase {
 
 		$this->assertWPError( $result );
 		$this->assertSame( 'atmosphere_no_pds', $result->get_error_code() );
+	}
+
+	/**
+	 * A 5xx from plc.directory surfaces as a distinct upstream error, not
+	 * as `atmosphere_invalid_did_doc`, so a transient outage is not mistaken
+	 * for a malformed document. The status rides along in the error data.
+	 */
+	public function test_resolve_did_surfaces_upstream_error_on_5xx() {
+		$this->stub_response( 'plc.directory', 503, '<html>Service Unavailable</html>' );
+
+		$result = Resolver::resolve_did( 'did:plc:test123' );
+
+		$this->assertWPError( $result );
+		$this->assertSame( 'atmosphere_upstream_error', $result->get_error_code() );
+		$this->assertSame( 503, $result->get_error_data()['upstream_status'] );
+	}
+
+	/**
+	 * A 429 surfaces as a rate-limit error, and the `Retry-After` header is
+	 * carried into the message.
+	 */
+	public function test_resolve_did_surfaces_rate_limit_with_retry_after() {
+		$this->stub_response( 'plc.directory', 429, '{"error":"RateLimitExceeded"}', array( 'retry-after' => '30' ) );
+
+		$result = Resolver::resolve_did( 'did:plc:test123' );
+
+		$this->assertWPError( $result );
+		$this->assertSame( 'atmosphere_upstream_rate_limited', $result->get_error_code() );
+		$this->assertSame( 429, $result->get_error_data()['upstream_status'] );
+		$this->assertStringContainsString( '30 seconds', $result->get_error_message() );
+	}
+
+	/**
+	 * A 5xx on the `oauth-protected-resource` fetch surfaces as an upstream
+	 * error rather than "PDS did not advertise an authorization server".
+	 */
+	public function test_discover_auth_server_surfaces_upstream_error_on_5xx() {
+		$this->stub_response( 'oauth-protected-resource', 500, '<html>Internal Server Error</html>' );
+
+		$result = Resolver::discover_auth_server( 'https://pds.example.com' );
+
+		$this->assertWPError( $result );
+		$this->assertSame( 'atmosphere_upstream_error', $result->get_error_code() );
+		$this->assertSame( 500, $result->get_error_data()['upstream_status'] );
+	}
+
+	/**
+	 * A 5xx on the second fetch — the auth-server metadata document — also
+	 * surfaces as an upstream error, not "Authorization server metadata is
+	 * incomplete". The first fetch succeeds so this exercises that call site.
+	 */
+	public function test_discover_auth_server_surfaces_upstream_error_on_metadata_5xx() {
+		$this->stub_response(
+			'oauth-protected-resource',
+			200,
+			array( 'authorization_servers' => array( 'https://auth.example.com' ) )
+		);
+		$this->stub_response( 'oauth-authorization-server', 503, '<html>Service Unavailable</html>' );
+
+		$result = Resolver::discover_auth_server( 'https://pds.example.com' );
+
+		$this->assertWPError( $result );
+		$this->assertSame( 'atmosphere_upstream_error', $result->get_error_code() );
+		$this->assertSame( 503, $result->get_error_data()['upstream_status'] );
+	}
+
+	/**
+	 * A hostile `Retry-After` never reaches the message. The value comes from
+	 * a host the submitted handle chose, and the message is printed unescaped
+	 * by `settings_errors()`, so anything non-numeric has to be dropped rather
+	 * than displayed.
+	 */
+	public function test_rate_limit_message_drops_a_hostile_retry_after() {
+		$this->stub_response(
+			'plc.directory',
+			429,
+			'{"error":"RateLimitExceeded"}',
+			array( 'retry-after' => '<script>alert(1)</script>' )
+		);
+
+		$message = Resolver::resolve_did( 'did:plc:test123' )->get_error_message();
+
+		$this->assertStringNotContainsString( '<script>', $message );
+		$this->assertStringNotContainsString( 'alert', $message );
+		$this->assertStringNotContainsString( 'Retry after', $message );
+	}
+
+	/**
+	 * An HTTP-date `Retry-After` is dropped too rather than interpolated, and
+	 * the caller still gets the rate-limit code.
+	 */
+	public function test_rate_limit_message_drops_an_http_date_retry_after() {
+		$this->stub_response(
+			'plc.directory',
+			429,
+			'{"error":"RateLimitExceeded"}',
+			array( 'retry-after' => 'Wed, 21 Oct 2026 07:28:00 GMT' )
+		);
+
+		$result = Resolver::resolve_did( 'did:plc:test123' );
+
+		$this->assertSame( 'atmosphere_upstream_rate_limited', $result->get_error_code() );
+		$this->assertStringNotContainsString( 'Retry after', $result->get_error_message() );
+	}
+
+	/**
+	 * `Retry-After: 0` used to be dropped because the string is falsy. Zero is
+	 * not a useful wait, so it still takes the no-value message, but by way of
+	 * the range check rather than by accident.
+	 */
+	public function test_rate_limit_message_handles_a_zero_retry_after() {
+		$this->stub_response( 'plc.directory', 429, '{}', array( 'retry-after' => '0' ) );
+
+		$this->assertStringNotContainsString(
+			'Retry after',
+			Resolver::resolve_did( 'did:plc:test123' )->get_error_message()
+		);
+	}
+
+	/**
+	 * `is_numeric()` accepts a negative, which would otherwise render as
+	 * "Retry after -30 seconds". The range check takes it to the no-value
+	 * message instead.
+	 */
+	public function test_rate_limit_message_drops_a_negative_retry_after() {
+		$this->stub_response( 'plc.directory', 429, '{}', array( 'retry-after' => '-30' ) );
+
+		$message = Resolver::resolve_did( 'did:plc:test123' )->get_error_message();
+
+		$this->assertStringNotContainsString( 'Retry after', $message );
+		$this->assertStringNotContainsString( '-30', $message );
+	}
+
+	/**
+	 * `is_numeric()` also accepts exponent notation, where `1e5` expands to a
+	 * 27-hour wait. Anything past a day is not a plausible delta-seconds value,
+	 * so it takes the no-value message.
+	 */
+	public function test_rate_limit_message_drops_an_implausibly_large_retry_after() {
+		$this->stub_response( 'plc.directory', 429, '{}', array( 'retry-after' => '1e5' ) );
+
+		$message = Resolver::resolve_did( 'did:plc:test123' )->get_error_message();
+
+		$this->assertStringNotContainsString( 'Retry after', $message );
+		$this->assertStringNotContainsString( '100000', $message );
+	}
+
+	/**
+	 * The status is deliberately not stored under `status`: that key is what
+	 * `rest_convert_error_to_response()` reads, so an upstream 401 must not be
+	 * able to become the site's own REST response code.
+	 */
+	public function test_upstream_status_is_not_stored_under_the_rest_status_key() {
+		$this->stub_response( 'plc.directory', 401, '{}' );
+
+		$data = Resolver::resolve_did( 'did:plc:test123' )->get_error_data();
+
+		$this->assertSame( 401, $data['upstream_status'] );
+		$this->assertArrayNotHasKey( 'status', $data );
+	}
+
+	/**
+	 * The well-known fetch points at the user's own domain, so it is the hop
+	 * most likely to sit behind a CDN or WAF. A 503 there must read as an
+	 * upstream failure rather than as an unresolvable handle.
+	 */
+	public function test_handle_to_did_surfaces_upstream_error_on_5xx() {
+		$this->stub_response( 'example.com/.well-known/atproto-did', 503, '<html>Service Unavailable</html>' );
+
+		$result = Resolver::handle_to_did( 'example.com' );
+
+		$this->assertWPError( $result );
+		$this->assertSame( 'atmosphere_upstream_error', $result->get_error_code() );
+		$this->assertSame( 503, $result->get_error_data()['upstream_status'] );
+	}
+
+	/**
+	 * A missing well-known file is not an outage: the host simply has not set
+	 * handle verification up, so 404 keeps falling through to the existing
+	 * resolve-handle message rather than claiming the upstream is down.
+	 */
+	public function test_handle_to_did_lets_a_404_fall_through() {
+		$this->stub_response( 'example.com/.well-known/atproto-did', 404, 'Not Found' );
+
+		$result = Resolver::handle_to_did( 'example.com' );
+
+		$this->assertWPError( $result );
+		$this->assertSame( 'atmosphere_resolve_handle', $result->get_error_code() );
+	}
+
+	/**
+	 * A non-2xx body that happens to start with `did:` is not a DID: without
+	 * the status gate an error page could be accepted as an identity.
+	 */
+	public function test_handle_to_did_rejects_a_did_shaped_error_body() {
+		$this->stub_response( 'example.com/.well-known/atproto-did', 500, 'did:plc:attacker' );
+
+		$result = Resolver::handle_to_did( 'example.com' );
+
+		$this->assertWPError( $result );
+		$this->assertSame( 'atmosphere_upstream_error', $result->get_error_code() );
 	}
 }

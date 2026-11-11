@@ -16,10 +16,14 @@ use Atmosphere\Content_Parser\Markpub;
 use Atmosphere\Content_Parser\Pckt;
 use Atmosphere\Content_Parser\Registry;
 use Atmosphere\Handle;
+use Atmosphere\Transformer\Publication;
+use function Atmosphere\appview_url;
 use function Atmosphere\get_connection;
+use function Atmosphere\get_identity;
 use function Atmosphere\get_supported_post_types;
 use function Atmosphere\has_identity;
 use function Atmosphere\is_connected;
+use function Atmosphere\is_legacy_connection;
 
 /**
  * Settings page UI assembly.
@@ -58,7 +62,8 @@ class Settings_Fields {
 				\__( 'Handle', 'atmosphere' ),
 				array( self::class, 'render_handle_field' ),
 				'atmosphere',
-				'atmosphere_connection'
+				'atmosphere_connection',
+				array( 'label_for' => 'atmosphere_handle' )
 			);
 
 			/*
@@ -114,6 +119,61 @@ class Settings_Fields {
 			'atmosphere_publishing'
 		);
 
+		// Publication theme section.
+		\add_settings_section(
+			'atmosphere_publication_theme',
+			\__( 'Theme', 'atmosphere' ),
+			array( self::class, 'render_publication_theme_section' ),
+			'atmosphere'
+		);
+
+		$theme_color_labels = array(
+			'background' => array(
+				\__( 'Background color', 'atmosphere' ),
+				\__( 'Overrides the publication background color.', 'atmosphere' ),
+			),
+			'foreground' => array(
+				\__( 'Foreground color', 'atmosphere' ),
+				\__( 'Overrides the publication foreground/text color.', 'atmosphere' ),
+			),
+			'accent'     => array(
+				\__( 'Accent color', 'atmosphere' ),
+				\__( 'Overrides the publication accent color. Accent foreground is computed automatically for contrast.', 'atmosphere' ),
+			),
+		);
+
+		foreach ( Publication::get_theme_color_options() as $key => $option ) {
+			/*
+			 * Falls back to the raw option name so a channel added to the
+			 * canonical map without a label here still renders — visibly
+			 * unlabelled, rather than warning and rendering blank.
+			 */
+			list( $label, $description ) = $theme_color_labels[ $key ] ?? array( $option, '' );
+
+			\add_settings_field(
+				$option,
+				$label,
+				array( self::class, 'render_publication_theme_color_field' ),
+				'atmosphere',
+				'atmosphere_publication_theme',
+				array(
+					// Ties the row's <th> label to the input for screen readers.
+					'label_for'   => $option,
+					'option'      => $option,
+					'key'         => $key,
+					'description' => $description,
+				)
+			);
+		}
+
+		\add_settings_field(
+			'atmosphere_shortlink',
+			\__( 'Post links', 'atmosphere' ),
+			array( self::class, 'render_shortlink_field' ),
+			'atmosphere',
+			'atmosphere_publishing'
+		);
+
 		// Reactions section.
 		\add_settings_section(
 			'atmosphere_reactions',
@@ -123,8 +183,16 @@ class Settings_Fields {
 		);
 
 		\add_settings_field(
+			'atmosphere_publish_comments',
+			\__( 'Outgoing replies', 'atmosphere' ),
+			array( self::class, 'render_publish_comments_field' ),
+			'atmosphere',
+			'atmosphere_reactions'
+		);
+
+		\add_settings_field(
 			'atmosphere_sync_reactions',
-			\__( 'Likes and reposts', 'atmosphere' ),
+			\__( 'Incoming reactions', 'atmosphere' ),
 			array( self::class, 'render_sync_reactions_field' ),
 			'atmosphere',
 			'atmosphere_reactions'
@@ -132,7 +200,7 @@ class Settings_Fields {
 
 		\add_settings_field(
 			'atmosphere_sync_replies',
-			\__( 'Replies', 'atmosphere' ),
+			\__( 'Incoming replies', 'atmosphere' ),
 			array( self::class, 'render_sync_replies_field' ),
 			'atmosphere',
 			'atmosphere_reactions'
@@ -205,6 +273,9 @@ class Settings_Fields {
 					<a href="<?php echo \esc_url( $disconnect_url ); ?>" class="button">
 						<?php \esc_html_e( 'Disconnect', 'atmosphere' ); ?>
 					</a>
+					<?php if ( is_legacy_connection() ) : ?>
+						<p class="description"><?php \esc_html_e( 'This login expires every two weeks. Disconnect and connect again once to switch to the longer-lasting Bluesky login.', 'atmosphere' ); ?></p>
+					<?php endif; ?>
 				</td>
 			</tr>
 		</table>
@@ -325,11 +396,12 @@ class Settings_Fields {
 				type="checkbox"
 				name="atmosphere_auto_publish"
 				value="1"
+				aria-describedby="atmosphere-auto-publish-description"
 				<?php \checked( \get_option( 'atmosphere_auto_publish', '1' ), '1' ); ?>
 			>
 			<?php \esc_html_e( 'Automatically publish new posts to AT Protocol', 'atmosphere' ); ?>
 		</label>
-		<p class="description"><?php \esc_html_e( 'When enabled, posts are sent to your PDS as soon as they are published in WordPress.', 'atmosphere' ); ?></p>
+		<p class="description" id="atmosphere-auto-publish-description"><?php \esc_html_e( 'When enabled, posts are sent to your PDS as soon as they are published in WordPress.', 'atmosphere' ); ?></p>
 		<?php
 	}
 
@@ -518,7 +590,232 @@ class Settings_Fields {
 	 */
 	public static function render_reactions_section(): void {
 		?>
-		<p><?php \esc_html_e( 'Choose which Bluesky interactions are saved to your posts.', 'atmosphere' ); ?></p>
+		<p><?php \esc_html_e( 'Choose which interactions are sent to Bluesky and which are saved to WordPress.', 'atmosphere' ); ?></p>
+		<?php
+	}
+
+	/**
+	 * Render the Publication theme section description.
+	 */
+	public static function render_publication_theme_section(): void {
+		echo '<p>' . \esc_html__( 'Choose the colors apps use when they display your site. Empty a field to go back to the matching color from your active WordPress theme. If a color cannot be read from your theme, set all three here so your colors are published.', 'atmosphere' ) . '</p>';
+	}
+
+	/**
+	 * Render a publication theme color field.
+	 *
+	 * @param array $args {
+	 *     Field arguments.
+	 *
+	 *     @type string $option      Option name to read and save.
+	 *     @type string $key         Derived-color key: background, foreground, or accent.
+	 *     @type string $description Help text shown under the input.
+	 * }
+	 */
+	public static function render_publication_theme_color_field( array $args ): void {
+		static $derived_colors = null;
+
+		// Resolved once per request; all three fields render on the same
+		// screen and the derivation runs an uncached theme.json merge.
+		if ( null === $derived_colors ) {
+			$derived_colors = Publication::get_derived_theme_colors();
+		}
+
+		$option  = $args['option'];
+		$derived = $derived_colors[ $args['key'] ] ?? '';
+
+		?>
+		<input
+			type="text"
+			name="<?php echo \esc_attr( $option ); ?>"
+			id="<?php echo \esc_attr( $option ); ?>"
+			class="atmosphere-color-input"
+			value="<?php echo \esc_attr( (string) \get_option( $option, '' ) ); ?>"
+			data-default-color="<?php echo \esc_attr( $derived ); ?>"
+		>
+		<p class="description">
+			<?php echo \esc_html( (string) ( $args['description'] ?? '' ) ); ?>
+			<?php if ( '' !== $derived ) : ?>
+				<br>
+				<?php
+				\printf(
+					/* translators: %s: hex color derived from the active theme, e.g. #ffffff. */
+					\esc_html__( 'Your theme currently provides %s.', 'atmosphere' ),
+					'<code>' . \esc_html( $derived ) . '</code>'
+				);
+				?>
+			<?php else : ?>
+				<br>
+				<strong><?php \esc_html_e( 'Your theme does not provide this color. Set it here, along with the other two, for any colors to be published.', 'atmosphere' ); ?></strong>
+			<?php endif; ?>
+		</p>
+		<?php
+	}
+
+	/**
+	 * Render the record-id link explainer and its `rel=shortlink` opt-in.
+	 *
+	 * The description names both addresses rather than saying "short URL"
+	 * and leaving the reader to picture it. Where the address comes from
+	 * is a longer story, so it sits behind a disclosure, styled as a link
+	 * the way the ActivityPub plugin styles its own.
+	 *
+	 * @since 2.3.0
+	 */
+	public static function render_shortlink_field(): void {
+		// A made-up record id, only here to give the example address a real shape.
+		$example_rkey = '3mn3kzvtns72d';
+
+		/*
+		 * The site's own handle when it has one, so the example is the
+		 * reader's own address rather than an abstract one. Falls back to
+		 * a placeholder before the first connection, when there is nothing
+		 * truthful to put here.
+		 */
+		$handle = (string) ( get_identity()['handle'] ?? '' );
+
+		if ( '' === $handle ) {
+			$handle = 'yourname.bsky.social';
+		}
+
+		/*
+		 * Whether the site already uses its own domain as its Bluesky
+		 * handle. That is the case the whole pattern is prettiest in: the
+		 * handle *is* the domain, so the two addresses differ only by the
+		 * appview prefix, and the explanation can say so plainly instead
+		 * of talking the reader through a substitution.
+		 */
+		$target           = Handle::get_target_handle();
+		$is_domain_handle = '' !== $target && \strtolower( $handle ) === $target;
+
+		/*
+		 * Only recommend the swap where it is actually available. The
+		 * Domain handle row applies the same gate, so the tip cannot point
+		 * at a setting that is not on the page.
+		 */
+		$can_use_domain_handle = ! $is_domain_handle && Handle::should_offer(
+			array(
+				'connected' => is_connected(),
+				'handle'    => $handle,
+			)
+		);
+
+		$example = self::bare_url( \home_url( '/post/' . $example_rkey ) );
+
+		// What WordPress offers today, so the setting reads as a swap.
+		$core = self::bare_url( \home_url( '/?p=123' ) );
+
+		/*
+		 * Built through `appview_url()` rather than hardcoded, so a site
+		 * pointed at a different appview sees its own host here instead of
+		 * being told about one it does not use.
+		 */
+		$bluesky = self::bare_url(
+			appview_url(
+				'profile/' . $handle . '/post/' . $example_rkey,
+				array(
+					'type'   => 'post',
+					'handle' => $handle,
+					'rkey'   => $example_rkey,
+				)
+			)
+		);
+		?>
+		<label>
+			<input
+				type="checkbox"
+				name="atmosphere_shortlink"
+				value="1"
+				aria-describedby="atmosphere-shortlink-description"
+				<?php \checked( \get_option( 'atmosphere_shortlink', '0' ), '1' ); ?>
+			>
+			<?php \esc_html_e( 'Use the Bluesky ID as the short URL', 'atmosphere' ); ?>
+		</label>
+		<p class="description" id="atmosphere-shortlink-description">
+			<?php
+			\printf(
+				/* translators: 1: the Bluesky-derived address, e.g. example.com/post/3mn3kzvtns72d. 2: WordPress's own short link, e.g. example.com/?p=123 */
+				\esc_html__( 'Short URLs become %1$s instead of %2$s. Leave this off if another plugin already handles short URLs on this site.', 'atmosphere' ),
+				'<code>' . \esc_html( $example ) . '</code>',
+				'<code>' . \esc_html( $core ) . '</code>'
+			);
+			?>
+		</p>
+		<details class="atmosphere-details">
+			<summary><?php \esc_html_e( 'See where that address comes from.', 'atmosphere' ); ?></summary>
+			<div class="description">
+				<p><?php \esc_html_e( 'Bluesky gives every post an ID, and your site already stores it. That makes it an address your site can answer to.', 'atmosphere' ); ?></p>
+				<ul>
+					<li>
+						<?php
+						\printf(
+							/* translators: %s: the post's address on Bluesky. */
+							\esc_html__( '%s is your post on Bluesky.', 'atmosphere' ),
+							'<code>' . \esc_html( $bluesky ) . '</code>'
+						);
+						?>
+					</li>
+					<li>
+						<?php
+						\printf(
+							/* translators: %s: the same post's address on this site. */
+							\esc_html__( '%s is the same post on your site.', 'atmosphere' ),
+							'<code>' . \esc_html( $example ) . '</code>'
+						);
+						?>
+					</li>
+				</ul>
+				<?php if ( $is_domain_handle ) : ?>
+					<p><?php \esc_html_e( 'Because your Bluesky handle is your domain, the two are the same address with a different prefix. Drop the Bluesky part and you are on your own site.', 'atmosphere' ); ?></p>
+				<?php else : ?>
+					<p><?php \esc_html_e( 'Take any Bluesky link to one of your posts, drop the profile part, and put your own domain in front.', 'atmosphere' ); ?></p>
+					<?php if ( $can_use_domain_handle ) : ?>
+						<p>
+							<?php
+							\printf(
+								/* translators: 1: the site's domain, e.g. example.com. 2: the name of the Domain handle setting, quoted. */
+								\esc_html__( 'They would line up more neatly if you used %1$s as your Bluesky handle: the two addresses would then differ only by the part in front. See %2$s above.', 'atmosphere' ),
+								'<code>' . \esc_html( Handle::get_target_handle() ) . '</code>',
+								'<strong>' . \esc_html__( 'Domain handle', 'atmosphere' ) . '</strong>'
+							);
+							?>
+						</p>
+					<?php endif; ?>
+				<?php endif; ?>
+				<p><?php \esc_html_e( 'Nothing extra is stored, and the address keeps working if you later change the post title or its permalink. It works whether or not you tick the box above.', 'atmosphere' ); ?></p>
+			</div>
+		</details>
+		<?php
+	}
+
+	/**
+	 * Strip the scheme from a URL so an example reads as an address.
+	 *
+	 * @since 2.3.0
+	 *
+	 * @param string $url Absolute URL.
+	 * @return string The URL without its scheme.
+	 */
+	private static function bare_url( string $url ): string {
+		return (string) \preg_replace( '#^https?://#', '', $url );
+	}
+
+	/**
+	 * Render the outgoing WordPress comment toggle.
+	 */
+	public static function render_publish_comments_field(): void {
+		?>
+		<label>
+			<input
+				type="checkbox"
+				name="atmosphere_publish_comments"
+				value="1"
+				aria-describedby="atmosphere-publish-comments-description"
+				<?php \checked( \get_option( 'atmosphere_publish_comments', '1' ), '1' ); ?>
+			>
+			<?php \esc_html_e( 'Publish eligible WordPress comments as Bluesky replies', 'atmosphere' ); ?>
+		</label>
+		<p class="description" id="atmosphere-publish-comments-description"><?php \esc_html_e( 'Comments are not sent to Bluesky while this is disabled. Replies that were already published to Bluesky are kept.', 'atmosphere' ); ?></p>
 		<?php
 	}
 
@@ -579,11 +876,12 @@ class Settings_Fields {
 				type="checkbox"
 				name="atmosphere_sync_reactions"
 				value="1"
+				aria-describedby="atmosphere-sync-reactions-description"
 				<?php \checked( \get_option( 'atmosphere_sync_reactions', '1' ), '1' ); ?>
 			>
 			<?php \esc_html_e( 'Save likes and reposts', 'atmosphere' ); ?>
 		</label>
-		<p class="description"><?php \esc_html_e( 'New likes and reposts are skipped while this is disabled and will not be imported when you turn it back on. Reactions that were already imported are kept.', 'atmosphere' ); ?></p>
+		<p class="description" id="atmosphere-sync-reactions-description"><?php \esc_html_e( 'New likes and reposts are skipped while this is disabled and will not be imported when you turn it back on. Reactions that were already imported are kept.', 'atmosphere' ); ?></p>
 		<?php
 	}
 
@@ -597,11 +895,12 @@ class Settings_Fields {
 				type="checkbox"
 				name="atmosphere_sync_replies"
 				value="1"
+				aria-describedby="atmosphere-sync-replies-description"
 				<?php \checked( \get_option( 'atmosphere_sync_replies', '1' ), '1' ); ?>
 			>
 			<?php \esc_html_e( 'Save replies as comments', 'atmosphere' ); ?>
 		</label>
-		<p class="description"><?php \esc_html_e( 'New replies are skipped while this is disabled and will not be imported when you turn it back on. Replies that were already imported are kept.', 'atmosphere' ); ?></p>
+		<p class="description" id="atmosphere-sync-replies-description"><?php \esc_html_e( 'New replies are skipped while this is disabled and will not be imported when you turn it back on. Replies that were already imported are kept.', 'atmosphere' ); ?></p>
 		<?php
 	}
 }

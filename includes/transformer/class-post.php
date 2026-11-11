@@ -19,6 +19,8 @@ use Atmosphere\Mention;
 use function Atmosphere\build_at_uri;
 use function Atmosphere\debug_log;
 use function Atmosphere\get_did;
+use function Atmosphere\get_publishable_content;
+use function Atmosphere\rendered_html_contains_image;
 use function Atmosphere\grapheme_length;
 use function Atmosphere\sanitize_text;
 use function Atmosphere\truncate_graphemes;
@@ -620,11 +622,22 @@ class Post extends Base {
 				$link_facets = $short['facets'];
 
 				$embed = $this->build_images_embed();
-				if ( '' === $text && null === $embed ) {
+				if ( $this->is_body_gated() || ( '' === $text && null === $embed ) ) {
 					/*
-					 * Empty body and no images: there is nothing to publish
-					 * natively, so fall back to the link-card composition. This
-					 * is a link-card record, so flip $is_short to false (the
+					 * Fall back to the link-card composition when there is
+					 * nothing to publish natively — a fully gated body, or an
+					 * empty body with no images. The gated check is
+					 * unconditional: the rendered $text can be non-empty even
+					 * though the publishable body is '', because a the_content
+					 * appender (a sharing/CTA/related-posts filter) adds its
+					 * boilerplate regardless of input — text that must not
+					 * ship as the body of a gated post. build_images_embed()
+					 * can also still surface the (public) featured image, but
+					 * an image with no text and no link home is not a useful
+					 * share of a gated post; the link card restores a title
+					 * and a link back to the post.
+					 *
+					 * This is a link-card record, so flip $is_short to false (the
 					 * embed-filter strategy label and the
 					 * atmosphere_transform_bsky_post context below must report
 					 * `link-card`, not `short-form`), and the short-form anchor
@@ -747,45 +760,28 @@ class Post extends Base {
 	 * {@inheritDoc}
 	 */
 	public function get_rkey(): string {
-		/*
-		 * Persist DID provenance on every call, not only on first
-		 * reservation. After a disconnect+reconnect-to-different-DID,
-		 * `META_TID` already exists from the prior account, so a
-		 * one-shot reservation guard would never refresh `META_DID`
-		 * to the current account — letting the mismatch guard in
-		 * `delete_post()` later block a legitimate cleanup against
-		 * the current account.
-		 *
-		 * Written BEFORE `META_TID` so a partial-failure between the
-		 * two writes leaves the row in "DID set, no TID" state. The
-		 * cleanup gates skip that state cleanly; the inverse ("TID
-		 * set, no DID") would let the mismatch guard fall through to
-		 * `get_did()` and re-open the wrong-repo-delete bypass.
-		 *
-		 * Compare before writing so the read-path callers (the
-		 * `wp_head` document-link renderer) don't issue a DB write on
-		 * every pageload — only on the actual transition.
-		 */
-		$current_did = \Atmosphere\get_did();
-		$stored_did  = (string) \get_post_meta( $this->object->ID, self::META_DID, true );
-		if ( $stored_did !== $current_did ) {
-			\update_post_meta( $this->object->ID, self::META_DID, $current_did );
-		}
+		$post_id = $this->object->ID;
 
-		$rkey = \get_post_meta( $this->object->ID, self::META_TID, true );
+		return $this->reserve_rkey_with_provenance(
+			fn ( string $key ) => \get_post_meta( $post_id, $key, true ),
+			fn ( string $key, string $value ) => \update_post_meta( $post_id, $key, $value )
+		);
+	}
 
-		if ( empty( $rkey ) ) {
-			$rkey = $this->mint_historical_rkey(
-				$this->get_collection(),
-				(string) $this->object->post_date_gmt,
-				(int) $this->object->ID,
-				self::TID_SALT_PREFIX,
-				$this->object
-			);
-			\update_post_meta( $this->object->ID, self::META_TID, $rkey );
-		}
-
-		return $rkey;
+	/**
+	 * Mint the rkey for a thread reply at the given index.
+	 *
+	 * Publisher calls this for each non-root entry in a teaser thread so
+	 * reply keys honor `--original-time`: when original-time minting is
+	 * on the reply is dated just after the root within the same second;
+	 * otherwise a fresh live TID is used. Not persisted here — replies
+	 * are tracked in `META_THREAD_RECORDS` by Publisher.
+	 *
+	 * @param int $index Reply index within the thread (>= 1).
+	 * @return string
+	 */
+	public function mint_reply_rkey( int $index ): string {
+		return $this->original_time ? $this->historical_rkey( $index ) : TID::generate();
 	}
 
 	/**
@@ -1145,6 +1141,29 @@ class Post extends Base {
 	}
 
 	/**
+	 * Whether the whole body was gated away.
+	 *
+	 * True when the post has stored content but none of it is publicly
+	 * publishable — i.e. a membership plugin gated the entire body (see
+	 * {@see \Atmosphere\get_publishable_content()}). Distinguishes a genuinely
+	 * empty post from one that only looks empty because it is fully gated, so
+	 * the short-form path can fall back to a link card that still links home
+	 * instead of shipping a bare, contextless featured image. A split (partly
+	 * gated) post keeps a public portion, so it is not "body gated" here.
+	 *
+	 * Both sides trim before comparing: a post whose stored content is only
+	 * whitespace is genuinely empty, not gated, so it must keep the plain
+	 * short-form path (e.g. a bare featured image) rather than be mistaken for
+	 * a fully gated body and pushed to the link card.
+	 *
+	 * @return bool
+	 */
+	private function is_body_gated(): bool {
+		return '' !== \trim( (string) $this->object->post_content )
+			&& '' === \trim( get_publishable_content( $this->object ) );
+	}
+
+	/**
 	 * Build an `app.bsky.embed.images` record from the post's images.
 	 *
 	 * Source priority:
@@ -1253,7 +1272,7 @@ class Post extends Base {
 	 * @return int[]
 	 */
 	private function collect_image_attachment_ids(): array {
-		$content = (string) $this->object->post_content;
+		$content = get_publishable_content( $this->object );
 
 		if ( '' === $content || ! \has_blocks( $content ) ) {
 			return array();
@@ -1293,7 +1312,21 @@ class Post extends Base {
 
 		$walker( $blocks, 0 );
 
-		return \array_values( \array_unique( $ids ) );
+		if ( empty( $ids ) ) {
+			return array();
+		}
+
+		/*
+		 * Only keep images a logged-out visitor sees. An image in a part of
+		 * the post that a plugin hides through `the_content` is not public.
+		 */
+		$html = $this->render_post_content_html( $this->object );
+		$ids  = \array_filter(
+			\array_unique( $ids ),
+			static fn( int $id ) => rendered_html_contains_image( $html, $id )
+		);
+
+		return \array_values( $ids );
 	}
 
 	/**
@@ -1400,6 +1433,28 @@ class Post extends Base {
 	}
 
 	/**
+	 * When true, {@see self::upload_image_blob()} ignores the cached blob
+	 * ref and re-uploads. Set by the Publisher's self-heal retry; see
+	 * {@see \Atmosphere\Publisher::publish_post()} for why a cached ref
+	 * goes stale.
+	 *
+	 * @var bool
+	 */
+	private static bool $force_blob_reupload = false;
+
+	/**
+	 * Force, or stop forcing, blob re-upload on subsequent uploads.
+	 *
+	 * @since 2.2.0
+	 *
+	 * @param bool $force Whether to bypass the blob-ref cache.
+	 * @return void
+	 */
+	public static function set_force_blob_reupload( bool $force ): void {
+		self::$force_blob_reupload = $force;
+	}
+
+	/**
 	 * Upload an image attachment and return the blob reference.
 	 *
 	 * Used for any image that needs to land on the PDS — featured-image
@@ -1419,10 +1474,18 @@ class Post extends Base {
 	 * @return array|null Blob reference or null.
 	 */
 	public static function upload_image_blob( int $attachment_id ): ?array {
-		// Check cache first.
-		$cached = self::cached_image_blob( $attachment_id );
-		if ( null !== $cached ) {
-			return $cached;
+		/*
+		 * Check the cache first, unless a self-heal retry is forcing a
+		 * re-upload. Forcing bypasses the cache for every image a publish
+		 * touches — featured thumbnail, in-body images, publication icon,
+		 * content-parser images alike — so a stale ref is replaced whichever
+		 * image carried it, with no need to enumerate the upload set.
+		 */
+		if ( ! self::$force_blob_reupload ) {
+			$cached = self::cached_image_blob( $attachment_id );
+			if ( null !== $cached ) {
+				return $cached;
+			}
 		}
 
 		$mime = \get_post_mime_type( $attachment_id );
@@ -1667,13 +1730,11 @@ class Post extends Base {
 			}
 
 			/*
-			 * Derive the temp-file hint from the URL path only — CDN /
-			 * offload URLs often carry a query string, and the raw
-			 * basename (`photo.jpg?w=769`) makes a messy/invalid filename.
+			 * Not `wp_tempnam()`: it lives in `wp-admin/includes/file.php`,
+			 * which isn't loaded in cron, WP-CLI, or REST requests — the
+			 * contexts this publish path runs in.
 			 */
-			$path_part = (string) \wp_parse_url( $url, \PHP_URL_PATH );
-			$hint      = '' !== $path_part ? \basename( $path_part ) : 'image';
-			$temp      = \wp_tempnam( $hint );
+			$temp = \tempnam( \get_temp_dir(), 'atmosphere-' );
 			if ( ! $temp ) {
 				continue;
 			}
@@ -1935,7 +1996,7 @@ class Post extends Base {
 			\_doing_it_wrong(
 				__METHOD__,
 				\esc_html__( 'atmosphere_post_embed must return an array or null; falling back to the unfiltered embed.', 'atmosphere' ),
-				'unreleased'
+				'1.1.0'
 			);
 			return $embed;
 		}
@@ -1955,7 +2016,7 @@ class Post extends Base {
 			\_doing_it_wrong(
 				__METHOD__,
 				\esc_html__( 'atmosphere_post_embed must return an embed array with a non-empty $type string, or null; falling back to the unfiltered embed.', 'atmosphere' ),
-				'unreleased'
+				'1.1.0'
 			);
 			return $embed;
 		}
@@ -2026,20 +2087,15 @@ class Post extends Base {
 			);
 		}
 
-		$html = Mention::without_links(
-			fn() => \apply_filters( 'the_content', $this->object->post_content ) // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Core WordPress filter.
-		);
+		$html = $this->render_post_content_html( $this->object );
 
 		/*
 		 * Fast path: no anchors, so the plain render is the whole story.
-		 * Match `<a ` / `<a>` only, not `<article>` / `<aside>`. Sanitize the
-		 * already-rendered $html rather than calling render_post_content_plain(),
-		 * which would run `the_content` a second time — doubling any shortcode
-		 * or filter side effect and risking text that differs from $html.
+		 * Match `<a ` / `<a>` only, not `<article>` / `<aside>`.
 		 */
 		if ( ! \preg_match( '/<a[\s>]/i', $html ) ) {
 			return array(
-				'text'   => truncate_text( sanitize_text( $html ), self::BLUESKY_MAX_GRAPHEMES ),
+				'text'   => truncate_text( $this->render_post_content_plain( $this->object ), self::BLUESKY_MAX_GRAPHEMES ),
 				'facets' => array(),
 			);
 		}

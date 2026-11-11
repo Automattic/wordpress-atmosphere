@@ -24,11 +24,15 @@ require_once __DIR__ . '/includes/functions.php';
 // Remove options.
 $atmosphere_options = array(
 	'atmosphere_connection',
+	// Canonical value: `\Atmosphere\OAuth\Client_Authentication::KEY_OPTION`.
+	// Hardcoded for the same reason as `_atmosphere_refresh_lock`.
+	'atmosphere_oauth_client_authentication_key',
 	'atmosphere_identity',
 	'atmosphere_publication_tid',
 	'atmosphere_publication_cid',
 	'atmosphere_publication_uri',
 	'atmosphere_auto_publish',
+	'atmosphere_shortlink',
 	// Legacy: written by set_handle() in 1.0.x and 1.1.0 as a revert
 	// snapshot for disconnect. The revert path was removed; the option
 	// no longer has a producer or consumer. Kept in the uninstall sweep
@@ -37,9 +41,12 @@ $atmosphere_options = array(
 	'atmosphere_previous_handle',
 	'atmosphere_long_form_composition',
 	'atmosphere_support_post_types',
+	'atmosphere_publish_comments',
 	'atmosphere_sync_reactions',
 	'atmosphere_sync_replies',
 	'atmosphere_last_seen_notification',
+	'atmosphere_reaction_sync_pagination',
+	'atmosphere_reaction_sync_did',
 	'atmosphere_tid_last_ts',
 	'atmosphere_visibility_cleanup_migrated',
 	'atmosphere_visibility_cleanup_migrated_offset',
@@ -48,6 +55,12 @@ $atmosphere_options = array(
 	// Hardcoded here because `uninstall.php` runs before the plugin
 	// bootstrap is loaded, so the constant isn't available.
 	'_atmosphere_refresh_lock',
+	// Canonical value: `\Atmosphere\OAuth\Client::REFRESH_STATUS_OPTION`.
+	// Hardcoded for the same reason as `_atmosphere_refresh_lock`.
+	'atmosphere_refresh_status',
+	// Canonical value: `\Atmosphere\Reaction_Sync::LOCK_OPTION`.
+	// Hardcoded because the reaction-sync class is unavailable during uninstall.
+	'_atmosphere_reaction_sync_lock',
 	// Canonical value: `\Atmosphere\OAuth\Client::DISCONNECTED_OPTION`.
 	// Hardcoded for the same reason as `_atmosphere_refresh_lock`.
 	'atmosphere_disconnected',
@@ -84,7 +97,11 @@ $atmosphere_meta_keys = array(
 	'_atmosphere_visibility_cleanup',
 	'_atmosphere_publish_retries',
 	'_atmosphere_last_publish_error',
+	'_atmosphere_share_pending',
+	'_atmosphere_reply_backfill_checked_at',
 	'_atmosphere_blob_ref',
+	'_atmosphere_threadgate',
+	'atmosphere_reply_restriction',
 	'atmosphere_custom_text',
 );
 
@@ -106,6 +123,7 @@ foreach ( $atmosphere_meta_keys as $atmosphere_key ) {
  */
 $atmosphere_comment_meta_keys = array(
 	'_atmosphere_bsky_tid',
+	'_atmosphere_bsky_did',
 	'_atmosphere_bsky_uri',
 	'_atmosphere_bsky_cid',
 	'_atmosphere_publish_attempts',
@@ -133,6 +151,8 @@ $atmosphere_transients = array(
 	'atmosphere_oauth_state',
 	'atmosphere_oauth_dpop_jwk',
 	'atmosphere_oauth_resolved',
+	// Canonical value: `\Atmosphere\OAuth\Client::REFRESH_HOLD_TRANSIENT`.
+	'atmosphere_refresh_hold',
 	'atmosphere_invalid_long_form_composition_logged',
 );
 

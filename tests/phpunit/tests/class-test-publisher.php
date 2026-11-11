@@ -22,6 +22,8 @@ use Atmosphere\Transformer\Comment;
 use Atmosphere\Transformer\Document;
 use Atmosphere\Transformer\Post;
 use Atmosphere\Transformer\Publication;
+use Atmosphere\Transformer\Threadgate;
+use Atmosphere\Transformer\TID;
 
 /**
  * Publisher tests.
@@ -56,15 +58,70 @@ class Test_Publisher extends WP_UnitTestCase {
 		\delete_option( 'atmosphere_did' );
 		\delete_option( 'atmosphere_publication_tid' );
 		\delete_option( 'atmosphere_publication_cid' );
+		\delete_option( 'atmosphere_publish_comments' );
 
 		\remove_all_filters( 'atmosphere_pre_apply_writes' );
+		\remove_all_filters( 'atmosphere_pre_get_record' );
 		\remove_all_filters( 'atmosphere_long_form_composition' );
 		\remove_all_filters( 'atmosphere_teaser_thread_posts' );
 		\remove_all_filters( 'atmosphere_transform_bsky_post' );
 		\remove_all_filters( 'atmosphere_transform_document' );
 		\remove_all_filters( 'atmosphere_is_short_form_post' );
+		\remove_all_filters( 'atmosphere_pre_upload_blob' );
+		\remove_all_filters( 'atmosphere_should_publish_bluesky_post' );
+		\remove_all_filters( 'atmosphere_update_skipped_unsynced_post' );
+
+		foreach ( $this->temp_files as $path ) {
+			if ( \file_exists( $path ) ) {
+				\unlink( $path ); // phpcs:ignore WordPress.WP.AlternativeFunctions.unlink_unlink
+			}
+		}
+		$this->temp_files = array();
 
 		parent::tear_down();
+	}
+
+	/**
+	 * Temp files created by {@see self::create_post_with_featured_image()},
+	 * removed in {@see self::tear_down()}.
+	 *
+	 * @var string[]
+	 */
+	private array $temp_files = array();
+
+	/**
+	 * Create a published post with a real featured-image file on disk.
+	 *
+	 * The blob-upload path needs a readable file, so this writes one and
+	 * registers it for teardown cleanup.
+	 *
+	 * @param string $suffix Unique filename suffix.
+	 * @return array{0: \WP_Post, 1: int} The post and its featured attachment ID.
+	 */
+	private function create_post_with_featured_image( string $suffix ): array {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_status'  => 'publish',
+				'post_content' => 'Short body.',
+			)
+		);
+
+		$upload_dir         = \wp_upload_dir();
+		$path               = $upload_dir['basedir'] . "/atmosphere-{$suffix}.jpg";
+		$this->temp_files[] = $path;
+		\file_put_contents( $path, 'FEATURED-IMAGE-BYTES' ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents
+
+		$attachment_id = self::factory()->attachment->create_object(
+			$path,
+			$post->ID,
+			array(
+				'post_mime_type' => 'image/jpeg',
+				'post_title'     => 'Featured image',
+			)
+		);
+		\set_post_thumbnail( $post->ID, $attachment_id );
+
+		return array( $post, $attachment_id );
 	}
 
 	/**
@@ -299,6 +356,669 @@ class Test_Publisher extends WP_UnitTestCase {
 	}
 
 	/**
+	 * A cached blob CID that the PDS no longer holds must self-heal.
+	 *
+	 * Featured-image blob refs are cached in `_atmosphere_blob_ref`
+	 * postmeta and reused on subsequent publishes without re-uploading.
+	 * When the active PDS does not have that blob — because it was
+	 * uploaded to a different account/PDS, or the reference PDS garbage
+	 * collected an orphaned blob — `applyWrites` fails with
+	 * "Could not find blob". Publisher must drop the stale ref, re-upload,
+	 * and retry the publish once so the post lands without operator
+	 * intervention.
+	 */
+	public function test_publish_post_self_heals_stale_blob_ref() {
+		list( $post, $attachment_id ) = $this->create_post_with_featured_image( 'self-heal-test' );
+
+		// Pre-seed a stale blob ref, as a prior publish to another PDS would.
+		$stale_ref = array(
+			'$type'    => 'blob',
+			'ref'      => array( '$link' => 'bafkreistalecid' ),
+			'mimeType' => 'image/jpeg',
+			'size'     => 123,
+		);
+		\update_post_meta( $attachment_id, '_atmosphere_blob_ref', $stale_ref );
+
+		// The re-upload after the cache is cleared returns a fresh blob.
+		$fresh_ref = array(
+			'$type'    => 'blob',
+			'ref'      => array( '$link' => 'bafkreifreshcid' ),
+			'mimeType' => 'image/jpeg',
+			'size'     => 456,
+		);
+		\add_filter(
+			'atmosphere_pre_upload_blob',
+			static function () use ( $fresh_ref ) {
+				return array( 'blob' => $fresh_ref );
+			}
+		);
+
+		// First applyWrites is rejected for the missing blob; the retry succeeds.
+		$this->fail_call_indexes = array(
+			1 => new \WP_Error(
+				'atmosphere_pds',
+				'Could not find blob: bafkreistalecid',
+				array( 'status' => 400 )
+			),
+		);
+		$this->register_capture( $post->ID );
+
+		$result = Publisher::publish_post( $post );
+
+		$this->assertIsArray( $result, 'Publish should ultimately succeed after self-heal.' );
+		$this->assertCount( 2, $this->captured_calls, 'Publisher should retry applyWrites once after the blob error.' );
+		$this->assertSame(
+			$fresh_ref,
+			\get_post_meta( $attachment_id, '_atmosphere_blob_ref', true ),
+			'The stale blob ref should be replaced by the freshly uploaded one.'
+		);
+	}
+
+	/**
+	 * The blob-error self-heal retries at most once.
+	 *
+	 * If the re-uploaded blob is also rejected (a misconfigured PDS, a
+	 * persistent upload problem), Publisher must surface the error rather
+	 * than retry forever.
+	 */
+	public function test_publish_post_blob_self_heal_retries_only_once() {
+		list( $post ) = $this->create_post_with_featured_image( 'self-heal-loop-test' );
+
+		\add_filter(
+			'atmosphere_pre_upload_blob',
+			static function () {
+				return array(
+					'blob' => array(
+						'$type' => 'blob',
+						'ref'   => array( '$link' => 'bafkreiwhatever' ),
+					),
+				);
+			}
+		);
+
+		// Both attempts are rejected for the same missing blob.
+		$this->fail_call_indexes = array(
+			1 => new \WP_Error( 'atmosphere_pds', 'Could not find blob: bafkreiwhatever', array( 'status' => 400 ) ),
+			2 => new \WP_Error( 'atmosphere_pds', 'Could not find blob: bafkreiwhatever', array( 'status' => 400 ) ),
+		);
+		$this->register_capture( $post->ID );
+
+		$result = Publisher::publish_post( $post );
+
+		$this->assertWPError( $result, 'A persistently missing blob should surface the error.' );
+		$this->assertCount( 2, $this->captured_calls, 'Self-heal must retry exactly once, not loop.' );
+	}
+
+	/**
+	 * An unrelated `atmosphere_pds` 400 must not trigger the self-heal
+	 * retry — only a blob-missing rejection does.
+	 *
+	 * Without this guard a second `applyWrites` would fire for any 400,
+	 * risking an accidental double-publish on an error that a re-upload
+	 * cannot fix.
+	 */
+	public function test_unrelated_pds_400_does_not_retry() {
+		list( $post ) = $this->create_post_with_featured_image( 'no-retry-test' );
+
+		\add_filter(
+			'atmosphere_pre_upload_blob',
+			static function () {
+				return array(
+					'blob' => array(
+						'$type' => 'blob',
+						'ref'   => array( '$link' => 'bafok' ),
+					),
+				);
+			}
+		);
+
+		$this->fail_call_indexes = array(
+			1 => new \WP_Error( 'atmosphere_pds', 'Invalid record: missing required field.', array( 'status' => 400 ) ),
+		);
+		$this->register_capture( $post->ID );
+
+		$result = Publisher::publish_post( $post );
+
+		$this->assertWPError( $result, 'A non-blob 400 should surface, not self-heal.' );
+		$this->assertCount( 1, $this->captured_calls, 'A non-blob 400 must not trigger a second applyWrites.' );
+	}
+
+	/**
+	 * The "blob not found" wording triggers the self-heal too, not only the
+	 * reference PDS's "could not find blob".
+	 */
+	public function test_self_heals_on_blob_not_found_wording() {
+		list( $post, $attachment_id ) = $this->create_post_with_featured_image( 'not-found-wording-test' );
+
+		$fresh_ref = array(
+			'$type'    => 'blob',
+			'ref'      => array( '$link' => 'bafkreifreshwording' ),
+			'mimeType' => 'image/jpeg',
+			'size'     => 456,
+		);
+		\add_filter(
+			'atmosphere_pre_upload_blob',
+			static function () use ( $fresh_ref ) {
+				return array( 'blob' => $fresh_ref );
+			}
+		);
+
+		$this->fail_call_indexes = array(
+			1 => new \WP_Error( 'atmosphere_pds', 'Blob not found: bafkreistalewording', array( 'status' => 400 ) ),
+		);
+		$this->register_capture( $post->ID );
+
+		$result = Publisher::publish_post( $post );
+
+		$this->assertIsArray( $result, 'The "blob not found" wording should also self-heal.' );
+		$this->assertCount( 2, $this->captured_calls, 'Publisher should retry once on the "blob not found" wording.' );
+		$this->assertSame(
+			$fresh_ref,
+			\get_post_meta( $attachment_id, '_atmosphere_blob_ref', true ),
+			'The stale ref should be replaced after the "blob not found" self-heal.'
+		);
+	}
+
+	/**
+	 * The self-heal also covers in-body images, not just the featured image.
+	 *
+	 * Inline `core/image` blobs are cached under the same
+	 * `_atmosphere_blob_ref` key as the featured image, so a post whose
+	 * stale blob belongs to an in-body image (and which has no featured
+	 * image at all) must still self-heal.
+	 */
+	public function test_publish_post_self_heals_stale_inline_image_blob() {
+		$upload_dir         = \wp_upload_dir();
+		$path               = $upload_dir['basedir'] . '/atmosphere-self-heal-inline-test.jpg';
+		$this->temp_files[] = $path;
+		\file_put_contents( $path, 'INLINE-IMAGE-BYTES' ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents
+
+		$attachment_id = self::factory()->attachment->create_object(
+			$path,
+			0,
+			array(
+				'post_mime_type' => 'image/jpeg',
+				'post_title'     => 'Inline image',
+			)
+		);
+
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_status'  => 'publish',
+				'post_content' => \sprintf(
+					'<!-- wp:image {"id":%1$d} --><figure class="wp-block-image"><img src="%2$s" alt="" class="wp-image-%1$d"/></figure><!-- /wp:image -->',
+					$attachment_id,
+					\wp_get_attachment_url( $attachment_id )
+				),
+			)
+		);
+
+		// Force the short-form path so the in-body image is uploaded as a
+		// native `app.bsky.embed.images` blob (long-form uses a link card).
+		\add_filter( 'atmosphere_is_short_form_post', '__return_true' );
+
+		// No featured image — the stale ref is on the in-body image only.
+		$stale_ref = array(
+			'$type'    => 'blob',
+			'ref'      => array( '$link' => 'bafkreistaleinline' ),
+			'mimeType' => 'image/jpeg',
+			'size'     => 123,
+		);
+		\update_post_meta( $attachment_id, '_atmosphere_blob_ref', $stale_ref );
+
+		$fresh_ref = array(
+			'$type'    => 'blob',
+			'ref'      => array( '$link' => 'bafkreifreshinline' ),
+			'mimeType' => 'image/jpeg',
+			'size'     => 456,
+		);
+		\add_filter(
+			'atmosphere_pre_upload_blob',
+			static function () use ( $fresh_ref ) {
+				return array( 'blob' => $fresh_ref );
+			}
+		);
+
+		$this->fail_call_indexes = array(
+			1 => new \WP_Error( 'atmosphere_pds', 'Could not find blob: bafkreistaleinline', array( 'status' => 400 ) ),
+		);
+		$this->register_capture( $post->ID );
+
+		$result = Publisher::publish_post( $post );
+
+		$this->assertIsArray( $result, 'Publish should self-heal an in-body image blob too.' );
+		$this->assertCount( 2, $this->captured_calls, 'Publisher should retry once after the inline-image blob error.' );
+		$this->assertSame(
+			$fresh_ref,
+			\get_post_meta( $attachment_id, '_atmosphere_blob_ref', true ),
+			'The stale in-body image ref should be replaced by the freshly uploaded one.'
+		);
+	}
+
+	/**
+	 * A reply-restricted post writes a threadgate in the same batch,
+	 * sharing the post's rkey.
+	 */
+	public function test_publish_post_includes_threadgate_when_restricted() {
+		$post = self::factory()->post->create_and_get(
+			array( 'post_status' => 'publish' )
+		);
+		\update_post_meta(
+			$post->ID,
+			Threadgate::META_RESTRICTION,
+			array( Threadgate::AUDIENCE_FOLLOWING )
+		);
+		$this->stub_threadgate_read( $this->threadgate_absent() );
+
+		\add_filter( 'atmosphere_is_short_form_post', '__return_true' );
+		$this->register_capture( $post->ID );
+
+		$result = Publisher::publish_post( $post );
+
+		$this->assertIsArray( $result );
+		$this->assertCount( 1, $this->captured_calls );
+
+		$writes = $this->captured_calls[0]['writes'];
+		$this->assertCount( 3, $writes, 'The batch should carry the post, document, and threadgate.' );
+		$this->assertSame( 'app.bsky.feed.threadgate', $writes[2]['collection'] );
+		$this->assertSame( $writes[0]['rkey'], $writes[2]['rkey'], 'The threadgate must share the post rkey.' );
+		$this->assertSame(
+			array( array( '$type' => 'app.bsky.feed.threadgate#followingRule' ) ),
+			$writes[2]['value']['allow']
+		);
+	}
+
+	/**
+	 * A connection known to lack the threadgate scope publishes the post
+	 * without the gate, rather than failing the whole batch.
+	 *
+	 * `set_up()` seeds a connection with no stored scope, so the sibling
+	 * test above already proves an unknown grant is allowed through. This
+	 * one stores a grant that is known and missing the scope: the post and
+	 * document still go out, the gate stays home, and the written marker
+	 * is left untouched so the first update after a reconnect creates it.
+	 */
+	public function test_publish_post_skips_threadgate_when_scope_is_missing() {
+		$connection          = \get_option( 'atmosphere_connection' );
+		$connection['scope'] = 'atproto repo:app.bsky.feed.post repo:site.standard.document';
+		\update_option( 'atmosphere_connection', $connection );
+
+		$post = self::factory()->post->create_and_get(
+			array( 'post_status' => 'publish' )
+		);
+		\update_post_meta(
+			$post->ID,
+			Threadgate::META_RESTRICTION,
+			array( Threadgate::AUDIENCE_FOLLOWING )
+		);
+
+		\add_filter( 'atmosphere_is_short_form_post', '__return_true' );
+		$this->register_capture( $post->ID );
+
+		$result = Publisher::publish_post( $post );
+
+		$this->assertIsArray( $result );
+		$writes = $this->captured_calls[0]['writes'];
+		$this->assertCount( 2, $writes, 'The post and document publish; the gate is skipped.' );
+		foreach ( $writes as $write ) {
+			$this->assertNotSame( 'app.bsky.feed.threadgate', $write['collection'] );
+		}
+		$this->assertFalse( Threadgate::is_written( $post->ID ), 'Nothing was written, so the marker stays unset.' );
+	}
+
+	/**
+	 * An unrestricted post writes no threadgate record.
+	 */
+	public function test_publish_post_omits_threadgate_when_everybody() {
+		$post = self::factory()->post->create_and_get(
+			array( 'post_status' => 'publish' )
+		);
+
+		\add_filter( 'atmosphere_is_short_form_post', '__return_true' );
+		$this->register_capture( $post->ID );
+
+		$result = Publisher::publish_post( $post );
+
+		$this->assertIsArray( $result );
+		$writes = $this->captured_calls[0]['writes'];
+		$this->assertCount( 2, $writes, 'No threadgate should be written for an unrestricted post.' );
+	}
+
+	/**
+	 * Initial publish creates the gate without reading — so a transient read
+	 * failure can never silently drop a brand-new restriction.
+	 */
+	public function test_publish_creates_threadgate_without_a_read() {
+		$post = self::factory()->post->create_and_get( array( 'post_status' => 'publish' ) );
+		\update_post_meta(
+			$post->ID,
+			Threadgate::META_RESTRICTION,
+			array( Threadgate::AUDIENCE_FOLLOWING )
+		);
+		// A failing read must not matter on initial publish.
+		$this->stub_threadgate_read( $this->threadgate_read_error() );
+
+		\add_filter( 'atmosphere_is_short_form_post', '__return_true' );
+		$this->register_capture( $post->ID );
+
+		$result = Publisher::publish_post( $post );
+
+		$this->assertIsArray( $result );
+		$writes = $this->captured_calls[0]['writes'];
+		$this->assertCount( 3, $writes );
+		$this->assertSame( 'com.atproto.repo.applyWrites#create', $writes[2]['$type'] );
+		$this->assertSame( 'app.bsky.feed.threadgate', $writes[2]['collection'] );
+		$this->assertSame( '1', \get_post_meta( $post->ID, Threadgate::META_WRITTEN, true ) );
+	}
+
+	/**
+	 * Stub the threadgate getRecord read with a canned response.
+	 *
+	 * @param array|\WP_Error $response getRecord response (array with `value`),
+	 *                                 or a WP_Error (absent / transport failure).
+	 */
+	private function stub_threadgate_read( $response ): void {
+		\add_filter(
+			'atmosphere_pre_get_record',
+			static function ( $short, $collection ) use ( $response ) {
+				return 'app.bsky.feed.threadgate' === $collection ? $response : $short;
+			},
+			10,
+			2
+		);
+	}
+
+	/**
+	 * A getRecord error standing in for a genuinely-absent record.
+	 *
+	 * @return \WP_Error
+	 */
+	private function threadgate_absent(): \WP_Error {
+		return new \WP_Error(
+			'atmosphere_pds',
+			'Could not locate record.',
+			array(
+				'status' => 400,
+				'error'  => 'RecordNotFound',
+			)
+		);
+	}
+
+	/**
+	 * A getRecord success wrapping a threadgate record value.
+	 *
+	 * @param array $value Record value.
+	 * @return array
+	 */
+	private function threadgate_found( array $value ): array {
+		return array( 'value' => $value );
+	}
+
+	/**
+	 * A getRecord transport failure (unknown remote state).
+	 *
+	 * @return \WP_Error
+	 */
+	private function threadgate_read_error(): \WP_Error {
+		return new \WP_Error( 'http_request_failed', 'Connection reset.' );
+	}
+
+	/**
+	 * Seed a published single-record post ready for an update_post() call.
+	 *
+	 * @param array $restriction Reply-restriction tokens to store.
+	 * @param bool  $gate_written Whether a threadgate is already live on the PDS.
+	 * @return \WP_Post
+	 */
+	private function published_post_for_update( array $restriction = array(), bool $gate_written = false ): \WP_Post {
+		$post = self::factory()->post->create_and_get( array( 'post_status' => 'publish' ) );
+		\update_post_meta( $post->ID, Post::META_TID, 'bsky-tid-123' );
+		\update_post_meta( $post->ID, Document::META_TID, 'doc-tid-456' );
+		\update_post_meta( $post->ID, Post::META_URI, 'at://did:plc:test/app.bsky.feed.post/bsky-tid-123' );
+		\update_post_meta( $post->ID, Document::META_URI, 'at://did:plc:test/site.standard.document/doc-tid-456' );
+		if ( ! empty( $restriction ) ) {
+			\update_post_meta( $post->ID, Threadgate::META_RESTRICTION, $restriction );
+		}
+		if ( $gate_written ) {
+			\update_post_meta( $post->ID, Threadgate::META_WRITTEN, '1' );
+		}
+
+		return $post;
+	}
+
+	/**
+	 * Adding a restriction to a live post creates its threadgate on update.
+	 */
+	public function test_update_creates_threadgate_when_newly_restricted() {
+		$post = $this->published_post_for_update( array( Threadgate::AUDIENCE_FOLLOWING ) );
+		$this->stub_threadgate_read( $this->threadgate_absent() );
+		$this->register_capture( $post->ID );
+
+		$result = Publisher::update_post( $post );
+
+		$this->assertIsArray( $result );
+		$writes = $this->captured_calls[0]['writes'];
+		$this->assertCount( 3, $writes );
+		$this->assertSame( 'com.atproto.repo.applyWrites#create', $writes[2]['$type'] );
+		$this->assertSame( 'app.bsky.feed.threadgate', $writes[2]['collection'] );
+		$this->assertSame( 'bsky-tid-123', $writes[2]['rkey'] );
+		$this->assertSame( '1', \get_post_meta( $post->ID, Threadgate::META_WRITTEN, true ) );
+	}
+
+	/**
+	 * Changing the restriction on an already-gated post updates the gate.
+	 */
+	public function test_update_updates_existing_threadgate() {
+		$post = $this->published_post_for_update( array( Threadgate::AUDIENCE_FOLLOWING ), true );
+		$this->stub_threadgate_read(
+			$this->threadgate_found(
+				array(
+					'$type'     => 'app.bsky.feed.threadgate',
+					'post'      => 'at://did:plc:test/app.bsky.feed.post/bsky-tid-123',
+					'allow'     => array( array( '$type' => 'app.bsky.feed.threadgate#mentionRule' ) ),
+					'createdAt' => '2026-01-01T00:00:00.000Z',
+				)
+			)
+		);
+		$this->register_capture( $post->ID );
+
+		Publisher::update_post( $post );
+
+		$writes = $this->captured_calls[0]['writes'];
+		$this->assertSame( 'com.atproto.repo.applyWrites#update', $writes[2]['$type'] );
+		$this->assertSame( 'app.bsky.feed.threadgate', $writes[2]['collection'] );
+		$this->assertSame( '1', \get_post_meta( $post->ID, Threadgate::META_WRITTEN, true ) );
+	}
+
+	/**
+	 * Clearing the restriction deletes the gate and forgets the marker.
+	 */
+	public function test_update_deletes_threadgate_when_unrestricted() {
+		$post = $this->published_post_for_update( array(), true );
+		$this->stub_threadgate_read(
+			$this->threadgate_found(
+				array(
+					'$type'     => 'app.bsky.feed.threadgate',
+					'post'      => 'at://did:plc:test/app.bsky.feed.post/bsky-tid-123',
+					'allow'     => array( array( '$type' => 'app.bsky.feed.threadgate#followingRule' ) ),
+					'createdAt' => '2026-01-01T00:00:00.000Z',
+				)
+			)
+		);
+		$this->register_capture( $post->ID );
+
+		Publisher::update_post( $post );
+
+		$writes = $this->captured_calls[0]['writes'];
+		$this->assertSame( 'com.atproto.repo.applyWrites#delete', $writes[2]['$type'] );
+		$this->assertSame( 'app.bsky.feed.threadgate', $writes[2]['collection'] );
+		$this->assertSame( 'bsky-tid-123', $writes[2]['rkey'] );
+		$this->assertSame( '', \get_post_meta( $post->ID, Threadgate::META_WRITTEN, true ) );
+	}
+
+	/**
+	 * Updating a gate preserves Bluesky-native fields it does not own.
+	 */
+	public function test_update_preserves_externally_managed_fields() {
+		$post = $this->published_post_for_update( array( Threadgate::AUDIENCE_FOLLOWING ), true );
+		$this->stub_threadgate_read(
+			$this->threadgate_found(
+				array(
+					'$type'         => 'app.bsky.feed.threadgate',
+					'post'          => 'at://did:plc:test/app.bsky.feed.post/bsky-tid-123',
+					'allow'         => array( array( '$type' => 'app.bsky.feed.threadgate#mentionRule' ) ),
+					'createdAt'     => '2026-01-01T00:00:00.000Z',
+					'hiddenReplies' => array( 'at://did:plc:other/app.bsky.feed.post/xyz' ),
+				)
+			)
+		);
+		$this->register_capture( $post->ID );
+
+		Publisher::update_post( $post );
+
+		$value = $this->captured_calls[0]['writes'][2]['value'];
+		$this->assertSame(
+			array( array( '$type' => 'app.bsky.feed.threadgate#followingRule' ) ),
+			$value['allow'],
+			'Our allow should replace the old one.'
+		);
+		$this->assertSame(
+			array( 'at://did:plc:other/app.bsky.feed.post/xyz' ),
+			$value['hiddenReplies'],
+			'Externally-set hiddenReplies must survive the update.'
+		);
+		$this->assertSame( '2026-01-01T00:00:00.000Z', $value['createdAt'], 'The original createdAt is kept.' );
+	}
+
+	/**
+	 * Selecting Everybody keeps a gate that still carries moderation state,
+	 * dropping only our allow.
+	 */
+	public function test_update_strips_allow_but_keeps_hidden_replies() {
+		$post = $this->published_post_for_update( array(), true );
+		$this->stub_threadgate_read(
+			$this->threadgate_found(
+				array(
+					'$type'         => 'app.bsky.feed.threadgate',
+					'post'          => 'at://did:plc:test/app.bsky.feed.post/bsky-tid-123',
+					'allow'         => array( array( '$type' => 'app.bsky.feed.threadgate#followingRule' ) ),
+					'createdAt'     => '2026-01-01T00:00:00.000Z',
+					'hiddenReplies' => array( 'at://did:plc:other/app.bsky.feed.post/xyz' ),
+				)
+			)
+		);
+		$this->register_capture( $post->ID );
+
+		Publisher::update_post( $post );
+
+		$write = $this->captured_calls[0]['writes'][2];
+		$this->assertSame( 'com.atproto.repo.applyWrites#update', $write['$type'], 'Keep the record, do not delete it.' );
+		$this->assertArrayNotHasKey( 'allow', $write['value'], 'Our allow is removed.' );
+		$this->assertSame( array( 'at://did:plc:other/app.bsky.feed.post/xyz' ), $write['value']['hiddenReplies'] );
+		// The record is still live, so the marker stays set — the post's own
+		// delete must still clean it up.
+		$this->assertSame( '1', \get_post_meta( $post->ID, Threadgate::META_WRITTEN, true ) );
+	}
+
+	/**
+	 * A gate created directly on Bluesky is merged into, not collided with.
+	 */
+	public function test_update_merges_into_externally_created_gate() {
+		$post = $this->published_post_for_update( array( Threadgate::AUDIENCE_FOLLOWING ) );
+		$this->stub_threadgate_read(
+			$this->threadgate_found(
+				array(
+					'$type'         => 'app.bsky.feed.threadgate',
+					'post'          => 'at://did:plc:test/app.bsky.feed.post/bsky-tid-123',
+					'createdAt'     => '2026-01-01T00:00:00.000Z',
+					'hiddenReplies' => array( 'at://did:plc:other/app.bsky.feed.post/xyz' ),
+				)
+			)
+		);
+		$this->register_capture( $post->ID );
+
+		Publisher::update_post( $post );
+
+		$write = $this->captured_calls[0]['writes'][2];
+		$this->assertSame( 'com.atproto.repo.applyWrites#update', $write['$type'], 'Merge into the existing record, not create.' );
+		$this->assertSame( array( 'at://did:plc:other/app.bsky.feed.post/xyz' ), $write['value']['hiddenReplies'] );
+	}
+
+	/**
+	 * A failed read leaves the gate and the marker untouched.
+	 */
+	public function test_update_skips_gate_on_read_error() {
+		$post = $this->published_post_for_update( array( Threadgate::AUDIENCE_FOLLOWING ) );
+		$this->stub_threadgate_read( $this->threadgate_read_error() );
+		$this->register_capture( $post->ID );
+
+		Publisher::update_post( $post );
+
+		$this->assertCount( 2, $this->captured_calls[0]['writes'], 'No gate write when the read fails.' );
+		$this->assertSame( '', \get_post_meta( $post->ID, Threadgate::META_WRITTEN, true ), 'Marker left unchanged.' );
+	}
+
+	/**
+	 * An unrestricted, never-gated post touches no threadgate on update.
+	 */
+	public function test_update_leaves_threadgate_alone_when_never_gated() {
+		$post = $this->published_post_for_update();
+		$this->register_capture( $post->ID );
+
+		Publisher::update_post( $post );
+
+		$writes = $this->captured_calls[0]['writes'];
+		$this->assertCount( 2, $writes, 'No threadgate write for an ungated post.' );
+	}
+
+	/**
+	 * Deleting a post removes its written threadgate at the root rkey.
+	 */
+	public function test_delete_post_deletes_threadgate() {
+		$post = self::factory()->post->create_and_get( array( 'post_status' => 'trash' ) );
+		\update_post_meta( $post->ID, Post::META_TID, 'root-tid' );
+		\update_post_meta( $post->ID, Document::META_TID, 'doc-tid' );
+		\update_post_meta( $post->ID, Threadgate::META_WRITTEN, '1' );
+
+		$this->register_capture( $post->ID );
+		Publisher::delete_post( $post );
+
+		$gate = $this->threadgate_writes_in( $this->captured_calls[0]['writes'] );
+		$this->assertCount( 1, $gate );
+		$this->assertSame( 'com.atproto.repo.applyWrites#delete', $gate[0]['$type'] );
+		$this->assertSame( 'root-tid', $gate[0]['rkey'] );
+	}
+
+	/**
+	 * The hard-delete path deletes the threadgate at the carried root rkey.
+	 */
+	public function test_delete_post_by_tids_deletes_threadgate() {
+		$this->register_capture( 0 );
+
+		Publisher::delete_post_by_tids( array( 'root-tid' ), 'doc-tid', array(), 'root-tid' );
+
+		$gate = $this->threadgate_writes_in( $this->captured_calls[0]['writes'] );
+		$this->assertCount( 1, $gate );
+		$this->assertSame( 'com.atproto.repo.applyWrites#delete', $gate[0]['$type'] );
+		$this->assertSame( 'root-tid', $gate[0]['rkey'] );
+	}
+
+	/**
+	 * Filter the threadgate entries out of an applyWrites batch.
+	 *
+	 * @param array $writes applyWrites entries.
+	 * @return array Threadgate entries only.
+	 */
+	private function threadgate_writes_in( array $writes ): array {
+		return \array_values(
+			\array_filter(
+				$writes,
+				static fn( $w ) => 'app.bsky.feed.threadgate' === $w['collection']
+			)
+		);
+	}
+
+	/**
 	 * Direct publish calls defensively reject password-protected posts.
 	 */
 	public function test_publish_rejects_password_protected_post() {
@@ -334,6 +1054,237 @@ class Test_Publisher extends WP_UnitTestCase {
 		$this->assertCount( 1, $captured, 'Rejected publish must still fire the result action.' );
 		$this->assertSame( $post->ID, $captured[0]['post']->ID );
 		$this->assertSame( $result, $captured[0]['result'] );
+	}
+
+	/**
+	 * With the companion filter off, publish writes only the document record.
+	 *
+	 * @group atmosphere
+	 * @group publisher
+	 */
+	public function test_publish_document_only_writes_single_document_record() {
+		\add_filter( 'atmosphere_should_publish_bluesky_post', '__return_false' );
+
+		$post = self::factory()->post->create_and_get( array( 'post_status' => 'publish' ) );
+		$this->register_capture( $post->ID );
+
+		$result = Publisher::publish_post( $post );
+
+		$this->assertNotWPError( $result );
+		$this->assertCount( 1, $this->captured_calls, 'Doc-only publish should make one applyWrites call.' );
+
+		$writes = $this->captured_calls[0]['writes'];
+		$this->assertCount( 1, $writes, 'Doc-only publish should write exactly one record.' );
+		$this->assertSame( 'com.atproto.repo.applyWrites#create', $writes[0]['$type'] );
+		$this->assertSame( 'site.standard.document', $writes[0]['collection'] );
+	}
+
+	/**
+	 * Doc-only publish marks the document synced and leaves no Bluesky post meta.
+	 *
+	 * @group atmosphere
+	 * @group publisher
+	 */
+	public function test_publish_document_only_sets_document_meta_not_bsky_meta() {
+		\add_filter( 'atmosphere_should_publish_bluesky_post', '__return_false' );
+
+		$post = self::factory()->post->create_and_get( array( 'post_status' => 'publish' ) );
+		$this->register_capture( $post->ID );
+
+		Publisher::publish_post( $post );
+
+		$this->assertNotEmpty( \get_post_meta( $post->ID, Document::META_URI, true ), 'Document URI should be stored.' );
+		$this->assertEmpty( \get_post_meta( $post->ID, Post::META_URI, true ), 'No Bluesky post URI should be stored.' );
+	}
+
+	/**
+	 * With the filter at its default (on), publish still writes both records.
+	 *
+	 * @group atmosphere
+	 * @group publisher
+	 */
+	public function test_publish_writes_both_records_when_filter_enabled() {
+		$post = self::factory()->post->create_and_get( array( 'post_status' => 'publish' ) );
+		$this->register_capture( $post->ID );
+
+		Publisher::publish_post( $post );
+
+		$writes = $this->captured_calls[0]['writes'];
+		$this->assertCount( 2, $writes, 'Default behavior writes the bsky post and the document.' );
+		$collections = array( $writes[0]['collection'], $writes[1]['collection'] );
+		$this->assertContains( 'app.bsky.feed.post', $collections );
+		$this->assertContains( 'site.standard.document', $collections );
+	}
+
+	/**
+	 * A per-post filter routes each post independently in a single run: a post
+	 * flagged "quiet" via post meta is written document-only while an ordinary
+	 * post keeps its Bluesky companion. Proves the post reaches the filter and
+	 * shapes that post's applyWrites batch.
+	 *
+	 * @group atmosphere
+	 * @group publisher
+	 */
+	public function test_publish_companion_decided_per_post() {
+		\add_filter(
+			'atmosphere_should_publish_bluesky_post',
+			static function ( $enabled, $post ) {
+				return \get_post_meta( $post->ID, 'quiet', true ) ? false : $enabled;
+			},
+			10,
+			2
+		);
+
+		$loud  = self::factory()->post->create_and_get( array( 'post_status' => 'publish' ) );
+		$quiet = self::factory()->post->create_and_get( array( 'post_status' => 'publish' ) );
+		\update_post_meta( $quiet->ID, 'quiet', '1' );
+
+		$this->register_capture( $loud->ID );
+
+		Publisher::publish_post( $loud );
+		Publisher::publish_post( $quiet );
+
+		$this->assertCount( 2, $this->captured_calls, 'Each post makes one applyWrites call.' );
+
+		$loud_writes = $this->captured_calls[0]['writes'];
+		$this->assertCount( 2, $loud_writes, 'The ordinary post keeps the Bluesky companion.' );
+		$loud_collections = \wp_list_pluck( $loud_writes, 'collection' );
+		$this->assertContains( 'app.bsky.feed.post', $loud_collections );
+		$this->assertContains( 'site.standard.document', $loud_collections );
+
+		$quiet_writes = $this->captured_calls[1]['writes'];
+		$this->assertCount( 1, $quiet_writes, 'The quiet post is written document-only.' );
+		$this->assertSame( 'site.standard.document', $quiet_writes[0]['collection'] );
+	}
+
+	/**
+	 * Doc-only update issues a single document #update against the stored TID.
+	 *
+	 * @group atmosphere
+	 * @group publisher
+	 */
+	public function test_update_document_only_updates_existing_document() {
+		\add_filter( 'atmosphere_should_publish_bluesky_post', '__return_false' );
+
+		$post = self::factory()->post->create_and_get( array( 'post_status' => 'publish' ) );
+
+		// Simulate a previously-seeded document-only post: only Document meta.
+		\update_post_meta( $post->ID, Document::META_TID, 'doc-tid-abc' );
+		\update_post_meta( $post->ID, Document::META_URI, 'at://did:plc:test123/site.standard.document/doc-tid-abc' );
+
+		$this->register_capture( $post->ID );
+
+		$result = Publisher::update_post( $post );
+
+		$this->assertNotWPError( $result );
+		$this->assertCount( 1, $this->captured_calls );
+
+		$writes = $this->captured_calls[0]['writes'];
+		$this->assertCount( 1, $writes );
+		$this->assertSame( 'com.atproto.repo.applyWrites#update', $writes[0]['$type'] );
+		$this->assertSame( 'site.standard.document', $writes[0]['collection'] );
+		$this->assertSame( 'doc-tid-abc', $writes[0]['rkey'] );
+	}
+
+	/**
+	 * Doc-only update of a never-synced post is a no-op: it must not mint a
+	 * fresh document record on a routine edit (that would retro-sync legacy
+	 * content behind the author's back — the backfill command is the deliberate
+	 * path for that). Mirrors the dual-record update guard, and fires the same
+	 * skip action so subscribers behave identically.
+	 *
+	 * @group atmosphere
+	 * @group publisher
+	 */
+	public function test_update_document_only_skips_never_synced_post() {
+		\add_filter( 'atmosphere_should_publish_bluesky_post', '__return_false' );
+
+		$skipped = array();
+		\add_action(
+			'atmosphere_update_skipped_unsynced_post',
+			static function ( $post ) use ( &$skipped ) {
+				$skipped[] = $post->ID;
+			}
+		);
+
+		$post = self::factory()->post->create_and_get( array( 'post_status' => 'publish' ) );
+		$this->register_capture( $post->ID );
+
+		$result = Publisher::update_post( $post );
+
+		$this->assertSame( array(), $result, 'A never-synced post edit should be a no-op.' );
+		$this->assertCount( 0, $this->captured_calls, 'No applyWrites call should be made.' );
+		$this->assertSame( array( $post->ID ), $skipped, 'The skip action should fire once for the post.' );
+		$this->assertEmpty( \get_post_meta( $post->ID, Document::META_URI, true ), 'No document record should be minted.' );
+	}
+
+	/**
+	 * Doc-only update of a post whose stored URI has no TID is a corrupted
+	 * half-synced state: it must error rather than mint a second document that
+	 * orphans the existing one — mirroring the dual-record update path.
+	 *
+	 * @group atmosphere
+	 * @group publisher
+	 */
+	public function test_update_document_only_errors_when_uri_present_but_tid_missing() {
+		\add_filter( 'atmosphere_should_publish_bluesky_post', '__return_false' );
+
+		$post = self::factory()->post->create_and_get( array( 'post_status' => 'publish' ) );
+
+		// Corrupted state: a document URI exists but its TID was never stored.
+		\update_post_meta( $post->ID, Document::META_URI, 'at://did:plc:test123/site.standard.document/doc-tid-orphan' );
+
+		$this->register_capture( $post->ID );
+
+		$result = Publisher::update_post( $post );
+
+		$this->assertWPError( $result );
+		$this->assertSame( 'atmosphere_missing_tid', $result->get_error_code() );
+		$this->assertCount( 0, $this->captured_calls, 'No applyWrites call should be made for a corrupted doc-only record.' );
+	}
+
+	/**
+	 * Doc-only: a now-unpublishable, previously-seeded document-only post
+	 * deletes just the document record — one delete op on
+	 * site.standard.document and no app.bsky.feed.post delete.
+	 *
+	 * @group atmosphere
+	 * @group publisher
+	 */
+	public function test_update_document_only_deletes_only_document_when_unpublishable() {
+		\add_filter( 'atmosphere_should_publish_bluesky_post', '__return_false' );
+
+		// Password-protected so is_post_publishable() returns false, routing
+		// update_post() straight to delete_post().
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_status'   => 'publish',
+				'post_password' => 'secret',
+			)
+		);
+
+		// Previously-seeded document-only post: only Document meta, no Post
+		// meta. META_DID matches the connected DID so delete_post()'s
+		// DID-mismatch guard lets the document delete through.
+		\update_post_meta( $post->ID, Document::META_TID, 'doc-tid-del' );
+		\update_post_meta( $post->ID, Document::META_URI, 'at://did:plc:test123/site.standard.document/doc-tid-del' );
+		\update_post_meta( $post->ID, Document::META_DID, 'did:plc:test123' );
+
+		$this->register_capture( $post->ID );
+
+		$result = Publisher::update_post( $post );
+
+		$this->assertNotWPError( $result );
+		$this->assertCount( 1, $this->captured_calls, 'Doc-only cleanup should make exactly one applyWrites call.' );
+
+		$writes = $this->captured_calls[0]['writes'];
+		$this->assertCount( 1, $writes, 'Doc-only cleanup should emit exactly one write.' );
+		$this->assertSame( 'com.atproto.repo.applyWrites#delete', $writes[0]['$type'] );
+		$this->assertSame( 'site.standard.document', $writes[0]['collection'] );
+		$this->assertSame( 'doc-tid-del', $writes[0]['rkey'] );
+
+		$collections = \array_column( $writes, 'collection' );
+		$this->assertNotContains( 'app.bsky.feed.post', $collections, 'No Bluesky post delete should be emitted.' );
 	}
 
 	/**
@@ -453,6 +1404,67 @@ class Test_Publisher extends WP_UnitTestCase {
 	}
 
 	/**
+	 * A document-only publish that races a visibility change runs the same
+	 * reconcile race-guard as the dual path: the document record it just wrote
+	 * is deleted when the post becomes non-publishable mid-flight.
+	 *
+	 * @group atmosphere
+	 * @group publisher
+	 */
+	public function test_publish_document_only_reconciles_when_post_protected_mid_publish() {
+		\add_filter( 'atmosphere_should_publish_bluesky_post', '__return_false' );
+
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_status'  => 'publish',
+				'post_title'   => 'Race window',
+				'post_content' => 'This starts public.',
+			)
+		);
+
+		$captured_calls = array();
+		\add_filter(
+			'atmosphere_pre_apply_writes',
+			static function ( $short, $writes ) use ( $post, &$captured_calls ) {
+				$captured_calls[] = $writes;
+
+				if ( 1 === \count( $captured_calls ) ) {
+					\wp_update_post(
+						array(
+							'ID'            => $post->ID,
+							'post_password' => 'secret',
+						)
+					);
+				}
+
+				return array(
+					'results' => \array_map(
+						static fn ( $write ) => array(
+							'uri' => 'at://did:plc:test123/' . $write['collection'] . '/' . $write['rkey'],
+							'cid' => 'bafy' . $write['rkey'],
+						),
+						$writes
+					),
+				);
+			},
+			10,
+			2
+		);
+
+		$result = Publisher::publish_post( $post );
+
+		\wp_clear_scheduled_hook( 'atmosphere_delete_post', array( $post->ID ) );
+
+		$this->assertIsArray( $result );
+		$this->assertCount( 2, $captured_calls, 'Document-only publish must be followed by cleanup.' );
+		$this->assertSame( 'com.atproto.repo.applyWrites#create', $captured_calls[0][0]['$type'] );
+		$this->assertSame( 'site.standard.document', $captured_calls[0][0]['collection'] );
+		$this->assertSame( 'com.atproto.repo.applyWrites#delete', $captured_calls[1][0]['$type'] );
+		$this->assertSame( 'site.standard.document', $captured_calls[1][0]['collection'] );
+		$this->assertSame( '', \get_post_meta( $post->ID, Document::META_URI, true ) );
+	}
+
+	/**
 	 * Test that delete() returns error when not connected.
 	 *
 	 * The API layer requires a valid OAuth connection. Without one,
@@ -549,6 +1561,77 @@ class Test_Publisher extends WP_UnitTestCase {
 		$this->assertSame( '', \get_comment_meta( $c2, Comment::META_TID, true ) );
 		// Stale comment's TID is left alone — we did not touch its record.
 		$this->assertSame( 'stale-tid', \get_comment_meta( $c3, Comment::META_TID, true ) );
+	}
+
+	/**
+	 * Disabling comment publishing leaves published comment replies and
+	 * their metadata untouched while post and document cleanup continues.
+	 */
+	public function test_delete_post_skips_comment_cascade_when_comment_publishing_disabled() {
+		$post = self::factory()->post->create_and_get(
+			array( 'post_status' => 'trash' )
+		);
+		\update_post_meta( $post->ID, Post::META_TID, 'post-tid' );
+		\update_post_meta( $post->ID, Post::META_URI, 'at://did:plc:test123/app.bsky.feed.post/post-tid' );
+		\update_post_meta( $post->ID, Document::META_TID, 'doc-tid' );
+
+		$comment_id = self::factory()->comment->create( array( 'comment_post_ID' => $post->ID ) );
+		\update_comment_meta( $comment_id, Comment::META_TID, 'reply-tid' );
+		\update_comment_meta( $comment_id, Comment::META_URI, 'at://did:plc:test123/app.bsky.feed.post/reply-tid' );
+
+		\update_option( 'atmosphere_publish_comments', '' );
+		$this->register_capture( $post->ID );
+
+		$result = Publisher::delete_post( $post );
+
+		$this->assertIsArray( $result );
+		$this->assertCount( 1, $this->captured_calls );
+		$this->assertSame(
+			array( 'post-tid', 'doc-tid' ),
+			\array_column( $this->captured_calls[0]['writes'], 'rkey' )
+		);
+		$this->assertSame( 'reply-tid', \get_comment_meta( $comment_id, Comment::META_TID, true ) );
+		$this->assertNotSame( '', \get_comment_meta( $comment_id, Comment::META_URI, true ) );
+		$this->assertSame( '', \get_post_meta( $post->ID, Post::META_TID, true ) );
+	}
+
+	/**
+	 * Disabling comment publishing while the root delete is in flight must
+	 * prevent the prebuilt comment batch and preserve its local metadata.
+	 */
+	public function test_delete_post_rechecks_comment_publishing_before_comment_batch() {
+		$post = self::factory()->post->create_and_get(
+			array( 'post_status' => 'trash' )
+		);
+		\update_post_meta( $post->ID, Post::META_TID, 'post-tid' );
+		\update_post_meta( $post->ID, Post::META_URI, 'at://did:plc:test123/app.bsky.feed.post/post-tid' );
+		\update_post_meta( $post->ID, Document::META_TID, 'doc-tid' );
+
+		$comment_id = self::factory()->comment->create( array( 'comment_post_ID' => $post->ID ) );
+		\update_comment_meta( $comment_id, Comment::META_TID, 'reply-tid' );
+		\update_comment_meta( $comment_id, Comment::META_URI, 'at://did:plc:test123/app.bsky.feed.post/reply-tid' );
+
+		\add_filter(
+			'atmosphere_pre_apply_writes',
+			static function ( $short_circuit ) {
+				\update_option( 'atmosphere_publish_comments', '' );
+				return $short_circuit;
+			},
+			5
+		);
+		$this->register_capture( $post->ID );
+
+		$result = Publisher::delete_post( $post );
+
+		$this->assertIsArray( $result );
+		$this->assertCount( 1, $this->captured_calls );
+		$this->assertSame(
+			array( 'post-tid', 'doc-tid' ),
+			\array_column( $this->captured_calls[0]['writes'], 'rkey' )
+		);
+		$this->assertSame( '', \get_post_meta( $post->ID, Post::META_TID, true ) );
+		$this->assertSame( 'reply-tid', \get_comment_meta( $comment_id, Comment::META_TID, true ) );
+		$this->assertNotSame( '', \get_comment_meta( $comment_id, Comment::META_URI, true ) );
 	}
 
 	/**
@@ -898,6 +1981,94 @@ class Test_Publisher extends WP_UnitTestCase {
 
 		$this->assertWPError( $result );
 		$this->assertSame( 'atmosphere_not_published', $result->get_error_code() );
+	}
+
+	/**
+	 * Refuses to delete a reply minted under a different connected account,
+	 * issues no write, and preserves the meta so a reconnect to the
+	 * original account can still clean up.
+	 */
+	public function test_delete_comment_bails_on_did_mismatch() {
+		$post_id    = $this->seed_root_post();
+		$user_id    = self::factory()->user->create();
+		$comment_id = self::factory()->comment->create(
+			array(
+				'comment_post_ID'  => $post_id,
+				'comment_approved' => '1',
+				'user_id'          => $user_id,
+			)
+		);
+		\update_comment_meta( $comment_id, Comment::META_TID, 'reply-tid' );
+		\update_comment_meta( $comment_id, Comment::META_URI, 'at://did:plc:old/app.bsky.feed.post/reply-tid' );
+		\update_comment_meta( $comment_id, Comment::META_DID, 'did:plc:old' );
+
+		$get_body = $this->stub_apply_writes( '', '' );
+		$result   = Publisher::delete_comment( \get_comment( $comment_id ) );
+		\remove_all_filters( 'pre_http_request' );
+
+		$this->assertWPError( $result );
+		$this->assertSame( 'atmosphere_did_mismatch', $result->get_error_code() );
+		$this->assertNull( $get_body(), 'No applyWrites should be issued for a foreign-DID reply.' );
+		$this->assertSame( 'reply-tid', \get_comment_meta( $comment_id, Comment::META_TID, true ) );
+	}
+
+	/**
+	 * The TID-only delete path refuses a foreign origin DID and issues no write.
+	 */
+	public function test_delete_comment_by_tid_bails_on_did_mismatch() {
+		$get_body = $this->stub_apply_writes( '', '' );
+		$result   = Publisher::delete_comment_by_tid( 'goner', 'did:plc:old' );
+		\remove_all_filters( 'pre_http_request' );
+
+		$this->assertWPError( $result );
+		$this->assertSame( 'atmosphere_did_mismatch', $result->get_error_code() );
+		$this->assertNull( $get_body(), 'No applyWrites should be issued for a foreign-DID reply.' );
+	}
+
+	/**
+	 * An origin DID matching the connected account does not block the delete.
+	 */
+	public function test_delete_comment_by_tid_proceeds_when_origin_matches() {
+		$get_body = $this->stub_apply_writes( '', '' );
+		$result   = Publisher::delete_comment_by_tid( 'goner', 'did:plc:test123' );
+		\remove_all_filters( 'pre_http_request' );
+
+		if ( \is_wp_error( $result ) ) {
+			$this->markTestSkipped( 'API layer rejected request: ' . $result->get_error_message() );
+		}
+
+		$body = $get_body();
+		$this->assertSame( 'goner', $body['writes'][0]['rkey'] );
+	}
+
+	/**
+	 * Direct Publisher callers cannot bypass the global comment-publishing
+	 * setting for create, update, or delete operations.
+	 */
+	public function test_comment_publisher_methods_return_disabled_error_without_writing() {
+		$post_id    = self::factory()->post->create();
+		$comment_id = self::factory()->comment->create( array( 'comment_post_ID' => $post_id ) );
+		$comment    = \get_comment( $comment_id );
+
+		\update_comment_meta( $comment_id, Comment::META_TID, 'reply-tid' );
+		\update_comment_meta( $comment_id, Comment::META_URI, 'at://did:plc:test123/app.bsky.feed.post/reply-tid' );
+		\update_option( 'atmosphere_publish_comments', '' );
+		$this->register_capture( $post_id );
+
+		$results = array(
+			Publisher::publish_comment( $comment ),
+			Publisher::update_comment( $comment ),
+			Publisher::delete_comment( $comment ),
+			Publisher::delete_comment_by_tid( 'reply-tid' ),
+		);
+
+		foreach ( $results as $result ) {
+			$this->assertWPError( $result );
+			$this->assertSame( 'atmosphere_comment_publishing_disabled', $result->get_error_code() );
+		}
+
+		$this->assertCount( 0, $this->captured_calls );
+		$this->assertSame( 'reply-tid', \get_comment_meta( $comment_id, Comment::META_TID, true ) );
 	}
 
 	/**
@@ -1405,6 +2576,59 @@ class Test_Publisher extends WP_UnitTestCase {
 		$this->assertSame( '', \get_post_meta( $post->ID, Post::META_URI, true ) );
 		$this->assertSame( '', \get_post_meta( $post->ID, Post::META_TID, true ) );
 		$this->assertSame( '', \get_post_meta( $post->ID, Post::META_CID, true ) );
+	}
+
+	/**
+	 * A gated thread that fails mid-publish must delete its threadgate too.
+	 *
+	 * The threadgate rides in the root batch and shares the root rkey, so a
+	 * rollback that removes the root but leaves the threadgate would strand a
+	 * live record on the PDS pointing at a deleted post.
+	 */
+	public function test_publish_teaser_thread_rollback_deletes_threadgate() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'A Long-Form Post',
+				'post_content' => 'Hi.',
+				'post_excerpt' => 'A curated standalone excerpt for the test fixture.',
+			)
+		);
+		\update_post_meta(
+			$post->ID,
+			Threadgate::META_RESTRICTION,
+			array( Threadgate::AUDIENCE_FOLLOWING )
+		);
+		$this->stub_threadgate_read( $this->threadgate_absent() );
+
+		\add_filter( 'atmosphere_long_form_composition', fn() => 'teaser-thread' );
+
+		// Fail the reply create; rollback succeeds.
+		$this->fail_call_indexes = array(
+			2 => new \WP_Error( 'atmosphere_reply_failed', 'Reply write failed.' ),
+		);
+		$this->register_capture( $post->ID );
+
+		$result = Publisher::publish( $post );
+		$this->assertWPError( $result );
+
+		// The root batch carried post + doc + threadgate.
+		$root_writes = $this->captured_calls[0]['writes'];
+		$this->assertCount( 3, $root_writes );
+		$this->assertSame( 'app.bsky.feed.threadgate', $root_writes[2]['collection'] );
+		$root_rkey = $root_writes[0]['rkey'];
+
+		// Rollback deletes the reply, root, doc, AND the threadgate — at the
+		// shared root rkey.
+		$rollback_writes    = $this->captured_calls[2]['writes'];
+		$threadgate_deletes = \array_values(
+			\array_filter(
+				$rollback_writes,
+				static fn( $w ) => 'app.bsky.feed.threadgate' === $w['collection']
+			)
+		);
+		$this->assertCount( 1, $threadgate_deletes, 'Rollback must delete the threadgate.' );
+		$this->assertSame( 'com.atproto.repo.applyWrites#delete', $threadgate_deletes[0]['$type'] );
+		$this->assertSame( $root_rkey, $threadgate_deletes[0]['rkey'] );
 	}
 
 	/**
@@ -2244,6 +3468,49 @@ class Test_Publisher extends WP_UnitTestCase {
 	}
 
 	/**
+	 * A permanent-post-delete event queued before the switch changed still
+	 * removes the post and document, but drops its comment-reply TIDs.
+	 */
+	public function test_delete_post_by_tids_strips_comments_when_comment_publishing_disabled() {
+		\update_option( 'atmosphere_publish_comments', '' );
+		$this->register_capture( 0 );
+
+		$result = Publisher::delete_post_by_tids(
+			array( 'root-tid' ),
+			'doc-tid',
+			array( 'reply-1', 'reply-2' )
+		);
+
+		$this->assertIsArray( $result );
+		$this->assertCount( 1, $this->captured_calls );
+		$this->assertSame(
+			array( 'root-tid', 'doc-tid' ),
+			\array_column( $this->captured_calls[0]['writes'], 'rkey' )
+		);
+	}
+
+	/**
+	 * A queued comment-only cascade whose TIDs were stripped by the disabled
+	 * setting is an intentional no-op — it returns an empty success (so the
+	 * cron handler logs nothing), while a genuinely empty payload still
+	 * surfaces the no-TIDs error.
+	 */
+	public function test_delete_post_by_tids_comment_only_payload_is_noop_when_disabled() {
+		\update_option( 'atmosphere_publish_comments', '' );
+		$this->register_capture( 0 );
+
+		$result = Publisher::delete_post_by_tids( array(), '', array( 'reply-1', 'reply-2' ) );
+
+		$this->assertSame( array( 'results' => array() ), $result );
+		$this->assertCount( 0, $this->captured_calls, 'A stripped comment-only cascade must not reach the PDS.' );
+
+		$this->assertWPError(
+			Publisher::delete_post_by_tids( array(), '', array() ),
+			'A genuinely empty payload must still surface the no-TIDs error.'
+		);
+	}
+
+	/**
 	 * If the root batch fails on the permanent-delete path, the comment
 	 * batch is not attempted — the failure short-circuits before the
 	 * comment cascade, mirroring the trash path.
@@ -2263,6 +3530,176 @@ class Test_Publisher extends WP_UnitTestCase {
 		$this->assertWPError( $result );
 		$this->assertSame( 'atmosphere_pds_500', $result->get_error_code() );
 		$this->assertCount( 1, $this->captured_calls, 'Comment batch must be skipped when the root batch fails.' );
+	}
+
+	/**
+	 * A document-only post whose DID meta was moved to the current account
+	 * (a failed republish after reconnecting) still lives in the old repo,
+	 * as its stored URI says. The delete must be refused, not no-op'd.
+	 */
+	public function test_delete_post_bails_when_document_uri_names_previous_account() {
+		$post = self::factory()->post->create_and_get( array( 'post_status' => 'trash' ) );
+		\update_post_meta( $post->ID, Document::META_TID, 'doc-tid' );
+		\update_post_meta( $post->ID, Document::META_URI, 'at://did:plc:old/site.standard.document/doc-tid' );
+		\update_post_meta( $post->ID, Document::META_DID, 'did:plc:test123' );
+
+		$get_body = $this->stub_apply_writes( '', '' );
+		$result   = Publisher::delete_post( $post );
+		\remove_all_filters( 'pre_http_request' );
+
+		$this->assertWPError( $result );
+		$this->assertSame( 'atmosphere_did_mismatch', $result->get_error_code() );
+		$this->assertNull( $get_body(), 'No applyWrites should be issued against the wrong repo.' );
+		$this->assertSame( 'doc-tid', \get_post_meta( $post->ID, Document::META_TID, true ) );
+	}
+
+	/**
+	 * Same for the Bluesky post: its stored URI outranks the DID meta.
+	 */
+	public function test_delete_post_bails_when_bsky_uri_names_previous_account() {
+		$post = self::factory()->post->create_and_get( array( 'post_status' => 'trash' ) );
+		\update_post_meta( $post->ID, Post::META_TID, 'post-tid' );
+		\update_post_meta( $post->ID, Post::META_URI, 'at://did:plc:old/app.bsky.feed.post/post-tid' );
+		\update_post_meta( $post->ID, Post::META_DID, 'did:plc:test123' );
+
+		$get_body = $this->stub_apply_writes( '', '' );
+		$result   = Publisher::delete_post( $post );
+		\remove_all_filters( 'pre_http_request' );
+
+		$this->assertWPError( $result );
+		$this->assertSame( 'atmosphere_did_mismatch', $result->get_error_code() );
+		$this->assertNull( $get_body(), 'No applyWrites should be issued against the wrong repo.' );
+		$this->assertSame( 'post-tid', \get_post_meta( $post->ID, Post::META_TID, true ) );
+	}
+
+	/**
+	 * A reply published under a previous account is left out of the trash
+	 * cascade and keeps its meta, while the replies in the connected repo
+	 * are deleted as usual.
+	 */
+	public function test_delete_post_skips_comment_replies_from_previous_account() {
+		$post = self::factory()->post->create_and_get( array( 'post_status' => 'trash' ) );
+		\update_post_meta( $post->ID, Post::META_TID, 'post-tid' );
+		\update_post_meta( $post->ID, Post::META_URI, 'at://did:plc:test123/app.bsky.feed.post/post-tid' );
+
+		$current = self::factory()->comment->create( array( 'comment_post_ID' => $post->ID ) );
+		\update_comment_meta( $current, Comment::META_TID, 'reply-current' );
+		\update_comment_meta( $current, Comment::META_URI, 'at://did:plc:test123/app.bsky.feed.post/reply-current' );
+
+		$foreign = self::factory()->comment->create( array( 'comment_post_ID' => $post->ID ) );
+		\update_comment_meta( $foreign, Comment::META_TID, 'reply-foreign' );
+		\update_comment_meta( $foreign, Comment::META_URI, 'at://did:plc:old/app.bsky.feed.post/reply-foreign' );
+		\update_comment_meta( $foreign, Comment::META_DID, 'did:plc:old' );
+
+		$this->register_capture( $post->ID );
+		$result = Publisher::delete_post( $post );
+
+		$this->assertNotWPError( $result );
+		$this->assertCount( 2, $this->captured_calls, 'Root and comment deletes must be separate batches.' );
+		$this->assertSame( array( 'reply-current' ), \array_column( $this->captured_calls[1]['writes'], 'rkey' ) );
+		$this->assertSame( '', \get_comment_meta( $current, Comment::META_TID, true ) );
+		$this->assertSame( 'reply-foreign', \get_comment_meta( $foreign, Comment::META_TID, true ), 'The skipped reply keeps its meta.' );
+	}
+
+	/**
+	 * When the only records left on a post are replies from a previous
+	 * account (a comment-only retry after reconnecting), the delete reports
+	 * the account mismatch instead of claiming nothing was published.
+	 */
+	public function test_delete_post_reports_mismatch_when_only_foreign_replies_remain() {
+		$post = self::factory()->post->create_and_get( array( 'post_status' => 'trash' ) );
+
+		$foreign = self::factory()->comment->create( array( 'comment_post_ID' => $post->ID ) );
+		\update_comment_meta( $foreign, Comment::META_TID, 'reply-foreign' );
+		\update_comment_meta( $foreign, Comment::META_URI, 'at://did:plc:old/app.bsky.feed.post/reply-foreign' );
+
+		$this->register_capture( $post->ID );
+		$result = Publisher::delete_post( $post );
+
+		$this->assertWPError( $result );
+		$this->assertSame( 'atmosphere_did_mismatch', $result->get_error_code() );
+		$this->assertCount( 0, $this->captured_calls, 'No applyWrites should be issued against the wrong repo.' );
+		$this->assertSame( 'reply-foreign', \get_comment_meta( $foreign, Comment::META_TID, true ) );
+	}
+
+	/**
+	 * A reply's stored URI outranks its DID meta in the single-comment delete.
+	 */
+	public function test_delete_comment_bails_when_uri_names_previous_account() {
+		$post_id    = $this->seed_root_post();
+		$comment_id = self::factory()->comment->create( array( 'comment_post_ID' => $post_id ) );
+		\update_comment_meta( $comment_id, Comment::META_TID, 'reply-tid' );
+		\update_comment_meta( $comment_id, Comment::META_URI, 'at://did:plc:old/app.bsky.feed.post/reply-tid' );
+		\update_comment_meta( $comment_id, Comment::META_DID, 'did:plc:test123' );
+
+		$get_body = $this->stub_apply_writes( '', '' );
+		$result   = Publisher::delete_comment( \get_comment( $comment_id ) );
+		\remove_all_filters( 'pre_http_request' );
+
+		$this->assertWPError( $result );
+		$this->assertSame( 'atmosphere_did_mismatch', $result->get_error_code() );
+		$this->assertNull( $get_body(), 'No applyWrites should be issued against the wrong repo.' );
+	}
+
+	/**
+	 * The hard-delete path refuses to delete Bluesky records minted under a
+	 * different account and issues no write, aborting the whole cascade.
+	 */
+	public function test_delete_post_by_tids_bails_on_bsky_did_mismatch() {
+		$this->register_capture( 0 );
+
+		$result = Publisher::delete_post_by_tids(
+			array( 'root-tid' ),
+			'doc-tid',
+			array( 'reply-1' ),
+			'',
+			'did:plc:old',
+			'did:plc:test123'
+		);
+
+		$this->assertWPError( $result );
+		$this->assertSame( 'atmosphere_did_mismatch', $result->get_error_code() );
+		$this->assertCount( 0, $this->captured_calls, 'A foreign-DID cascade must issue no writes.' );
+	}
+
+	/**
+	 * A foreign document origin DID also aborts the cascade.
+	 */
+	public function test_delete_post_by_tids_bails_on_doc_did_mismatch() {
+		$this->register_capture( 0 );
+
+		$result = Publisher::delete_post_by_tids(
+			array(),
+			'doc-tid',
+			array(),
+			'',
+			'',
+			'did:plc:old'
+		);
+
+		$this->assertWPError( $result );
+		$this->assertSame( 'atmosphere_did_mismatch', $result->get_error_code() );
+		$this->assertCount( 0, $this->captured_calls, 'A foreign-DID document delete must issue no writes.' );
+	}
+
+	/**
+	 * Origin DIDs matching the connected account (or absent, for records
+	 * predating provenance) do not block the delete.
+	 */
+	public function test_delete_post_by_tids_proceeds_when_origin_matches() {
+		$this->register_capture( 0 );
+
+		$result = Publisher::delete_post_by_tids(
+			array( 'root-tid' ),
+			'doc-tid',
+			array(),
+			'',
+			'did:plc:test123',
+			'did:plc:test123'
+		);
+
+		$this->assertNotWPError( $result );
+		$this->assertCount( 1, $this->captured_calls, 'A matching-DID cascade must issue its delete batch.' );
 	}
 
 	/**
@@ -2578,5 +4015,95 @@ class Test_Publisher extends WP_UnitTestCase {
 
 		$this->assertIsArray( $result );
 		$this->assertCount( 0, $put_calls );
+	}
+
+	/**
+	 * Publishing with `$original_time` reserves historical rkeys: both
+	 * the bsky post TID and the document TID decode to the post's
+	 * original date, not "now".
+	 */
+	public function test_publish_post_original_time_reserves_historical_rkeys() {
+		\add_filter(
+			'atmosphere_pre_apply_writes',
+			fn( $short_circuit, array $writes ) => $this->mock_response( $writes ),
+			10,
+			2
+		);
+
+		$post_id = self::factory()->post->create(
+			array(
+				'post_status'   => 'publish',
+				'post_title'    => 'Old post',
+				'post_content'  => 'Body.',
+				'post_date'     => '2019-05-04 09:00:00',
+				'post_date_gmt' => '2019-05-04 09:00:00',
+			)
+		);
+
+		$result = Publisher::publish_post( \get_post( $post_id ), true );
+		$this->assertNotWPError( $result );
+
+		$expected = \strtotime( '2019-05-04 09:00:00' ) * 1_000_000 + ( $post_id % 100000 ) * 10;
+
+		$this->assertSame( $expected, TID::decode( \get_post_meta( $post_id, Post::META_TID, true ) ) );
+		$this->assertSame( $expected, TID::decode( \get_post_meta( $post_id, Document::META_TID, true ) ) );
+	}
+
+	/**
+	 * The default (no flag) still mints live rkeys.
+	 */
+	public function test_publish_post_defaults_to_live_rkeys() {
+		\add_filter(
+			'atmosphere_pre_apply_writes',
+			fn( $short_circuit, array $writes ) => $this->mock_response( $writes ),
+			10,
+			2
+		);
+
+		$post_id = self::factory()->post->create(
+			array(
+				'post_status'   => 'publish',
+				'post_content'  => 'Body.',
+				'post_date'     => '2019-05-04 09:00:00',
+				'post_date_gmt' => '2019-05-04 09:00:00',
+			)
+		);
+
+		Publisher::publish_post( \get_post( $post_id ) );
+
+		$historic = \strtotime( '2019-05-04 09:00:00' ) * 1_000_000;
+		$this->assertGreaterThan( $historic, TID::decode( \get_post_meta( $post_id, Post::META_TID, true ) ) );
+	}
+
+	/**
+	 * Document-only publishing (#211) still honours --original-time: the
+	 * document rkey is reserved from the post's original date, and no
+	 * Bluesky post rkey is minted. Regression: the trunk merge routed the
+	 * document-only path without threading the original-time flag.
+	 */
+	public function test_publish_document_only_honors_original_time() {
+		\add_filter( 'atmosphere_should_publish_bluesky_post', '__return_false' );
+		\add_filter(
+			'atmosphere_pre_apply_writes',
+			fn( $short_circuit, array $writes ) => $this->mock_response( $writes ),
+			10,
+			2
+		);
+
+		$post_id = self::factory()->post->create(
+			array(
+				'post_status'   => 'publish',
+				'post_content'  => 'Body.',
+				'post_date'     => '2017-08-09 10:11:00',
+				'post_date_gmt' => '2017-08-09 10:11:00',
+			)
+		);
+
+		Publisher::publish_post( \get_post( $post_id ), true );
+
+		$expected = \strtotime( '2017-08-09 10:11:00' ) * 1_000_000 + ( $post_id % 100000 ) * 10;
+
+		$this->assertSame( $expected, TID::decode( \get_post_meta( $post_id, Document::META_TID, true ) ) );
+		$this->assertEmpty( \get_post_meta( $post_id, Post::META_TID, true ) );
 	}
 }

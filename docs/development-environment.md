@@ -150,7 +150,7 @@ docker system prune -a   # Reclaim space.
 | Tests WordPress | 8885 |
 | MySQL | Random external port (see `docker ps`) |
 
-Override in `.wp-env.json` if 8884/8885 are in use:
+If 8884/8885 are in use, for instance by a second checkout or a git worktree, override them in a `.wp-env.override.json` (gitignored):
 
 ```json
 { "port": 8886, "testsPort": 8887 }
@@ -165,6 +165,8 @@ npm run env-test -- --filter=pattern            # Tests matching a name pattern.
 npm run env-test -- --group=transformer         # Tests with @group transformer.
 npm run env-test -- tests/phpunit/tests/transformer/class-test-post.php
 ```
+
+The tests environment always mounts the plugin at `wp-content/plugins/atmosphere` (see `mappings` in `.wp-env.json`), whatever your checkout's directory is called, so `env-test` works the same from a default clone, a renamed one, or a git worktree.
 
 Common PHPUnit flags:
 

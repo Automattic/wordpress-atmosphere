@@ -10,18 +10,39 @@ namespace Atmosphere\WP_Admin;
 \defined( 'ABSPATH' ) || exit;
 
 use Atmosphere\Atmosphere;
+use Atmosphere\Connectors;
 use Atmosphere\Handle;
 use Atmosphere\OAuth\Client;
 use Atmosphere\Publisher;
-use function Atmosphere\get_connection;
+use Atmosphere\Transformer\Publication;
+use function Atmosphere\get_identity;
 use function Atmosphere\get_supported_post_types;
+use function Atmosphere\handle_typeahead_url;
 use function Atmosphere\has_identity;
+use function Atmosphere\is_auto_publish_enabled;
+use function Atmosphere\is_connected;
+use function Atmosphere\is_comment_publishing_enabled;
+use function Atmosphere\is_connection_only_mode;
+use function Atmosphere\is_operator_disconnected;
+use function Atmosphere\is_publication_sync_enabled;
 use function Atmosphere\needs_reauth;
+use function Atmosphere\reauth_lead_for_current_user;
+use function Atmosphere\reconnect_url;
+use function Atmosphere\settings_url;
+use function Atmosphere\threadgate_needs_reconnect;
 
 /**
  * Admin class.
  */
 class Admin {
+
+	/**
+	 * Transient holding the one-time notice the OAuth callback stashes for the
+	 * post-redirect screen to display.
+	 *
+	 * @var string
+	 */
+	private const OAUTH_NOTICE_TRANSIENT = 'atmosphere_oauth_notice';
 
 	/**
 	 * Boot admin hooks.
@@ -40,9 +61,33 @@ class Admin {
 		\add_action( 'admin_init', array( self::class, 'maybe_set_domain_handle' ) );
 		\add_action( 'admin_enqueue_scripts', array( self::class, 'enqueue_assets' ) );
 		\add_action( 'admin_notices', array( self::class, 'maybe_render_reauth_notice' ) );
+		\add_action( 'admin_notices', array( self::class, 'maybe_render_renewal_blocker_notice' ) );
+		\add_action( 'admin_notices', array( self::class, 'maybe_render_oauth_notice' ) );
+		\add_action( 'admin_notices', array( self::class, 'maybe_render_threadgate_scope_notice' ) );
 		\add_action( 'load-settings_page_atmosphere', array( self::class, 'maybe_warn_missing_post_types' ) );
 
 		\add_action( 'admin_post_atmosphere_disconnect', array( self::class, 'handle_disconnect' ) );
+
+		\add_filter(
+			'plugin_action_links_' . \plugin_basename( ATMOSPHERE_PLUGIN_FILE ),
+			array( self::class, 'filter_action_links' )
+		);
+	}
+
+	/**
+	 * Whether the plugin's own settings screen should be shown.
+	 *
+	 * Hidden while {@see \Atmosphere\is_connection_only_mode()} is on: a host that
+	 * embeds ATmosphere purely as a connection layer — driving the AT Protocol
+	 * connection through the Settings → Connectors screen and its own UI — has no
+	 * use for Settings → ATmosphere. The connection layer, publishing, and the
+	 * Connectors card all keep working; only this plugin's own settings surface is
+	 * hidden.
+	 *
+	 * @return bool True to show the settings screen (default), false to hide it.
+	 */
+	public static function is_settings_page_visible(): bool {
+		return ! is_connection_only_mode();
 	}
 
 	/**
@@ -62,6 +107,22 @@ class Admin {
 		}
 
 		/*
+		 * When a third-party plugin hides the settings screen, drop it from the
+		 * Settings menu but keep the page itself registered. The OAuth callback
+		 * lands on this page's own URL (`options-general.php?page=atmosphere`);
+		 * leaving the page registered keeps that URL accessible so `admin_init`
+		 * can run `handle_oauth_callback()` and redirect on to the Connectors
+		 * screen. An unregistered page would trip core's
+		 * `user_can_access_admin_page()` gate, which `wp_die`s before
+		 * `admin_init` ever fires — stranding the browser on the callback URL.
+		 * `render_page()` shows a short "managed elsewhere" notice for anyone
+		 * who reaches the hidden page directly.
+		 */
+		if ( ! self::is_settings_page_visible() ) {
+			\remove_submenu_page( 'options-general.php', 'atmosphere' );
+		}
+
+		/*
 		 * Self-heal the well-known rewrite rules whenever an
 		 * administrator loads our settings page — the surface where this
 		 * bug surfaces, and so the right place to silently fix it.
@@ -70,15 +131,118 @@ class Admin {
 		 * {@see Atmosphere::maybe_flush_wellknown_rewrites()} for detail.
 		 */
 		\add_action( "load-{$hook}", array( Atmosphere::class, 'maybe_flush_wellknown_rewrites' ) );
+		\add_action( "load-{$hook}", array( self::class, 'add_help_tabs' ) );
 	}
 
 	/**
-	 * Enqueue admin CSS/JS on our settings page only.
+	 * Add the ATmosphere tabs to the settings screen's Help panel.
+	 */
+	public static function add_help_tabs(): void {
+		// The hidden page renders only a short notice, so there is nothing to explain.
+		if ( ! self::is_settings_page_visible() ) {
+			return;
+		}
+
+		$screen = \get_current_screen();
+
+		$tabs = array(
+			'overview'        => \__( 'Overview', 'atmosphere' ),
+			'standard-site'   => \__( 'Full Articles', 'atmosphere' ),
+			'settings'        => \__( 'Settings', 'atmosphere' ),
+			'error-messages'  => \__( 'Error Messages', 'atmosphere' ),
+			'troubleshooting' => \__( 'Troubleshooting', 'atmosphere' ),
+			'site-health'     => \__( 'Site Health', 'atmosphere' ),
+		);
+
+		foreach ( $tabs as $template_name => $title ) {
+			$screen->add_help_tab(
+				array(
+					'id'      => 'atmosphere-' . $template_name,
+					'title'   => $title,
+					'content' => self::get_help_tab_template( $template_name ),
+				)
+			);
+		}
+
+		$screen->set_help_sidebar(
+			'<p><strong>' . \esc_html__( 'For more information:', 'atmosphere' ) . '</strong></p>' .
+			'<p><a href="https://wordpress.org/support/plugin/atmosphere/">' . \esc_html__( 'Get support', 'atmosphere' ) . '</a></p>' .
+			'<p><a href="https://github.com/Automattic/wordpress-atmosphere/issues">' . \esc_html__( 'Report an issue', 'atmosphere' ) . '</a></p>' .
+			'<p><a href="https://github.com/Automattic/wordpress-atmosphere/blob/trunk/CHANGELOG.md">' . \esc_html__( 'View latest changes', 'atmosphere' ) . '</a></p>'
+		);
+	}
+
+	/**
+	 * Render a Help tab template into a string.
+	 *
+	 * @param string $template_name Template file name in `templates/help-tab/`, without `.php`.
+	 * @return string The rendered template, or an empty string if it does not exist.
+	 */
+	private static function get_help_tab_template( string $template_name ): string {
+		$template_path = ATMOSPHERE_PLUGIN_DIR . 'templates/help-tab/' . $template_name . '.php';
+		if ( ! \file_exists( $template_path ) ) {
+			return '';
+		}
+
+		\ob_start();
+		\load_template( $template_path, false );
+		return \ob_get_clean();
+	}
+
+	/**
+	 * Add a Settings shortcut to the plugin's row on the Plugins screen.
+	 *
+	 * When the settings screen is hidden by connection-only mode, the shortcut is
+	 * replaced with a plain, non-linked label so operators understand why the usual
+	 * Settings link is gone. The filter cannot report which plugin hid the screen,
+	 * so the copy is intentionally generic.
+	 *
+	 * @param string[] $links Existing plugin action links.
+	 * @return string[] Filtered plugin action links.
+	 */
+	public static function filter_action_links( array $links ): array {
+		if ( self::is_settings_page_visible() ) {
+			$settings_link = \sprintf(
+				'<a href="%s">%s</a>',
+				\esc_url( settings_url() ),
+				\esc_html__( 'Settings', 'atmosphere' )
+			);
+		} else {
+			$settings_link = \sprintf(
+				'<span style="color:#646970;">%s</span>',
+				\esc_html__( 'Settings hidden by another plugin', 'atmosphere' )
+			);
+		}
+
+		\array_unshift( $links, $settings_link );
+
+		return $links;
+	}
+
+	/**
+	 * Enqueue dashboard styles and settings-page CSS/JS.
 	 *
 	 * @param string $hook_suffix Current admin page.
 	 */
 	public static function enqueue_assets( string $hook_suffix ): void {
+		if ( 'index.php' === $hook_suffix ) {
+			\wp_enqueue_style(
+				'atmosphere-dashboard',
+				ATMOSPHERE_PLUGIN_URL . 'assets/css/dashboard.css',
+				array(),
+				ATMOSPHERE_VERSION
+			);
+		}
+
 		if ( 'settings_page_atmosphere' !== $hook_suffix ) {
+			return;
+		}
+
+		/*
+		 * While hidden the page renders only a short notice (see render_page()),
+		 * so none of the settings assets below are needed.
+		 */
+		if ( ! self::is_settings_page_visible() ) {
 			return;
 		}
 
@@ -87,6 +251,87 @@ class Admin {
 			ATMOSPHERE_PLUGIN_URL . 'assets/css/admin.css',
 			array(),
 			ATMOSPHERE_VERSION
+		);
+
+		\wp_enqueue_style( 'wp-color-picker' );
+		\wp_enqueue_script( 'wp-color-picker' );
+
+		/*
+		 * Offer the active theme's own palette as swatches: those are the
+		 * colours the publication record would otherwise derive, so the
+		 * common case ("same as my theme, but pinned") is one click.
+		 */
+		$swatches = array();
+
+		foreach ( Publication::get_palette_lookup() as $hex ) {
+			$hex = \sanitize_hex_color( (string) $hex );
+
+			if ( $hex && ! \in_array( $hex, $swatches, true ) ) {
+				$swatches[] = $hex;
+			}
+		}
+
+		\wp_add_inline_script(
+			'wp-color-picker',
+			\sprintf(
+				'jQuery( function ( $ ) { $( ".atmosphere-color-input" ).wpColorPicker( %s ); } );',
+				\wp_json_encode( array( 'palettes' => \array_slice( $swatches, 0, 8 ) ) )
+			)
+		);
+
+		/*
+		 * The connect handle field — and so the typeahead that enhances it —
+		 * only renders while disconnected.
+		 */
+		if ( is_connected() ) {
+			return;
+		}
+
+		$asset_file = ATMOSPHERE_PLUGIN_DIR . 'build/settings-connect/index.asset.php';
+		if ( ! \file_exists( $asset_file ) ) {
+			return;
+		}
+
+		$asset = include $asset_file;
+
+		/*
+		 * No wp-components dependency: the typeahead's loading indicator uses
+		 * core's own `.spinner` (free on every wp-admin page), so the classic
+		 * settings page never pulls the wp-components bundle just for a spinner.
+		 */
+		\wp_enqueue_style(
+			'atmosphere-handle-typeahead',
+			ATMOSPHERE_PLUGIN_URL . 'assets/css/handle-typeahead.css',
+			array(),
+			ATMOSPHERE_VERSION
+		);
+
+		\wp_enqueue_script(
+			'atmosphere-settings-connect',
+			ATMOSPHERE_PLUGIN_URL . 'build/settings-connect/index.js',
+			\array_merge(
+				$asset['dependencies'] ?? array(),
+				array( 'wp-element', 'wp-i18n' )
+			),
+			$asset['version'] ?? ATMOSPHERE_VERSION,
+			true
+		);
+
+		/*
+		 * Load the JS translations for this script's `__()` strings — a classic
+		 * admin page doesn't set them up on its own. (The Connectors card is a
+		 * script module; core's script-module i18n story is still limited, so
+		 * its strings stay a known untranslated gap for now.)
+		 */
+		\wp_set_script_translations( 'atmosphere-settings-connect', 'atmosphere' );
+
+		\wp_localize_script(
+			'atmosphere-settings-connect',
+			'atmosphereSettingsConnect',
+			array(
+				'typeaheadUrl' => handle_typeahead_url(),
+				'handle'       => get_identity()['handle'] ?? '',
+			)
 		);
 	}
 
@@ -98,7 +343,41 @@ class Admin {
 			return;
 		}
 
+		/*
+		 * The page stays registered while hidden so the OAuth callback URL
+		 * resolves (see add_menu()). A direct visit that is not an OAuth
+		 * callback reaches here after headers are sent — too late to redirect —
+		 * so show a short explanation instead of the settings form.
+		 */
+		if ( ! self::is_settings_page_visible() ) {
+			self::render_hidden_notice();
+			return;
+		}
+
 		include ATMOSPHERE_PLUGIN_DIR . 'templates/settings-page.php';
+	}
+
+	/**
+	 * Render the placeholder shown when the settings screen is hidden.
+	 *
+	 * The screen is hidden from the menu but kept registered so the OAuth
+	 * callback URL still resolves; anyone who lands on it directly sees this
+	 * instead of the settings form.
+	 */
+	private static function render_hidden_notice(): void {
+		?>
+		<div class="wrap">
+			<h1><?php echo \esc_html__( 'ATmosphere', 'atmosphere' ); ?></h1>
+			<p>
+				<?php
+				\esc_html_e(
+					'The ATmosphere settings are currently managed by another plugin on this site.',
+					'atmosphere'
+				);
+				?>
+			</p>
+		</div>
+		<?php
 	}
 
 	/**
@@ -121,29 +400,156 @@ class Admin {
 			return;
 		}
 
+		/*
+		 * Read where the flow started before handle_callback() consumes the
+		 * resolved record it lives in. Captured up front so the browser returns
+		 * to the origin screen on success *or* failure, rather than stranding a
+		 * failed connect on a hidden settings page (see render_page()).
+		 */
+		$origin = Client::pending_origin();
+
 		$result = Client::handle_callback(
 			\sanitize_text_field( $code ),
 			\sanitize_text_field( $state )
 		);
 
+		$destination = self::oauth_return_destination( $origin );
+
 		if ( \is_wp_error( $result ) ) {
-			\add_settings_error( 'atmosphere', 'callback_failed', $result->get_error_message() );
+			self::store_oauth_notice( 'error', $result->get_error_message() );
+
+			\wp_safe_redirect( \add_query_arg( 'atmosphere_error', '1', $destination ) );
+			exit;
+		}
+
+		// Auto-create publication on first connect — unless the host runs
+		// ATmosphere purely as a connection layer and doesn't want a public
+		// site.standard.publication record written to the connected repo.
+		if ( is_publication_sync_enabled() ) {
+			Publisher::sync_publication();
+		}
+
+		self::store_oauth_notice(
+			'success',
+			\__( 'Successfully connected to AT Protocol.', 'atmosphere' )
+		);
+
+		\wp_safe_redirect( \add_query_arg( 'connected', '1', $destination ) );
+		exit;
+	}
+
+	/**
+	 * Stash a one-time notice for the post-OAuth-callback redirect to display.
+	 *
+	 * The callback redirects the browser to the origin screen (the settings page
+	 * or the Connectors screen), so the outcome can't be printed inline. Core's
+	 * `settings_errors` transient is unreliable for this: it is only merged back
+	 * when `settings-updated` is set, the Connectors screen never calls
+	 * `settings_errors()` at all, and reusing it risks the stashed message
+	 * surfacing on an unrelated `options.php` save.
+	 *
+	 * Keyed per user so a second admin (or a second tab) whose `admin_notices`
+	 * fires first can't consume the message meant for the admin who initiated the
+	 * connect. Consumed by {@see self::maybe_render_oauth_notice()} on the
+	 * settings page, or by the Connectors card via {@see self::consume_oauth_notice()}
+	 * (the Connectors screen is a React app where classic `admin_notices` output
+	 * isn't reliably visible, so the card renders it from its hydration payload).
+	 *
+	 * @param string $type    Notice type: `error` or `success`.
+	 * @param string $message Human-readable notice text.
+	 */
+	private static function store_oauth_notice( string $type, string $message ): void {
+		\set_transient(
+			self::oauth_notice_transient_key(),
+			array(
+				'type'    => $type,
+				'message' => $message,
+			),
+			MINUTE_IN_SECONDS
+		);
+	}
+
+	/**
+	 * Per-user transient key for the stored OAuth-callback notice.
+	 *
+	 * @return string
+	 */
+	private static function oauth_notice_transient_key(): string {
+		return self::OAUTH_NOTICE_TRANSIENT . '_' . \get_current_user_id();
+	}
+
+	/**
+	 * Read and delete the current user's stored OAuth-callback notice, if any.
+	 *
+	 * Shared by the settings-page `admin_notices` renderer and the Connectors
+	 * card's hydration payload so exactly one of them surfaces the outcome.
+	 *
+	 * @return array{type: string, message: string}|null The notice, or null.
+	 */
+	public static function consume_oauth_notice(): ?array {
+		$notice = \get_transient( self::oauth_notice_transient_key() );
+		if ( ! \is_array( $notice ) || empty( $notice['message'] ) ) {
+			return null;
+		}
+
+		\delete_transient( self::oauth_notice_transient_key() );
+
+		return array(
+			'type'    => 'success' === ( $notice['type'] ?? '' ) ? 'success' : 'error',
+			'message' => (string) $notice['message'],
+		);
+	}
+
+	/**
+	 * Print the OAuth-callback outcome as an admin notice, once.
+	 *
+	 * Runs on `admin_notices` for the settings page. Skips the Connectors screen,
+	 * whose React UI renders the same notice from the card's hydration payload
+	 * (see {@see \Atmosphere\Connectors::get_connector_data()}); letting both fire
+	 * would double-render, or the classic notice would silently consume the
+	 * message the card should have shown.
+	 */
+	public static function maybe_render_oauth_notice(): void {
+		if ( ! \current_user_can( 'manage_options' ) ) {
 			return;
 		}
 
-		// Auto-create publication on first connect.
-		Publisher::sync_publication();
+		$screen = \function_exists( 'get_current_screen' ) ? \get_current_screen() : null;
+		if ( $screen instanceof \WP_Screen && Connectors::is_connectors_screen( $screen->id ) ) {
+			return;
+		}
 
-		\add_settings_error(
-			'atmosphere',
-			'connected',
-			\__( 'Successfully connected to AT Protocol.', 'atmosphere' ),
-			'success'
+		$notice = self::consume_oauth_notice();
+		if ( null === $notice ) {
+			return;
+		}
+
+		\printf(
+			'<div class="notice %s is-dismissible"><p>%s</p></div>',
+			\esc_attr( 'success' === $notice['type'] ? 'notice-success' : 'notice-error' ),
+			\esc_html( $notice['message'] )
 		);
-		\set_transient( 'settings_errors', \get_settings_errors(), 30 );
+	}
 
-		\wp_safe_redirect( \admin_url( 'options-general.php?page=atmosphere&connected=1' ) );
-		exit;
+	/**
+	 * Resolve where the OAuth callback should return the browser for a flow.
+	 *
+	 * A Connectors-card connect starts with origin `connectors` (see
+	 * {@see \Atmosphere\OAuth\Client::authorize()}); honor it by returning to the
+	 * Connectors screen, otherwise fall back to the settings page. The Connectors
+	 * screen has two possible URLs (core's `options-connectors.php` and the
+	 * Gutenberg plugin's Settings submenu), so the concrete URL is resolved
+	 * server-side from the registered admin menu via {@see Connectors::screen_url()}
+	 * — the origin is a fixed marker and the URL is never taken from request input,
+	 * so nothing off the wire can steer the redirect.
+	 *
+	 * @param string $origin The flow's origin, from {@see Client::pending_origin()}.
+	 * @return string The admin URL to redirect to.
+	 */
+	private static function oauth_return_destination( string $origin ): string {
+		return 'connectors' === $origin
+			? Connectors::screen_url()
+			: settings_url();
 	}
 
 	/**
@@ -209,59 +615,211 @@ class Admin {
 		);
 		\set_transient( 'settings_errors', \get_settings_errors(), 30 );
 
-		\wp_safe_redirect( \admin_url( 'options-general.php?page=atmosphere' ) );
+		\wp_safe_redirect( settings_url() );
 		exit;
+	}
+
+	/**
+	 * Nudge toward a reconnect when reply restrictions cannot be written.
+	 *
+	 * Settings page only, unlike the reauth notice: nothing is broken
+	 * site-wide, so it does not earn a place on every screen. The admin
+	 * who can reconnect is the one on this page.
+	 *
+	 * @since 2.2.0
+	 */
+	public static function maybe_render_threadgate_scope_notice(): void {
+		if ( ! \current_user_can( 'manage_options' ) ) {
+			return;
+		}
+
+		$screen = \function_exists( 'get_current_screen' ) ? \get_current_screen() : null;
+		if ( ! $screen || 'settings_page_atmosphere' !== $screen->id ) {
+			return;
+		}
+
+		if ( ! threadgate_needs_reconnect() ) {
+			return;
+		}
+
+		\printf(
+			'<div class="notice notice-info"><p><strong>%1$s</strong> %2$s</p></div>',
+			\esc_html__( 'Reply restrictions need a reconnect.', 'atmosphere' ),
+			\esc_html__( 'This site connected to Bluesky before reply restrictions were available. Posts still share as usual. Reconnect your account below to turn restrictions on.', 'atmosphere' )
+		);
+	}
+
+	/**
+	 * What stops working while the connection is down.
+	 *
+	 * Naming posts and comments is wrong when both outgoing lanes are
+	 * already off, which is exactly connection-only mode: there the host
+	 * plugin's features are what break.
+	 *
+	 * @return string
+	 */
+	private static function connection_consequence(): string {
+		if ( is_auto_publish_enabled() || is_comment_publishing_enabled() ) {
+			return \__( 'New posts and comments will not publish until the connection is restored.', 'atmosphere' );
+		}
+
+		return \__( 'Anything on this site that uses your Bluesky connection will stop working until it is restored.', 'atmosphere' );
+	}
+
+	/**
+	 * Render a global admin notice when the login cannot be renewed and no
+	 * reconnect prompt will appear.
+	 *
+	 * A rejected client registration and an unreadable signing key keep the
+	 * session, so `needs_reauth()` stays false and the reauth notice never
+	 * fires, while every publish fails permanently. Without this, the only
+	 * signs are a Site Health row and a log line. Same audience as the
+	 * reauth notice: everyone who publishes, with the action swapped for
+	 * readers who cannot act.
+	 *
+	 * @since 2.4.0
+	 */
+	public static function maybe_render_renewal_blocker_notice(): void {
+		if ( needs_reauth() || ! \current_user_can( 'edit_posts' ) ) {
+			return;
+		}
+
+		$blocker = Health_Check::renewal_blocker();
+		if ( '' === $blocker ) {
+			return;
+		}
+
+		$can_manage = \current_user_can( 'manage_options' );
+
+		if ( 'signing_key' === $blocker ) {
+			$lead = \__( 'ATmosphere cannot read the key it uses to sign in to Bluesky, so the saved login cannot be renewed. This usually happens after the security keys in wp-config.php changed.', 'atmosphere' );
+			$fix  = \__( 'Disconnect and connect again to create a new key.', 'atmosphere' );
+		} else {
+			$lead = \__( 'Bluesky rejected this site’s login setup when ATmosphere tried to renew the saved login.', 'atmosphere' );
+			$fix  = \__( 'Site Health explains what Bluesky objected to.', 'atmosphere' );
+		}
+
+		if ( ! $can_manage ) {
+			$action = \__( 'Ask an administrator to check Site Health.', 'atmosphere' );
+		} else {
+			$action = $fix . ' ' . \sprintf(
+				/* translators: %s: URL of the Site Health screen. */
+				\__( '<a href="%s">Open Site Health</a> for details.', 'atmosphere' ),
+				\esc_url( \admin_url( 'site-health.php' ) )
+			);
+		}
+
+		$message = $lead . ' ' . self::connection_consequence() . ' ' . $action;
+
+		?>
+		<div class="notice notice-warning is-dismissible">
+			<p>
+				<strong><?php \esc_html_e( 'ATmosphere: Bluesky login cannot be renewed', 'atmosphere' ); ?></strong>
+			</p>
+			<p>
+				<?php
+				echo \wp_kses(
+					$message,
+					array( 'a' => array( 'href' => array() ) )
+				);
+				?>
+			</p>
+		</div>
+		<?php
 	}
 
 	/**
 	 * Render a global admin notice when the OAuth session needs reauth.
 	 *
-	 * Surfaced on every admin screen (gated on `manage_options`) because
-	 * the publish, comment, and update paths silently no-op until the
-	 * user reconnects — without a visible nudge, an expired refresh
-	 * token can sit unnoticed for days. The notice is dismissible per
-	 * page-load only so the user is reminded again on their next visit.
+	 * Surfaced on every admin screen, because the publish, comment, and
+	 * update paths silently no-op until the user reconnects — without a
+	 * visible nudge, an expired refresh token can sit unnoticed for days,
+	 * and the person hitting Publish is often not the one who can
+	 * reconnect. That argument reaches as far as `edit_posts` and no
+	 * further: it covers authors, editors and contributors, and leaves out
+	 * subscribers, who on a membership or WooCommerce site are most of the
+	 * logged-in users and have nothing to do with sharing. Within that
+	 * audience there is no further gate; the action sentence is swapped
+	 * instead, so a reader who cannot reconnect is told who can rather
+	 * than handed a link they cannot follow. The notice is dismissible per
+	 * page-load only, so the user is reminded again on their next visit.
 	 *
 	 * Swaps copy when the disconnect was operator-initiated (the user
 	 * clicked Disconnect) so the message does not falsely claim "your
 	 * session has expired" for a state the user just chose.
 	 */
 	public static function maybe_render_reauth_notice(): void {
-		if ( ! \current_user_can( 'manage_options' ) ) {
-			return;
-		}
-
 		if ( ! needs_reauth() ) {
 			return;
 		}
 
-		$settings_url = \admin_url( 'options-general.php?page=atmosphere' );
+		if ( ! \current_user_can( 'edit_posts' ) ) {
+			return;
+		}
+
+		$can_manage = \current_user_can( 'manage_options' );
 
 		/*
-		 * Treat the explicit-disconnect marker as authoritative only
-		 * when the connection row is genuinely empty. `Client::disconnect()`
-		 * deletes `atmosphere_connection` before any other admin request
-		 * can land, so a missing connection alongside the marker is a
-		 * true operator-initiated disconnect. After a refresh failure,
-		 * the connection row stays put (with `needs_reauth = true` and
-		 * an emptied access_token) — if a stale marker from an earlier
-		 * disconnect survived (e.g. `handle_callback()`'s `delete_option`
-		 * silently failed at a cache layer), the connection's presence
-		 * outs the marker as stale and the gate falls through to the
-		 * "session expired" copy, which is the accurate framing for the
-		 * actual failure mode.
+		 * Resolve where the reconnect link points via the shared helper: the
+		 * settings page normally hosts it, but in connection-only mode that
+		 * page is hidden, so it falls back to the Connectors screen, whose
+		 * card can also reconnect, when one exists (WP 7.0+). An empty
+		 * result only costs the link: the notice itself still renders, so a
+		 * dead session is never left without a site-wide signal.
 		 */
-		$disconnected = \get_option( Client::DISCONNECTED_OPTION, false ) && empty( get_connection() );
+		$reconnect_url = $can_manage ? reconnect_url() : '';
 
-		if ( $disconnected ) {
+		$heading = \__( 'ATmosphere: reconnection required', 'atmosphere' );
+
+		/*
+		 * The cause lead comes from `reauth_lead_for_current_user()`
+		 * (shared with the document panel and the pre-publish panel); only
+		 * the notice's own tail (what stops working + the reconnect link)
+		 * is composed here. The helper's non-admin and
+		 * operator-disconnect-suppression arms do fire here, since this
+		 * notice has no capability gate, which is why an empty lead falls
+		 * back below. The heading still needs its own swap, as the
+		 * helper's lead text doesn't distinguish which heading to show. The disconnect gate's stale-marker rationale
+		 * lives in `is_operator_disconnected()`.
+		 */
+		if ( is_operator_disconnected() ) {
 			$heading = \__( 'ATmosphere: disconnected', 'atmosphere' );
-			/* translators: %s: URL to the ATmosphere settings page. */
-			$message = \__( 'ATmosphere is disconnected from AT Protocol. New posts and comments will not publish until you <a href="%s">reconnect on the settings page</a>. Your publishing preferences and verification headers stay in place in the meantime.', 'atmosphere' );
-		} else {
-			$heading = \__( 'ATmosphere: reconnection required', 'atmosphere' );
-			/* translators: %s: URL to the ATmosphere settings page. */
-			$message = \__( 'Your AT Protocol session has expired. New posts and comments will not publish until you <a href="%s">reconnect on the settings page</a>. Your publishing preferences and verification headers stay in place in the meantime.', 'atmosphere' );
 		}
+
+		$lead = reauth_lead_for_current_user();
+
+		/*
+		 * The helper suppresses the cause for a reader without
+		 * `manage_options` on an operator-initiated disconnect. This notice
+		 * still renders for them, so fall back to the same generic sentence
+		 * the helper gives every other non-admin rather than opening with
+		 * the consequence and no subject.
+		 */
+		if ( '' === $lead ) {
+			$lead = \__( 'Your site’s Bluesky connection needs attention.', 'atmosphere' );
+		}
+
+		$consequence = self::connection_consequence();
+
+		/*
+		 * Only the action sentence goes through sprintf: a lead or
+		 * consequence translation containing a stray `%` must not be able to
+		 * corrupt the placeholder substitution (PHP 8 throws on missing
+		 * arguments).
+		 */
+		if ( ! $can_manage ) {
+			$action = \__( 'Ask an administrator to reconnect it.', 'atmosphere' );
+		} elseif ( '' === $reconnect_url ) {
+			$action = \__( 'Reconnect your Bluesky account to fix this.', 'atmosphere' );
+		} else {
+			$action = \sprintf(
+				/* translators: %s: URL to reconnect the Bluesky account. */
+				\__( '<a href="%s">Reconnect your account</a> to fix this.', 'atmosphere' ),
+				\esc_url( $reconnect_url )
+			);
+		}
+
+		$message = $lead . ' ' . $consequence . ' ' . $action . ' ' . \__( 'Your publishing preferences and verification headers stay in place in the meantime.', 'atmosphere' );
 
 		?>
 		<div class="notice notice-warning is-dismissible">
@@ -271,7 +829,7 @@ class Admin {
 			<p>
 				<?php
 				echo \wp_kses(
-					\sprintf( $message, \esc_url( $settings_url ) ),
+					$message,
 					array( 'a' => array( 'href' => array() ) )
 				);
 				?>
@@ -301,7 +859,7 @@ class Admin {
 			return;
 		}
 
-		if ( '1' !== \get_option( 'atmosphere_auto_publish', '1' ) ) {
+		if ( ! is_auto_publish_enabled() ) {
 			return;
 		}
 

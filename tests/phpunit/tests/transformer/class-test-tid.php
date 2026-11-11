@@ -57,233 +57,130 @@ class Test_TID extends WP_UnitTestCase {
 	}
 
 	/**
-	 * The generate_for_time() helper returns a 13-character valid TID.
+	 * A historical TID decodes back to the micros it was minted from.
 	 */
-	public function test_generate_for_time_shape() {
-		$tid = TID::generate_for_time( 1_500_000_000_000_000 );
+	public function test_generate_for_time_round_trips_through_decode() {
+		$unix     = \strtotime( '2020-01-01 00:00:00' );
+		$expected = $unix * 1_000_000 + 42;
+
+		$tid = TID::generate_for_time( $unix, 42 );
 
 		$this->assertSame( 13, \strlen( $tid ) );
 		$this->assertTrue( TID::is_valid( $tid ) );
+		$this->assertSame( $expected, TID::decode( $tid ) );
 	}
 
 	/**
-	 * The generate_for_time() helper is fully deterministic for the
-	 * same microsecond input. The clock_id is derived from the input
-	 * rather than the per-process random value, so a retry in a
-	 * different PHP worker reconstructs the same rkey — which is the
-	 * idempotency guarantee the backfill flow depends on.
+	 * A historical TID sorts below a freshly minted live TID.
 	 */
-	public function test_generate_for_time_is_deterministic() {
-		$microseconds = 1_500_000_000_000_000;
+	public function test_generate_for_time_sorts_below_live() {
+		$hist = TID::generate_for_time( \strtotime( '2020-01-01 00:00:00' ), 1 );
+		$live = TID::generate();
 
-		$first  = TID::generate_for_time( $microseconds );
-		$second = TID::generate_for_time( $microseconds );
-
-		$this->assertSame( $first, $second );
+		$this->assertLessThan( $live, $hist );
 	}
 
 	/**
-	 * The generate_for_time() helper must not consult or update the
-	 * monotonic floor. After a historical mint with an old timestamp
-	 * the live generate() must still produce a now-based TID (not
-	 * floor + 1).
+	 * Historical minting never advances the persisted monotonic floor.
 	 */
-	public function test_generate_for_time_does_not_poison_floor() {
-		// Prime the floor with a current-time call.
-		$baseline     = TID::generate();
-		$floor_before = (int) \get_option( 'atmosphere_tid_last_ts', 0 );
+	public function test_generate_for_time_does_not_advance_floor() {
+		\update_option( 'atmosphere_tid_last_ts', '9999999999999999' );
 
-		// Mint a historical TID well below the floor.
-		$historical_micros = 1_000_000_000_000_000; // 2001-09-09.
-		$historical        = TID::generate_for_time( $historical_micros );
+		TID::generate_for_time( \strtotime( '2020-01-01 00:00:00' ), 1 );
 
-		$floor_after = (int) \get_option( 'atmosphere_tid_last_ts', 0 );
-
-		// Floor must not change.
-		$this->assertSame( $floor_before, $floor_after, 'Historical TID write must not bump the persisted floor.' );
-
-		// And the historical TID must sort *before* the baseline (proves
-		// it was not snapped forward to the floor).
-		$this->assertLessThan( $baseline, $historical, 'Historical TID for 2001 must sort before a current-time TID.' );
-
-		// A subsequent live generate() should keep moving forward
-		// relative to the baseline, not regress to the historical value.
-		$next_live = TID::generate();
-		$this->assertGreaterThan( $baseline, $next_live, 'Live generate() after a historical mint must still increase.' );
+		$this->assertSame( '9999999999999999', \get_option( 'atmosphere_tid_last_ts' ) );
 	}
 
 	/**
-	 * The microseconds_from_post_date() helper returns deterministic,
-	 * post-ID-disambiguated microseconds for two posts at the same second.
+	 * The disambiguator separates two posts that share a second and
+	 * orders them by the disambiguator value.
 	 */
-	public function test_microseconds_from_post_date_disambiguates_same_second() {
-		$gmt = '2019-03-14 15:09:26';
+	public function test_generate_for_time_disambiguator_separates_same_second() {
+		$unix = \strtotime( '2020-01-01 00:00:00' );
 
-		$a = TID::microseconds_from_post_date( $gmt, 42 );
-		$b = TID::microseconds_from_post_date( $gmt, 43 );
-		$c = TID::microseconds_from_post_date( $gmt, 42 );
+		$a = TID::generate_for_time( $unix, 100 );
+		$b = TID::generate_for_time( $unix, 200 );
 
-		$this->assertNotSame( $a, $b, 'Different post IDs in the same second must produce different microseconds.' );
-		$this->assertSame( $a, $c, 'Same post ID + same second must be idempotent.' );
-
-		// Sanity-check: the seconds-portion of all three matches.
-		$seconds = (int) \strtotime( $gmt . ' UTC' );
-		$this->assertSame( $seconds, \intdiv( $a, 1_000_000 ) );
-		$this->assertSame( $seconds, \intdiv( $b, 1_000_000 ) );
+		$this->assertNotSame( $a, $b );
+		$this->assertLessThan( $b, $a );
 	}
 
 	/**
-	 * The microseconds_from_post_date() helper returns 0 for unparseable
-	 * input so callers can fall back to TID::generate() rather than
-	 * minting an epoch-anchored TID.
+	 * Different dates sort in date order.
 	 */
-	public function test_microseconds_from_post_date_returns_zero_on_parse_failure() {
-		$this->assertSame( 0, TID::microseconds_from_post_date( '', 42 ) );
-		$this->assertSame( 0, TID::microseconds_from_post_date( '0000-00-00 00:00:00', 42 ) );
-		$this->assertSame( 0, TID::microseconds_from_post_date( 'not a date', 42 ) );
+	public function test_generate_for_time_sorts_by_date() {
+		$older = TID::generate_for_time( \strtotime( '2019-06-01 00:00:00' ), 5 );
+		$newer = TID::generate_for_time( \strtotime( '2021-06-01 00:00:00' ), 5 );
+
+		$this->assertLessThan( $newer, $older );
 	}
 
 	/**
-	 * Pre-epoch dates are rejected so the historical path never mints a
-	 * negative-encoded TID. Posts dated before 1970-01-01 UTC are
-	 * vanishingly rare in WordPress but possible (manual `post_date_gmt`
-	 * edits, imports from legacy systems); the explicit guard keeps the
-	 * caller-side fallback to {@see TID::generate()} working.
+	 * A non-positive timestamp falls back to a live TID rather than
+	 * minting a 1970-epoch rkey.
 	 */
-	public function test_microseconds_from_post_date_returns_zero_for_pre_epoch_date() {
-		$this->assertSame( 0, TID::microseconds_from_post_date( '1969-12-31 23:59:00', 42 ) );
-		$this->assertSame( 0, TID::microseconds_from_post_date( '1900-01-01 00:00:00', 42 ) );
+	public function test_generate_for_time_falls_back_on_bad_date() {
+		$tid = TID::generate_for_time( 0, 1 );
+
+		$this->assertTrue( TID::is_valid( $tid ) );
+		// A live TID is far above any 2020s historical value; a 0-epoch
+		// TID would sort near the bottom of the charset.
+		$this->assertGreaterThan( TID::generate_for_time( \strtotime( '2020-01-01 00:00:00' ), 1 ), $tid );
 	}
 
 	/**
-	 * A historical-mint with an old timestamp produces a TID that sorts
-	 * well before a TID minted from `microtime(true)` — proving the
-	 * historical-ordering property end-to-end.
+	 * A negative disambiguator is wrapped back into the sub-second slot
+	 * rather than pushing the key before the target second (PHP's `%`
+	 * keeps the sign of the dividend).
 	 */
-	public function test_generate_for_time_sorts_before_current() {
-		$historical_micros = TID::microseconds_from_post_date( '2010-01-01 00:00:00', 1 );
-		$historical        = TID::generate_for_time( $historical_micros );
+	public function test_generate_for_time_negative_disambiguator_stays_in_second() {
+		$unix    = \strtotime( '2020-01-01 00:00:00' );
+		$decoded = TID::decode( TID::generate_for_time( $unix, -5 ) );
 
-		$current = TID::generate();
-
-		$this->assertLessThan( $current, $historical, 'A 2010 TID must sort before a now-minted TID.' );
+		$this->assertGreaterThanOrEqual( $unix * 1_000_000, $decoded );
+		$this->assertLessThan( ( $unix + 1 ) * 1_000_000, $decoded );
 	}
 
 	/**
-	 * The salt argument to generate_for_time() makes two records that
-	 * map to the same microsecond (e.g. IDs that collide modulo 1M
-	 * inside the same GMT second) mint distinct rkeys.
+	 * The clock bits widen disambiguation beyond the sub-second slot: two
+	 * records with the same sub-second disambiguator but different clock
+	 * bits mint distinct rkeys at the same microsecond — where the old
+	 * sub-second-only scheme (shared per-process clock) collided.
 	 */
-	public function test_generate_for_time_salt_disambiguates_modulo_collision() {
-		$gmt = '2019-03-14 15:09:26';
+	public function test_generate_for_time_clock_widens_disambiguation() {
+		$unix = \strtotime( '2020-01-01 00:00:00' );
 
-		// IDs that collide on `% 1_000_000` produce identical microseconds.
-		$micros_a = TID::microseconds_from_post_date( $gmt, 42 );
-		$micros_b = TID::microseconds_from_post_date( $gmt, 1_000_042 );
-		$this->assertSame( $micros_a, $micros_b, 'Setup: ids differing by 1M must share microseconds.' );
+		$a = TID::generate_for_time( $unix, 500, 0 );
+		$b = TID::generate_for_time( $unix, 500, 1 );
 
-		// Without a salt, the rkey collides — that's the documented
-		// failure mode we are guarding against.
-		$rkey_no_salt_a = TID::generate_for_time( $micros_a );
-		$rkey_no_salt_b = TID::generate_for_time( $micros_b );
-		$this->assertSame( $rkey_no_salt_a, $rkey_no_salt_b, 'Sanity: no-salt path collides when microseconds match.' );
-
-		// With a per-record salt, the rkeys must differ even though
-		// the microsecond portion is identical.
-		$rkey_a = TID::generate_for_time( $micros_a, 'post:42' );
-		$rkey_b = TID::generate_for_time( $micros_b, 'post:1000042' );
-		$this->assertNotSame( $rkey_a, $rkey_b, 'Distinct salts must mint distinct rkeys.' );
+		$this->assertNotSame( $a, $b );
+		// Same microsecond timestamp — the difference is purely the clock.
+		$this->assertSame( TID::decode( $a ), TID::decode( $b ) );
+		$this->assertLessThan( $b, $a );
 	}
 
 	/**
-	 * Non-positive microseconds fall back to {@see TID::generate()}
-	 * rather than encoding a negative or epoch-anchored value. Mirrors
-	 * the parse-failure guard in `microseconds_from_post_date()` and
-	 * protects direct callers who hand the helper their own integer.
+	 * A future date is clamped to now so a historical mint can't sort ahead
+	 * of records published later in real time.
 	 */
-	public function test_generate_for_time_rejects_non_positive_microseconds() {
-		$zero_tid     = TID::generate_for_time( 0, 'post:1' );
-		$negative_tid = TID::generate_for_time( -1, 'post:1' );
-
-		$this->assertTrue( TID::is_valid( $zero_tid ), 'Zero microseconds must fall back to a valid TID.' );
-		$this->assertTrue( TID::is_valid( $negative_tid ), 'Negative microseconds must fall back to a valid TID.' );
-
-		// Fall-back path goes through `generate()` which uses the live
-		// monotonic floor, so the fallback rkey must sort after a 2010
-		// historical TID — the same ordering invariant that proves the
-		// fallback didn't accidentally mint a near-epoch garbage value.
-		$historical_2010 = TID::generate_for_time(
-			TID::microseconds_from_post_date( '2010-01-01 00:00:00', 1 ),
-			'post:1'
+	public function test_generate_for_time_clamps_future_dates() {
+		$second = \intdiv(
+			TID::decode( TID::generate_for_time( \strtotime( '2999-01-01 00:00:00' ), 0 ) ),
+			1_000_000
 		);
-		$this->assertGreaterThan( $historical_2010, $zero_tid );
-		$this->assertGreaterThan( $historical_2010, $negative_tid );
+
+		$this->assertLessThanOrEqual( \time(), $second );
+		$this->assertGreaterThan( \strtotime( '2020-01-01 00:00:00' ), $second );
 	}
 
 	/**
-	 * Microsecond values large enough to overflow into negative when
-	 * shifted left by 10 bits also fall back to `generate()`. Guards
-	 * against caller bugs (e.g. an accidental double `* 1_000_000`).
+	 * Decoding malformed input returns 0 explicitly instead of decoding
+	 * stray characters into a plausible-but-wrong timestamp.
 	 */
-	public function test_generate_for_time_rejects_oversized_microseconds() {
-		$overflow_tid = TID::generate_for_time( \PHP_INT_MAX, 'post:1' );
-
-		$this->assertTrue( TID::is_valid( $overflow_tid ), 'Oversized microseconds must fall back to a valid TID.' );
-	}
-
-	/**
-	 * The kind argument segregates Post/Document records (microseconds
-	 * 0..499,999 within each second) from Comment records (500,000..
-	 * 999,999), so they cannot share the microsecond field even with
-	 * matching IDs and timestamps. Idempotency per kind still holds.
-	 */
-	public function test_microseconds_from_post_date_namespace_disambiguates() {
-		$gmt     = '2019-03-14 15:09:26';
-		$id      = 42;
-		$seconds = (int) \strtotime( $gmt . ' UTC' );
-
-		$post    = TID::microseconds_from_post_date( $gmt, $id );
-		$comment = TID::microseconds_from_post_date( $gmt, $id, 'comment' );
-
-		$this->assertNotSame( $post, $comment, 'Namespaced and bare results must differ for the same id+second.' );
-
-		// Namespace must be deterministic across calls.
-		$comment_again = TID::microseconds_from_post_date( $gmt, $id, 'comment' );
-		$this->assertSame( $comment, $comment_again, 'Same namespace + id + second must be idempotent.' );
-
-		// Both still land inside the same GMT second.
-		$this->assertSame( $seconds, \intdiv( $post, 1_000_000 ) );
-		$this->assertSame( $seconds, \intdiv( $comment, 1_000_000 ) );
-
-		// Disjoint ranges by construction: posts/documents in 0..499_999,
-		// comments in 500_000..999_999. Lock the exact offsets for id 42
-		// so a future refactor cannot silently shrink the segregation.
-		$this->assertSame( ( $seconds * 1_000_000 ) + 42, $post );
-		$this->assertSame( ( $seconds * 1_000_000 ) + 500_042, $comment );
-	}
-
-	/**
-	 * Regression test for the cross-kind microsecond collision codex
-	 * surfaced during PR 92 review. Post id 1288 and Comment id 350044
-	 * landed on identical microseconds under the old modulo+CRC32 scheme
-	 * because `(350044 + crc32('comment')) % 1_000_000 == 1288`, and the
-	 * salt-derived clock_id happened to collide on the same 1/1024
-	 * bucket — minting identical rkeys inside `app.bsky.feed.post` that
-	 * `applyWrites` would reject on the second create.
-	 *
-	 * The disjoint-range scheme eliminates the failure mode by
-	 * construction; this test locks the specific pair so we cannot
-	 * silently regress.
-	 */
-	public function test_microseconds_disambiguate_codex_collision_pair(): void {
-		$gmt            = '2020-01-01 00:00:00';
-		$post_micros    = TID::microseconds_from_post_date( $gmt, 1288, '' );
-		$comment_micros = TID::microseconds_from_post_date( $gmt, 350044, 'comment' );
-
-		$this->assertNotSame(
-			$post_micros,
-			$comment_micros,
-			'Post id 1288 and Comment id 350044 must not produce identical microseconds in the same second.'
-		);
+	public function test_decode_returns_zero_for_invalid_tid() {
+		$this->assertSame( 0, TID::decode( '' ) );
+		$this->assertSame( 0, TID::decode( 'tooshort' ) );
+		// 13 characters, but '0' is not in the base-32 charset.
+		$this->assertSame( 0, TID::decode( '0000000000000' ) );
 	}
 }

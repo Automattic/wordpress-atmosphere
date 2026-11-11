@@ -5,6 +5,100 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.6.0] - 2026-11-09
+### Changed
+- The Bluesky column in the Posts list and the editor panel now explain why a post was not shared, including when the site was disconnected from Bluesky at the time, or when the background task that shares it never ran or did not finish. Switching "Share this post" on for a post that was never shared now shares it. [#335]
+
+### Fixed
+- The follow-up posts of a teaser thread no longer show up as comments on your own post. Replies from other people, and replies you write yourself on Bluesky, still arrive as before. [#339]
+
+## [2.5.0] - 2026-10-29
+### Added
+- The ATmosphere settings page now has a Help tab that explains the plugin, common error messages, and where to find its Site Health checks. [#300]
+
+### Changed
+- Site Health now shows the full error message when the site could not reach Bluesky to renew its login, so a timeout, DNS or SSL problem can be told apart. [#331]
+
+### Fixed
+- Featured images stored on a CDN or offloaded media service no longer stop scheduled posts from being shared to Bluesky. [#327]
+- The reactions block and the reactions REST route no longer show likes and reposts of password-protected posts. [#299]
+
+## [2.4.2] - 2026-10-16
+### Fixed
+- Fix the alignment of Bluesky likes and reposts beside their avatars in the dashboard Activity widget. [#284]
+- Fix the Site Health message about a rejected Bluesky login renewal pointing to a check that is not shown on the screen. [#288]
+- Posts shared to Bluesky now always show what a logged-out visitor sees, not the version shown to the logged-in author. [#289]
+- Replies on Bluesky no longer show up as comments on posts that are no longer public. [#286]
+- Text and images that plugins hide from visitors no longer show up in posts shared to Bluesky. [#289]
+
+## [2.4.1] - 2026-10-01
+### Fixed
+- Deleting a post that was shared from a previous Bluesky account no longer pretends to succeed. The post stays marked as shared, so it can still be removed after reconnecting that account. [#279]
+- Sites with a slow connection to Bluesky no longer have to reconnect every week or so. [#281]
+
+## [2.4.0] - 2026-09-22
+### Added
+- Site Health warns when the Bluesky login has not been renewed for a day, when Bluesky rejects the site's login setup, and when a one-time reconnect is needed for the longer-lasting login. An admin notice points to Site Health when the login can no longer be renewed. [#272]
+
+### Changed
+- Your Bluesky login no longer expires after two weeks. Reconnect once after this update to switch to the longer login. [#272]
+
+### Fixed
+- Connecting to Bluesky no longer fails at random for a small share of attempts. [#272]
+
+## [2.3.0] - 2026-09-11
+### Added
+- Posts shared to Bluesky are now also reachable on your own site at the address Bluesky uses for them, so swapping the domain on a Bluesky link lands on your own copy. A new setting can offer these as your posts' short links. [#265]
+- Site Health now shows when ATmosphere last renewed its Bluesky login, and what went wrong if the renewal failed. [#234]
+
+### Fixed
+- Content restricted to subscribers is no longer shared to Bluesky. This covers whole posts, paywalled sections, and paid-content blocks. [#227]
+- Fixed the custom Bluesky text, the share toggle, and the reply restriction silently not saving on custom post types. [#259]
+- Posts that fail to share because your Bluesky session has expired now offer a reconnect link, instead of showing a technical error message. [#263]
+
+## [2.2.0] - 2026-08-31
+### Security
+- Strip HTML from the display names of Bluesky accounts whose replies, likes, and reposts are imported as comments, and keep names containing an ampersand from breaking the comment feeds. [#255]
+- Treat the text of imported Bluesky replies as plain text, so markup in a reply can no longer alter the look of your site. [#256]
+
+### Added
+- Add a Bluesky column to the posts list showing whether a post was shared, with a link to it, plus a "Share to Bluesky" action to share a post that did not make it the first time. [#248]
+- Add a Site Health check that tells you when Bluesky cannot reach your site, which is why connecting silently fails when a security plugin limits the REST API. [#250]
+- Add a way for sites to change the tags and keywords sent to Bluesky and standard.site, so leftover terms from an import stay out of the records. [#243]
+- Add the ATmosphere and Bluesky icons to the WordPress 7.1 icon library, so you can use them in the Icon block. [#254]
+- Allow sites to publish posts as standard.site documents without also posting to Bluesky. [#211]
+- Compatible plugins can now decide per post whether it is also shared to Bluesky. [#240]
+- Handle Bluesky rate limits when sharing: a share that hits the limit now waits for it to lift before retrying, and bulk syncs can be paced so they stay under it. [#244]
+- The backfill command can now preserve each post's original publish date so historical posts appear in the right chronological order in Bluesky and standard.site readers. [#213]
+- The post editor now tells you when your Bluesky connection has expired so you can reconnect before publishing, and warns you in the editor before saving a change that removes a post from Bluesky. [#233]
+- You can now choose who is allowed to reply to a post on Bluesky: everyone, no one, people you mention, people you follow, or your followers. Sites that connected to Bluesky before this update need to reconnect once to turn it on. [#229]
+- Your posts and home page now name the AT Protocol records they were published as, so other apps can tell which record a page came from. [#220]
+
+### Changed
+- Mention resolution now tells a temporarily unreachable handle host apart from a handle that has no verification set up. [#214]
+
+### Fixed
+- Fixed a case where deleting a post or comment after reconnecting to a different Bluesky account could quietly leave the original records stranded on the old account. Atmosphere now stops and reports the mismatch instead. [#216]
+- Fix sharing to Bluesky failing with an "Invalid client ID" error on sites served through a reverse proxy or CDN. [#230]
+- Posts with images no longer fail to share when a stored image reference is no longer available on the server; the images are automatically re-uploaded and the post is shared on a second attempt. [#143]
+- Show a clearer error when your own domain, Bluesky's directory, or a login server is temporarily unavailable, instead of reporting the account as invalid. [#214]
+- The Bluesky pre-publish preview now shows a clear message when it can't be generated — including a distinct one for permission errors — instead of failing without explanation. [#149]
+
+## [2.1.0] - 2026-07-22
+### Added
+- Add a connection-only mode so another plugin can reuse just the Bluesky connection: automatic cross-posting, likes and reposts, and reply importing all stay off, and the ATmosphere settings screen is hidden. [#203]
+- Add a setting — and a filter for plugins — to keep WordPress comment changes from being published to Bluesky while leaving incoming reactions enabled. [#199]
+- Add color settings for your publication theme, so you can choose the background, text, and accent colors apps use when they display your site. [#207]
+- ATmosphere now appears on the WordPress Settings → Connectors screen (WordPress 7.0 and later), so you can connect your account from there too. [#203]
+- Settings: suggest AT Protocol handles as you type when connecting your account. [#203]
+- Site Health now shows your Bluesky connection status, explains why a reconnect is needed and how to prevent it, and adds an ATmosphere section to the debug information for easier troubleshooting. [#192]
+- Sites that rotate their WordPress security keys can now define a dedicated encryption key in wp-config.php so the Bluesky connection survives the rotation. [#191]
+
+### Fixed
+- Busy Bluesky threads no longer lose older replies and reactions when more than 250 notifications arrive between syncs, and older missed replies are now recovered automatically or on demand with WP-CLI. [#194]
+- Comments from Subscribers and other comment-only accounts now stay on WordPress instead of being published through the site's Bluesky account. [#198]
+- When your site's security keys change (after a migration or a salt rotation), ATmosphere now explains what happened and asks you to reconnect your Bluesky account, instead of failing on every post with an unhelpful retry message. [#191]
+
 ## [2.0.0] - 2026-07-08
 ### Added
 - Add an ATmosphere Reactions block that shows the Bluesky likes and reposts that your posts have received, as a facepile of avatars with a count. [#148]
@@ -147,6 +241,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Remove a comment reply from Bluesky if the comment was deleted or unapproved while it was being published, instead of leaving an orphan reply behind. [#32]
 - Short posts under the long-form teaser-thread strategy no longer ship a redundant "continue reading" reply when the entire body already fits in a single Bluesky post. The link-back is preserved as a card on the same post. [#51]
 
+[2.6.0]: https://github.com/Automattic/wordpress-atmosphere/compare/2.5.0...2.6.0
+[2.5.0]: https://github.com/Automattic/wordpress-atmosphere/compare/2.4.2...2.5.0
+[2.4.2]: https://github.com/Automattic/wordpress-atmosphere/compare/2.4.1...2.4.2
+[2.4.1]: https://github.com/Automattic/wordpress-atmosphere/compare/2.4.0...2.4.1
+[2.4.0]: https://github.com/Automattic/wordpress-atmosphere/compare/2.3.0...2.4.0
+[2.3.0]: https://github.com/Automattic/wordpress-atmosphere/compare/2.2.0...2.3.0
+[2.2.0]: https://github.com/Automattic/wordpress-atmosphere/compare/2.1.0...2.2.0
+[2.1.0]: https://github.com/Automattic/wordpress-atmosphere/compare/2.0.0...2.1.0
 [2.0.0]: https://github.com/Automattic/wordpress-atmosphere/compare/1.2.0...2.0.0
 [1.2.0]: https://github.com/Automattic/wordpress-atmosphere/compare/1.1.1...1.2.0
 [1.1.1]: https://github.com/Automattic/wordpress-atmosphere/compare/1.1.0...1.1.1

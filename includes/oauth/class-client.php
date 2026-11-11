@@ -15,7 +15,9 @@ namespace Atmosphere\OAuth;
 use Atmosphere\Atmosphere;
 use function Atmosphere\clear_scheduled_hooks;
 use function Atmosphere\debug_log;
+use function Atmosphere\truncate_graphemes;
 use function Atmosphere\get_connection;
+use function Atmosphere\set_identity;
 use function Atmosphere\is_success_status;
 
 /**
@@ -34,6 +36,18 @@ class Client {
 	 *
 	 * @var string[]
 	 */
+	/**
+	 * Scope that lets the plugin write reply restrictions.
+	 *
+	 * Named so the surfaces that check for it and the list that requests
+	 * it cannot drift apart.
+	 *
+	 * @since 2.2.0
+	 *
+	 * @var string
+	 */
+	public const THREADGATE_SCOPE = 'repo:app.bsky.feed.threadgate';
+
 	private const SCOPES = array(
 
 		/*
@@ -50,6 +64,15 @@ class Client {
 		 * `repo` permissions: https://atproto.com/specs/permission#repo.
 		 */
 		'repo:app.bsky.feed.post',
+
+		/*
+		 * Write the reply restrictions a post can carry. The threadgate is
+		 * a separate record from the post it gates, so writing the post
+		 * does not imply permission to write this one.
+		 *
+		 * `repo` permissions: https://atproto.com/specs/permission#repo.
+		 */
+		self::THREADGATE_SCOPE,
 
 		/*
 		 * Write one Standard.site document record per synced WordPress post.
@@ -136,12 +159,92 @@ class Client {
 	public const DISCONNECTED_OPTION = 'atmosphere_disconnected';
 
 	/**
-	 * Get the client_id URL (= client metadata endpoint).
+	 * `reauth_reason` marker: the encryption key material changed under
+	 * the stored tokens (salt rotation, regenerated wp-config.php).
+	 *
+	 * Written by {@see self::flag_decrypt_failure()}; read by the admin
+	 * reauth notice and Site Health, whose copy explains the cause. A
+	 * mistyped comparison fails soft (falls through to generic expiry
+	 * copy), so consumers MUST use these constants.
+	 *
+	 * @since 2.1.0
+	 *
+	 * @var string
+	 */
+	public const REAUTH_REASON_KEY_CHANGED = 'key_changed';
+
+	/**
+	 * `reauth_reason` marker: tokens unreadable although the key
+	 * fingerprint still matches (corrupted ciphertext).
+	 *
+	 * @since 2.1.0
+	 *
+	 * @var string
+	 */
+	public const REAUTH_REASON_DECRYPT_FAILED = 'decrypt_failed';
+
+	/**
+	 * Reauth reason: the site's own client_id URL no longer matches the one
+	 * the session was minted under (domain move, permalink change).
+	 *
+	 * @since 2.4.0
+	 *
+	 * @var string
+	 */
+	public const REAUTH_REASON_CLIENT_ID_CHANGED = 'client_id_changed';
+
+	/**
+	 * Transient that pauses refresh attempts after a failure that will not
+	 * clear on its own.
+	 *
+	 * Without it every API call past the access token's expiry would make
+	 * a synchronous token request and hold the refresh lock, because such
+	 * a failure neither moves `expires_at` nor flags a reconnect.
+	 *
+	 * @since 2.4.0
+	 *
+	 * @var string
+	 */
+	public const REFRESH_HOLD_TRANSIENT = 'atmosphere_refresh_hold';
+
+	/**
+	 * Failure codes that put refreshing on hold.
+	 *
+	 * @var string[]
+	 */
+	private const REFRESH_HOLD_CODES = array(
+		'atmosphere_client_configuration',
+		'atmosphere_client_authentication',
+		'atmosphere_client_authentication_key',
+	);
+
+	/**
+	 * Get the client_id URL (= confidential client metadata endpoint).
+	 *
+	 * Forces the `https` scheme, mirroring redirect_uri(). AT Protocol
+	 * requires the client_id to be an https URL. rest_url() inherits its
+	 * scheme from the request context, so on a site behind a
+	 * TLS-terminating proxy a CLI/cron request (where is_ssl() is false)
+	 * yields an http client_id — which the auth server rejects as
+	 * "Invalid client ID" during the pre-publish token refresh, even
+	 * though the browser-side authorize used https and succeeded.
+	 * Forcing the scheme keeps the client_id stable across contexts and
+	 * matches the value advertised in the client metadata document.
 	 *
 	 * @return string
 	 */
 	public static function client_id(): string {
-		return \rest_url( 'atmosphere/v1/client-metadata' );
+		return \set_url_scheme( \rest_url( 'atmosphere/v2/client-metadata' ), 'https' );
+	}
+
+	/**
+	 * OAuth client identifier used by connections created before confidential
+	 * client authentication was introduced. Same scheme rule as client_id().
+	 *
+	 * @return string
+	 */
+	public static function legacy_client_id(): string {
+		return \set_url_scheme( \rest_url( 'atmosphere/v1/client-metadata' ), 'https' );
 	}
 
 	/**
@@ -215,9 +318,13 @@ class Client {
 	 * request, and returns the authorization URL to redirect to.
 	 *
 	 * @param string $handle AT Protocol handle.
+	 * @param string $origin Which surface started the flow: `settings` (default)
+	 *                       or `connectors`. Persisted with the flow so the
+	 *                       callback returns the browser to the right screen
+	 *                       without a separate, clobberable flag transient.
 	 * @return string|\WP_Error Authorization URL or error.
 	 */
-	public static function authorize( string $handle ): string|\WP_Error {
+	public static function authorize( string $handle, string $origin = 'settings' ): string|\WP_Error {
 		/*
 		 * Rate-limit AFTER a successful `Resolver::resolve()`, not
 		 * before. The earlier ordering charged the per-user bucket on
@@ -282,6 +389,8 @@ class Client {
 				'pds_endpoint' => $resolved['pds_endpoint'],
 				'auth_server'  => $auth_meta,
 				'handle'       => $handle,
+				'origin'       => 'connectors' === $origin ? 'connectors' : 'settings',
+				'client_id'    => self::client_id(),
 			),
 			HOUR_IN_SECONDS
 		);
@@ -296,7 +405,8 @@ class Client {
 				$dpop_jwk,
 				$state,
 				$challenge,
-				$resolved['did']
+				$resolved['did'],
+				$auth_meta['issuer_url']
 			);
 		}
 
@@ -316,6 +426,24 @@ class Client {
 	}
 
 	/**
+	 * The origin surface of the OAuth flow currently awaiting its callback.
+	 *
+	 * Read from the same per-flow `atmosphere_oauth_resolved` record the callback
+	 * validates, so the return destination can never diverge from the flow that
+	 * is actually in progress — there is one flow at a time (the state, verifier,
+	 * and DPoP key are all single site-wide transients).
+	 *
+	 * @return string `connectors` or `settings` (the default when unknown).
+	 */
+	public static function pending_origin(): string {
+		$resolved = \get_transient( 'atmosphere_oauth_resolved' );
+
+		return \is_array( $resolved ) && 'connectors' === ( $resolved['origin'] ?? '' )
+			? 'connectors'
+			: 'settings';
+	}
+
+	/**
 	 * Use PAR to obtain a request_uri, then redirect to auth endpoint.
 	 *
 	 * @param string $par_url  PAR endpoint.
@@ -324,6 +452,7 @@ class Client {
 	 * @param string $state    CSRF state.
 	 * @param string $challenge PKCE challenge.
 	 * @param string $did      Login hint.
+	 * @param string $issuer   Authorization server issuer URL.
 	 * @return string|\WP_Error
 	 */
 	private static function authorize_via_par(
@@ -333,6 +462,7 @@ class Client {
 		string $state,
 		string $challenge,
 		string $did,
+		string $issuer,
 	): string|\WP_Error {
 		$dpop_proof = DPoP::create_proof( $dpop_jwk, 'POST', $par_url );
 
@@ -350,6 +480,11 @@ class Client {
 			'code_challenge_method' => 'S256',
 			'login_hint'            => $did,
 		);
+
+		$body = Client_Authentication::sign_request( $body, $issuer );
+		if ( \is_wp_error( $body ) ) {
+			return $body;
+		}
 
 		$response = \wp_safe_remote_post(
 			$par_url,
@@ -389,6 +524,11 @@ class Client {
 
 			if ( false === $dpop_proof ) {
 				return new \WP_Error( 'atmosphere_dpop', \__( 'DPoP nonce retry failed.', 'atmosphere' ) );
+			}
+
+			$body = Client_Authentication::sign_request( $body, $issuer );
+			if ( \is_wp_error( $body ) ) {
+				return $body;
 			}
 
 			$response = \wp_safe_remote_post(
@@ -496,6 +636,16 @@ class Client {
 		}
 
 		$token_endpoint = $resolved['auth_server']['token_endpoint'];
+		$issuer         = $resolved['auth_server']['issuer_url'];
+
+		/*
+		 * A flow started under the previous plugin version carries no
+		 * client_id in its transient. The code was issued to the public
+		 * client, so it is exchanged as that client and the session is
+		 * stored without a client_id, exactly like a legacy session.
+		 */
+		$confidential = ! empty( $resolved['client_id'] );
+		$client_id    = $confidential ? (string) $resolved['client_id'] : self::legacy_client_id();
 
 		// Build DPoP proof for token request.
 		$dpop_proof = DPoP::create_proof( $dpop_jwk, 'POST', $token_endpoint );
@@ -506,10 +656,17 @@ class Client {
 		$token_body = array(
 			'grant_type'    => 'authorization_code',
 			'code'          => $code,
-			'client_id'     => self::client_id(),
+			'client_id'     => $client_id,
 			'redirect_uri'  => self::redirect_uri(),
 			'code_verifier' => $verifier,
 		);
+
+		if ( $confidential ) {
+			$token_body = Client_Authentication::sign_request( $token_body, $issuer );
+			if ( \is_wp_error( $token_body ) ) {
+				return $token_body;
+			}
+		}
 
 		$response = \wp_safe_remote_post(
 			$token_endpoint,
@@ -547,6 +704,13 @@ class Client {
 			$dpop_proof = DPoP::create_proof( $dpop_jwk, 'POST', $token_endpoint, $nonce );
 			if ( false === $dpop_proof ) {
 				return new \WP_Error( 'atmosphere_dpop', \__( 'DPoP nonce retry failed during token exchange.', 'atmosphere' ) );
+			}
+
+			if ( $confidential ) {
+				$token_body = Client_Authentication::sign_request( $token_body, $issuer );
+				if ( \is_wp_error( $token_body ) ) {
+					return $token_body;
+				}
 			}
 
 			$response = \wp_safe_remote_post(
@@ -599,15 +763,7 @@ class Client {
 		 * pre-split shape; the canonical source of truth for identity
 		 * is `atmosphere_identity`.
 		 */
-		\update_option(
-			'atmosphere_identity',
-			array(
-				'did'          => $resolved['did'],
-				'handle'       => $resolved['handle'],
-				'pds_endpoint' => $resolved['pds_endpoint'],
-			),
-			true
-		);
+		set_identity( $resolved );
 
 		$connection = array(
 			'did'                 => $resolved['did'],
@@ -621,9 +777,23 @@ class Client {
 			'access_token'        => Encryption::encrypt( $data['access_token'] ),
 			'refresh_token'       => ! empty( $data['refresh_token'] ) ? Encryption::encrypt( $data['refresh_token'] ) : '',
 			'dpop_jwk'            => Encryption::encrypt( (string) \wp_json_encode( $dpop_jwk ) ),
+			'key_fingerprint'     => Encryption::key_fingerprint(),
 			'expires_at'          => \time() + ( $data['expires_in'] ?? 3600 ),
 			'needs_reauth'        => false,
+
+			/*
+			 * What the server actually granted, when it says. Read back
+			 * by `connection_scopes()` so a feature that needs a scope
+			 * added after this site connected can tell, rather than
+			 * failing the write.
+			 */
+			'scope'               => (string) ( $data['scope'] ?? '' ),
 		);
+
+		// Refresh reads this to decide whether to authenticate as the confidential client.
+		if ( $confidential ) {
+			$connection['client_id'] = $client_id;
+		}
 
 		/*
 		 * Clear any prior explicit-disconnect marker BEFORE persisting
@@ -650,6 +820,13 @@ class Client {
 		\delete_option( self::DISCONNECTED_OPTION );
 
 		/*
+		 * A fresh authorization starts a new session, so the previous
+		 * one's refresh history must not carry over and make the new
+		 * connection look like it has already been failing.
+		 */
+		\delete_option( self::REFRESH_STATUS_OPTION );
+
+		/*
 		 * Encrypted token blobs do not need to ride along in every
 		 * request's `alloptions` payload; they're only read on the
 		 * paths that actually talk to the PDS. WP 6.6+ honours the
@@ -657,6 +834,14 @@ class Client {
 		 * existing autoloaded rows flip on the next reconnect.
 		 */
 		\update_option( 'atmosphere_connection', $connection, false );
+
+		/*
+		 * Treat the initial token exchange as a successful credential
+		 * renewal too. This establishes a baseline for Site Health, so a
+		 * newly-connected but low-traffic site can be warned before the
+		 * authorization server's refresh-token inactivity window expires.
+		 */
+		self::record_refresh_success();
 
 		/*
 		 * Connecting is the moment our well-known endpoints become
@@ -669,30 +854,91 @@ class Client {
 		 */
 		Atmosphere::maybe_flush_wellknown_rewrites();
 
+		/**
+		 * Fires after an AT Protocol account is connected.
+		 *
+		 * The OAuth callback has succeeded and the connection is persisted. Lets
+		 * a host plugin embedding ATmosphere purely as a connection layer react
+		 * to a card-driven connect without polling {@see \Atmosphere\is_connected()}
+		 * — e.g. to invalidate its own caches or surface a confirmation.
+		 *
+		 * @since 2.1.0
+		 *
+		 * @param string $did    The connected account's DID.
+		 * @param string $handle The connected account's handle.
+		 */
+		\do_action( 'atmosphere_connected', (string) $resolved['did'], (string) $resolved['handle'] );
+
 		return true;
 	}
+
+	/**
+	 * Timeout (seconds) of each refresh POST to the token endpoint.
+	 *
+	 * The auth server rotates the refresh token as soon as it handles
+	 * the request, so a response the site gives up on is a lost token:
+	 * the next attempt sends the old one, which the reference server
+	 * treats as a replay and answers by deleting the whole session. A
+	 * slow host or a slow client-metadata fetch on the server's side
+	 * can push a legitimate answer past 15 seconds, so the refresh
+	 * waits longer than the other OAuth requests.
+	 *
+	 * @var int
+	 */
+	private const REFRESH_TIMEOUT = 30;
 
 	/**
 	 * Maximum lifetime (seconds) of the refresh lock before it is
 	 * presumed stale and reclaimed.
 	 *
 	 * `refresh_locked()` can issue up to two sequential HTTP POSTs on
-	 * the `use_dpop_nonce` retry path, each with a 15s
-	 * `wp_safe_remote_post` timeout. The first call typically returns
-	 * the nonce error in well under a second (the auth server rejects
-	 * before any real work) — but on a degraded auth server that
-	 * actually hangs on every call, both legs can run the full 15s
-	 * timeout, yielding a worst-case ~30s + encryption + option I/O
-	 * overhead. 45 seconds covers that pathological case plus a small
-	 * margin so a slow-but-legitimate refresh isn't stomped by a
-	 * second worker's CAS-steal. Going lower than the actual worst
-	 * case reintroduces the concurrent-refresh race the lock exists
-	 * to close; going much higher keeps a crashed worker's lock alive
-	 * for proportionally longer before any successor can take over.
+	 * the `use_dpop_nonce` retry path, each with a
+	 * {@see self::REFRESH_TIMEOUT} timeout. The first call typically
+	 * returns the nonce error in well under a second, but on a degraded
+	 * auth server both legs can run the full timeout, yielding a
+	 * worst-case ~60s + encryption + option I/O overhead. 90 seconds
+	 * covers that case plus a margin so a slow-but-legitimate refresh
+	 * isn't stomped by a second worker's CAS-steal, which would send
+	 * the same refresh token twice and get the session deleted as a
+	 * replay. Going much higher keeps a crashed worker's lock alive for
+	 * proportionally longer before any successor can take over.
 	 *
 	 * @var int
 	 */
-	private const REFRESH_LOCK_TTL = 45;
+	private const REFRESH_LOCK_TTL = 90;
+
+	/**
+	 * Expiry this process wrote into the refresh lock, 0 when it holds none.
+	 *
+	 * The lock row carries no owner, so this is how a holder recognizes its
+	 * own lock: {@see self::unlock()} releases only this value, and a token
+	 * request is only started while enough of it is left. A holder that
+	 * overran and lost the lock to a successor can then neither release the
+	 * successor's lock nor race it with the same refresh token.
+	 *
+	 * @var int
+	 */
+	private static int $lock_expires_at = 0;
+
+	/**
+	 * Option holding the outcome of the most recent refresh attempt.
+	 *
+	 * Diagnostic only: nothing branches on it. A dead session looks the
+	 * same from the outside whether the auth server rejected the refresh
+	 * token, the site could not reach the auth server, or the worker
+	 * never ran, and until now none of those left a trace. Site Health
+	 * surfaces this so a support report carries the answer instead of a
+	 * guess.
+	 *
+	 * Kept out of `atmosphere_connection` on purpose: that row is written
+	 * under the careful mid-flight race checks in {@see self::refresh_locked()},
+	 * and a failure record must not have to win those checks to be stored.
+	 *
+	 * @since 2.3.0
+	 *
+	 * @var string
+	 */
+	public const REFRESH_STATUS_OPTION = 'atmosphere_refresh_status';
 
 	/**
 	 * Refresh the access token.
@@ -716,13 +962,47 @@ class Client {
 	 * @return true|\WP_Error
 	 */
 	public static function refresh(): true|\WP_Error {
+		self::invalidate_lock_option_cache( 'atmosphere_connection' );
 		$conn = \get_option( 'atmosphere_connection', array() );
 
+		// A corrupted scalar row must degrade like an empty one, not
+		// fatal against the recorder's array-typed parameter.
+		if ( ! \is_array( $conn ) ) {
+			$conn = array();
+		}
+
 		if ( empty( $conn['refresh_token'] ) ) {
+			/*
+			 * Recorded so a malformed row does not read as a renewal that
+			 * never ran; the rationale lives on REFRESH_STATUS_OPTION.
+			 */
+			self::record_refresh_failure( 'atmosphere_no_refresh', $conn );
+
 			return new \WP_Error( 'atmosphere_no_refresh', \__( 'No refresh token available.', 'atmosphere' ) );
 		}
 
+		/*
+		 * Its own code, deliberately absent from the permanent list in
+		 * `Atmosphere::is_transient_publish_error()`: the hold is shorter
+		 * than the publish retry ladder, so a post that lands inside it is
+		 * retried instead of dropped. The cause rides along for triage.
+		 */
+		$hold = \get_transient( self::REFRESH_HOLD_TRANSIENT );
+		if ( \is_array( $hold ) && ! empty( $hold['code'] ) ) {
+			// A hold left by a session that has since been replaced is void.
+			if ( ( $hold['session'] ?? '' ) !== self::session_fingerprint( $conn ) ) {
+				\delete_transient( self::REFRESH_HOLD_TRANSIENT );
+			} else {
+				return new \WP_Error(
+					'atmosphere_refresh_on_hold',
+					(string) ( $hold['message'] ?? '' ),
+					array( 'cause' => (string) $hold['code'] )
+				);
+			}
+		}
+
 		if ( ! self::lock() ) {
+			self::invalidate_lock_option_cache( 'atmosphere_connection' );
 			$fresh = \get_option( 'atmosphere_connection', array() );
 
 			if ( ! empty( $fresh['access_token'] )
@@ -746,16 +1026,114 @@ class Client {
 			 * read and the lock acquisition; using a stale refresh
 			 * token here would defeat the point of locking.
 			 */
+			self::invalidate_lock_option_cache( 'atmosphere_connection' );
 			$conn = \get_option( 'atmosphere_connection', array() );
 
-			if ( empty( $conn['refresh_token'] ) ) {
-				return new \WP_Error( 'atmosphere_no_refresh', \__( 'No refresh token available.', 'atmosphere' ) );
+			if ( ! \is_array( $conn ) ) {
+				$conn = array();
 			}
 
-			return self::refresh_locked( $conn );
+			self::extend_time_limit();
+
+			$result = self::refresh_locked( $conn );
+
+			if ( true === $result ) {
+				return true;
+			}
+
+			/*
+			 * One recording site for every way the locked routine can
+			 * fail, so a future early return cannot silently skip the
+			 * history. The server's own code rides in the error data
+			 * when it differs from the WP_Error code. Success is
+			 * stamped inside `refresh_locked()`, under the same row
+			 * check that guarded the token write.
+			 */
+			$data = $result->get_error_data();
+
+			self::record_refresh_failure(
+				\is_array( $data ) && ! empty( $data['refresh_error'] )
+					? (string) $data['refresh_error']
+					: (string) $result->get_error_code(),
+				$conn,
+				// A transport failure keeps its message: the code alone does not tell a timeout from a DNS or TLS problem.
+				'http_request_failed' === $result->get_error_code()
+					? $result->get_error_message()
+					: ''
+			);
+
+			/*
+			 * Same row check as the recorder above: a worker that was in
+			 * flight when the operator disconnected must not leave a hold
+			 * behind for the session that replaces it.
+			 */
+			self::invalidate_lock_option_cache( 'atmosphere_connection' );
+			$current = \get_option( 'atmosphere_connection', array() );
+			if ( \in_array( (string) $result->get_error_code(), self::REFRESH_HOLD_CODES, true )
+				&& \is_array( $current )
+				&& ! empty( $conn['refresh_token'] )
+				&& self::connection_row_matches( $conn, $current, 'refresh_token' )
+			) {
+				\set_transient(
+					self::REFRESH_HOLD_TRANSIENT,
+					array(
+						'code'    => (string) $result->get_error_code(),
+						'message' => $result->get_error_message(),
+						'session' => self::session_fingerprint( $conn ),
+					),
+					5 * MINUTE_IN_SECONDS
+				);
+			}
+
+			return $result;
 		} finally {
 			self::unlock();
 		}
+	}
+
+	/**
+	 * Give the locked refresh enough time to store the rotated token.
+	 *
+	 * Once the auth server answers, the old refresh token is spent. A
+	 * PHP time limit that ends the request between that answer and the
+	 * option write loses the new token for good, and the next refresh
+	 * gets the session deleted as a replay. The limit is only ever
+	 * raised: an unlimited run (WP-CLI, `0`) stays unlimited, and a
+	 * longer configured limit restarts at its own value.
+	 */
+	private static function extend_time_limit(): void {
+		$limit = (int) \ini_get( 'max_execution_time' );
+
+		if ( 0 === $limit || ! \function_exists( 'set_time_limit' ) ) {
+			return;
+		}
+
+		\set_time_limit( \max( $limit, self::REFRESH_LOCK_TTL ) );
+	}
+
+	/**
+	 * Whether a token request started now still ends inside this
+	 * process's refresh lock.
+	 *
+	 * Once the lock expires another worker may take it and send the same
+	 * refresh token, which the auth server treats as a replay and answers
+	 * by ending the session. A request that could still be running by then
+	 * is not started; the renewal is retried on the next run instead. The
+	 * margin covers storing the result after the response arrives.
+	 *
+	 * @since 2.4.1
+	 *
+	 * @return true|\WP_Error
+	 */
+	private static function request_fits_in_lock(): true|\WP_Error {
+		if ( \time() + self::REFRESH_TIMEOUT + 5 < self::$lock_expires_at ) {
+			return true;
+		}
+
+		return new \WP_Error(
+			'atmosphere_refresh_lock_expiring',
+			\__( 'Token refresh ran out of time and will be retried.', 'atmosphere' )
+		);
 	}
 
 	/**
@@ -768,14 +1146,24 @@ class Client {
 	 * @return true|\WP_Error
 	 */
 	private static function refresh_locked( array $conn ): true|\WP_Error {
-		$refresh_token = Encryption::decrypt( $conn['refresh_token'] );
-		if ( false === $refresh_token ) {
-			return new \WP_Error( 'atmosphere_decrypt', \__( 'Failed to decrypt refresh token.', 'atmosphere' ) );
+		/*
+		 * Re-checked here because the caller re-read the row after
+		 * taking the lock; a reconnect can land a token-less row too
+		 * (`handle_callback()` stores an empty `refresh_token` when the
+		 * token response carries none).
+		 */
+		if ( empty( $conn['refresh_token'] ) ) {
+			return new \WP_Error( 'atmosphere_no_refresh', \__( 'No refresh token available.', 'atmosphere' ) );
 		}
 
-		$dpop_jwk_json = Encryption::decrypt( $conn['dpop_jwk'] );
-		if ( false === $dpop_jwk_json ) {
-			return new \WP_Error( 'atmosphere_decrypt', \__( 'Failed to decrypt DPoP key.', 'atmosphere' ) );
+		$refresh_token = self::decrypt_field( $conn, 'refresh_token' );
+		if ( \is_wp_error( $refresh_token ) ) {
+			return $refresh_token;
+		}
+
+		$dpop_jwk_json = self::decrypt_field( $conn, 'dpop_jwk' );
+		if ( \is_wp_error( $dpop_jwk_json ) ) {
+			return $dpop_jwk_json;
 		}
 
 		$dpop_jwk       = \json_decode( $dpop_jwk_json, true );
@@ -786,11 +1174,32 @@ class Client {
 			return new \WP_Error( 'atmosphere_dpop', \__( 'Failed to create DPoP proof for refresh.', 'atmosphere' ) );
 		}
 
+		/*
+		 * A session minted by the confidential client stores its client_id;
+		 * older public-client sessions have none and must keep refreshing
+		 * without an assertion under the frozen legacy client_id.
+		 */
+		$confidential = ! empty( $conn['client_id'] );
+		$client_id    = $confidential ? (string) $conn['client_id'] : self::legacy_client_id();
+		$issuer       = (string) ( $conn['auth_server'] ?? '' );
+
 		$body = array(
 			'grant_type'    => 'refresh_token',
 			'refresh_token' => $refresh_token,
-			'client_id'     => self::client_id(),
+			'client_id'     => $client_id,
 		);
+
+		if ( $confidential ) {
+			$body = Client_Authentication::sign_request( $body, $issuer );
+			if ( \is_wp_error( $body ) ) {
+				return $body;
+			}
+		}
+
+		$in_time = self::request_fits_in_lock();
+		if ( \is_wp_error( $in_time ) ) {
+			return $in_time;
+		}
 
 		$response = \wp_safe_remote_post(
 			$token_endpoint,
@@ -800,12 +1209,20 @@ class Client {
 					'DPoP'         => $dpop_proof,
 				),
 				'body'        => $body,
-				'timeout'     => 15,
+				'timeout'     => self::REFRESH_TIMEOUT,
 				'redirection' => 0,
 			)
 		);
 
 		if ( \is_wp_error( $response ) ) {
+			/*
+			 * The site could not reach the auth server at all. The
+			 * refresh token is almost certainly still good, so nothing
+			 * is flagged; the attempt is recorded because a run of these
+			 * is what a firewalled or offline site looks like from the
+			 * outside, and it is otherwise indistinguishable from a
+			 * worker that never ran.
+			 */
 			return $response;
 		}
 
@@ -830,6 +1247,18 @@ class Client {
 				return new \WP_Error( 'atmosphere_dpop', \__( 'DPoP nonce retry failed during refresh.', 'atmosphere' ) );
 			}
 
+			if ( $confidential ) {
+				$body = Client_Authentication::sign_request( $body, $issuer );
+				if ( \is_wp_error( $body ) ) {
+					return $body;
+				}
+			}
+
+			$in_time = self::request_fits_in_lock();
+			if ( \is_wp_error( $in_time ) ) {
+				return $in_time;
+			}
+
 			$response = \wp_safe_remote_post(
 				$token_endpoint,
 				array(
@@ -838,7 +1267,7 @@ class Client {
 						'DPoP'         => $dpop_proof,
 					),
 					'body'        => $body,
-					'timeout'     => 15,
+					'timeout'     => self::REFRESH_TIMEOUT,
 					'redirection' => 0,
 				)
 			);
@@ -867,14 +1296,29 @@ class Client {
 		}
 
 		if ( ! is_success_status( $status ) || empty( $data['access_token'] ) ) {
-			$msg = $data['error_description'] ?? ( $data['error'] ?? \__( 'Token refresh failed.', 'atmosphere' ) );
-
 			/*
 			 * Only mark the connection as needing reauth for permanent
 			 * errors where the refresh token has been consumed or revoked.
 			 * Transient errors (rate-limiting, server errors) may not have
 			 * consumed the token, so the connection can recover on the
 			 * next attempt without operator action.
+			 *
+			 * The two branches must not share an error code. Everything
+			 * downstream classifies the failure through
+			 * {@see self::is_reconnect_error()}: the publish retry ladder
+			 * decides whether another attempt could ever succeed, and the
+			 * editor and posts-list surfaces decide between offering a
+			 * reconnect prompt and reporting a retryable glitch. One code
+			 * would force one answer onto both branches — either dropping a
+			 * post the auth server would have accepted a minute later, or
+			 * leaving the author with a raw OAuth string and no way to act
+			 * on it while the site-wide notice says to reconnect.
+			 *
+			 * So the permanent branch returns `atmosphere_needs_reauth`,
+			 * the same code (and wording) `access_token()` returns once the
+			 * flag is set, and the auth server's own `error_description` is
+			 * dropped: it reaches authors verbatim in the posts-list column,
+			 * where "invalid_grant" tells them nothing they can use.
 			 *
 			 * The connection row itself is preserved (rather than deleted)
 			 * so the durable identity inside it stays available for the
@@ -884,37 +1328,112 @@ class Client {
 			 * `needs_reauth` is set, so the publish, comment, and API
 			 * callers short-circuit until the user re-authorizes.
 			 */
+
+			/*
+			 * The auth server is whatever the admin's handle resolved to,
+			 * so its body shape is not ours to trust: a member that
+			 * arrives as an object or a number must not reach a `string`
+			 * parameter, where PHP would raise an uncatchable TypeError
+			 * and turn a graceful failure into a fatal on the cron and
+			 * inline-publish paths.
+			 */
 			$error = $data['error'] ?? '';
-			if ( \in_array( $error, array( 'invalid_grant', 'invalid_client', 'unauthorized_client' ), true ) ) {
-				/*
-				 * Re-read the connection before writing, and only stamp
-				 * `needs_reauth` if the row STILL holds the same
-				 * refresh-token ciphertext we read at lock-acquisition
-				 * time. Two races close here:
-				 *
-				 *   - Admin disconnected mid-flight: the row is gone
-				 *     and the `refresh_token` check below fails.
-				 *   - Admin disconnected + reconnected to a different
-				 *     account mid-flight: the row exists but the
-				 *     `refresh_token` ciphertext is different (libsodium
-				 *     re-encrypts with a fresh nonce). Stamping
-				 *     `needs_reauth` on the NEW account because the
-				 *     OLD account's refresh failed would be wrong.
-				 */
-				$current = \get_option( 'atmosphere_connection', array() );
-				if ( \is_array( $current )
-					&& ! empty( $current['refresh_token'] )
-					&& isset( $conn['refresh_token'] )
-					&& \hash_equals( (string) $conn['refresh_token'], (string) $current['refresh_token'] )
-				) {
-					$current['needs_reauth'] = true;
-					$current['access_token'] = '';
-					unset( $current['expires_at'] );
-					\update_option( 'atmosphere_connection', $current, false );
-				}
+			$error = \is_string( $error ) ? $error : '';
+
+			$msg = $data['error_description'] ?? $error;
+			if ( ! \is_string( $msg ) || '' === $msg ) {
+				$msg = \__( 'Token refresh failed.', 'atmosphere' );
 			}
 
-			return new \WP_Error( 'atmosphere_refresh', $msg, array( 'status' => $status ) );
+			if ( 'invalid_grant' === $error ) {
+				self::mark_needs_reauth( $conn, 'refresh_token' );
+
+				/*
+				 * The generic message above is what authors need; the raw
+				 * auth-server text is what triage needs. `log_cron_error()`
+				 * only ever sees the message we return, so the detail has
+				 * to be logged here or it is gone.
+				 */
+				debug_log( \sprintf( 'refresh rejected permanently (%s): %s', $error, $msg ) );
+
+				/*
+				 * The server's own code rides along in the data for the
+				 * recorder in `refresh()`: the WP_Error code says a
+				 * reconnect is required but not why. Without it, every
+				 * report of "it disconnected again" starts from zero.
+				 */
+				return new \WP_Error(
+					'atmosphere_needs_reauth',
+					\__( 'AT Protocol session expired. Reconnect to resume publishing.', 'atmosphere' ),
+					array(
+						'status'        => $status,
+						'refresh_error' => $error,
+					)
+				);
+			}
+
+			/*
+			 * A client-registration failure is not repaired by authorizing
+			 * the same client again. Keeping the session intact avoids a
+			 * misleading "disconnected" state and leaves a still-valid access
+			 * token usable while the administrator fixes stale client metadata,
+			 * a blocked client-metadata endpoint, or a provider-side policy.
+			 */
+			if ( self::is_client_configuration_error( $error ) ) {
+				/*
+				 * The rejected registration is the stored client_id. When the
+				 * site's own client_id URL has moved (domain change, permalink
+				 * switch, a `rest_url` filter), that document is gone and only
+				 * a reconnect under the current URL repairs it. A legacy
+				 * session reconnects for any such rejection: reconnecting
+				 * moves it to the confidential client, which is the fix
+				 * whatever the server objected to.
+				 */
+				$moved = $confidential && self::client_id() !== $client_id;
+
+				if ( ! $confidential || $moved ) {
+					self::mark_needs_reauth( $conn, 'refresh_token', $moved ? self::REAUTH_REASON_CLIENT_ID_CHANGED : '' );
+					debug_log(
+						$moved
+							? \sprintf( 'refresh rejected (%s): stored client_id %s no longer matches %s', $error, $client_id, self::client_id() )
+							: \sprintf( 'refresh rejected (%s) on the legacy client; reconnect required', $error )
+					);
+
+					return new \WP_Error(
+						'atmosphere_needs_reauth',
+						\__( 'AT Protocol session expired. Reconnect to resume publishing.', 'atmosphere' ),
+						array(
+							'status'        => $status,
+							'refresh_error' => $error,
+						)
+					);
+				}
+
+				debug_log( \sprintf( 'refresh rejected client configuration (%s): %s', $error, $msg ) );
+
+				return new \WP_Error(
+					'atmosphere_client_configuration',
+					\__( 'The authorization server rejected this site’s OAuth client configuration. Check ATmosphere Site Health before trying again.', 'atmosphere' ),
+					array(
+						'status'        => $status,
+						'refresh_error' => $error,
+					)
+				);
+			}
+
+			// Same reason as above: the recorder wants the server's code.
+			return new \WP_Error(
+				'atmosphere_refresh',
+				$msg,
+				array(
+					'status'        => $status,
+					'refresh_error' => '' !== $error
+						? $error
+						// An unparseable status leaves the key empty; the
+						// boundary then records the WP_Error code itself.
+						: ( \is_numeric( $status ) && (int) $status > 0 ? 'http_' . (int) $status : '' ),
+				)
+			);
 		}
 
 		/*
@@ -933,35 +1452,568 @@ class Client {
 		 * Both are closed by comparing the refresh-token ciphertext we
 		 * read at lock-acquisition time against the current row. The
 		 * ciphertexts are random per encryption (libsodium uses a
-		 * fresh nonce on every `encrypt()`), so any change at all —
-		 * delete-then-recreate, reconnect, even an unrelated
-		 * `sync_connection_handle()` write that re-encrypted the row
-		 * — fails the equality check and the worker bails.
+		 * fresh nonce on every `encrypt()`), so delete-then-recreate
+		 * or a reconnect fails the equality check and the worker
+		 * bails. The check and the write are one compare-and-swap, so
+		 * nothing can land between them either.
 		 */
-		$current = \get_option( 'atmosphere_connection', array() );
+		$refresh_ciphertext = ! empty( $data['refresh_token'] ) ? Encryption::encrypt( $data['refresh_token'] ) : '';
 
-		if ( ! \is_array( $current )
-			|| empty( $current['refresh_token'] )
-			|| ! isset( $conn['refresh_token'] )
-			|| ! \hash_equals( (string) $conn['refresh_token'], (string) $current['refresh_token'] )
-		) {
+		$written = self::update_connection(
+			static function ( array $current ) use ( $conn, $data, $refresh_ciphertext ): ?array {
+				if ( ! self::connection_row_matches( $conn, $current, 'refresh_token' ) ) {
+					return null;
+				}
+
+				$current['access_token'] = Encryption::encrypt( $data['access_token'] );
+				$current['expires_at']   = \time() + ( $data['expires_in'] ?? 3600 );
+				$current['needs_reauth'] = false;
+				unset( $current['reauth_reason'] );
+
+				/*
+				 * Opportunistic backfill for rows connected before fingerprints
+				 * existed: the refresh token just decrypted with the current key,
+				 * so the current fingerprint is the right one for this row.
+				 */
+				$current['key_fingerprint'] = Encryption::key_fingerprint();
+
+				/*
+				 * Same opportunistic backfill for the granted scope: rows
+				 * connected before it was stored pick it up on their next
+				 * refresh, so a scope gap becomes visible within the hour
+				 * without anyone reconnecting just to find out.
+				 */
+				if ( ! empty( $data['scope'] ) ) {
+					$current['scope'] = (string) $data['scope'];
+				}
+
+				if ( '' !== $refresh_ciphertext ) {
+					$current['refresh_token'] = $refresh_ciphertext;
+				}
+
+				return $current;
+			}
+		);
+
+		if ( null === $written ) {
+			/*
+			 * The session these tokens belong to is gone. Nothing will
+			 * ever use them, so they are revoked like a disconnect would.
+			 */
+			if ( '' !== $refresh_ciphertext ) {
+				self::schedule_revocation( $conn, $refresh_ciphertext );
+			}
+
 			return new \WP_Error(
 				'atmosphere_disconnected_mid_refresh',
 				\__( 'Connection changed while the refresh was in-flight; new tokens were discarded.', 'atmosphere' )
 			);
 		}
 
-		$current['access_token'] = Encryption::encrypt( $data['access_token'] );
-		$current['expires_at']   = \time() + ( $data['expires_in'] ?? 3600 );
-		$current['needs_reauth'] = false;
-
-		if ( ! empty( $data['refresh_token'] ) ) {
-			$current['refresh_token'] = Encryption::encrypt( $data['refresh_token'] );
-		}
-
-		\update_option( 'atmosphere_connection', $current, false );
+		/*
+		 * Stamped right behind the token write, under the row check that
+		 * just passed, so a disconnect or reconnect cannot slip between
+		 * the write and the stamp and get the old session's history. A
+		 * long gap on a still-connected site is the signal that the
+		 * refresh worker stopped running.
+		 */
+		self::record_refresh_success();
 
 		return true;
+	}
+
+	/**
+	 * Decrypt a stored connection credential, flagging the row for
+	 * reauth on failure.
+	 *
+	 * The single chokepoint for reading connection ciphertext, so the
+	 * invariant "a failed credential decrypt always flags the row" is
+	 * enforced by the mechanism instead of repeated at every call site
+	 * (see {@see self::flag_decrypt_failure()} for why the failure is
+	 * permanent).
+	 *
+	 * @since 2.1.0
+	 *
+	 * @param array  $conn  Connection row the credential was read from.
+	 * @param string $field Connection field to decrypt (`access_token`,
+	 *                      `refresh_token`, `dpop_jwk`).
+	 * @return string|\WP_Error The plaintext, or the reauth error.
+	 */
+	public static function decrypt_field( array $conn, string $field ): string|\WP_Error {
+		$plaintext = Encryption::decrypt( (string) ( $conn[ $field ] ?? '' ) );
+
+		if ( false === $plaintext ) {
+			return self::flag_decrypt_failure( $conn, $field );
+		}
+
+		return $plaintext;
+	}
+
+	/**
+	 * Failure codes resolvable only by reconnecting the Bluesky account.
+	 *
+	 * Consumed by the `atmosphere_publish_error` REST field as the
+	 * `needs_reconnect` flag so the editor panel never keeps its own
+	 * copy of this judgment. Lives here, next to the code paths that
+	 * mint these codes, so a future reconnect-class error is added in
+	 * one place. A curated subset of the permanent codes in
+	 * {@see \Atmosphere\Atmosphere::is_transient_publish_error()} —
+	 * deliberately without `atmosphere_did_mismatch`, which reconnecting
+	 * to the current account does not fix.
+	 *
+	 * @var string[]
+	 */
+	private const RECONNECT_ERROR_CODES = array(
+		'atmosphere_key_changed',
+		'atmosphere_decrypt',
+		'atmosphere_needs_reauth',
+		'atmosphere_not_connected',
+	);
+
+	/**
+	 * Whether a failure code can only be resolved by reconnecting.
+	 *
+	 * @since 2.1.0
+	 *
+	 * @param string $code Machine-readable failure code.
+	 * @return bool
+	 */
+	public static function is_reconnect_error( string $code ): bool {
+		return \in_array( $code, self::RECONNECT_ERROR_CODES, true );
+	}
+
+	/**
+	 * Auth-server error codes that reject the client registration itself.
+	 *
+	 * Reconnecting the same client cannot repair these, so `refresh()`
+	 * keeps the session and Site Health points at the client metadata
+	 * instead. Declared once here so both stay in step.
+	 *
+	 * @var string[]
+	 */
+	private const CLIENT_CONFIGURATION_ERRORS = array(
+		'invalid_client',
+		// What the reference server answers when it cannot fetch, or does
+		// not accept, the client metadata document behind the client_id.
+		'invalid_client_metadata',
+		'unauthorized_client',
+	);
+
+	/**
+	 * Whether an auth-server error code means the client registration was rejected.
+	 *
+	 * @since 2.4.0
+	 *
+	 * @param string $error OAuth error code as returned by the authorization server.
+	 * @return bool
+	 */
+	public static function is_client_configuration_error( string $error ): bool {
+		return \in_array( $error, self::CLIENT_CONFIGURATION_ERRORS, true );
+	}
+
+	/**
+	 * Build the error for an undecryptable connection credential and
+	 * flag the connection for reauth.
+	 *
+	 * A decrypt failure is never transient: the ciphertext can only be
+	 * read with the exact key material it was written under, so every
+	 * subsequent attempt fails identically until the user reconnects.
+	 * The key fingerprint stored at connect/refresh time classifies the
+	 * failure — a mismatch means the site's security keys changed (salt
+	 * rotation, regenerated `wp-config.php`), while a match (or a
+	 * pre-fingerprint row) points at corrupted data. Either way the row
+	 * is flagged `needs_reauth` so publishing short-circuits and the
+	 * admin reconnect notice appears, instead of every save failing
+	 * again with a retry hint that can never succeed.
+	 *
+	 * @since 2.1.0
+	 *
+	 * @param array  $conn  Connection row the failed decrypt ran against.
+	 * @param string $field Connection field that failed to decrypt
+	 *                      (`access_token`, `refresh_token`, `dpop_jwk`).
+	 *                      The reauth stamp is guarded on this field's
+	 *                      ciphertext so a concurrent worker that already
+	 *                      repaired it (e.g. a refresh rewriting
+	 *                      `access_token`) is left alone.
+	 * @return \WP_Error `atmosphere_key_changed` when the stored
+	 *                   fingerprint mismatches the current key,
+	 *                   `atmosphere_decrypt` otherwise.
+	 */
+	public static function flag_decrypt_failure( array $conn, string $field ): \WP_Error {
+		$stored = (string) ( $conn['key_fingerprint'] ?? '' );
+
+		/*
+		 * Only a well-formed stored fingerprint (32 hex chars, exactly
+		 * what `Encryption::key_fingerprint()` writes) is authoritative
+		 * for the "key changed" diagnosis. A mangled row proves only
+		 * that the row is corrupt, so it falls back to the generic
+		 * classification below — like a pre-fingerprint row.
+		 */
+		$key_changed = \preg_match( '/^[0-9a-f]{32}$/', $stored )
+			&& ! \hash_equals( Encryption::key_fingerprint(), $stored );
+
+		self::mark_needs_reauth(
+			$conn,
+			$field,
+			$key_changed ? self::REAUTH_REASON_KEY_CHANGED : self::REAUTH_REASON_DECRYPT_FAILED
+		);
+
+		if ( $key_changed ) {
+			return new \WP_Error(
+				'atmosphere_key_changed',
+				\__( 'Your site’s security keys have changed, so the saved Bluesky login can no longer be read. Reconnect your Bluesky account to resume sharing.', 'atmosphere' )
+			);
+		}
+
+		return new \WP_Error(
+			'atmosphere_decrypt',
+			\__( 'The saved Bluesky login could not be read. Reconnect your Bluesky account to resume sharing.', 'atmosphere' )
+		);
+	}
+
+	/**
+	 * Whether the stored row still holds the ciphertext the caller read,
+	 * i.e. no disconnect or reconnect landed mid-flight. Libsodium
+	 * re-encrypts with a fresh nonce on every write, so any
+	 * re-encryption of the compared field fails the comparison. Other
+	 * fields may change without failing it — the failure recording at
+	 * the `refresh()` boundary depends on that, because
+	 * `mark_needs_reauth()` rewrites the row (keeping the token
+	 * ciphertext) before the failure is recorded.
+	 *
+	 * @since 2.3.0
+	 *
+	 * @param array  $conn    Connection as read by the caller.
+	 * @param array  $current Connection as stored now.
+	 * @param string $field   Ciphertext field to compare.
+	 * @return bool
+	 */
+	private static function connection_row_matches( array $conn, array $current, string $field ): bool {
+		return ! empty( $conn[ $field ] )
+			&& ! empty( $current[ $field ] )
+			&& \hash_equals( (string) $conn[ $field ], (string) $current[ $field ] );
+	}
+
+	/**
+	 * Change the stored connection without losing a concurrent write.
+	 *
+	 * `get_option()` followed by `update_option()` is a read-modify-write:
+	 * a token rotation, disconnect or reconnect landing in between is
+	 * silently overwritten, and an overwritten refresh token ends the
+	 * session on its next use. This reads the raw row, applies `$change`
+	 * and writes back only if the row still holds exactly what was read,
+	 * starting over with the new row otherwise.
+	 *
+	 * A missing row stays missing; `$change` is not called for it.
+	 *
+	 * @since 2.4.1
+	 *
+	 * @param callable $change Receives the stored row and returns the row
+	 *                         to store, an empty array to delete it, or
+	 *                         null to leave it alone.
+	 * @return array|null The row as it was before the change, or null
+	 *                    when nothing was written.
+	 */
+	public static function update_connection( callable $change ): ?array {
+		global $wpdb;
+
+		/*
+		 * Every lost round means another write landed in between, so a
+		 * handful is plenty; the bound only keeps a runaway writer from
+		 * pinning this request.
+		 */
+		for ( $attempt = 0; $attempt < 10; $attempt++ ) {
+			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching
+			$raw = $wpdb->get_var(
+				$wpdb->prepare(
+					"SELECT option_value FROM {$wpdb->options} WHERE option_name = %s",
+					'atmosphere_connection'
+				)
+			);
+
+			if ( null === $raw ) {
+				return null;
+			}
+
+			$current = \maybe_unserialize( $raw );
+			if ( ! \is_array( $current ) ) {
+				$current = array();
+			}
+
+			$next = $change( $current );
+			if ( null === $next ) {
+				return null;
+			}
+
+			if ( array() === $next ) {
+				// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching
+				$written = $wpdb->query(
+					$wpdb->prepare(
+						"DELETE FROM {$wpdb->options} WHERE option_name = %s AND option_value = %s",
+						'atmosphere_connection',
+						$raw
+					)
+				);
+			} else {
+				$value = \maybe_serialize( $next );
+
+				// MySQL reports an unchanged row as zero affected rows.
+				if ( $value === $raw ) {
+					return $current;
+				}
+
+				// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching
+				$written = $wpdb->query(
+					$wpdb->prepare(
+						"UPDATE {$wpdb->options} SET option_value = %s, autoload = 'off' WHERE option_name = %s AND option_value = %s",
+						$value,
+						'atmosphere_connection',
+						$raw
+					)
+				);
+			}
+
+			if ( 1 === (int) $written ) {
+				self::invalidate_lock_option_cache( 'atmosphere_connection' );
+				return $current;
+			}
+		}
+
+		return null;
+	}
+
+	/**
+	 * The recorded refresh history, tolerating a corrupted row.
+	 *
+	 * @since 2.3.0
+	 *
+	 * @return array
+	 */
+	public static function refresh_status(): array {
+		$status = \get_option( self::REFRESH_STATUS_OPTION, array() );
+
+		if ( ! \is_array( $status ) ) {
+			return array();
+		}
+
+		/*
+		 * Member types are enforced here too, so every reader inherits
+		 * the corruption tolerance: a non-numeric timestamp would render
+		 * as a 1970 delta and a non-string error would fatal the Site
+		 * Health screen, the one place a broken site's admin is sent.
+		 */
+		foreach ( array( 'last_success', 'last_failure' ) as $key ) {
+			if ( isset( $status[ $key ] ) && ( ! \is_numeric( $status[ $key ] ) || (int) $status[ $key ] <= 0 ) ) {
+				unset( $status[ $key ] );
+			}
+		}
+
+		if ( isset( $status['last_error'] ) && ! \is_string( $status['last_error'] ) ) {
+			unset( $status['last_error'] );
+		}
+
+		return $status;
+	}
+
+	/**
+	 * Merge fields into the refresh history.
+	 *
+	 * @since 2.3.0
+	 *
+	 * @param array $fields Fields to stamp.
+	 */
+	private static function update_refresh_status( array $fields ): void {
+		\update_option( self::REFRESH_STATUS_OPTION, \array_merge( self::refresh_status(), $fields ), false );
+	}
+
+	/**
+	 * Identify a session by its refresh-token ciphertext without storing it.
+	 *
+	 * The hold is written after the row check and the two are not atomic;
+	 * a reconnect landing in between would otherwise inherit the hold.
+	 *
+	 * @param array $conn Connection row.
+	 * @return string
+	 */
+	private static function session_fingerprint( array $conn ): string {
+		return \hash( 'sha256', (string) ( $conn['refresh_token'] ?? '' ) );
+	}
+
+	/**
+	 * Record that a refresh attempt succeeded.
+	 *
+	 * The previous failure is kept rather than cleared: a session that
+	 * recovers after one rejected attempt is a different story from one
+	 * that never failed, and the difference matters when reading a
+	 * support report weeks later.
+	 *
+	 * @since 2.3.0
+	 */
+	private static function record_refresh_success(): void {
+		\delete_transient( self::REFRESH_HOLD_TRANSIENT );
+		self::update_refresh_status( array( 'last_success' => \time() ) );
+	}
+
+	/**
+	 * Record why a refresh attempt failed.
+	 *
+	 * @since 2.3.0
+	 *
+	 * @param string $error Auth-server error code, or a transport error code.
+	 * @param array  $conn  Connection as read by the caller (required, so no
+	 *                      call site can silently skip the session check); a
+	 *                      failure belonging to a session that ended
+	 *                      mid-flight is dropped.
+	 * @param string $detail Optional. The transport error message, stored
+	 *                       after the code. Default ''.
+	 */
+	private static function record_refresh_failure( string $error, array $conn, string $detail = '' ): void {
+		self::invalidate_lock_option_cache( 'atmosphere_connection' );
+		$current = \get_option( 'atmosphere_connection', array() );
+
+		/*
+		 * A worker can still be in flight when the operator disconnects
+		 * or reconnects, and both of those clear this option on purpose.
+		 * Writing the dead session's failure afterwards would resurrect
+		 * the row and date-stamp a brand-new connection with the old
+		 * account's error. Same ciphertext comparison the token write
+		 * uses — see {@see self::connection_row_matches()}.
+		 */
+		if ( ! \is_array( $current ) || empty( $current ) ) {
+			return;
+		}
+
+		/*
+		 * Symmetric session check: exactly one side holding a token
+		 * means the session changed mid-flight and the failure belongs
+		 * to the dead one; both sides token-less is the same malformed
+		 * row the failure describes, so it is kept.
+		 */
+		if ( empty( $conn['refresh_token'] ) !== empty( $current['refresh_token'] ) ) {
+			return;
+		}
+
+		if ( ! empty( $conn['refresh_token'] ) && ! self::connection_row_matches( $conn, $current, 'refresh_token' ) ) {
+			return;
+		}
+
+		/*
+		 * The code comes from a remote server and is rendered into the
+		 * Site Health panel that people paste into public threads, so it
+		 * is stripped of markup and bounded. Real OAuth error codes are
+		 * short; anything longer is noise or an attempt to use the panel
+		 * as a canvas.
+		 */
+		$error = truncate_graphemes( \sanitize_text_field( $error ), 64 );
+
+		/*
+		 * The transport message comes from the site's own HTTP library,
+		 * but it is bounded the same way. A cURL message fits in 200.
+		 */
+		$detail = truncate_graphemes( \sanitize_text_field( $detail ), 200 );
+		if ( '' !== $detail ) {
+			$error .= ': ' . $detail;
+		}
+
+		/*
+		 * A row that fails on every API-touching request (a token-less
+		 * connection that never flags `needs_reauth`) must not turn the
+		 * history into one options UPDATE per request. The same error
+		 * within a short window adds nothing a support thread needs.
+		 */
+		$status = self::refresh_status();
+		if ( ( $status['last_error'] ?? null ) === $error
+			&& ! empty( $status['last_failure'] )
+			&& \time() - (int) $status['last_failure'] < 5 * MINUTE_IN_SECONDS
+		) {
+			return;
+		}
+
+		debug_log( 'token refresh failed: ' . $error );
+
+		self::update_refresh_status(
+			array(
+				'last_failure' => \time(),
+				'last_error'   => $error,
+			)
+		);
+	}
+
+	/**
+	 * Stamp `needs_reauth` on the stored connection, guarded against a
+	 * concurrent disconnect or reconnect.
+	 *
+	 * Re-reads the row and only writes when it still holds the same
+	 * token ciphertext the caller read. Two races close here:
+	 *
+	 *   - Admin disconnected mid-flight: the row is gone and the
+	 *     ciphertext check below fails.
+	 *   - Admin disconnected + reconnected to a different account
+	 *     mid-flight: the row exists but the ciphertext is different
+	 *     (libsodium re-encrypts with a fresh nonce). Stamping
+	 *     `needs_reauth` on the NEW account because the OLD account's
+	 *     credentials failed would be wrong.
+	 *
+	 * @param array  $conn   Connection as read by the caller.
+	 * @param string $field  Ciphertext field the guard compares — the one
+	 *                       the caller's failure was observed on, so a
+	 *                       concurrent worker that already rewrote it
+	 *                       doesn't get its repair wiped.
+	 * @param string $reason Optional machine-readable marker stored as
+	 *                       `reauth_reason` so the admin notice can
+	 *                       explain the failure (e.g. `key_changed`).
+	 *                       An empty reason clears any stale marker, so
+	 *                       a later session-expiry stamp is not
+	 *                       explained with an earlier failure's cause.
+	 */
+	private static function mark_needs_reauth( array $conn, string $field, string $reason = '' ): void {
+		$before = self::update_connection(
+			static function ( array $current ) use ( $conn, $field, $reason ): ?array {
+				if ( ! self::connection_row_matches( $conn, $current, $field ) ) {
+					return null;
+				}
+
+				$current['needs_reauth'] = true;
+				$current['access_token'] = '';
+				unset( $current['expires_at'] );
+
+				if ( '' !== $reason ) {
+					$current['reauth_reason'] = $reason;
+				} else {
+					unset( $current['reauth_reason'] );
+				}
+
+				return $current;
+			}
+		);
+
+		if ( null === $before ) {
+			return;
+		}
+
+		/*
+		 * Fire the lifecycle action only on the first transition into the
+		 * reauth-required state, not on every repeated mark (this method is
+		 * idempotent and can be reached by several failure paths).
+		 */
+		if ( empty( $before['needs_reauth'] ) ) {
+			/**
+			 * Fires when the connection first enters a reauth-required state.
+			 *
+			 * A permanent OAuth failure (rejected/expired refresh token, a
+			 * changed encryption key, ...) has left the stored token unusable:
+			 * the account stays on file but publishing and sync short-circuit
+			 * until the user reconnects. Lets a host plugin surface its own
+			 * reconnect prompt without polling {@see \Atmosphere\needs_reauth()}.
+			 * Fires once per transition, not on every repeated mark.
+			 *
+			 * @since 2.1.0
+			 *
+			 * @param string $did    The affected account's DID, or '' if unknown.
+			 * @param string $reason Machine-readable reauth reason (e.g. 'refresh_token', 'key_changed'), or '' if unspecified.
+			 */
+			\do_action( 'atmosphere_reauth_required', (string) ( $before['did'] ?? '' ), $reason );
+		}
 	}
 
 	/**
@@ -1007,6 +2059,7 @@ class Client {
 
 		if ( 1 === (int) $inserted ) {
 			self::invalidate_lock_option_cache( $key );
+			self::$lock_expires_at = $expires_at;
 			return true;
 		}
 
@@ -1040,6 +2093,7 @@ class Client {
 
 		if ( 1 === (int) $stolen ) {
 			self::invalidate_lock_option_cache( $key );
+			self::$lock_expires_at = $expires_at;
 			return true;
 		}
 
@@ -1049,13 +2103,21 @@ class Client {
 	/**
 	 * Release the refresh-in-progress lock.
 	 *
-	 * Safe to call unconditionally — a missing row is a no-op.
+	 * Safe to call unconditionally — a missing row is a no-op. A process
+	 * that took the lock releases only its own: once its lock expired and
+	 * another worker took over, the row holds a different expiry and stays.
 	 */
 	public static function unlock(): void {
 		global $wpdb;
 
+		$where = array( 'option_name' => self::REFRESH_LOCK_OPTION );
+		if ( self::$lock_expires_at ) {
+			$where['option_value'] = (string) self::$lock_expires_at;
+		}
+
 		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching
-		$wpdb->delete( $wpdb->options, array( 'option_name' => self::REFRESH_LOCK_OPTION ) );
+		$wpdb->delete( $wpdb->options, $where );
+		self::$lock_expires_at = 0;
 		self::invalidate_lock_option_cache( self::REFRESH_LOCK_OPTION );
 	}
 
@@ -1093,11 +2155,23 @@ class Client {
 	 * `get_option` call does not see a stale value written by the
 	 * direct `$wpdb` queries above.
 	 *
+	 * Also used before every read of `atmosphere_connection` that must
+	 * see another process's write. The row is not autoloaded, so the
+	 * first `get_option()` caches it for the rest of the request, and
+	 * a waiter or a long cron/CLI run would otherwise keep the copy it
+	 * loaded first (a rotated refresh token included). A row from before
+	 * autoload was switched off lives in `alloptions` instead, so that
+	 * cache goes too until the next write flips the row.
+	 *
 	 * @param string $key Option name.
 	 */
 	private static function invalidate_lock_option_cache( string $key ): void {
 		\wp_cache_delete( $key, 'options' );
 		\wp_cache_delete( 'notoptions', 'options' );
+
+		if ( isset( \wp_load_alloptions()[ $key ] ) ) {
+			\wp_cache_delete( 'alloptions', 'options' );
+		}
 	}
 
 	/**
@@ -1105,10 +2179,10 @@ class Client {
 	 * holder to write a fresh access token (or to flip
 	 * `needs_reauth` on a permanent failure).
 	 *
-	 * The deadline matches `REFRESH_LOCK_TTL` (45s) rather than a
+	 * The deadline matches `REFRESH_LOCK_TTL` (90s) rather than a
 	 * conservative few-seconds wait. The previous 5-second budget
 	 * was shorter than the realistic worst case — two sequential
-	 * `wp_safe_remote_post` calls at 15-second timeouts on the
+	 * `wp_safe_remote_post` calls at `REFRESH_TIMEOUT` on the
 	 * `use_dpop_nonce` retry path plus encryption overhead — which
 	 * meant single-shot publish / comment cron events that arrived
 	 * mid-refresh would silently drop their content even though the
@@ -1150,6 +2224,7 @@ class Client {
 			// phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
 			\usleep( 100000 );
 
+			self::invalidate_lock_option_cache( 'atmosphere_connection' );
 			$conn = \get_option( 'atmosphere_connection', array() );
 
 			if ( ! empty( $conn['needs_reauth'] ) ) {
@@ -1181,6 +2256,7 @@ class Client {
 	 * @return string|\WP_Error
 	 */
 	public static function access_token(): string|\WP_Error {
+		self::invalidate_lock_option_cache( 'atmosphere_connection' );
 		$conn = \get_option( 'atmosphere_connection', array() );
 
 		if ( ! empty( $conn['needs_reauth'] ) ) {
@@ -1222,12 +2298,7 @@ class Client {
 			$conn = \get_option( 'atmosphere_connection', array() );
 		}
 
-		$token = Encryption::decrypt( $conn['access_token'] );
-		if ( false === $token ) {
-			return new \WP_Error( 'atmosphere_decrypt', \__( 'Failed to decrypt access token.', 'atmosphere' ) );
-		}
-
-		return $token;
+		return self::decrypt_field( $conn, 'access_token' );
 	}
 
 	/**
@@ -1265,42 +2336,6 @@ class Client {
 	 * for up to ~20 seconds (two synchronous 10-second POSTs).
 	 */
 	public static function disconnect(): void {
-		$conn = \get_option( 'atmosphere_connection', array() );
-
-		/*
-		 * Capture the inputs the revocation worker needs BEFORE we
-		 * wipe the local options. The encrypted ciphertexts are passed
-		 * directly to the cron worker so it can decrypt them later
-		 * without re-reading `atmosphere_connection`, which is about
-		 * to be deleted.
-		 */
-		$revoke_args = null;
-		if ( \is_array( $conn )
-			&& ! empty( $conn['refresh_token'] )
-			&& ! empty( $conn['dpop_jwk'] )
-			&& ! empty( $conn['revocation_endpoint'] )
-			&& ! empty( $conn['auth_server'] )
-		) {
-			/*
-			 * Pass the auth-server issuer URL alongside the revocation
-			 * endpoint. The cron worker binds the two at use time: if
-			 * a tampered or backup-restored `atmosphere_connection`
-			 * row pointed `revocation_endpoint` at an attacker host,
-			 * the refresh token would otherwise be POSTed to that
-			 * host even though `is_safe_https_url()` would not block
-			 * it (the check only confirms HTTPS + safe host, not the
-			 * issuer-binding). Including the issuer here lets the
-			 * worker reject endpoint↔issuer mismatches before the
-			 * decryption step.
-			 */
-			$revoke_args = array(
-				(string) $conn['refresh_token'],
-				(string) $conn['dpop_jwk'],
-				(string) $conn['revocation_endpoint'],
-				(string) $conn['auth_server'],
-			);
-		}
-
 		/*
 		 * Mark the disconnect as operator-initiated BEFORE wiping the
 		 * connection row so the admin reauth notice's copy swap is
@@ -1324,8 +2359,26 @@ class Client {
 		 */
 		\update_option( self::DISCONNECTED_OPTION, \time(), false );
 
-		\delete_option( 'atmosphere_connection' );
+		/*
+		 * Deleted as one compare-and-swap, so the token revoked below is
+		 * the one that was stored at the moment of deletion, not one a
+		 * concurrent refresh already rotated away.
+		 */
+		$conn = self::update_connection(
+			static function (): array {
+				return array();
+			}
+		) ?? array();
+
 		\delete_option( self::REFRESH_LOCK_OPTION );
+
+		/*
+		 * The refresh history described the session that just ended.
+		 * Keeping it would date-stamp a reconnected account with the
+		 * previous one's last failure.
+		 */
+		\delete_option( self::REFRESH_STATUS_OPTION );
+		\delete_transient( self::REFRESH_HOLD_TRANSIENT );
 
 		/*
 		 * Sweep a stale option from 1.0.0 installs. `atmosphere_publication_uri`
@@ -1341,13 +2394,67 @@ class Client {
 
 		clear_scheduled_hooks();
 
-		if ( null !== $revoke_args ) {
-			\wp_schedule_single_event(
-				\time(),
-				'atmosphere_revoke_refresh_token',
-				$revoke_args
-			);
+		self::schedule_revocation( $conn, (string) ( $conn['refresh_token'] ?? '' ) );
+
+		/**
+		 * Fires after the AT Protocol connection is torn down.
+		 *
+		 * The local connection has been wiped (token revocation, if any, is
+		 * queued separately). Counterpart to {@see 'atmosphere_connected'}: lets
+		 * a host plugin drop its own connection-derived state without polling.
+		 *
+		 * @since 2.1.0
+		 *
+		 * @param string $did The DID of the account that was disconnected, or '' if unknown.
+		 */
+		\do_action( 'atmosphere_disconnected', (string) ( $conn['did'] ?? '' ) );
+	}
+
+	/**
+	 * Queue the revocation of a refresh token the site will never use again.
+	 *
+	 * The encrypted ciphertexts are passed directly to the cron worker so
+	 * it can decrypt them later without re-reading `atmosphere_connection`,
+	 * which by then is gone or belongs to another session.
+	 *
+	 * The auth-server issuer URL rides along with the revocation endpoint.
+	 * The cron worker binds the two at use time: if a tampered or
+	 * backup-restored `atmosphere_connection` row pointed
+	 * `revocation_endpoint` at an attacker host, the refresh token would
+	 * otherwise be POSTed to that host even though `is_safe_https_url()`
+	 * would not block it (the check only confirms HTTPS + safe host, not
+	 * the issuer-binding). Including the issuer lets the worker reject
+	 * endpoint↔issuer mismatches before the decryption step.
+	 *
+	 * The session's own client_id rides along too: the token was minted
+	 * for that client, and a confidential session has to authenticate the
+	 * revocation as it. Empty means a legacy public-client session.
+	 *
+	 * @since 2.4.1
+	 *
+	 * @param array  $conn               Connection the token belongs to.
+	 * @param string $refresh_ciphertext Encrypted refresh token to revoke.
+	 */
+	private static function schedule_revocation( array $conn, string $refresh_ciphertext ): void {
+		if ( '' === $refresh_ciphertext
+			|| empty( $conn['dpop_jwk'] )
+			|| empty( $conn['revocation_endpoint'] )
+			|| empty( $conn['auth_server'] )
+		) {
+			return;
 		}
+
+		\wp_schedule_single_event(
+			\time(),
+			'atmosphere_revoke_refresh_token',
+			array(
+				$refresh_ciphertext,
+				(string) $conn['dpop_jwk'],
+				(string) $conn['revocation_endpoint'],
+				(string) $conn['auth_server'],
+				(string) ( $conn['client_id'] ?? '' ),
+			)
+		);
 	}
 
 	/**
@@ -1370,12 +2477,18 @@ class Client {
 	 * @param string $auth_server_issuer       Auth server issuer URL the
 	 *                                         revocation endpoint must
 	 *                                         share an origin with.
+	 * @param string $client_id                Client the session was minted
+	 *                                         for. Empty for a legacy
+	 *                                         public-client session, and for
+	 *                                         events queued before this
+	 *                                         argument existed.
 	 */
 	public static function revoke_refresh_token(
 		string $refresh_token_ciphertext,
 		string $dpop_jwk_ciphertext,
 		string $revocation_endpoint,
-		string $auth_server_issuer = ''
+		string $auth_server_issuer = '',
+		string $client_id = ''
 	): void {
 		if ( '' === $revocation_endpoint ) {
 			return;
@@ -1442,11 +2555,31 @@ class Client {
 			return;
 		}
 
+		/*
+		 * Revoke as the client the token belongs to. RFC 7009 defers
+		 * client authentication to RFC 6749, so a confidential session
+		 * signs the request; a legacy session revokes as the public client.
+		 */
+		$confidential = '' !== $client_id;
+
+		// Same call-time distrust as the endpoint above: the row may have been restored or tampered with.
+		if ( $confidential && ! Resolver::is_safe_https_url( $client_id ) ) {
+			return;
+		}
+
 		$body = array(
 			'token'           => $refresh_token,
 			'token_type_hint' => 'refresh_token',
-			'client_id'       => self::client_id(),
+			'client_id'       => $confidential ? $client_id : self::legacy_client_id(),
 		);
+
+		if ( $confidential ) {
+			$body = Client_Authentication::sign_request( $body, $auth_server_issuer );
+			if ( \is_wp_error( $body ) ) {
+				debug_log( \sprintf( 'refresh-token revocation skipped: %s', $body->get_error_message() ) );
+				return;
+			}
+		}
 
 		$dpop_proof = DPoP::create_proof( $dpop_jwk, 'POST', $revocation_endpoint );
 		if ( false === $dpop_proof ) {
@@ -1494,6 +2627,14 @@ class Client {
 			$dpop_proof = DPoP::create_proof( $dpop_jwk, 'POST', $revocation_endpoint, $nonce );
 			if ( false === $dpop_proof ) {
 				return;
+			}
+
+			if ( $confidential ) {
+				$body = Client_Authentication::sign_request( $body, $auth_server_issuer );
+				if ( \is_wp_error( $body ) ) {
+					debug_log( \sprintf( 'refresh-token revocation retry skipped: %s', $body->get_error_message() ) );
+					return;
+				}
 			}
 
 			$response = \wp_safe_remote_post(

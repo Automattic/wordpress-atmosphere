@@ -10,3 +10,24 @@
 	display: inline-block;
 	margin-top: 2px;
 }
+
+/*
+ * Keep the connect field's handle typeahead at a readable width. The shared
+ * control fills its container (so it fits the narrow Connectors card), but on
+ * the settings page that container is a full-width table cell — cap it to match
+ * WordPress's `.regular-text` inputs instead of spanning the whole page.
+ */
+.atmosphere-handle-typeahead-mount .atmosphere-handle-field {
+	max-width: 25em;
+}
+
+/*
+ * Disclosures read as links, because that is what they behave like: click
+ * to see more. Mirrors the treatment in the ActivityPub plugin, so a site
+ * running both gets one convention rather than two.
+ */
+.atmosphere-details summary {
+	cursor: pointer;
+	color: #2271b1;
+	text-decoration: underline;
+}

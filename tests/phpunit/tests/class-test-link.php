@@ -1,0 +1,451 @@
+<?php
+/**
+ * Tests for the AT Protocol rkey short links.
+ *
+ * @package Atmosphere
+ * @group atmosphere
+ */
+
+namespace Atmosphere\Tests;
+
+use Atmosphere\Link;
+use Atmosphere\Transformer\Document;
+use Atmosphere\Transformer\Post;
+use Atmosphere\Transformer\TID;
+
+/**
+ * Short link tests.
+ */
+class Test_Link extends \WP_UnitTestCase {
+
+	/**
+	 * A real, well-formed rkey.
+	 *
+	 * @var string
+	 */
+	private const TID = '3mn3kzvtns72d';
+
+	/**
+	 * Pretty permalinks: an unknown path only 404s when rewrite rules
+	 * exist, and the resolver hangs off that 404.
+	 */
+	public function set_up(): void {
+		parent::set_up();
+
+		$this->set_permalink_structure( '/%postname%/' );
+	}
+
+	/**
+	 * Opt in to advertising the link as `rel=shortlink`.
+	 */
+	private function enable_shortlink(): void {
+		\update_option( 'atmosphere_shortlink', '1' );
+	}
+
+	/**
+	 * Tear down each test.
+	 */
+	public function tear_down(): void {
+		$this->set_permalink_structure( '' );
+		\delete_option( 'atmosphere_shortlink' );
+		\remove_all_filters( 'atmosphere_should_advertise_shortlink' );
+		\remove_all_filters( 'wp_redirect' );
+		\remove_all_filters( 'atmosphere_link' );
+		\remove_all_filters( 'pre_get_shortlink' );
+
+		parent::tear_down();
+	}
+
+	/**
+	 * Run a request and capture the redirect it issues, instead of exiting.
+	 *
+	 * The resolver hooks `template_redirect`, which `go_to()` stops short
+	 * of, so the handler is called by hand once the main query has run and
+	 * WordPress has decided whether the path is a 404.
+	 *
+	 * @param string $url The URL to request.
+	 * @return string The redirect target, or '' when none was issued.
+	 */
+	private function capture_redirect( string $url ): string {
+		$captured = '';
+
+		/*
+		 * `maybe_redirect()` exits after redirecting, as it must in
+		 * production. Throwing from the filter unwinds before that,
+		 * leaving the captured target behind.
+		 */
+		\add_filter(
+			'wp_redirect',
+			static function ( $location ) use ( &$captured ) {
+				$captured = (string) $location;
+
+				throw new \RuntimeException();
+			}
+		);
+
+		$this->go_to( $url );
+
+		try {
+			Link::maybe_redirect();
+		} catch ( \RuntimeException $e ) {
+			// Expected: the redirect fired.
+			unset( $e );
+		}
+
+		return $captured;
+	}
+
+	/**
+	 * The Bluesky rkey resolves to the post that owns it.
+	 */
+	public function test_bluesky_rkey_resolves_to_its_post() {
+		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		\update_post_meta( $post_id, Post::META_TID, self::TID );
+
+		$this->assertSame( $post_id, Link::resolve( self::TID ) );
+	}
+
+	/**
+	 * A document-only site still gets working short links: the
+	 * `site.standard.document` rkey resolves too.
+	 */
+	public function test_document_rkey_resolves_to_its_post() {
+		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		\update_post_meta( $post_id, Document::META_TID, self::TID );
+
+		$this->assertSame( $post_id, Link::resolve( self::TID ) );
+	}
+
+	/**
+	 * An rkey nothing owns resolves to nothing.
+	 */
+	public function test_unknown_rkey_resolves_to_null() {
+		$this->assertNull( Link::resolve( self::TID ) );
+	}
+
+	/**
+	 * Anything that is not a TID is rejected before it reaches the database.
+	 */
+	public function test_non_tid_is_rejected() {
+		$this->assertNull( Link::resolve( 'hello' ) );
+		$this->assertNull( Link::resolve( '0000000000000' ), 'The charset excludes 0, 1, 8 and 9.' );
+		$this->assertNull( Link::resolve( '3mn3kzvtns72' ), 'A TID is exactly thirteen characters.' );
+	}
+
+	/**
+	 * A visit to the short link redirects to the post, permanently.
+	 */
+	public function test_shortlink_redirects_to_the_permalink() {
+		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		\update_post_meta( $post_id, Post::META_TID, self::TID );
+
+		$this->assertSame( \get_permalink( $post_id ), $this->capture_redirect( \home_url( '/post/' . self::TID ) ) );
+	}
+
+	/**
+	 * The path mirrors Bluesky's own, which is the whole point: strip
+	 * `/profile/<handle>` off an app URL, swap the host, and the rkey is
+	 * already in the right place.
+	 */
+	public function test_path_mirrors_the_bluesky_app_url() {
+		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		\update_post_meta( $post_id, Post::META_TID, self::TID );
+
+		$app_url  = 'https://bsky.app/profile/example.com/post/' . self::TID;
+		$expected = \home_url( \str_replace( '/profile/example.com', '', \wp_parse_url( $app_url, \PHP_URL_PATH ) ) );
+
+		$this->assertSame( $expected, Link::get( $post_id ) );
+	}
+
+	/**
+	 * An rkey nothing owns is left to WordPress, which has nothing at
+	 * that path either: a plain 404, not the blog index.
+	 */
+	public function test_unowned_rkey_is_left_to_wordpress() {
+		$this->assertSame( '', $this->capture_redirect( \home_url( '/post/' . self::TID ) ), 'Nothing owns this rkey, so nothing to redirect to.' );
+		$this->assertTrue( \is_404() );
+	}
+
+	/**
+	 * The resolver only looks under `post/`, so a bare path is never
+	 * touched, however rkey-shaped its slug.
+	 *
+	 * `wordpressblog` is thirteen characters drawn entirely from the rkey
+	 * charset, so a resolver matching on the bare path would have
+	 * swallowed a page slugged that way.
+	 */
+	public function test_bare_paths_are_not_claimed() {
+		$this->assertTrue( TID::is_valid( 'wordpressblog' ), 'Precondition: the slug really is rkey-shaped.' );
+
+		$page_id = self::factory()->post->create(
+			array(
+				'post_type'   => 'page',
+				'post_status' => 'publish',
+				'post_name'   => 'wordpressblog',
+			)
+		);
+
+		$this->assertSame( '', $this->capture_redirect( \home_url( '/wordpressblog' ) ), 'A bare path must not resolve as a short link.' );
+		$this->assertTrue( \is_page( $page_id ) );
+	}
+
+	/**
+	 * A post under a `/post/%postname%/` permalink structure is served,
+	 * even when its slug is rkey-shaped.
+	 *
+	 * This is the case a rewrite rule cannot get right. `configuration`
+	 * is thirteen characters from the rkey charset, and a rule claiming
+	 * `post/` plus that shape at the top of the set 404ed the post at its
+	 * own permalink. Resolving by ownership instead leaves it alone.
+	 */
+	public function test_post_under_post_prefix_permalinks_is_served() {
+		$this->set_permalink_structure( '/post/%postname%/' );
+
+		$this->assertTrue( TID::is_valid( 'configuration' ), 'Precondition: the slug really is rkey-shaped.' );
+
+		$post_id = self::factory()->post->create(
+			array(
+				'post_status' => 'publish',
+				'post_name'   => 'configuration',
+			)
+		);
+
+		$this->assertSame( '', $this->capture_redirect( \get_permalink( $post_id ) ), 'The real post must not be redirected away from.' );
+		$this->assertTrue( \is_single( $post_id ) );
+	}
+
+	/**
+	 * The same `/post/%postname%/` site still gets its short links: an
+	 * owned rkey redirects, a slug does not, and they share the prefix.
+	 */
+	public function test_owned_rkey_redirects_under_post_prefix_permalinks() {
+		$this->set_permalink_structure( '/post/%postname%/' );
+
+		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		\update_post_meta( $post_id, Post::META_TID, self::TID );
+
+		$this->assertSame( \get_permalink( $post_id ), $this->capture_redirect( \home_url( '/post/' . self::TID ) ) );
+	}
+
+	/**
+	 * A page living at `post/` plus an rkey-shaped slug is served too.
+	 */
+	public function test_page_under_post_is_served() {
+		$parent_id = self::factory()->post->create(
+			array(
+				'post_type'   => 'page',
+				'post_status' => 'publish',
+				'post_name'   => 'post',
+			)
+		);
+		$page_id   = self::factory()->post->create(
+			array(
+				'post_type'   => 'page',
+				'post_status' => 'publish',
+				'post_name'   => 'wordpressblog',
+				'post_parent' => $parent_id,
+			)
+		);
+
+		$this->assertSame( '', $this->capture_redirect( \home_url( '/post/wordpressblog/' ) ), 'The page must not be redirected away from.' );
+		$this->assertTrue( \is_page( $page_id ) );
+	}
+
+	/**
+	 * A shared post advertises the rkey short link as its `rel=shortlink`.
+	 */
+	public function test_shared_post_advertises_the_rkey_shortlink() {
+		$this->enable_shortlink();
+
+		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		\update_post_meta( $post_id, Post::META_TID, self::TID );
+
+		$this->assertSame( \home_url( '/post/' . self::TID ), \wp_get_shortlink( $post_id ) );
+	}
+
+	/**
+	 * A post ATmosphere never shared keeps WordPress's own short link.
+	 */
+	public function test_unshared_post_keeps_the_core_shortlink() {
+		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
+
+		$this->assertSame( \home_url( '/?p=' . $post_id ), \wp_get_shortlink( $post_id ) );
+	}
+
+	/**
+	 * A site running its own shortener can take the field back.
+	 */
+	public function test_the_filter_can_hand_the_shortlink_back() {
+		$this->enable_shortlink();
+
+		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		\update_post_meta( $post_id, Post::META_TID, self::TID );
+
+		\add_filter( 'atmosphere_link', '__return_empty_string' );
+
+		$this->assertSame(
+			\home_url( '/?p=' . $post_id ),
+			\wp_get_shortlink( $post_id ),
+			'An empty filter return must fall through to the core short link.'
+		);
+	}
+
+	/**
+	 * Another plugin that answered first is not overridden.
+	 */
+	public function test_a_prior_short_circuit_is_respected() {
+		$this->enable_shortlink();
+
+		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		\update_post_meta( $post_id, Post::META_TID, self::TID );
+
+		\add_filter( 'pre_get_shortlink', static fn() => 'https://example.com/hum', 5 );
+
+		$this->assertSame( 'https://example.com/hum', \wp_get_shortlink( $post_id ) );
+	}
+
+	/**
+	 * An archive must not advertise some other post's short link.
+	 *
+	 * This is the shape every real caller uses: `wp_shortlink_wp_head()`,
+	 * `wp_shortlink_header()`, and the admin bar all call
+	 * `wp_get_shortlink( 0, 'query' )`. On a home page or archive,
+	 * WordPress has already set `$GLOBALS['post']` to the first post in
+	 * the loop, so resolving "the current post" without checking
+	 * `is_singular()` first silently points the whole archive at whichever
+	 * post happens to be at the top of it.
+	 */
+	public function test_archive_does_not_advertise_a_shortlink() {
+		$this->enable_shortlink();
+
+		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		\update_post_meta( $post_id, Post::META_TID, self::TID );
+
+		$this->go_to( \home_url( '/' ) );
+
+		$this->assertFalse( \is_singular(), 'Precondition: this is an archive.' );
+		$this->assertNotEmpty( $GLOBALS['post'], 'Precondition: the loop has primed a global post.' );
+
+		$this->assertSame(
+			'',
+			\wp_get_shortlink( 0, 'query' ),
+			'An archive has no single post to advertise, so it must advertise nothing.'
+		);
+	}
+
+	/**
+	 * On the post's own page, the query context does resolve it.
+	 */
+	public function test_singular_query_context_resolves_the_shortlink() {
+		$this->enable_shortlink();
+
+		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		\update_post_meta( $post_id, Post::META_TID, self::TID );
+
+		$this->go_to( \get_permalink( $post_id ) );
+
+		$this->assertTrue( \is_singular(), 'Precondition: this is the post.' );
+		$this->assertSame( \home_url( '/post/' . self::TID ), \wp_get_shortlink( 0, 'query' ) );
+	}
+
+	/**
+	 * A post that is no longer public does not resolve.
+	 *
+	 * The publisher clears both record ids when a post leaves public
+	 * visibility, so this should never come up — but the query is the last
+	 * line of that defence, and a short link must never be the thing that
+	 * confirms a draft exists.
+	 */
+	public function test_non_public_post_does_not_resolve() {
+		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		\update_post_meta( $post_id, Post::META_TID, self::TID );
+
+		foreach ( array( 'draft', 'private', 'pending', 'trash' ) as $status ) {
+			\wp_update_post(
+				array(
+					'ID'          => $post_id,
+					'post_status' => $status,
+				)
+			);
+
+			// Re-stamp: the status change clears the record meta.
+			\update_post_meta( $post_id, Post::META_TID, self::TID );
+
+			$this->assertNull(
+				Link::resolve( self::TID ),
+				\sprintf( 'A %s post must not resolve.', $status )
+			);
+		}
+	}
+
+	/**
+	 * A password-protected post is published but not public, and a short
+	 * link must not hand out a redirect to it. Same line the publisher's
+	 * own publishable check draws.
+	 */
+	public function test_password_protected_post_does_not_resolve() {
+		$post_id = self::factory()->post->create(
+			array(
+				'post_status'   => 'publish',
+				'post_password' => 'secret',
+			)
+		);
+		\update_post_meta( $post_id, Post::META_TID, self::TID );
+
+		$this->assertNull( Link::resolve( self::TID ) );
+	}
+
+	/**
+	 * `wp_get_shortlink()` with no arguments, the way a theme calls it
+	 * inside the loop, resolves the global post exactly as core does:
+	 * `get_post( 0 )` is the current post.
+	 */
+	public function test_bare_call_resolves_the_global_post() {
+		$this->enable_shortlink();
+
+		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		\update_post_meta( $post_id, Post::META_TID, self::TID );
+
+		$this->go_to( \get_permalink( $post_id ) );
+		\the_post();
+
+		$this->assertSame( $post_id, \get_the_ID(), 'Precondition: the loop has set the global post.' );
+		$this->assertSame( \home_url( '/post/' . self::TID ), \wp_get_shortlink() );
+	}
+
+	/**
+	 * The opt-in is off by default, so WordPress keeps its own short link.
+	 *
+	 * Claiming `rel=shortlink` speaks for the whole site, including posts
+	 * that were never cross-posted, and plenty of sites already run a
+	 * shortener that owns it. The link itself still resolves.
+	 */
+	public function test_shortlink_is_not_claimed_by_default() {
+		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		\update_post_meta( $post_id, Post::META_TID, self::TID );
+
+		$this->assertSame(
+			\home_url( '/?p=' . $post_id ),
+			\wp_get_shortlink( $post_id ),
+			'Nothing should be claimed until the site opts in.'
+		);
+
+		$this->assertSame(
+			\get_permalink( $post_id ),
+			$this->capture_redirect( \home_url( '/post/' . self::TID ) ),
+			'The link must resolve whether or not it is advertised.'
+		);
+	}
+
+	/**
+	 * The opt-in can also be driven from code.
+	 */
+	public function test_filter_overrides_the_stored_opt_in() {
+		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		\update_post_meta( $post_id, Post::META_TID, self::TID );
+
+		\add_filter( 'atmosphere_should_advertise_shortlink', '__return_true' );
+
+		$this->assertSame( \home_url( '/post/' . self::TID ), \wp_get_shortlink( $post_id ) );
+	}
+}

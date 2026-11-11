@@ -119,16 +119,164 @@ class Test_API extends \WP_UnitTestCase {
 	/**
 	 * Build a synthetic `pre_http_request` response payload.
 	 *
-	 * @param int   $status HTTP status code.
-	 * @param array $body   Response body to JSON-encode.
+	 * @param int   $status  HTTP status code.
+	 * @param array $body    Response body to JSON-encode.
+	 * @param array $headers Response headers.
 	 * @return array
 	 */
-	private function http_response( int $status, array $body ): array {
+	private function http_response( int $status, array $body, array $headers = array() ): array {
 		return array(
 			'response' => array( 'code' => $status ),
-			'headers'  => new \WpOrg\Requests\Utility\CaseInsensitiveDictionary( array() ),
+			'headers'  => new \WpOrg\Requests\Utility\CaseInsensitiveDictionary( $headers ),
 			'body'     => (string) \wp_json_encode( $body ),
 		);
+	}
+
+	/**
+	 * Fail the test if the token endpoint is touched.
+	 *
+	 * The rate-limit branches must not look like an auth problem, so
+	 * none of them may trigger a refresh.
+	 *
+	 * @param string $reason Failure message, when the default is not
+	 *                       specific enough for the caller.
+	 * @return callable
+	 */
+	private function no_token_calls( string $reason = 'Token endpoint should not be called.' ): callable {
+		return function () use ( $reason ) {
+			$this->fail( $reason );
+		};
+	}
+
+	/**
+	 * Stub a single fixed PDS response, with the token endpoint off
+	 * limits.
+	 *
+	 * @param int   $status  HTTP status code.
+	 * @param array $body    Response body to JSON-encode.
+	 * @param array $headers Response headers.
+	 */
+	private function stub_pds( int $status, array $body, array $headers = array() ): void {
+		$this->stub_http(
+			$this->no_token_calls(),
+			fn() => $this->http_response( $status, $body, $headers )
+		);
+	}
+
+	/**
+	 * A 429 gets its own error code rather than the generic
+	 * `atmosphere_pds`, and carries the window the PDS reported so a
+	 * caller can wait for it instead of guessing at a backoff.
+	 */
+	public function test_rate_limited_response_returns_dedicated_error() {
+		$reset = \time() + 900;
+
+		$this->stub_pds(
+			429,
+			array(
+				'error'   => 'RateLimitExceeded',
+				'message' => 'Rate Limit Exceeded',
+			),
+			array(
+				'ratelimit-limit'     => '5000',
+				'ratelimit-remaining' => '0',
+				'ratelimit-reset'     => (string) $reset,
+			)
+		);
+
+		$result = API::get( '/xrpc/com.atproto.repo.getRecord' );
+
+		$this->assertWPError( $result );
+		$this->assertSame( 'atmosphere_rate_limited', $result->get_error_code() );
+		$this->assertSame( 'Rate Limit Exceeded', $result->get_error_message() );
+
+		$data = $result->get_error_data();
+
+		$this->assertSame( 429, $data['status'] );
+		$this->assertSame( $reset, $data['reset'] );
+		$this->assertSame( 5000, $data['limit'] );
+		$this->assertSame( 0, $data['remaining'] );
+		$this->assertEqualsWithDelta( 900, $data['retry_after'], 5 );
+	}
+
+	/**
+	 * Headers are read off every response, not just the 429s, so a long
+	 * run can watch its remaining budget before it runs out.
+	 */
+	public function test_rate_limit_headers_are_captured_on_success() {
+		$reset = \time() + 300;
+
+		$this->stub_pds(
+			200,
+			array( 'ok' => true ),
+			array(
+				'ratelimit-limit'     => '3000',
+				'ratelimit-remaining' => '2999',
+				'ratelimit-reset'     => (string) $reset,
+			)
+		);
+
+		$result = API::get( '/xrpc/com.atproto.repo.getRecord' );
+
+		$this->assertIsArray( $result );
+
+		$snapshot = API::last_rate_limit();
+
+		$this->assertSame( 3000, $snapshot['limit'] );
+		$this->assertSame( 2999, $snapshot['remaining'] );
+		$this->assertSame( $reset, $snapshot['reset'] );
+	}
+
+	/**
+	 * Bluesky sends `ratelimit-reset` as an absolute timestamp, but the
+	 * IETF draft allows delta-seconds and another PDS may send that.
+	 * Small values are read as "seconds from now".
+	 */
+	public function test_rate_limit_reset_accepts_delta_seconds() {
+		$this->stub_pds( 200, array( 'ok' => true ), array( 'ratelimit-reset' => '60' ) );
+
+		API::get( '/xrpc/com.atproto.repo.getRecord' );
+
+		$this->assertEqualsWithDelta( \time() + 60, API::last_rate_limit()['reset'], 5 );
+	}
+
+	/**
+	 * A 429 with no headers still gets the dedicated code, but must not
+	 * borrow a reset time from an earlier request — that would send the
+	 * caller back at a moment unrelated to the window it actually hit.
+	 */
+	public function test_rate_limited_without_headers_reports_no_reset() {
+		$calls = 0;
+
+		$this->stub_http(
+			$this->no_token_calls(),
+			function () use ( &$calls ) {
+				++$calls;
+
+				if ( 1 === $calls ) {
+					return $this->http_response(
+						200,
+						array( 'ok' => true ),
+						array( 'ratelimit-reset' => (string) ( \time() + HOUR_IN_SECONDS ) )
+					);
+				}
+
+				return $this->http_response( 429, array( 'error' => 'RateLimitExceeded' ) );
+			}
+		);
+
+		API::get( '/xrpc/com.atproto.repo.getRecord' );
+		$result = API::get( '/xrpc/com.atproto.repo.getRecord' );
+
+		$this->assertSame( 'atmosphere_rate_limited', $result->get_error_code() );
+
+		$data = $result->get_error_data();
+
+		$this->assertNull( $data['reset'] );
+		$this->assertNull( $data['retry_after'] );
+
+		// The earlier reading survives for anything that still wants it.
+		$this->assertNotNull( API::last_rate_limit()['reset'] );
 	}
 
 	/**
@@ -166,9 +314,7 @@ class Test_API extends \WP_UnitTestCase {
 	 */
 	public function test_request_rejects_redirect_response() {
 		$this->stub_http(
-			function () {
-				$this->fail( 'Token endpoint should not be called for a PDS redirect response.' );
-			},
+			$this->no_token_calls( 'Token endpoint should not be called for a PDS redirect response.' ),
 			function () {
 				return $this->http_response( 307, array() );
 			}
@@ -291,9 +437,7 @@ class Test_API extends \WP_UnitTestCase {
 		$pds_calls = 0;
 
 		$this->stub_http(
-			function () {
-				$this->fail( 'Token endpoint must not be called when there is no refresh token.' );
-			},
+			$this->no_token_calls( 'Token endpoint must not be called when there is no refresh token.' ),
 			function () use ( &$pds_calls ) {
 				++$pds_calls;
 				return $this->http_response(
@@ -334,6 +478,43 @@ class Test_API extends \WP_UnitTestCase {
 
 		$this->assertWPError( $result );
 		$this->assertSame( 'atmosphere_invalid_pre_upload_blob_return', $result->get_error_code() );
+	}
+
+	/**
+	 * A malformed `atmosphere_pre_get_record` return (scalar / object) is
+	 * coerced into a WP_Error rather than fataling against the
+	 * `array|WP_Error` return type. Mirrors `atmosphere_pre_apply_writes`.
+	 */
+	public function test_get_record_pre_filter_rejects_invalid_return() {
+		$invalid = static function () {
+			return false;
+		};
+		\add_filter( 'atmosphere_pre_get_record', $invalid, 10, 0 );
+
+		$result = API::get_record( 'app.bsky.feed.threadgate', 'some-rkey' );
+
+		\remove_filter( 'atmosphere_pre_get_record', $invalid, 10 );
+
+		$this->assertWPError( $result );
+		$this->assertSame( 'atmosphere_invalid_pre_get_record_return', $result->get_error_code() );
+	}
+
+	/**
+	 * A well-formed array return from `atmosphere_pre_get_record`
+	 * short-circuits the read and is returned verbatim.
+	 */
+	public function test_get_record_pre_filter_short_circuits_with_array() {
+		$record  = array( 'value' => array( '$type' => 'app.bsky.feed.threadgate' ) );
+		$shorter = static function () use ( $record ) {
+			return $record;
+		};
+		\add_filter( 'atmosphere_pre_get_record', $shorter, 10, 0 );
+
+		$result = API::get_record( 'app.bsky.feed.threadgate', 'some-rkey' );
+
+		\remove_filter( 'atmosphere_pre_get_record', $shorter, 10 );
+
+		$this->assertSame( $record, $result );
 	}
 
 	/**

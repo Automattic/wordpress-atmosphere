@@ -1,0 +1,869 @@
+<?php
+/**
+ * Site Health integration.
+ *
+ * Surfaces the Bluesky connection state where WordPress users (and the
+ * people supporting them) actually look when something is wrong: the
+ * Tools → Site Health status screen and its debug-information panel.
+ * The admin reconnect notice is dismissible and easy to miss; this
+ * check is persistent until the connection is healthy again, and the
+ * debug panel makes support threads self-diagnosing.
+ *
+ * Mirrors the ActivityPub plugin's `Health_Check` layout.
+ *
+ * @package Atmosphere
+ */
+
+namespace Atmosphere\WP_Admin;
+
+\defined( 'ABSPATH' ) || exit;
+
+use Atmosphere\OAuth\Client;
+use Atmosphere\OAuth\Encryption;
+use function Atmosphere\get_did;
+use function Atmosphere\get_identity;
+use function Atmosphere\get_pds_endpoint;
+use function Atmosphere\get_reauth_reason;
+use function Atmosphere\get_supported_post_types;
+use function Atmosphere\has_identity;
+use function Atmosphere\is_auto_publish_enabled;
+use function Atmosphere\is_connected;
+use function Atmosphere\is_legacy_connection;
+use function Atmosphere\is_operator_disconnected;
+use function Atmosphere\reauth_reason_lead;
+use function Atmosphere\reconnect_url;
+use function Atmosphere\settings_url;
+use function Atmosphere\threadgate_needs_reconnect;
+use function Atmosphere\truncate_text;
+
+/**
+ * Health check class.
+ *
+ * @since 2.1.0
+ */
+class Health_Check {
+
+	/**
+	 * Age at which a connected site's missing credential renewal becomes a
+	 * Site Health recommendation.
+	 *
+	 * Public AT Protocol clients can receive short refresh-token inactivity
+	 * windows. Twenty-four hours gives a production site time to repair a
+	 * stalled WP-Cron runner before the provider expires the session.
+	 *
+	 * @var int
+	 */
+	private const RENEWAL_STALE_AFTER = DAY_IN_SECONDS;
+
+	/**
+	 * Async test identifier for the reachability test.
+	 *
+	 * Core turns this into the admin-ajax action by prefixing
+	 * `health-check-` and replacing the first underscore with a hyphen,
+	 * so it must carry exactly one underscore.
+	 *
+	 * @since 2.2.0
+	 *
+	 * @var string
+	 */
+	public const REACHABILITY_TEST = 'atmosphere_reachability';
+
+	/**
+	 * The admin-ajax action core calls for {@see self::REACHABILITY_TEST}.
+	 *
+	 * @since 2.2.0
+	 *
+	 * @var string
+	 */
+	public const REACHABILITY_ACTION = 'health-check-atmosphere-reachability';
+
+	/**
+	 * Register the direct (non-async) status tests.
+	 *
+	 * The connection test only reads options — no HTTP — so it cannot
+	 * slow the Site Health screen down or flake on network conditions.
+	 * The one test that does make a request is registered as async for
+	 * the same reason.
+	 *
+	 * @param array $tests Site Health tests.
+	 * @return array
+	 */
+	public static function add_tests( $tests ) {
+		$tests['direct']['atmosphere_test_connection'] = array(
+			'label' => \__( 'ATmosphere Bluesky Connection Test', 'atmosphere' ),
+			'test'  => array( self::class, 'test_connection' ),
+		);
+
+		/*
+		 * Asynchronous, like every core test that makes an HTTP request,
+		 * so the loopback never holds up the Site Health screen. Driven
+		 * over admin-ajax rather than REST on purpose: the test exists to
+		 * catch plugins that restrict the REST API, and a REST-driven test
+		 * could not run under exactly that restriction. Core still supports
+		 * the admin-ajax form (it is the default when `has_rest` is unset).
+		 * The cron run keeps only the pass/fail counters, not the
+		 * description that makes this test useful, so it is skipped.
+		 */
+		$tests['async']['atmosphere_test_client_metadata'] = array(
+			'label'             => \__( 'ATmosphere Bluesky Reachability Test', 'atmosphere' ),
+			'test'              => self::REACHABILITY_TEST,
+			'async_direct_test' => array( self::class, 'test_client_metadata' ),
+			'skip_cron'         => true,
+		);
+
+		$tests['direct']['atmosphere_test_threadgate_scope'] = array(
+			'label' => \__( 'ATmosphere Bluesky Reply Restrictions Test', 'atmosphere' ),
+			'test'  => array( self::class, 'test_threadgate_scope' ),
+		);
+
+		return $tests;
+	}
+
+	/**
+	 * Bluesky connection test.
+	 *
+	 * Four states, in order of precedence:
+	 *
+	 *  - connected                  → good.
+	 *  - operator disconnected      → recommended (a state the user chose).
+	 *  - connection needs reauth    → critical, with cause-specific copy
+	 *    driven by the `reauth_reason` marker. The `key_changed` case
+	 *    additionally recommends pinning `ATMOSPHERE_ENCRYPTION_KEY` so
+	 *    the next salt rotation doesn't break the connection again.
+	 *  - never connected            → recommended.
+	 *
+	 * @return array The test result.
+	 */
+	public static function test_connection(): array {
+		$result = array(
+			'label'       => \__( 'ATmosphere is connected to Bluesky', 'atmosphere' ),
+			'status'      => 'good',
+			'badge'       => array(
+				'label' => \__( 'ATmosphere', 'atmosphere' ),
+				'color' => 'green',
+			),
+			'description' => \sprintf(
+				'<p>%s</p>',
+				\__( 'Your site is connected to Bluesky and can share posts and comments.', 'atmosphere' )
+			),
+			'actions'     => '',
+			'test'        => 'atmosphere_test_connection',
+		);
+
+		$state = self::connection_state();
+
+		if ( 'connected' === $state ) {
+			$status = Client::refresh_status();
+
+			$blocker = self::renewal_blocker( $status );
+
+			if ( 'signing_key' === $blocker ) {
+				$result['status']         = 'critical';
+				$result['badge']['color'] = 'red';
+				$result['label']          = \__( 'ATmosphere cannot read its Bluesky signing key', 'atmosphere' );
+				$result['description']    = \sprintf(
+					'<p>%s</p>',
+					\__( 'The saved login can no longer be renewed because the key that signs in to Bluesky could not be read. This usually happens after the security keys in wp-config.php changed. Disconnect and connect again to create a new key.', 'atmosphere' )
+				);
+				$result['actions']        = self::reconnect_action();
+			} elseif ( 'client_configuration' === $blocker ) {
+				$result['status']         = 'critical';
+				$result['badge']['color'] = 'red';
+				$result['label']          = \__( 'Bluesky rejected ATmosphere’s OAuth client configuration', 'atmosphere' );
+				$result['description']    = \sprintf(
+					'<p>%s</p>',
+					\__( 'The saved login remains available, but Bluesky rejected its latest renewal. Further down this screen, check whether Bluesky can reach ATmosphere on this site. If that check passed, it is listed under Passed tests. Make sure security or caching software allows the client-metadata endpoint. ATmosphere tries again on its own, and this message goes away after the next successful renewal.', 'atmosphere' )
+				);
+			} elseif ( self::renewal_is_failing( $status ) ) {
+				$result['status']         = 'recommended';
+				$result['badge']['color'] = 'orange';
+				$result['label']          = \__( 'ATmosphere could not renew its Bluesky login recently', 'atmosphere' );
+				$result['description']    = \sprintf(
+					'<p>%s</p>',
+					\__( 'This site is still connected, but its latest attempt to renew the saved Bluesky login failed. If this keeps happening the login will expire. The Info tab lists the error under Last Login Renewal.', 'atmosphere' )
+				);
+			} elseif ( self::renewal_is_stale( $status ) ) {
+				$result['status']         = 'recommended';
+				$result['badge']['color'] = 'orange';
+				$result['label']          = \__( 'ATmosphere has not renewed its Bluesky login recently', 'atmosphere' );
+				$result['description']    = \sprintf(
+					'<p>%s</p>',
+					\sprintf(
+						/* translators: %s: human-readable duration, e.g. "1 day". */
+						\__( 'This site is still connected, but its saved Bluesky login has not been renewed for more than %s. Configure a real server cron to run WordPress scheduled tasks so the connection does not expire while the site has little traffic.', 'atmosphere' ),
+						\human_time_diff( \time() - self::RENEWAL_STALE_AFTER )
+					)
+				);
+			} elseif ( is_legacy_connection() ) {
+				$result['status']         = 'recommended';
+				$result['badge']['color'] = 'orange';
+				$result['label']          = \__( 'ATmosphere still uses the older Bluesky login', 'atmosphere' );
+				$result['description']    = \sprintf(
+					'<p>%s</p>',
+					\__( 'This login expires every two weeks. Disconnect and connect again once to switch to the longer-lasting Bluesky login.', 'atmosphere' )
+				);
+				$result['actions']        = self::reconnect_action();
+			}
+
+			return $result;
+		}
+
+		/*
+		 * Routed through the shared resolver rather than hardcoding the
+		 * settings page: in connection-only mode that page is hidden, and
+		 * the resolver falls back to the Connectors screen (or, with
+		 * neither available, an empty string — no action link to show).
+		 */
+		$result['actions'] = self::reconnect_action();
+
+		if ( 'never_connected' === $state ) {
+			$result['status']      = 'recommended';
+			$result['label']       = \__( 'ATmosphere is not connected to Bluesky yet', 'atmosphere' );
+			$result['description'] = \sprintf(
+				'<p>%s</p>',
+				\__( 'Connect a Bluesky account to start sharing posts and comments.', 'atmosphere' )
+			);
+
+			return $result;
+		}
+
+		if ( 'disconnected' === $state ) {
+			$result['status']      = 'recommended';
+			$result['label']       = \__( 'ATmosphere is disconnected from Bluesky', 'atmosphere' );
+			$result['description'] = \sprintf(
+				'<p>%s</p>',
+				\__( 'You disconnected this site from Bluesky. New posts and comments will not be shared until you reconnect.', 'atmosphere' )
+			);
+
+			return $result;
+		}
+
+		$result['status']         = 'critical';
+		$result['badge']['color'] = 'red';
+		$result['label']          = \__( 'ATmosphere needs to be reconnected to Bluesky', 'atmosphere' );
+		$result['description']    = self::reauth_description();
+
+		return $result;
+	}
+
+	/**
+	 * Serve the reachability test to the Site Health screen.
+	 *
+	 * Same nonce and capability core used for its own admin-ajax tests.
+	 * The screen reads `response.data`, hence `wp_send_json_success()`.
+	 *
+	 * @since 2.2.0
+	 */
+	public static function ajax_client_metadata(): void {
+		\check_ajax_referer( 'health-check-site-status' );
+
+		if ( ! \current_user_can( 'view_site_health_checks' ) ) {
+			\wp_send_json_error( null, 403 );
+		}
+
+		\wp_send_json_success( self::test_client_metadata() );
+	}
+
+	/**
+	 * Client-metadata reachability test.
+	 *
+	 * The OAuth `client_id` is a URL on this site, and the auth server
+	 * fetches it while the user connects. If that fetch fails, connecting
+	 * cannot work, and the only symptom is the auth server's own error
+	 * text, which reads like a Bluesky problem. A plugin that restricts
+	 * the REST API to an allow list is the usual cause, and core's own
+	 * REST test does not catch it because it only fetches `wp/v2`.
+	 *
+	 * Runs asynchronously over admin-ajax ({@see self::ajax_client_metadata()}),
+	 * so the loopback never blocks the Site Health screen, and a REST
+	 * restriction cannot stop the test itself from running.
+	 *
+	 * Unlike core's loopback, this one sends no cookies and no HTTP auth
+	 * credentials. The auth server has none either, so the request has
+	 * to look the way its request does. For the same reason the
+	 * certificate is validated first: the auth server validates it too,
+	 * so a site whose certificate cannot be validated must not pass. Only
+	 * when validation is the sole thing in the way is the fetch retried
+	 * with core's loopback setting, and reported as recommended rather
+	 * than critical, since split-horizon setups can fail validation from
+	 * the server itself while being perfectly valid from outside.
+	 *
+	 * @since 2.2.0
+	 *
+	 * @return array Site Health test result.
+	 */
+	public static function test_client_metadata(): array {
+		$url = Client::client_id();
+
+		$result = array(
+			'label'       => \__( 'Bluesky can reach ATmosphere on this site', 'atmosphere' ),
+			'status'      => 'good',
+			'badge'       => array(
+				'label' => \__( 'ATmosphere', 'atmosphere' ),
+				'color' => 'green',
+			),
+			'description' => \sprintf(
+				'<p>%s</p>',
+				\__( 'When you connect, Bluesky reads a small file from this site to identify it. That file is available.', 'atmosphere' )
+			),
+			'actions'     => '',
+			'test'        => 'atmosphere_test_client_metadata',
+		);
+
+		/*
+		 * Bluesky only accepts an https client_id, so `client_id()` forces
+		 * that scheme. On a site served over plain http the auth server
+		 * cannot fetch it, and neither could this loopback. Say that,
+		 * rather than reporting a connection error against a URL that
+		 * was never going to answer.
+		 */
+		if ( 'https' !== \wp_parse_url( \home_url(), \PHP_URL_SCHEME ) ) {
+			$result['status']         = 'critical';
+			$result['badge']['color'] = 'red';
+			$result['label']          = \__( 'Bluesky cannot reach ATmosphere on this site', 'atmosphere' );
+			$result['description']    = \sprintf(
+				'<p>%s</p>',
+				\esc_html__( 'Bluesky requires your site to use HTTPS before it can connect. Once your site is served over HTTPS, connect again.', 'atmosphere' )
+			);
+
+			return $result;
+		}
+
+		$args = array(
+			'timeout'             => 10, // Same as core's own REST loopback; async, so nothing waits on it.
+			// The endpoint advertises a five minute public cache; a cached
+			// answer would hide a block that was just added, or just lifted.
+			'headers'             => array( 'Cache-Control' => 'no-cache' ),
+			// The excerpt shows 200 characters; there is no reason to buffer
+			// a whole error page to find them.
+			'limit_response_size' => 8 * KB_IN_BYTES,
+		);
+
+		$response = \wp_remote_get( $url, $args + array( 'sslverify' => true ) );
+		$problem  = self::client_metadata_problem( $response, $url );
+
+		if ( '' === $problem ) {
+			return $result;
+		}
+
+		/*
+		 * A transport error with validation on may be nothing but the
+		 * certificate. The retry differs in that one setting only, so if
+		 * it succeeds, validation was the whole problem.
+		 */
+		if ( \is_wp_error( $response ) ) {
+			$retry = \wp_remote_get(
+				$url,
+				/** This filter is documented in wp-includes/class-wp-http-streams.php */
+				$args + array( 'sslverify' => \apply_filters( 'https_local_ssl_verify', false, $url ) )
+			);
+
+			if ( '' === self::client_metadata_problem( $retry, $url ) ) {
+				$result['status']         = 'recommended';
+				$result['badge']['color'] = 'orange';
+				$result['label']          = \__( 'ATmosphere could not validate this site\'s certificate', 'atmosphere' );
+				$result['description']    = \sprintf(
+					'<p>%1$s</p><p>%2$s</p><p><code>%3$s</code></p>',
+					\sprintf(
+						/* translators: %s: the client metadata URL. */
+						\esc_html__( 'When you connect, Bluesky fetches %s from this site and checks its certificate. From this server the certificate could not be validated. If it is valid for visitors, Bluesky will accept it and you can ignore this.', 'atmosphere' ),
+						'<code>' . \esc_html( $url ) . '</code>'
+					),
+					\esc_html__( 'The validation error was:', 'atmosphere' ),
+					\esc_html( $problem )
+				);
+
+				return $result;
+			}
+		}
+
+		$result['status']         = 'critical';
+		$result['badge']['color'] = 'red';
+		$result['label']          = \__( 'Bluesky cannot reach ATmosphere on this site', 'atmosphere' );
+		$result['description']    = \sprintf(
+			'<p>%1$s</p><p>%2$s</p><p><code>%3$s</code></p><p>%4$s</p>',
+			\sprintf(
+				/* translators: %s: the client metadata URL. */
+				\esc_html__( 'When you connect, Bluesky fetches %s from this site to identify it. That request fails, so connecting cannot work.', 'atmosphere' ),
+				'<code>' . \esc_html( $url ) . '</code>'
+			),
+			\esc_html__( 'If a security plugin limits which plugins may use the REST API, allow ATmosphere. The response was:', 'atmosphere' ),
+			\esc_html( $problem ),
+			\esc_html__( 'Posts you have already shared are not affected.', 'atmosphere' )
+		);
+
+		return $result;
+	}
+
+	/**
+	 * Describe what is wrong with a client-metadata response, or '' when nothing is.
+	 *
+	 * @since 2.2.0
+	 *
+	 * @param array|\WP_Error $response Result of the loopback request.
+	 * @param string          $url      The client metadata URL that was fetched.
+	 * @return string Human-readable problem, empty when the response is what the auth server needs.
+	 */
+	private static function client_metadata_problem( array|\WP_Error $response, string $url ): string {
+		if ( \is_wp_error( $response ) ) {
+			return \sprintf( '(%1$s) %2$s', $response->get_error_code(), $response->get_error_message() );
+		}
+
+		$status = (int) \wp_remote_retrieve_response_code( $response );
+		$body   = (string) \wp_remote_retrieve_body( $response );
+
+		if ( 200 !== $status ) {
+			return \sprintf(
+				'(%1$d) %2$s %3$s',
+				$status,
+				self::body_excerpt( (string) \wp_remote_retrieve_response_message( $response ) ),
+				self::body_excerpt( $body )
+			);
+		}
+
+		$json = \json_decode( $body, true );
+
+		if ( ! \is_array( $json ) || ( $json['client_id'] ?? '' ) !== $url ) {
+			return \sprintf( '(200) %s', self::body_excerpt( $body ) );
+		}
+
+		return '';
+	}
+
+	/**
+	 * The start of a response body, enough to recognise an error page.
+	 *
+	 * Core's REST test shows only the status line. This one shows a bit
+	 * of the body on purpose: a REST restricting plugin's block page
+	 * names itself there, and Site Health output is what people paste
+	 * into support threads, so that is where the cause has to be legible.
+	 * The audience is users who can install plugins, who can read the
+	 * page directly anyway.
+	 *
+	 * @since 2.2.0
+	 *
+	 * @param string $body Raw body.
+	 * @return string
+	 */
+	private static function body_excerpt( string $body ): string {
+		$text = \trim( (string) \preg_replace( '/\s+/', ' ', \wp_strip_all_tags( $body ) ) );
+
+		return truncate_text( $text, 200, '…' );
+	}
+
+	/**
+	 * Reply-restrictions scope test.
+	 *
+	 * Reply restrictions were added after the first connections were made,
+	 * and they need a scope those connections never asked for. This is the
+	 * one place a site admin who never opens the editor would find out.
+	 * Recommended, not critical: posts still publish, only the restriction
+	 * is skipped.
+	 *
+	 * @since 2.2.0
+	 *
+	 * @return array Site Health test result.
+	 */
+	public static function test_threadgate_scope(): array {
+		$result = array(
+			'label'       => \__( 'ATmosphere can restrict who replies on Bluesky', 'atmosphere' ),
+			'status'      => 'good',
+			'badge'       => array(
+				'label' => \__( 'ATmosphere', 'atmosphere' ),
+				'color' => 'green',
+			),
+			'description' => \sprintf(
+				'<p>%s</p>',
+				\__( 'Your Bluesky connection allows ATmosphere to set who can reply to a shared post.', 'atmosphere' )
+			),
+			'actions'     => '',
+			'test'        => 'atmosphere_test_threadgate_scope',
+		);
+
+		if ( ! threadgate_needs_reconnect() ) {
+			return $result;
+		}
+
+		$result['status']      = 'recommended';
+		$result['label']       = \__( 'ATmosphere needs a reconnect to restrict replies on Bluesky', 'atmosphere' );
+		$result['description'] = \sprintf(
+			'<p>%s</p>',
+			\__( 'This site connected to Bluesky before reply restrictions were available. Posts still share as usual, but any reply restriction you set is skipped until you reconnect your account.', 'atmosphere' )
+		);
+		$result['actions']     = \sprintf(
+			'<p><a href="%s">%s</a></p>',
+			\esc_url( settings_url() ),
+			\esc_html__( 'Reconnect on the ATmosphere settings page', 'atmosphere' )
+		);
+
+		return $result;
+	}
+
+	/**
+	 * Resolve the connection state once for both Site Health surfaces.
+	 *
+	 * Precedence matters: a live connection wins, a site with no
+	 * identity has never connected, the operator-disconnect gate (see
+	 * `is_operator_disconnected()` for the stale-marker rationale) beats
+	 * the failure states, and everything else needs a reconnect — the
+	 * `reauth_reason` marker carries the specific cause.
+	 *
+	 * @return string One of `connected`, `never_connected`,
+	 *                `disconnected`, `needs_reauth`.
+	 */
+	private static function connection_state(): string {
+		if ( is_connected() ) {
+			return 'connected';
+		}
+
+		if ( ! has_identity() ) {
+			return 'never_connected';
+		}
+
+		if ( is_operator_disconnected() ) {
+			return 'disconnected';
+		}
+
+		return 'needs_reauth';
+	}
+
+	/**
+	 * Link to the screen where the connection can be (re)made, or '' when
+	 * there is none to send the reader to.
+	 *
+	 * @return string
+	 */
+	private static function reconnect_action(): string {
+		$reconnect_url = reconnect_url();
+
+		if ( '' === $reconnect_url ) {
+			return '';
+		}
+
+		return \sprintf(
+			'<p><a href="%s">%s</a></p>',
+			\esc_url( $reconnect_url ),
+			\esc_html__( 'Manage your Bluesky connection', 'atmosphere' )
+		);
+	}
+
+	/**
+	 * Whether the latest renewal attempt failed, whatever the reason.
+	 *
+	 * Checked before the staleness test: a run of failed attempts also ages
+	 * the last success out, and the advice for "cannot reach Bluesky" is
+	 * not "fix your cron".
+	 *
+	 * @param array $status Refresh status as read from `Client::refresh_status()`.
+	 * @return bool
+	 */
+	private static function renewal_is_failing( array $status ): bool {
+		return ! empty( $status['last_failure'] )
+			&& (int) $status['last_failure'] > (int) ( $status['last_success'] ?? 0 );
+	}
+
+	/**
+	 * Whether the current connection has missed its renewal heartbeat.
+	 *
+	 * @param array $status Refresh status as read from `Client::refresh_status()`.
+	 * @return bool
+	 */
+	private static function renewal_is_stale( array $status ): bool {
+		return ! empty( $status['last_success'] )
+			&& (int) $status['last_success'] < \time() - self::RENEWAL_STALE_AFTER;
+	}
+
+	/**
+	 * Which renewal failure, if any, will not clear without a person acting.
+	 *
+	 * Two states keep the session but stop it from renewing: a signing key
+	 * that can no longer be read, and a client registration Bluesky rejects.
+	 * Neither flags a reconnect, so the reauth notice stays silent; this is
+	 * the single source the Site Health test and the admin notice share.
+	 *
+	 * @since 2.4.0
+	 *
+	 * @param array|null $status Refresh status, or null to read it.
+	 * @return string `signing_key`, `client_configuration`, or '' when renewal is not blocked.
+	 */
+	public static function renewal_blocker( ?array $status = null ): string {
+		if ( ! is_connected() ) {
+			return '';
+		}
+
+		$status = $status ?? Client::refresh_status();
+
+		if ( self::signing_key_unreadable( $status ) ) {
+			return 'signing_key';
+		}
+
+		if ( self::client_configuration_failed( $status ) ) {
+			return 'client_configuration';
+		}
+
+		return '';
+	}
+
+	/**
+	 * Whether the latest renewal failed because the signing key is unreadable.
+	 *
+	 * Unlike a transport failure this does not clear on its own while the
+	 * session is bound to the key, and the fix is specific.
+	 *
+	 * @param array $status Refresh status as read from `Client::refresh_status()`.
+	 * @return bool
+	 */
+	private static function signing_key_unreadable( array $status ): bool {
+		return ! empty( $status['last_failure'] )
+			&& (int) $status['last_failure'] > (int) ( $status['last_success'] ?? 0 )
+			&& 'atmosphere_client_authentication_key' === ( $status['last_error'] ?? '' );
+	}
+
+	/**
+	 * Whether the latest renewal failure is a client-configuration problem.
+	 *
+	 * @param array $status Refresh status as read from `Client::refresh_status()`.
+	 * @return bool
+	 */
+	private static function client_configuration_failed( array $status ): bool {
+		return ! empty( $status['last_failure'] )
+			&& (int) $status['last_failure'] > (int) ( $status['last_success'] ?? 0 )
+			&& Client::is_client_configuration_error( (string) ( $status['last_error'] ?? '' ) );
+	}
+
+	/**
+	 * Build the cause-specific description for the needs-reauth state.
+	 *
+	 * @return string HTML paragraphs.
+	 */
+	private static function reauth_description(): string {
+		/*
+		 * The cause sentence comes from `reauth_reason_lead()`, shared with
+		 * the admin notice and both editor surfaces (those three read it
+		 * through `reauth_lead_for_current_user()`, which drops the cause
+		 * for a reader who cannot reconnect; this screen needs
+		 * `view_site_health_checks`, so it always shows it). Only the action
+		 * tail is owned here.
+		 */
+		$description = \sprintf(
+			'<p>%s %s</p>',
+			reauth_reason_lead(),
+			\__( 'Reconnect your Bluesky account to resume sharing.', 'atmosphere' )
+		);
+
+		if ( Client::REAUTH_REASON_KEY_CHANGED !== get_reauth_reason() ) {
+			return $description;
+		}
+
+		if ( Encryption::has_dedicated_key() ) {
+			$description .= \sprintf(
+				'<p>%s</p>',
+				\__( 'A dedicated ATmosphere encryption key is defined, but its value appears to have changed. Restore the previous value, or reconnect to save a new login under the current one.', 'atmosphere' )
+			);
+		} else {
+			/*
+			 * Generate a real, ready-to-paste key (same recipe as
+			 * WordPress's own secret-key service) instead of a
+			 * placeholder the user has to know how to replace. A
+			 * fresh value is generated per render and never stored
+			 * — only the copy the user pastes into wp-config.php
+			 * matters. `wp_generate_password()`'s character set
+			 * contains no quotes or backslashes, so the value is
+			 * safe inside a single-quoted PHP string literal.
+			 */
+			$description .= \sprintf(
+				'<p>%s</p><p><code>%s</code></p>',
+				\__( 'If your security keys are rotated regularly, add a dedicated key for ATmosphere to your wp-config.php before reconnecting, so the connection survives future rotations. Copy this freshly generated line as-is, and never change it afterwards:', 'atmosphere' ),
+				\esc_html( "define( 'ATMOSPHERE_ENCRYPTION_KEY', '" . \wp_generate_password( 64, true, true ) . "' );" )
+			);
+		}
+
+		return $description;
+	}
+
+	/**
+	 * Add the ATmosphere section to the Site Health debug information.
+	 *
+	 * Everything here is deliberately non-sensitive: DID, handle, and
+	 * PDS endpoint are public AT Protocol data, and the encryption key
+	 * *source* is reported without any key material. Users routinely
+	 * paste this panel into support threads.
+	 *
+	 * @param array $info Debug information sections.
+	 * @return array
+	 */
+	public static function debug_information( $info ) {
+		$identity = get_identity();
+
+		$info['atmosphere'] = array(
+			'label'  => \__( 'ATmosphere', 'atmosphere' ),
+			'fields' => array(
+				'version'           => array(
+					'label'   => \__( 'Plugin Version', 'atmosphere' ),
+					'value'   => ATMOSPHERE_VERSION,
+					'private' => false,
+				),
+				'connection_status' => array(
+					'label'   => \__( 'Connection Status', 'atmosphere' ),
+					'value'   => self::connection_status(),
+					'private' => false,
+				),
+				'handle'            => array(
+					'label'   => \__( 'Handle', 'atmosphere' ),
+					'value'   => (string) ( $identity['handle'] ?? '' ),
+					'private' => false,
+				),
+				'did'               => array(
+					'label'   => \__( 'DID', 'atmosphere' ),
+					'value'   => get_did(),
+					'private' => false,
+				),
+				'pds_endpoint'      => array(
+					'label'   => \__( 'PDS Endpoint', 'atmosphere' ),
+					'value'   => get_pds_endpoint(),
+					'private' => false,
+				),
+				'encryption_key'    => array(
+					'label'   => \__( 'Encryption Key Source', 'atmosphere' ),
+					'value'   => Encryption::has_dedicated_key()
+						? \__( 'Dedicated key (ATMOSPHERE_ENCRYPTION_KEY)', 'atmosphere' )
+						: \__( 'WordPress security keys (AUTH_KEY/AUTH_SALT)', 'atmosphere' ),
+					'private' => false,
+				),
+				'auto_publish'      => array(
+					'label'   => \__( 'Auto-Publish', 'atmosphere' ),
+					'value'   => self::auto_publish_debug_value(),
+					'private' => false,
+				),
+				'post_types'        => array(
+					'label'   => \__( 'Supported Post Types', 'atmosphere' ),
+					'value'   => \implode( ', ', get_supported_post_types() ),
+					'private' => false,
+				),
+				'last_refresh'      => array(
+					'label'   => \__( 'Last Login Renewal', 'atmosphere' ),
+					'value'   => self::last_refresh_debug_value(),
+					'private' => false,
+				),
+				'login_type'        => array(
+					'label'   => \__( 'Login Type', 'atmosphere' ),
+					'value'   => self::login_type_debug_value(),
+					'private' => false,
+				),
+			),
+		);
+
+		return $info;
+	}
+
+	/**
+	 * Which OAuth client the saved login belongs to, for the debug panel.
+	 *
+	 * @return string
+	 */
+	private static function login_type_debug_value(): string {
+		if ( ! is_connected() ) {
+			return \__( 'Not connected', 'atmosphere' );
+		}
+
+		return is_legacy_connection()
+			? \__( 'Older login (expires every two weeks)', 'atmosphere' )
+			: \__( 'Long-lasting login', 'atmosphere' );
+	}
+
+	/**
+	 * Login-renewal history for the debug panel.
+	 *
+	 * ATmosphere renews its saved Bluesky login in the background. When a
+	 * site keeps losing its connection, the useful question is whether that
+	 * renewal is running at all, and if it ran, what the answer was. Both
+	 * halves are reported, since "never renewed on a site connected for
+	 * weeks" and "renewed fine until it was rejected" call for opposite
+	 * advice.
+	 *
+	 * @since 2.3.0
+	 *
+	 * @return string
+	 */
+	private static function last_refresh_debug_value(): string {
+		$status = Client::refresh_status();
+
+		if ( empty( $status['last_success'] ) ) {
+			$success = \__( 'never', 'atmosphere' );
+		} else {
+			$success = \sprintf(
+				/* translators: %s: human-readable time difference, e.g. "2 hours". */
+				\__( '%s ago', 'atmosphere' ),
+				\human_time_diff( (int) $status['last_success'], \time() )
+			);
+		}
+
+		if ( empty( $status['last_failure'] ) ) {
+			return $success;
+		}
+
+		return \sprintf(
+			/* translators: 1: when the last renewal succeeded, 2: how long ago the last one failed, 3: the error reported. */
+			\__( '%1$s (last failure %2$s ago: %3$s)', 'atmosphere' ),
+			$success,
+			\human_time_diff( (int) $status['last_failure'], \time() ),
+			'' !== (string) ( $status['last_error'] ?? '' )
+				? (string) $status['last_error']
+				// A markup-only server code sanitizes to '', which `??`
+				// alone would render as a dangling colon.
+				: \__( 'unknown', 'atmosphere' )
+		);
+	}
+
+	/**
+	 * Auto-publish state for the debug panel, stored setting *and* effective.
+	 *
+	 * Report both so a support thread can see the user's actual saved preference
+	 * even when connection-only mode or the `atmosphere_should_auto_publish`
+	 * filter overrides it — the stored-vs-effective discrepancy is exactly what
+	 * such a thread needs to diagnose.
+	 *
+	 * @return string
+	 */
+	private static function auto_publish_debug_value(): string {
+		$stored_on = '1' === (string) \get_option( 'atmosphere_auto_publish', '1' );
+		$effective = is_auto_publish_enabled();
+
+		if ( $stored_on === $effective ) {
+			return $effective
+				? \__( 'Enabled', 'atmosphere' )
+				: \__( 'Disabled', 'atmosphere' );
+		}
+
+		return $effective
+			? \__( 'Disabled in settings, overridden on by another plugin', 'atmosphere' )
+			: \__( 'Enabled in settings, overridden off by another plugin', 'atmosphere' );
+	}
+
+	/**
+	 * Human-readable connection status for the debug panel.
+	 *
+	 * @return string
+	 */
+	private static function connection_status(): string {
+		switch ( self::connection_state() ) {
+			case 'connected':
+				return \__( 'Connected', 'atmosphere' );
+			case 'never_connected':
+				return \__( 'Not connected', 'atmosphere' );
+			case 'disconnected':
+				return \__( 'Disconnected by the user', 'atmosphere' );
+		}
+
+		switch ( get_reauth_reason() ) {
+			case Client::REAUTH_REASON_KEY_CHANGED:
+				return \__( 'Needs reconnect (security keys changed)', 'atmosphere' );
+			case Client::REAUTH_REASON_DECRYPT_FAILED:
+				return \__( 'Needs reconnect (saved login unreadable)', 'atmosphere' );
+			case Client::REAUTH_REASON_CLIENT_ID_CHANGED:
+				return \__( 'Needs reconnect (site address changed)', 'atmosphere' );
+			default:
+				return \__( 'Needs reconnect (session expired)', 'atmosphere' );
+		}
+	}
+}

@@ -7,18 +7,37 @@
 
 namespace Atmosphere\Tests;
 
+use Atmosphere\OAuth\Client;
+use function Atmosphere\reconnect_url;
+use function Atmosphere\share_status;
+use function Atmosphere\reauth_reason_lead;
 use function Atmosphere\parse_at_uri;
+use function Atmosphere\record_origin_did;
+use function Atmosphere\post_web_url;
 use function Atmosphere\build_at_uri;
 use function Atmosphere\appview_url;
+use function Atmosphere\get_identity;
+use function Atmosphere\set_identity;
 use function Atmosphere\sanitize_text;
 use function Atmosphere\truncate_text;
 use function Atmosphere\truncate_graphemes;
 use function Atmosphere\grapheme_length;
 use function Atmosphere\to_iso8601;
 use function Atmosphere\is_post_publishable;
+use function Atmosphere\get_publishable_content;
+use function Atmosphere\flush_publishable_content_cache;
 use function Atmosphere\is_sharing_enabled;
+use function Atmosphere\is_connection_only_mode;
+use function Atmosphere\is_auto_publish_enabled;
+use function Atmosphere\is_reaction_sync_enabled;
+use function Atmosphere\is_reply_sync_enabled;
 use function Atmosphere\get_connection;
 use function Atmosphere\debug_log;
+use function Atmosphere\is_comment_publishing_enabled;
+use function Atmosphere\is_bluesky_post_enabled;
+use function Atmosphere\reauth_lead_for_current_user;
+use function Atmosphere\rendered_html_contains_image;
+use function Atmosphere\render_publishable_content;
 
 /**
  * Function tests.
@@ -35,6 +54,72 @@ class Test_Functions extends \WP_UnitTestCase {
 		$this->assertSame( 'did:plc:abc123', $result['did'] );
 		$this->assertSame( 'app.bsky.feed.post', $result['collection'] );
 		$this->assertSame( '3k2la7b2zoq2s', $result['rkey'] );
+	}
+
+	/**
+	 * The origin DID comes from the stored AT-URI, which names the repo the
+	 * last successful write landed in, even when the DID meta says otherwise.
+	 */
+	public function test_record_origin_did_prefers_the_uri() {
+		$this->assertSame(
+			'did:plc:old',
+			record_origin_did( 'at://did:plc:old/site.standard.document/3k2la7', 'did:plc:new' )
+		);
+	}
+
+	/**
+	 * Without a usable URI the stored DID meta is the only source left.
+	 */
+	public function test_record_origin_did_falls_back_to_the_stored_did() {
+		$this->assertSame( 'did:plc:old', record_origin_did( '', 'did:plc:old' ) );
+		$this->assertSame( 'did:plc:old', record_origin_did( 'not-an-at-uri', 'did:plc:old' ) );
+		$this->assertSame( 'did:plc:old', record_origin_did( 'at://alice.bsky.social/app.bsky.feed.post/3k2la7', 'did:plc:old' ) );
+	}
+
+	/**
+	 * Nothing to go on means an unknown origin.
+	 */
+	public function test_record_origin_did_is_empty_without_provenance() {
+		$this->assertSame( '', record_origin_did( '', '' ) );
+	}
+
+	/**
+	 * A well-formed post URI becomes a profile/post link.
+	 */
+	public function test_post_web_url_builds_the_appview_link() {
+		$this->assertSame(
+			'https://bsky.app/profile/did:plc:abc123/post/3k2la7',
+			post_web_url( 'at://did:plc:abc123/app.bsky.feed.post/3k2la7' )
+		);
+	}
+
+	/**
+	 * Anything that is not exactly one of our post URIs yields no link at
+	 * all, never a half-built one. `parse_at_uri()` alone would accept an
+	 * empty rkey and ignore a trailing segment.
+	 *
+	 * @dataProvider malformed_post_uris
+	 *
+	 * @param string $uri The URI to reject.
+	 */
+	public function test_post_web_url_rejects_malformed_uris( string $uri ) {
+		$this->assertSame( '', post_web_url( $uri ) );
+	}
+
+	/**
+	 * URIs that must not produce a link.
+	 *
+	 * @return array<string, array{string}>
+	 */
+	public function malformed_post_uris(): array {
+		return array(
+			'empty rkey (trailing slash)' => array( 'at://did:plc:abc123/app.bsky.feed.post/' ),
+			'empty did'                   => array( 'at:///app.bsky.feed.post/3k2la7' ),
+			'extra trailing segment'      => array( 'at://did:plc:abc123/app.bsky.feed.post/3k2la7/extra' ),
+			'document collection'         => array( 'at://did:plc:abc123/site.standard.document/3k2la7' ),
+			'not an at uri'               => array( 'https://bsky.app/profile/did:plc:abc123/post/3k2la7' ),
+			'empty string'                => array( '' ),
+		);
 	}
 
 	/**
@@ -367,6 +452,71 @@ class Test_Functions extends \WP_UnitTestCase {
 	}
 
 	/**
+	 * With no membership integration, publishable content is the raw body.
+	 */
+	public function test_get_publishable_content_defaults_to_raw_body() {
+		$post = self::factory()->post->create_and_get(
+			array( 'post_content' => 'The whole body.' )
+		);
+
+		$this->assertSame( 'The whole body.', get_publishable_content( $post ) );
+	}
+
+	/**
+	 * An integration can narrow publishable content through the filter.
+	 */
+	public function test_get_publishable_content_honours_filter() {
+		$post = self::factory()->post->create_and_get(
+			array( 'post_content' => 'Public. Secret.' )
+		);
+
+		\add_filter(
+			'atmosphere_publishable_content',
+			static fn() => 'Public.',
+			10
+		);
+
+		try {
+			$this->assertSame( 'Public.', get_publishable_content( $post ) );
+		} finally {
+			\remove_all_filters( 'atmosphere_publishable_content' );
+		}
+	}
+
+	/**
+	 * The result is memoized per request, and `flush_publishable_content_cache()`
+	 * clears that memo so the next read recomputes.
+	 */
+	public function test_flush_publishable_content_cache_forces_recompute() {
+		$post = self::factory()->post->create_and_get(
+			array( 'post_content' => 'Body.' )
+		);
+
+		$calls = 0;
+		\add_filter(
+			'atmosphere_publishable_content',
+			static function ( $content ) use ( &$calls ) {
+				++$calls;
+				return $content;
+			},
+			10
+		);
+
+		try {
+			get_publishable_content( $post );
+			get_publishable_content( $post );
+			$this->assertSame( 1, $calls, 'the second read is served from the memo' );
+
+			flush_publishable_content_cache();
+			get_publishable_content( $post );
+			$this->assertSame( 2, $calls, 'a read after the flush recomputes' );
+		} finally {
+			\remove_all_filters( 'atmosphere_publishable_content' );
+			flush_publishable_content_cache();
+		}
+	}
+
+	/**
 	 * `get_connection()` returns the option array on a healthy install.
 	 */
 	public function test_get_connection_returns_array_for_healthy_option() {
@@ -405,6 +555,26 @@ class Test_Functions extends \WP_UnitTestCase {
 		$this->assertSame( array(), $conn );
 
 		\delete_option( 'atmosphere_connection' );
+	}
+
+	/**
+	 * Comment publishing retains the historical enabled default until an
+	 * administrator explicitly turns them off.
+	 */
+	public function test_comment_publishing_option_controls_effective_state() {
+		\delete_option( 'atmosphere_publish_comments' );
+		$this->assertTrue( is_comment_publishing_enabled() );
+
+		\update_option( 'atmosphere_publish_comments', '' );
+		$this->assertFalse( is_comment_publishing_enabled() );
+
+		\update_option( 'atmosphere_publish_comments', '0' );
+		$this->assertFalse( is_comment_publishing_enabled() );
+
+		\update_option( 'atmosphere_publish_comments', '1' );
+		$this->assertTrue( is_comment_publishing_enabled() );
+
+		\delete_option( 'atmosphere_publish_comments' );
 	}
 
 	/**
@@ -476,6 +646,9 @@ class Test_Functions extends \WP_UnitTestCase {
 			$received['message'] = $message;
 			return false;
 		};
+
+		// The bootstrap silences logging; drop that so the default reaches $capture.
+		\remove_filter( 'atmosphere_debug_log', '__return_false' );
 
 		$this->capture_debug_log(
 			function () use ( $capture ) {
@@ -856,6 +1029,848 @@ class Test_Functions extends \WP_UnitTestCase {
 				array( 'ciphertext', 'https://auth.example.com/revoke' )
 			),
 			'The queued revoke event must be cleared at deactivation/uninstall.'
+		);
+	}
+
+	/**
+	 * The typeahead resolver defaults to Bluesky's official public appview
+	 * searchActorsTypeahead endpoint.
+	 */
+	public function test_handle_typeahead_url_default() {
+		$url = \Atmosphere\handle_typeahead_url();
+
+		$this->assertStringContainsString( 'public.api.bsky.app', $url );
+		$this->assertStringContainsString( 'searchActorsTypeahead', $url );
+	}
+
+	/**
+	 * A site can repoint the endpoint through the filter.
+	 */
+	public function test_handle_typeahead_url_is_filterable() {
+		\add_filter(
+			'atmosphere_handle_typeahead_url',
+			static fn () => 'https://example.test/xrpc/app.bsky.actor.searchActorsTypeahead'
+		);
+
+		$this->assertStringStartsWith( 'https://example.test/', \Atmosphere\handle_typeahead_url() );
+
+		\remove_all_filters( 'atmosphere_handle_typeahead_url' );
+	}
+
+	/**
+	 * Filtering to an empty string disables typeahead entirely.
+	 */
+	public function test_handle_typeahead_url_can_be_disabled() {
+		\add_filter( 'atmosphere_handle_typeahead_url', '__return_empty_string' );
+
+		$this->assertSame( '', \Atmosphere\handle_typeahead_url() );
+
+		\remove_all_filters( 'atmosphere_handle_typeahead_url' );
+	}
+
+	/**
+	 * Clean up the connection-only-mode filters after each relevant test so a
+	 * lingering callback can't bleed into an unrelated test.
+	 */
+	public function tear_down(): void {
+		\remove_all_filters( 'atmosphere_connection_only_mode' );
+		\remove_all_filters( 'atmosphere_should_auto_publish' );
+		\remove_all_filters( 'atmosphere_should_sync_reactions' );
+		\remove_all_filters( 'atmosphere_should_sync_replies' );
+		\remove_all_filters( 'atmosphere_should_publish_comments' );
+		\wp_set_current_user( 0 );
+
+		parent::tear_down();
+	}
+
+	/**
+	 * Connection-only mode is off unless a plugin opts in.
+	 */
+	public function test_connection_only_mode_off_by_default() {
+		$this->assertFalse( is_connection_only_mode() );
+	}
+
+	/**
+	 * A host plugin flips connection-only mode on through the filter.
+	 */
+	public function test_connection_only_mode_is_filterable() {
+		\add_filter( 'atmosphere_connection_only_mode', '__return_true' );
+
+		$this->assertTrue( is_connection_only_mode() );
+	}
+
+	/**
+	 * Auto-publish is opt-out: on for a never-configured install.
+	 */
+	public function test_auto_publish_enabled_by_default() {
+		$this->assertTrue( is_auto_publish_enabled() );
+	}
+
+	/**
+	 * A saved "off" (any non-'1' value) turns auto-publish off.
+	 */
+	public function test_auto_publish_disabled_when_option_off() {
+		\update_option( 'atmosphere_auto_publish', '0' );
+
+		$this->assertFalse( is_auto_publish_enabled() );
+	}
+
+	/**
+	 * Regression: an option stored programmatically as the integer 1 (rather than
+	 * the string '1') must still read as enabled. The gates compare against '1',
+	 * so they cast to string first — otherwise `'1' === 1` is false and a genuinely
+	 * enabled feature would be mis-read as disabled. Covers all three sync gates.
+	 */
+	public function test_feature_gates_treat_integer_one_as_enabled() {
+		\update_option( 'atmosphere_auto_publish', 1 );
+		\update_option( 'atmosphere_sync_reactions', 1 );
+		\update_option( 'atmosphere_sync_replies', 1 );
+
+		$this->assertTrue( is_auto_publish_enabled() );
+		$this->assertTrue( is_reaction_sync_enabled() );
+		$this->assertTrue( is_reply_sync_enabled() );
+	}
+
+	/**
+	 * Connection-only mode forces auto-publish off even when the stored option
+	 * says on — the override is on effective behaviour, not just the default.
+	 */
+	public function test_auto_publish_forced_off_in_connection_only_mode() {
+		\update_option( 'atmosphere_auto_publish', '1' );
+		\add_filter( 'atmosphere_connection_only_mode', '__return_true' );
+
+		$this->assertFalse( is_auto_publish_enabled() );
+	}
+
+	/**
+	 * The per-feature filter is evaluated last, so a host can keep cross-posting
+	 * on while otherwise running in connection-only mode.
+	 */
+	public function test_auto_publish_filter_can_reenable_in_connection_only_mode() {
+		\add_filter( 'atmosphere_connection_only_mode', '__return_true' );
+		\add_filter( 'atmosphere_should_auto_publish', '__return_true' );
+
+		$this->assertTrue( is_auto_publish_enabled() );
+	}
+
+	/**
+	 * Reaction import is opt-out and forced off in connection-only mode.
+	 */
+	public function test_reaction_sync_forced_off_in_connection_only_mode() {
+		$this->assertTrue( is_reaction_sync_enabled() );
+
+		\add_filter( 'atmosphere_connection_only_mode', '__return_true' );
+
+		$this->assertFalse( is_reaction_sync_enabled() );
+	}
+
+	/**
+	 * The reaction filter has the final say over connection-only mode.
+	 */
+	public function test_reaction_sync_filter_can_reenable_in_connection_only_mode() {
+		\add_filter( 'atmosphere_connection_only_mode', '__return_true' );
+		\add_filter( 'atmosphere_should_sync_reactions', '__return_true' );
+
+		$this->assertTrue( is_reaction_sync_enabled() );
+	}
+
+	/**
+	 * Reply import is opt-out and forced off in connection-only mode.
+	 */
+	public function test_reply_sync_forced_off_in_connection_only_mode() {
+		$this->assertTrue( is_reply_sync_enabled() );
+
+		\add_filter( 'atmosphere_connection_only_mode', '__return_true' );
+
+		$this->assertFalse( is_reply_sync_enabled() );
+	}
+
+	/**
+	 * The reply filter has the final say over connection-only mode.
+	 */
+	public function test_reply_sync_filter_can_reenable_in_connection_only_mode() {
+		\add_filter( 'atmosphere_connection_only_mode', '__return_true' );
+		\add_filter( 'atmosphere_should_sync_replies', '__return_true' );
+
+		$this->assertTrue( is_reply_sync_enabled() );
+	}
+
+	/**
+	 * Comment publishing (WordPress comments → Bluesky replies) is opt-out and
+	 * forced off in connection-only mode, closing the outgoing lane too.
+	 */
+	public function test_comment_publishing_forced_off_in_connection_only_mode() {
+		$this->assertTrue( is_comment_publishing_enabled() );
+
+		\add_filter( 'atmosphere_connection_only_mode', '__return_true' );
+
+		$this->assertFalse( is_comment_publishing_enabled() );
+	}
+
+	/**
+	 * The comment-publishing filter has the final say over connection-only mode.
+	 */
+	public function test_comment_publishing_filter_can_reenable_in_connection_only_mode() {
+		\add_filter( 'atmosphere_connection_only_mode', '__return_true' );
+		\add_filter( 'atmosphere_should_publish_comments', '__return_true' );
+
+		$this->assertTrue( is_comment_publishing_enabled() );
+	}
+
+	/**
+	 * The Bluesky-companion lane defaults to enabled.
+	 *
+	 * @group atmosphere
+	 */
+	public function test_is_bluesky_post_enabled_defaults_true() {
+		$post = self::factory()->post->create_and_get();
+		$this->assertTrue( is_bluesky_post_enabled( $post ) );
+	}
+
+	/**
+	 * A site-wide (one-argument) callback still disables the companion post —
+	 * the added post parameter must not break callbacks that ignore it.
+	 *
+	 * @group atmosphere
+	 */
+	public function test_is_bluesky_post_enabled_filter_can_disable() {
+		$post = self::factory()->post->create_and_get();
+
+		\add_filter( 'atmosphere_should_publish_bluesky_post', '__return_false' );
+		$this->assertFalse( is_bluesky_post_enabled( $post ) );
+		\remove_filter( 'atmosphere_should_publish_bluesky_post', '__return_false' );
+	}
+
+	/**
+	 * `set_identity()` persists the canonical shape so `get_identity()`
+	 * reads it back, keeping the option's structure in one place.
+	 *
+	 * @group atmosphere
+	 */
+	public function test_set_identity_round_trips() {
+		\delete_option( 'atmosphere_identity' );
+
+		$this->assertTrue(
+			set_identity(
+				array(
+					'did'          => 'did:plc:abc123',
+					'handle'       => 'me.example.com',
+					'pds_endpoint' => 'https://pds.example.com',
+					'extra'        => 'dropped',
+				)
+			)
+		);
+
+		$this->assertSame(
+			array(
+				'did'          => 'did:plc:abc123',
+				'handle'       => 'me.example.com',
+				'pds_endpoint' => 'https://pds.example.com',
+			),
+			get_identity(),
+			'Only the three canonical fields are stored, and get_identity() reads them back.'
+		);
+
+		\delete_option( 'atmosphere_identity' );
+	}
+
+	/**
+	 * A non-scalar value must not become the literal "Array", which
+	 * `has_identity()` would treat as a live identity and the well-known
+	 * endpoint would then serve.
+	 */
+	public function test_set_identity_drops_non_scalar_values() {
+		set_identity(
+			array(
+				'did'          => array( 'nested' => 'value' ),
+				'handle'       => 'example.com',
+				'pds_endpoint' => 'https://pds.example.com',
+			)
+		);
+
+		$stored = \get_option( 'atmosphere_identity' );
+
+		$this->assertSame( '', $stored['did'] );
+		$this->assertStringNotContainsString( 'Array', (string) $stored['did'] );
+	}
+
+	/**
+	 * The helper replaces rather than merges. Pinned because the failure is
+	 * silent and expensive: a partial call clears the DID, which takes
+	 * `has_identity()` false and stops the well-known endpoint answering.
+	 */
+	public function test_set_identity_replaces_rather_than_merges() {
+		set_identity(
+			array(
+				'did'          => 'did:plc:test123',
+				'handle'       => 'old.example.com',
+				'pds_endpoint' => 'https://pds.example.com',
+			)
+		);
+
+		set_identity( array( 'handle' => 'new.example.com' ) );
+
+		$stored = \get_option( 'atmosphere_identity' );
+
+		$this->assertSame( 'new.example.com', $stored['handle'] );
+		$this->assertSame( '', $stored['did'] );
+	}
+
+	/**
+	 * The filter receives the post being published, so a callback can answer
+	 * per post — here, gating on the post type.
+	 *
+	 * @group atmosphere
+	 */
+	public function test_is_bluesky_post_enabled_filter_receives_post() {
+		$article = self::factory()->post->create_and_get( array( 'post_type' => 'post' ) );
+		$page    = self::factory()->post->create_and_get( array( 'post_type' => 'page' ) );
+
+		\add_filter(
+			'atmosphere_should_publish_bluesky_post',
+			static function ( $enabled, $post ) {
+				return 'page' === $post->post_type ? false : $enabled;
+			},
+			10,
+			2
+		);
+
+		$this->assertTrue( is_bluesky_post_enabled( $article ), 'Posts keep the Bluesky companion.' );
+		$this->assertFalse( is_bluesky_post_enabled( $page ), 'Pages are routed document-only.' );
+
+		\remove_all_filters( 'atmosphere_should_publish_bluesky_post' );
+	}
+
+	/**
+	 * A never-connected site (or one that doesn't need a reconnect) has
+	 * nothing to say.
+	 */
+	public function test_reauth_lead_for_current_user_empty_when_not_needed() {
+		\wp_set_current_user( self::factory()->user->create( array( 'role' => 'administrator' ) ) );
+		$this->assertSame( '', reauth_lead_for_current_user() );
+
+		\wp_set_current_user( self::factory()->user->create( array( 'role' => 'author' ) ) );
+		$this->assertSame( '', reauth_lead_for_current_user() );
+	}
+
+	/**
+	 * A user without `manage_options` gets a generic lead: the recorded
+	 * causes (rotated security keys, site migrations) are meaningless to
+	 * someone who cannot act on them.
+	 */
+	public function test_reauth_lead_for_current_user_generic_for_non_admin() {
+		\wp_set_current_user( self::factory()->user->create( array( 'role' => 'author' ) ) );
+		\update_option( 'atmosphere_identity', array( 'did' => 'did:plc:test123' ) );
+		\update_option(
+			'atmosphere_connection',
+			array(
+				'did'          => 'did:plc:test123',
+				'access_token' => 'test-token',
+				'needs_reauth' => true,
+			)
+		);
+
+		$this->assertSame(
+			'Your site’s Bluesky connection needs attention.',
+			reauth_lead_for_current_user()
+		);
+
+		\delete_option( 'atmosphere_connection' );
+		\delete_option( 'atmosphere_identity' );
+	}
+
+	/**
+	 * An administrator gets the recorded cause via `reauth_reason_lead()`.
+	 */
+	public function test_reauth_lead_for_current_user_reason_for_admin() {
+		\wp_set_current_user( self::factory()->user->create( array( 'role' => 'administrator' ) ) );
+		\update_option( 'atmosphere_identity', array( 'did' => 'did:plc:test123' ) );
+		\update_option(
+			'atmosphere_connection',
+			array(
+				'did'          => 'did:plc:test123',
+				'access_token' => 'test-token',
+				'needs_reauth' => true,
+			)
+		);
+
+		$this->assertSame(
+			'Your Bluesky session has expired.',
+			reauth_lead_for_current_user()
+		);
+
+		\delete_option( 'atmosphere_connection' );
+		\delete_option( 'atmosphere_identity' );
+	}
+
+	/**
+	 * An operator-initiated disconnect must not claim a session expired, even
+	 * for an administrator.
+	 */
+	public function test_reauth_lead_for_current_user_operator_disconnected() {
+		\wp_set_current_user( self::factory()->user->create( array( 'role' => 'administrator' ) ) );
+		\update_option( 'atmosphere_identity', array( 'did' => 'did:plc:test123' ) );
+		\delete_option( 'atmosphere_connection' );
+		\update_option( Client::DISCONNECTED_OPTION, true );
+
+		$this->assertSame(
+			'ATmosphere is disconnected from Bluesky.',
+			reauth_lead_for_current_user()
+		);
+
+		\delete_option( 'atmosphere_identity' );
+		\delete_option( Client::DISCONNECTED_OPTION );
+	}
+
+	/**
+	 * An operator-initiated disconnect is a state the administrator chose, not
+	 * a problem for every author to worry about: a non-admin gets no lead at
+	 * all for it (not even the generic "needs attention" sentence), matching
+	 * the suppression `Block_Editor::script_data()` relies on for the document
+	 * panel — without this, the pre-publish panel would still nag a
+	 * non-admin about a disconnect the administrator deliberately chose.
+	 */
+	public function test_reauth_lead_for_current_user_empty_for_non_admin_on_operator_disconnect() {
+		\wp_set_current_user( self::factory()->user->create( array( 'role' => 'author' ) ) );
+		\update_option( 'atmosphere_identity', array( 'did' => 'did:plc:test123' ) );
+		\delete_option( 'atmosphere_connection' );
+		\update_option( Client::DISCONNECTED_OPTION, true );
+
+		$this->assertSame( '', reauth_lead_for_current_user() );
+
+		\delete_option( 'atmosphere_identity' );
+		\delete_option( Client::DISCONNECTED_OPTION );
+	}
+
+	/**
+	 * A host plugin driving the connection itself can point every reconnect
+	 * prompt at its own screen, which is the whole reason the four surfaces
+	 * resolve through one helper.
+	 */
+	public function test_reconnect_url_is_filterable() {
+		\add_filter(
+			'atmosphere_reconnect_url',
+			static function () {
+				return 'https://example.com/host-plugin-connect';
+			}
+		);
+
+		$this->assertSame( 'https://example.com/host-plugin-connect', reconnect_url() );
+
+		\remove_all_filters( 'atmosphere_reconnect_url' );
+	}
+
+	/**
+	 * Returning an empty string drops the link and leaves the prompts as
+	 * plain text, the same as having no screen to link to.
+	 */
+	public function test_reconnect_url_filter_can_drop_the_link() {
+		\add_filter( 'atmosphere_reconnect_url', '__return_empty_string' );
+
+		$this->assertSame( '', reconnect_url() );
+
+		\remove_all_filters( 'atmosphere_reconnect_url' );
+	}
+
+	/**
+	 * The key-rotation cause is two sentences with no dashes: it renders in a
+	 * narrow sidebar column and in an admin notice.
+	 */
+	public function test_key_changed_cause_avoids_dashes() {
+		\update_option( 'atmosphere_identity', array( 'did' => 'did:plc:test123' ) );
+		\update_option(
+			'atmosphere_connection',
+			array(
+				'did'           => 'did:plc:test123',
+				'access_token'  => 'token',
+				'needs_reauth'  => true,
+				'reauth_reason' => Client::REAUTH_REASON_KEY_CHANGED,
+			)
+		);
+
+		$lead = reauth_reason_lead();
+
+		$this->assertStringContainsString( 'security keys have changed', $lead );
+		$this->assertStringNotContainsString( "\u{2014}", $lead );
+		$this->assertStringNotContainsString( "\u{2013}", $lead );
+	}
+
+	/**
+	 * The filter's return value reaches React as a raw `href`, because
+	 * `Block_Editor::script_data()` localizes it without escaping and
+	 * react-dom only warns about a `javascript:` scheme in development.
+	 * Sanitizing at the source covers every consumer at once.
+	 */
+	public function test_reconnect_url_filter_cannot_inject_a_script_scheme() {
+		\add_filter(
+			'atmosphere_reconnect_url',
+			static function () {
+				return 'javascript:alert(1)'; // phpcs:ignore WordPress.WP.EnqueuedResources
+			}
+		);
+
+		$this->assertSame( '', reconnect_url() );
+
+		\remove_all_filters( 'atmosphere_reconnect_url' );
+	}
+
+	/**
+	 * Sanitizing must not damage the ordinary case: an admin URL with a
+	 * query string survives intact.
+	 */
+	public function test_reconnect_url_filter_keeps_a_normal_admin_url() {
+		\add_filter(
+			'atmosphere_reconnect_url',
+			static function () {
+				return 'https://example.com/wp-admin/options-general.php?page=atmosphere&reconnect=1';
+			}
+		);
+
+		$this->assertSame(
+			'https://example.com/wp-admin/options-general.php?page=atmosphere&reconnect=1',
+			reconnect_url()
+		);
+
+		\remove_all_filters( 'atmosphere_reconnect_url' );
+	}
+
+	/**
+	 * `share_status()` decides the notice level and whether a reconnect link
+	 * renders on both editor surfaces, so `state`, `severity` and `action`
+	 * are load-bearing and were never asserted anywhere.
+	 */
+	public function test_share_status_is_quiet_and_shareable_when_healthy() {
+		$this->connect_site();
+
+		$status = share_status();
+
+		$this->assertSame( 'ok', $status['state'] );
+		$this->assertSame( '', $status['message'] );
+		$this->assertSame( 'info', $status['severity'] );
+		$this->assertFalse( $status['action'] );
+		$this->assertTrue( $status['can_share'] );
+		$this->assertTrue( $status['sharing_enabled'] );
+	}
+
+	/**
+	 * Sharing switched off by the site owner: the panel says so and points
+	 * at the setting, but there is nothing to reconnect.
+	 */
+	public function test_share_status_reports_sharing_off_without_an_action() {
+		$this->connect_site();
+		\update_option( 'atmosphere_auto_publish', '0' );
+
+		$status = share_status();
+
+		$this->assertSame( 'sharing_off', $status['state'] );
+		$this->assertNotSame( '', $status['message'] );
+		$this->assertFalse( $status['action'] );
+		$this->assertFalse( $status['can_share'] );
+		$this->assertFalse( $status['sharing_enabled'] );
+	}
+
+	/**
+	 * Sharing forced off from outside: `reason` still answers the direct
+	 * question the pre-publish panel asks, while `message` stays empty so
+	 * the ambient document panel keeps quiet.
+	 */
+	public function test_share_status_stays_silent_when_forced_off_externally() {
+		$this->connect_site();
+		\add_filter( 'atmosphere_should_auto_publish', '__return_false' );
+
+		$status = share_status();
+
+		$this->assertSame( 'sharing_off_external', $status['state'] );
+		$this->assertSame( '', $status['message'] );
+		$this->assertNotSame( '', $status['reason'] );
+		$this->assertFalse( $status['sharing_enabled'] );
+
+		\remove_all_filters( 'atmosphere_should_auto_publish' );
+	}
+
+	/**
+	 * A dead connection is a warning with a call to action, and it leaves
+	 * `sharing_enabled` true: site policy still says cross-post, so the
+	 * per-post toggle keeps recording a preference for when it recovers.
+	 */
+	public function test_share_status_asks_for_a_reconnect_without_disabling_sharing() {
+		$this->connect_site();
+		\update_option(
+			'atmosphere_connection',
+			array(
+				'did'          => 'did:plc:test123',
+				'access_token' => 'token',
+				'needs_reauth' => true,
+			)
+		);
+
+		$status = share_status();
+
+		$this->assertSame( 'needs_reconnect', $status['state'] );
+		$this->assertSame( 'warning', $status['severity'] );
+		$this->assertTrue( $status['action'] );
+		$this->assertFalse( $status['can_share'] );
+		$this->assertTrue( $status['sharing_enabled'] );
+	}
+
+	/**
+	 * An image ID only matches its own `wp-image-` class, not a longer ID
+	 * that starts with the same digits.
+	 */
+	public function test_rendered_html_contains_image_matches_whole_id() {
+		$html = '<img src="https://example.com/a.jpg" class="wp-image-123"/>';
+
+		$this->assertTrue( rendered_html_contains_image( $html, 123 ) );
+		$this->assertFalse( rendered_html_contains_image( $html, 12 ) );
+	}
+
+	/**
+	 * An image without the `wp-image-` class matches by its attachment URL.
+	 */
+	public function test_rendered_html_contains_image_matches_url() {
+		$image_id = self::factory()->attachment->create_object(
+			array(
+				'file'           => 'visible.jpg',
+				'post_mime_type' => 'image/jpeg',
+			)
+		);
+		$url      = \wp_get_attachment_url( $image_id );
+
+		$this->assertTrue( rendered_html_contains_image( '<img src="' . $url . '" alt=""/>', $image_id ) );
+		$this->assertFalse( rendered_html_contains_image( '<img src="https://example.com/other.jpg" alt=""/>', $image_id ) );
+	}
+
+	/**
+	 * Content and excerpt both render as a logged-out visitor, and the
+	 * current user is restored afterwards.
+	 *
+	 * @dataProvider data_render_modes
+	 *
+	 * @param bool $excerpt Render the excerpt.
+	 */
+	public function test_render_publishable_content_renders_as_logged_out_visitor( bool $excerpt ) {
+		$user_id = self::factory()->user->create( array( 'role' => 'administrator' ) );
+		\wp_set_current_user( $user_id );
+
+		$post = self::factory()->post->create_and_get( array( 'post_content' => 'Public part.' ) );
+
+		$filter = static fn( $content ) => \is_user_logged_in() ? $content . ' Members only.' : $content;
+		\add_filter( 'the_content', $filter );
+
+		$html = render_publishable_content( $post, $excerpt );
+
+		\remove_filter( 'the_content', $filter );
+
+		$this->assertStringContainsString( 'Public part.', $html );
+		$this->assertStringNotContainsString( 'Members only.', $html );
+		$this->assertSame( $user_id, \get_current_user_id() );
+	}
+
+	/**
+	 * The render actions fire once each, in order, and the global post is
+	 * restored, for content and excerpt alike.
+	 *
+	 * @dataProvider data_render_modes
+	 *
+	 * @param bool $excerpt Render the excerpt.
+	 */
+	public function test_render_publishable_content_fires_actions_and_restores_global_post( bool $excerpt ) {
+		$previous        = self::factory()->post->create_and_get();
+		$GLOBALS['post'] = $previous; // phpcs:ignore WordPress.WP.GlobalVariablesOverride.Prohibited -- Test setup.
+
+		$post   = self::factory()->post->create_and_get( array( 'post_content' => 'Body.' ) );
+		$events = array();
+		$pre    = static function ( $p ) use ( &$events ) {
+			$events[] = array( 'pre', $p->ID, $GLOBALS['post']->ID );
+		};
+		$after  = static function ( $p ) use ( &$events ) {
+			$events[] = array( 'post', $p->ID, $GLOBALS['post']->ID );
+		};
+		\add_action( 'atmosphere_pre_render_publishable_content', $pre );
+		\add_action( 'atmosphere_post_render_publishable_content', $after );
+
+		render_publishable_content( $post, $excerpt );
+
+		\remove_action( 'atmosphere_pre_render_publishable_content', $pre );
+		\remove_action( 'atmosphere_post_render_publishable_content', $after );
+
+		$this->assertSame(
+			array(
+				array( 'pre', $post->ID, $post->ID ),
+				array( 'post', $post->ID, $post->ID ),
+			),
+			$events
+		);
+		$this->assertSame( $previous, $GLOBALS['post'] );
+	}
+
+	/**
+	 * Render modes: content and excerpt.
+	 *
+	 * @return array[]
+	 */
+	public function data_render_modes(): array {
+		return array(
+			'content' => array( false ),
+			'excerpt' => array( true ),
+		);
+	}
+
+	/**
+	 * The excerpt stops at the more tag, in every form of the tag, both in a
+	 * cron-like context and on the post's own permalink (the preview).
+	 *
+	 * @dataProvider data_more_tags
+	 *
+	 * @param string $content      Post content.
+	 * @param bool   $on_permalink Render on the post's permalink.
+	 */
+	public function test_render_publishable_content_excerpt_stops_at_more_tag( string $content, bool $on_permalink ) {
+		$post = self::factory()->post->create_and_get( array( 'post_content' => $content ) );
+
+		if ( $on_permalink ) {
+			$this->go_to( \get_permalink( $post ) );
+		}
+
+		$excerpt = render_publishable_content( $post, true );
+
+		$this->assertStringContainsString( 'Teaser text.', $excerpt );
+		$this->assertStringNotContainsString( 'Hidden text.', $excerpt );
+		$this->assertStringNotContainsString( 'Read on', $excerpt );
+	}
+
+	/**
+	 * More tag variants, each off and on the permalink.
+	 *
+	 * @return array[]
+	 */
+	public function data_more_tags(): array {
+		$variants = array(
+			'classic'     => 'Teaser text.<!--more-->Hidden text.',
+			'custom text' => 'Teaser text.<!--more Read on-->Hidden text.',
+			'noteaser'    => 'Teaser text.<!--more--><!--noteaser-->Hidden text.',
+			'block'       => "<!-- wp:paragraph --><p>Teaser text.</p><!-- /wp:paragraph -->\n<!-- wp:more --><!--more--><!-- /wp:more -->\n<!-- wp:paragraph --><p>Hidden text.</p><!-- /wp:paragraph -->",
+		);
+
+		$data = array();
+		foreach ( $variants as $name => $content ) {
+			$data[ $name ]                   = array( $content, false );
+			$data[ $name . ' on permalink' ] = array( $content, true );
+		}
+
+		return $data;
+	}
+
+	/**
+	 * The full content still renders past the more tag.
+	 */
+	public function test_render_publishable_content_keeps_text_after_more_tag() {
+		$post = self::factory()->post->create_and_get( array( 'post_content' => 'Teaser text.<!--more-->Hidden text.' ) );
+
+		$this->assertStringContainsString( 'Hidden text.', render_publishable_content( $post ) );
+	}
+
+	/**
+	 * The excerpt drops shortcodes and dynamic blocks, like WordPress does on
+	 * archive pages, while the full content keeps them.
+	 */
+	public function test_render_publishable_content_excerpt_drops_shortcodes_and_dynamic_blocks() {
+		\add_shortcode( 'atmosphere_test', static fn() => 'Shortcode output.' );
+		\register_block_type( 'atmosphere-test/dynamic', array( 'render_callback' => static fn() => '<p>Dynamic output.</p>' ) );
+
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_content' => "<!-- wp:paragraph --><p>Body text. [atmosphere_test]</p><!-- /wp:paragraph -->\n<!-- wp:atmosphere-test/dynamic /-->",
+			)
+		);
+
+		$excerpt = render_publishable_content( $post, true );
+		$content = render_publishable_content( $post );
+
+		\remove_shortcode( 'atmosphere_test' );
+		\unregister_block_type( 'atmosphere-test/dynamic' );
+
+		$this->assertStringContainsString( 'Body text.', $excerpt );
+		$this->assertStringNotContainsString( 'Shortcode output.', $excerpt );
+		$this->assertStringNotContainsString( 'Dynamic output.', $excerpt );
+		$this->assertStringContainsString( 'Shortcode output.', $content );
+		$this->assertStringContainsString( 'Dynamic output.', $content );
+	}
+
+	/**
+	 * The excerpt is built from the content, even when the post has a manual
+	 * excerpt, and from the narrowed content only.
+	 */
+	public function test_render_publishable_content_excerpt_uses_narrowed_content() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_content' => 'Public part. Members only part.',
+				'post_excerpt' => 'Manual excerpt.',
+			)
+		);
+
+		$narrow = static fn() => 'Public part.';
+		\add_filter( 'atmosphere_publishable_content', $narrow );
+
+		$excerpt = render_publishable_content( $post, true );
+
+		\remove_filter( 'atmosphere_publishable_content', $narrow );
+		flush_publishable_content_cache();
+
+		$this->assertSame( 'Public part.', \trim( $excerpt ) );
+	}
+
+	/**
+	 * Rendering the excerpt does not change the post object it gets.
+	 */
+	public function test_render_publishable_content_excerpt_keeps_post_unchanged() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_content' => 'Teaser text.<!--more-->Hidden text.',
+				'post_excerpt' => 'Manual excerpt.',
+			)
+		);
+
+		render_publishable_content( $post, true );
+
+		$this->assertSame( 'Teaser text.<!--more-->Hidden text.', $post->post_content );
+		$this->assertSame( 'Manual excerpt.', $post->post_excerpt );
+	}
+
+	/**
+	 * A fully gated post has an empty excerpt, and filters that add to every
+	 * render do not fill it.
+	 */
+	public function test_render_publishable_content_excerpt_empty_for_gated_post() {
+		$post = self::factory()->post->create_and_get( array( 'post_content' => 'Secret body.' ) );
+
+		$gate     = static fn() => '';
+		$appender = static fn( $content ) => $content . 'Share this: Facebook X';
+		\add_filter( 'atmosphere_publishable_content', $gate );
+		\add_filter( 'the_content', $appender );
+		\add_filter( 'get_the_excerpt', $appender );
+
+		$excerpt = render_publishable_content( $post, true );
+
+		\remove_filter( 'atmosphere_publishable_content', $gate );
+		\remove_filter( 'the_content', $appender );
+		\remove_filter( 'get_the_excerpt', $appender );
+		flush_publishable_content_cache();
+
+		$this->assertSame( '', $excerpt );
+	}
+
+	/**
+	 * Put the site in a connected, sharing-enabled state.
+	 */
+	private function connect_site(): void {
+		\update_option( 'atmosphere_identity', array( 'did' => 'did:plc:test123' ) );
+		\update_option(
+			'atmosphere_connection',
+			array(
+				'did'          => 'did:plc:test123',
+				'access_token' => 'token',
+			)
 		);
 	}
 }

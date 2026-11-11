@@ -143,6 +143,23 @@ class Test_Reactions_Render extends WP_UnitTestCase {
 	}
 
 	/**
+	 * Reactions are not rendered for a password-protected post.
+	 */
+	public function test_renders_nothing_for_password_protected_post() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_status'   => 'publish',
+				'post_password' => 'secret',
+			)
+		);
+		$this->add_reaction( $post->ID, 'like', 'Alice' );
+
+		$html = $this->render_for( $post );
+
+		$this->assertStringNotContainsString( 'wp-block-atmosphere-reactions', $html );
+	}
+
+	/**
 	 * The compact style renders counts without the avatar facepile.
 	 */
 	public function test_compact_style_hides_facepile() {

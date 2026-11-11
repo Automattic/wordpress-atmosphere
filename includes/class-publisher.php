@@ -34,7 +34,7 @@ use Atmosphere\Transformer\Comment;
 use Atmosphere\Transformer\Document;
 use Atmosphere\Transformer\Post;
 use Atmosphere\Transformer\Publication;
-use Atmosphere\Transformer\TID;
+use Atmosphere\Transformer\Threadgate;
 
 /**
  * Publisher class.
@@ -90,10 +90,11 @@ class Publisher {
 	 * regardless of which internal path (short-form, long-form single,
 	 * long-form thread) produced it.
 	 *
-	 * @param \WP_Post $post WordPress post.
+	 * @param \WP_Post $post          WordPress post.
+	 * @param bool     $original_time Reserve rkeys from the post's original publish date rather than "now". Default false.
 	 * @return array|\WP_Error applyWrites response(s) or error.
 	 */
-	public static function publish_post( \WP_Post $post ): array|\WP_Error {
+	public static function publish_post( \WP_Post $post, bool $original_time = false ): array|\WP_Error {
 		if ( ! is_post_publishable( $post ) ) {
 			$result = new \WP_Error(
 				'atmosphere_post_not_publishable',
@@ -105,12 +106,112 @@ class Publisher {
 			return $result;
 		}
 
+		/*
+		 * Document-only mode: the operator has disabled the Bluesky
+		 * companion post site-wide. Write just the site.standard.document
+		 * record and skip the bsky post, strongRef precompute, and thread
+		 * machinery entirely. Still run the shared post-write tail — the
+		 * reconcile race-guard (so a document that raced a visibility change
+		 * is cleaned up) and the result action (so metrics/notice subscribers
+		 * behave the same as any other publish).
+		 */
+		if ( ! is_bluesky_post_enabled( $post ) ) {
+			$result = self::publish_document_only( $post, $original_time );
+			$result = self::reconcile_post_after_write( $post, $result );
+
+			\do_action( 'atmosphere_publish_post_result', $post, $result );
+
+			return $result;
+		}
+
 		// Heal a drifted publication record before composing the post,
 		// so the embedded publication strongRef points at the current CID.
 		self::maybe_heal_publication();
 
+		$result = self::attempt_publish_post( $post, $original_time );
+
+		/*
+		 * Self-heal a stale image blob ref. Blob CIDs are cached in
+		 * postmeta and reused across publishes, but a blob is only
+		 * retrievable from the PDS it was uploaded to and only while a
+		 * committed record references it. When the active account/PDS
+		 * changes, or the reference PDS garbage-collects an orphaned blob,
+		 * `applyWrites` rejects the cached CID with "Could not find blob".
+		 * Drop the stale refs for every image the post embeds — featured
+		 * image and in-body images alike — so the next transform
+		 * re-uploads against the current PDS, then attempt the publish once
+		 * more. This automates the manual "clear the cache and re-publish"
+		 * recovery.
+		 */
+		if ( self::is_blob_missing_error( $result ) ) {
+			debug_log(
+				\sprintf(
+					'post %d: PDS rejected a cached image blob (%s) — re-uploading the post images and retrying the publish',
+					$post->ID,
+					$result->get_error_message()
+				)
+			);
+
+			/*
+			 * Retry once with the blob cache bypassed, so every image the
+			 * publish re-uploads against the current PDS. Bounded to a single
+			 * re-attempt: a blob still missing after a fresh upload surfaces
+			 * the error instead of retrying forever.
+			 *
+			 * If the re-upload itself fails, the image is dropped and the
+			 * publish still succeeds — the same "un-uploadable image, publish
+			 * without it" policy every other publish follows. Returning a
+			 * WP_Error here would be worse: the records committed by this
+			 * attempt are live, and the publish worker's retry would
+			 * `applyWrites#create` the same rkeys again and collide.
+			 */
+			Post::set_force_blob_reupload( true );
+			$result = self::attempt_publish_post( $post, $original_time );
+			Post::set_force_blob_reupload( false );
+		}
+
+		$result = self::reconcile_post_after_write( $post, $result );
+
+		/**
+		 * Fires after a post publish attempt completes, with the final result.
+		 *
+		 * Subscribers can use this to react to success or failure — for
+		 * example, to instrument metrics, surface notifications, or schedule
+		 * follow-up jobs. Fires exactly once per `publish_post()` invocation
+		 * regardless of which internal path produced the result.
+		 *
+		 * @param \WP_Post        $post   The post that was published.
+		 * @param array|\WP_Error $result `applyWrites` response on success, `WP_Error` on failure.
+		 */
+		\do_action( 'atmosphere_publish_post_result', $post, $result );
+
+		return $result;
+	}
+
+	/**
+	 * Build the record batch for a post and write it once.
+	 *
+	 * Extracted from {@see self::publish_post()} so the publish can be
+	 * retried after a stale blob ref is dropped. Each call builds fresh
+	 * transformers, so a retry re-runs the blob upload that the first
+	 * attempt short-circuited from the cache.
+	 *
+	 * @param \WP_Post $post          WordPress post.
+	 * @param bool     $original_time Reserve rkeys from the post's original publish date rather than "now".
+	 * @return array|\WP_Error `applyWrites` response on success, `WP_Error` on failure.
+	 */
+	private static function attempt_publish_post( \WP_Post $post, bool $original_time = false ): array|\WP_Error {
 		$bsky_transformer = new Post( $post );
 		$doc_transformer  = new Document( $post );
+
+		if ( $original_time ) {
+			// Reserve rkeys from the post's original publish date so a
+			// backfilled record sorts chronologically rather than at the
+			// backfill-run time. Must run before the document-CID
+			// precompute below (the first get_rkey() call).
+			$bsky_transformer->use_original_time();
+			$doc_transformer->use_original_time();
+		}
 
 		/*
 		 * Pre-compute the document's CID locally and inject the
@@ -195,22 +296,46 @@ class Publisher {
 			}
 		}
 
-		$result = self::reconcile_post_after_write( $post, $result );
-
-		/**
-		 * Fires after a post publish attempt completes, with the final result.
-		 *
-		 * Subscribers can use this to react to success or failure — for
-		 * example, to instrument metrics, surface notifications, or schedule
-		 * follow-up jobs. Fires exactly once per `publish_post()` invocation
-		 * regardless of which internal path produced the result.
-		 *
-		 * @param \WP_Post        $post   The post that was published.
-		 * @param array|\WP_Error $result `applyWrites` response on success, `WP_Error` on failure.
-		 */
-		\do_action( 'atmosphere_publish_post_result', $post, $result );
-
 		return $result;
+	}
+
+	/**
+	 * Whether an `applyWrites` result failed because a referenced blob is
+	 * absent from the active PDS.
+	 *
+	 * The reference PDS rejects a write that references an unknown blob CID
+	 * with HTTP 400 and a "Could not find blob: <cid>" message — surfaced
+	 * by {@see API::apply_writes()} as an `atmosphere_pds` error. Matching
+	 * the message is the only signal available; the PDS does not use a
+	 * distinct error code for it.
+	 *
+	 * @param array|\WP_Error $result Publisher result.
+	 * @return bool
+	 */
+	private static function is_blob_missing_error( array|\WP_Error $result ): bool {
+		if ( ! \is_wp_error( $result ) ) {
+			return false;
+		}
+
+		if ( 'atmosphere_pds' !== $result->get_error_code() ) {
+			return false;
+		}
+
+		$data = $result->get_error_data();
+		if ( ! \is_array( $data ) || 400 !== ( $data['status'] ?? 0 ) ) {
+			return false;
+		}
+
+		/*
+		 * Match "blob" plus a not-found signal rather than one exact PDS
+		 * sentence, so "blob not found" is caught as well as "could not
+		 * find blob". Best-effort: the PDS gives no distinct error code.
+		 */
+		$message = $result->get_error_message();
+
+		return false !== \stripos( $message, 'blob' )
+			&& ( false !== \stripos( $message, 'not find' )
+				|| false !== \stripos( $message, 'not found' ) );
 	}
 
 	/**
@@ -268,6 +393,349 @@ class Publisher {
 		}
 
 		return $cleanup;
+	}
+
+	/**
+	 * Publish only the `site.standard.document` record for a post.
+	 *
+	 * Used when {@see \Atmosphere\is_bluesky_post_enabled()} is false — the
+	 * site runs as a standard.site publication with no Bluesky companion post.
+	 * Writes a single `applyWrites#create` for the document and persists only
+	 * the `Document::*` meta; no `Post::*` meta is written, so downstream
+	 * bsky-oriented paths (reaction/reply sync, in-place thread updates) stay
+	 * inert for this post.
+	 *
+	 * @since 2.2.0
+	 *
+	 * @param \WP_Post $post          WordPress post.
+	 * @param bool     $original_time Reserve the document rkey from the post's original publish date rather than "now".
+	 * @return array|\WP_Error applyWrites response or error.
+	 */
+	private static function publish_document_only( \WP_Post $post, bool $original_time = false ): array|\WP_Error {
+		$doc_transformer = new Document( $post );
+
+		if ( $original_time ) {
+			// Document-only backfills honour --original-time too: reserve the
+			// document rkey from the post's original publish date so it sorts
+			// chronologically in standard.site readers.
+			$doc_transformer->use_original_time();
+		}
+
+		return self::write_document_only( $post, 'create', $doc_transformer->get_rkey() );
+	}
+
+	/**
+	 * Write a single `site.standard.document` record and persist its meta.
+	 *
+	 * Shared writer for {@see self::publish_document_only()} (create) and
+	 * {@see self::update_document_only()} (update): the two differ only in the
+	 * applyWrites op and the rkey source, so the batch shape, error handling,
+	 * and document-meta persistence live here in one place. Persists only the
+	 * `Document::*` meta — no `Post::*` meta — so downstream bsky-oriented paths
+	 * (reaction/reply sync, in-place thread updates) stay inert for this post.
+	 *
+	 * @since 2.2.0
+	 *
+	 * @param \WP_Post $post WordPress post.
+	 * @param string   $op   applyWrites op — `create` or `update`.
+	 * @param string   $rkey Record key for the write.
+	 * @return array|\WP_Error applyWrites response or error.
+	 */
+	private static function write_document_only( \WP_Post $post, string $op, string $rkey ): array|\WP_Error {
+		self::maybe_heal_publication();
+
+		$doc_transformer = new Document( $post );
+
+		$writes = array(
+			array(
+				'$type'      => "com.atproto.repo.applyWrites#{$op}",
+				'collection' => 'site.standard.document',
+				'rkey'       => $rkey,
+				'value'      => $doc_transformer->transform(),
+			),
+		);
+
+		$result = API::apply_writes( $writes );
+
+		if ( \is_wp_error( $result ) ) {
+			return $result;
+		}
+
+		self::store_document_meta( $post->ID, $result, $doc_transformer, 0 );
+
+		return $result;
+	}
+
+	/**
+	 * Reconcile the PDS threadgate with the post's current reply restriction.
+	 *
+	 * The threadgate is a shared record: Bluesky writes native moderation
+	 * state (`hiddenReplies`) into the same record this setting manages. So
+	 * the reconcile reads the live record first and preserves every field it
+	 * does not own, touching only `allow`:
+	 *
+	 *  - gated + record absent    → create;
+	 *  - gated + record present   → update the record, overwriting the fields
+	 *                               this setting owns (`allow`/`post`/`$type`)
+	 *                               and keeping the rest (hiddenReplies + unknown);
+	 *  - everybody + hiddenReplies → update, dropping only `allow`;
+	 *  - everybody + nothing else  → delete;
+	 *  - everybody + never gated   → nothing (an externally-created gate we
+	 *                               never touched is left alone).
+	 *
+	 * A read failure is non-fatal: the gate is left untouched and the marker
+	 * unmoved (`written => null`), so a transient error can neither clobber
+	 * moderation state nor desync the marker.
+	 *
+	 * @since 2.2.0
+	 *
+	 * @param \WP_Post $post      WordPress post.
+	 * @param string   $rkey      The post's root rkey, shared by the threadgate.
+	 * @param bool     $reconcile Whether to read the live record and reconcile
+	 *                            against it. False on initial publish, where the
+	 *                            rkey is fresh and the gate is simply created.
+	 * @return array{writes: array, written: bool|null} The applyWrites entries
+	 *               (zero or one) and the marker state to persist, or null to
+	 *               leave the marker unchanged.
+	 */
+	private static function threadgate_sync_writes( \WP_Post $post, string $rkey, bool $reconcile = true ): array {
+		/*
+		 * The gate rides in the same atomic batch as the post, so a write
+		 * the server will refuse for lack of scope would fail the post
+		 * too. Leave the gate out and let the post through; the stored
+		 * restriction is picked up by the first update after a reconnect.
+		 * The marker is left alone: nothing was written or removed.
+		 */
+		if ( threadgate_needs_reconnect() ) {
+			return array(
+				'writes'  => array(),
+				'written' => null,
+			);
+		}
+
+		$desired = Threadgate::is_restricted( $post );
+
+		// Initial publish mints a fresh rkey, so no gate can exist there yet
+		// (a colliding record would fail the post create in the same batch).
+		// Create directly without a read — sparing a round-trip whose transient
+		// failure would otherwise silently drop a brand-new gate.
+		if ( ! $reconcile ) {
+			return $desired
+				? array(
+					'writes'  => array( self::threadgate_write_entry( 'create', $rkey, self::merge_threadgate_value( null, $post ) ) ),
+					'written' => true,
+				)
+				: array(
+					'writes'  => array(),
+					'written' => false,
+				);
+		}
+
+		$written = Threadgate::is_written( $post->ID );
+
+		// Nothing wanted and nothing of ours live: no read, no write, and a
+		// gate created directly on Bluesky stays untouched.
+		if ( ! $desired && ! $written ) {
+			return array(
+				'writes'  => array(),
+				'written' => false,
+			);
+		}
+
+		$current = self::read_threadgate( $rkey );
+
+		if ( false === $current ) {
+			// Unknown remote state: leave the gate and the marker untouched so a
+			// transient error can't clobber moderation state. Log it so the
+			// interim window (until the next post save re-reconciles) is visible.
+			debug_log(
+				\sprintf( 'threadgate reconcile skipped for post %d: could not read the current gate.', $post->ID )
+			);
+			return array(
+				'writes'  => array(),
+				'written' => null,
+			);
+		}
+
+		$exists = \is_array( $current );
+
+		if ( $desired ) {
+			return array(
+				'writes'  => array(
+					self::threadgate_write_entry(
+						$exists ? 'update' : 'create',
+						$rkey,
+						self::merge_threadgate_value( $exists ? $current : null, $post )
+					),
+				),
+				'written' => true,
+			);
+		}
+
+		// Everybody: drop our restriction. Keep a record that still carries
+		// external moderation state; delete only one that would be left empty.
+		if ( ! $exists ) {
+			return array(
+				'writes'  => array(),
+				'written' => false,
+			);
+		}
+
+		if ( ! empty( $current['hiddenReplies'] ) ) {
+			// The record outlives our restriction. Strip only our `allow` (if
+			// present) and keep `written` true: we created this record, so the
+			// post's own delete must still clean it up.
+			if ( ! isset( $current['allow'] ) ) {
+				return array(
+					'writes'  => array(),
+					'written' => true,
+				);
+			}
+
+			unset( $current['allow'] );
+			return array(
+				'writes'  => array( self::threadgate_write_entry( 'update', $rkey, $current ) ),
+				'written' => true,
+			);
+		}
+
+		return array(
+			'writes'  => array( self::threadgate_delete_write( $rkey ) ),
+			'written' => false,
+		);
+	}
+
+	/**
+	 * Read the live threadgate record for merging.
+	 *
+	 * @since 2.2.0
+	 *
+	 * @param string $rkey Root rkey shared by the threadgate.
+	 * @return array|null|false The record `value` when present, null when the
+	 *               record is genuinely absent (`RecordNotFound`), or false when
+	 *               the remote state is unknown (transport/auth error).
+	 */
+	private static function read_threadgate( string $rkey ): array|null|false {
+		$result = API::get_record( 'app.bsky.feed.threadgate', $rkey );
+
+		if ( \is_array( $result ) ) {
+			return \is_array( $result['value'] ?? null ) ? $result['value'] : array();
+		}
+
+		$data = $result->get_error_data();
+		if ( \is_array( $data ) && 'RecordNotFound' === ( $data['error'] ?? '' ) ) {
+			return null;
+		}
+
+		return false;
+	}
+
+	/**
+	 * Build the threadgate record to write, merged over the live one.
+	 *
+	 * Layers the transformer's output (this setting's `allow`/`post`/`$type`
+	 * plus anything an `atmosphere_transform_threadgate` filter adds) on top of
+	 * the record already on the PDS, so fields this setting does not own —
+	 * `hiddenReplies` and any field a newer lexicon adds — survive the write.
+	 * The record's original `createdAt` is kept when it already has one.
+	 *
+	 * @since 2.2.0
+	 *
+	 * @param array|null $current The live record value, or null to build fresh.
+	 * @param \WP_Post   $post    WordPress post.
+	 * @return array The record value to write.
+	 */
+	private static function merge_threadgate_value( ?array $current, \WP_Post $post ): array {
+		$ours    = ( new Threadgate( $post ) )->transform();
+		$current = null === $current ? array() : $current;
+
+		// Our fields win; the record's other fields (hiddenReplies, unknown)
+		// carry through.
+		$value = \array_merge( $current, $ours );
+
+		// Preserve the record's original creation time rather than restamping.
+		if ( ! empty( $current['createdAt'] ) ) {
+			$value['createdAt'] = $current['createdAt'];
+		}
+
+		return $value;
+	}
+
+	/**
+	 * Build an `applyWrites` create/update entry for a threadgate.
+	 *
+	 * @since 2.2.0
+	 *
+	 * @param string $op    applyWrites op — `create` or `update`.
+	 * @param string $rkey  Root rkey shared by the threadgate.
+	 * @param array  $value Record value.
+	 * @return array applyWrites entry.
+	 */
+	private static function threadgate_write_entry( string $op, string $rkey, array $value ): array {
+		return array(
+			'$type'      => "com.atproto.repo.applyWrites#{$op}",
+			'collection' => 'app.bsky.feed.threadgate',
+			'rkey'       => $rkey,
+			'value'      => $value,
+		);
+	}
+
+	/**
+	 * Build the `applyWrites#delete` entry for a threadgate at `$rkey`.
+	 *
+	 * @since 2.2.0
+	 *
+	 * @param string $rkey The post's root rkey, shared by the threadgate.
+	 * @return array applyWrites#delete entry.
+	 */
+	private static function threadgate_delete_write( string $rkey ): array {
+		return array(
+			'$type'      => 'com.atproto.repo.applyWrites#delete',
+			'collection' => 'app.bsky.feed.threadgate',
+			'rkey'       => $rkey,
+		);
+	}
+
+	/**
+	 * Delete-side counterpart to {@see self::threadgate_sync_writes()}.
+	 *
+	 * A live gate shares the root rkey (`$stored[0]`), so it is removed with
+	 * the records it gated. Returns nothing when no gate is live or the root
+	 * rkey is unknown.
+	 *
+	 * @since 2.2.0
+	 *
+	 * @param \WP_Post $post   WordPress post.
+	 * @param array[]  $stored Stored bsky records (root first).
+	 * @return array applyWrites#delete entries (zero or one).
+	 */
+	private static function threadgate_delete_writes( \WP_Post $post, array $stored ): array {
+		if ( ! Threadgate::is_written( $post->ID ) || empty( $stored[0]['tid'] ) ) {
+			return array();
+		}
+
+		return array( self::threadgate_delete_write( $stored[0]['tid'] ) );
+	}
+
+	/**
+	 * Record the remote threadgate state that a batch just submitted.
+	 *
+	 * Takes the outcome captured at batch-build time rather than re-reading
+	 * the restriction meta, so a restriction change racing in behind an
+	 * in-flight write cannot desync the marker from what was actually sent
+	 * (see the in-flight-state rule in the code-style docs).
+	 *
+	 * @since 2.2.0
+	 *
+	 * @param int  $post_id WordPress post ID.
+	 * @param bool $written Whether the submitted batch leaves a gate live.
+	 */
+	private static function persist_threadgate_state( int $post_id, bool $written ): void {
+		if ( $written ) {
+			\update_post_meta( $post_id, Threadgate::META_WRITTEN, '1' );
+		} else {
+			\delete_post_meta( $post_id, Threadgate::META_WRITTEN );
+		}
 	}
 
 	/**
@@ -336,6 +804,9 @@ class Publisher {
 			),
 		);
 
+		$gate   = self::threadgate_sync_writes( $post, $bsky_transformer->get_rkey(), false );
+		$writes = \array_merge( $writes, $gate['writes'] );
+
 		$result = API::apply_writes( $writes );
 
 		if ( \is_wp_error( $result ) ) {
@@ -356,6 +827,9 @@ class Publisher {
 		);
 
 		\delete_post_meta( $post->ID, Post::META_DOC_REF_PENDING );
+		if ( null !== $gate['written'] ) {
+			self::persist_threadgate_state( $post->ID, $gate['written'] );
+		}
 
 		return $result;
 	}
@@ -403,22 +877,32 @@ class Publisher {
 			$doc_record = $doc_transformer->transform();
 		}
 
-		$root_result = API::apply_writes(
+		$root_writes = array(
 			array(
-				array(
-					'$type'      => 'com.atproto.repo.applyWrites#create',
-					'collection' => 'app.bsky.feed.post',
-					'rkey'       => $root_rkey,
-					'value'      => $root_record,
-				),
-				array(
-					'$type'      => 'com.atproto.repo.applyWrites#create',
-					'collection' => 'site.standard.document',
-					'rkey'       => $doc_transformer->get_rkey(),
-					'value'      => $doc_record,
-				),
-			)
+				'$type'      => 'com.atproto.repo.applyWrites#create',
+				'collection' => 'app.bsky.feed.post',
+				'rkey'       => $root_rkey,
+				'value'      => $root_record,
+			),
+			array(
+				'$type'      => 'com.atproto.repo.applyWrites#create',
+				'collection' => 'site.standard.document',
+				'rkey'       => $doc_transformer->get_rkey(),
+				'value'      => $doc_record,
+			),
 		);
+
+		$gate        = self::threadgate_sync_writes( $post, $root_rkey, false );
+		$root_writes = \array_merge( $root_writes, $gate['writes'] );
+
+		// Only a gate we CREATED in this batch should be undone on rollback;
+		// a merge-update of a pre-existing (externally-created) gate must not
+		// be deleted. Captured now so a concurrent restriction change can't
+		// flip the decision.
+		$threadgate_created = ! empty( $gate['writes'] )
+			&& 'com.atproto.repo.applyWrites#create' === ( $gate['writes'][0]['$type'] ?? '' );
+
+		$root_result = API::apply_writes( $root_writes );
 
 		if ( \is_wp_error( $root_result ) ) {
 			return $root_result;
@@ -442,7 +926,8 @@ class Publisher {
 				new \WP_Error(
 					'atmosphere_missing_cid',
 					\__( 'Root post created but PDS response lacked a CID; rolling back thread.', 'atmosphere' )
-				)
+				),
+				$threadgate_created
 			);
 		}
 
@@ -452,13 +937,20 @@ class Publisher {
 		self::store_document_meta( $post->ID, $root_result, $doc_transformer );
 		self::mirror_thread_records_meta( $post->ID, $thread_records );
 
+		// The gate rode in the root batch that just succeeded, so record its
+		// state now — not after the reply loop — so a worker interruption
+		// mid-thread can't leave a live gate without its marker.
+		if ( null !== $gate['written'] ) {
+			self::persist_threadgate_state( $post->ID, $gate['written'] );
+		}
+
 		\delete_post_meta( $post->ID, Post::META_DOC_REF_PENDING );
 
 		$aggregated_results = $root_result['results'] ?? array();
 
 		$count = \count( $records );
 		for ( $i = 1; $i < $count; $i++ ) {
-			$reply_rkey   = TID::generate();
+			$reply_rkey   = $bsky_transformer->mint_reply_rkey( $i );
 			$reply_record = $records[ $i ];
 
 			if ( empty( $reply_record['createdAt'] ) ) {
@@ -507,7 +999,8 @@ class Publisher {
 					$post,
 					\array_merge( $thread_records, array( $ambiguous_triple ) ),
 					$doc_transformer,
-					$reply_result
+					$reply_result,
+					$threadgate_created
 				);
 			}
 
@@ -526,7 +1019,8 @@ class Publisher {
 					new \WP_Error(
 						'atmosphere_missing_cid',
 						\__( 'Reply created but PDS response lacked a CID; rolling back thread.', 'atmosphere' )
-					)
+					),
+					$threadgate_created
 				);
 			}
 
@@ -537,6 +1031,62 @@ class Publisher {
 		}
 
 		return array( 'results' => $aggregated_results );
+	}
+
+	/**
+	 * Error-data key carrying the failure that triggered a rollback.
+	 *
+	 * @since 2.2.0
+	 *
+	 * @var string
+	 */
+	private const ERROR_KEY_ORIGINAL = 'original_error';
+
+	/**
+	 * Error-data key carrying the failure the rollback itself hit.
+	 *
+	 * @since 2.2.0
+	 *
+	 * @var string
+	 */
+	private const ERROR_KEY_ROLLBACK = 'rollback_error';
+
+	/**
+	 * Unwrap the failures a Publisher error was built from.
+	 *
+	 * `atmosphere_thread_rollback_failed` is the one error the Publisher
+	 * nests inside another (see {@see Publisher::rollback_thread()}),
+	 * and a caller that classifies failures has to be able to see
+	 * through it: a rate limit that lands on a thread reply reaches the
+	 * caller wrapped in a rollback failure rather than as itself. The
+	 * keys live here, next to the method that writes them, so a rename
+	 * cannot silently break a consumer.
+	 *
+	 * An ordinary unwrapped failure returns an empty array, so a caller
+	 * can classify the error itself and then walk this without
+	 * special-casing the shape.
+	 *
+	 * @since 2.2.0
+	 *
+	 * @param \WP_Error $error Failure returned by the Publisher.
+	 * @return \WP_Error[] The nested failures, in declaration order.
+	 */
+	public static function underlying_errors( \WP_Error $error ): array {
+		$data = $error->get_error_data();
+
+		if ( ! \is_array( $data ) ) {
+			return array();
+		}
+
+		$nested = array();
+
+		foreach ( array( self::ERROR_KEY_ORIGINAL, self::ERROR_KEY_ROLLBACK ) as $key ) {
+			if ( ( $data[ $key ] ?? null ) instanceof \WP_Error ) {
+				$nested[] = $data[ $key ];
+			}
+		}
+
+		return $nested;
 	}
 
 	/**
@@ -554,17 +1104,19 @@ class Publisher {
 	 * `WP_Error` data otherwise disappears the moment the cron closure
 	 * returns.
 	 *
-	 * @param \WP_Post  $post            WordPress post.
-	 * @param array[]   $thread_records  Already-written thread records (uri/cid/tid each).
-	 * @param Document  $doc_transformer Document transformer instance.
-	 * @param \WP_Error $original_error The failure that triggered rollback.
+	 * @param \WP_Post  $post               WordPress post.
+	 * @param array[]   $thread_records     Already-written thread records (uri/cid/tid each).
+	 * @param Document  $doc_transformer    Document transformer instance.
+	 * @param \WP_Error $original_error     The failure that triggered rollback.
+	 * @param bool      $threadgate_created Whether this batch created a new threadgate to undo.
 	 * @return \WP_Error
 	 */
 	private static function rollback_thread(
 		\WP_Post $post,
 		array $thread_records,
 		Document $doc_transformer,
-		\WP_Error $original_error
+		\WP_Error $original_error,
+		bool $threadgate_created = false
 	): \WP_Error {
 		$doc_rkey = $doc_transformer->get_rkey();
 
@@ -582,6 +1134,18 @@ class Publisher {
 			'collection' => 'site.standard.document',
 			'rkey'       => $doc_rkey,
 		);
+
+		/*
+		 * A gated post's threadgate rides in the root batch and shares the
+		 * root rkey (thread_records[0] is always the root), so the same
+		 * rollback that removes the root post must remove the threadgate —
+		 * otherwise it dangles on the PDS pointing at a deleted post. The
+		 * flag is captured at batch-build time so a concurrent restriction
+		 * change can't make this skip a gate that was actually written.
+		 */
+		if ( $threadgate_created && ! empty( $thread_records ) ) {
+			$rollback_writes[] = self::threadgate_delete_write( $thread_records[0]['tid'] );
+		}
 
 		$rollback_result = API::apply_writes( $rollback_writes );
 
@@ -604,9 +1168,9 @@ class Publisher {
 					$original_error->get_error_message()
 				),
 				array(
-					'original_error'  => $original_error,
-					'rollback_error'  => $rollback_result,
-					'partial_records' => $thread_records,
+					self::ERROR_KEY_ORIGINAL => $original_error,
+					self::ERROR_KEY_ROLLBACK => $rollback_result,
+					'partial_records'        => $thread_records,
 				)
 			);
 		}
@@ -694,6 +1258,19 @@ class Publisher {
 	public static function update_post( \WP_Post $post ): array|\WP_Error {
 		if ( ! is_post_publishable( $post ) ) {
 			return self::delete_post( $post );
+		}
+
+		/*
+		 * Document-only mode: mirror publish_post()'s gate. Route edits to
+		 * a document-only update so a post with no bsky records is not
+		 * mistaken for the "half-synced" skip case below. The not-publishable
+		 * branch above already delegates deletion to delete_post(), which is
+		 * meta-driven and removes only the document when no bsky meta exists.
+		 * Run the same reconcile race-guard the dual update paths end with, so
+		 * a document edit that races a visibility change is still cleaned up.
+		 */
+		if ( ! is_bluesky_post_enabled( $post ) ) {
+			return self::reconcile_post_after_write( $post, self::update_document_only( $post ) );
 		}
 
 		$stored = self::stored_thread_records( $post->ID );
@@ -863,6 +1440,71 @@ class Publisher {
 	}
 
 	/**
+	 * Update only the `site.standard.document` record for a post.
+	 *
+	 * The document-only counterpart to {@see self::update_single()}, used when
+	 * {@see \Atmosphere\is_bluesky_post_enabled()} is false. Reached only for
+	 * publishable posts (the not-publishable case is handled by
+	 * {@see self::delete_post()} at the top of {@see self::update_post()}).
+	 *
+	 * When no document has ever been successfully published for the post (no
+	 * stored URI), this is a no-op that fires `atmosphere_update_skipped_unsynced_post`
+	 * and returns — mirroring the dual-record {@see self::update_post()} guard.
+	 * A routine edit must not retro-sync legacy content: turning edits of old
+	 * posts into fresh records consistently surprises users, and the deliberate
+	 * path for seeding an existing catalogue is the `wp atmosphere backfill`
+	 * command. (Document::META_TID is not a reliable "was published" marker here
+	 * the way Post::META_TID is on the dual path: {@see Atmosphere::output_document_link()}
+	 * speculatively mints it on a front-end pageview, so it cannot distinguish a
+	 * legacy post from a failed create — only a stored URI proves a real publish.
+	 * Genuine new publishes seed through {@see self::publish_post()}, and failed
+	 * creates retry through the publish ladder, so nothing is lost by skipping.)
+	 *
+	 * A stored URI with a missing TID is a corrupted half-synced state, not an
+	 * unseeded one: creating fresh would mint a second document record and orphan
+	 * the one the stored URI already points at, so it surfaces an
+	 * `atmosphere_missing_tid` error instead — again mirroring {@see self::update_post()}.
+	 *
+	 * @since 2.2.0
+	 *
+	 * @param \WP_Post $post WordPress post.
+	 * @return array|\WP_Error applyWrites response or error.
+	 */
+	private static function update_document_only( \WP_Post $post ): array|\WP_Error {
+		$doc_uri = \get_post_meta( $post->ID, Document::META_URI, true );
+		$doc_tid = \get_post_meta( $post->ID, Document::META_TID, true );
+
+		if ( ! $doc_uri ) {
+			/*
+			 * No document has ever been successfully published for this post,
+			 * so treat this edit as the dual-record path treats an edit of a
+			 * never-synced post: skip rather than mint a fresh record. This
+			 * keeps routine edits of legacy content from retro-syncing behind
+			 * the author's back — that is what the backfill command is for.
+			 * Fire the same skip action the dual path fires so subscribers
+			 * (admin notices, metrics) behave identically.
+			 */
+			\do_action( 'atmosphere_update_skipped_unsynced_post', $post );
+
+			return array();
+		}
+
+		if ( ! $doc_tid ) {
+			/*
+			 * A stored URI with no TID is a corrupted record: falling back to a
+			 * fresh create would mint a second document and orphan the existing
+			 * one. Surface the same error the dual-record update_post() raises.
+			 */
+			return new \WP_Error(
+				'atmosphere_missing_tid',
+				\__( 'Record URIs exist but TIDs are missing.', 'atmosphere' )
+			);
+		}
+
+		return self::write_document_only( $post, 'update', (string) $doc_tid );
+	}
+
+	/**
 	 * In-place `applyWrites#update` for both bsky + doc, mirroring today's
 	 * update path. Extended only to refresh `META_THREAD_RECORDS` with the
 	 * post-update CID.
@@ -912,6 +1554,11 @@ class Publisher {
 			),
 		);
 
+		// Reconcile the gate: create it if the post became gated, merge-update
+		// it if the restriction changed, strip/delete it for everybody.
+		$gate   = self::threadgate_sync_writes( $post, $stored_root['tid'] );
+		$writes = \array_merge( $writes, $gate['writes'] );
+
 		$result = API::apply_writes( $writes );
 
 		if ( \is_wp_error( $result ) ) {
@@ -932,6 +1579,9 @@ class Publisher {
 		);
 
 		\delete_post_meta( $post->ID, Post::META_DOC_REF_PENDING );
+		if ( null !== $gate['written'] ) {
+			self::persist_threadgate_state( $post->ID, $gate['written'] );
+		}
 
 		return self::reconcile_post_after_write( $post, $result );
 	}
@@ -1012,6 +1662,10 @@ class Publisher {
 			'value'      => $doc_record,
 		);
 
+		// Reconcile the gate against the thread root's rkey.
+		$gate   = self::threadgate_sync_writes( $post, $root['tid'] );
+		$writes = \array_merge( $writes, $gate['writes'] );
+
 		$result = API::apply_writes( $writes );
 
 		if ( \is_wp_error( $result ) ) {
@@ -1040,6 +1694,9 @@ class Publisher {
 		}
 
 		\delete_post_meta( $post->ID, Post::META_DOC_REF_PENDING );
+		if ( null !== $gate['written'] ) {
+			self::persist_threadgate_state( $post->ID, $gate['written'] );
+		}
 
 		return self::reconcile_post_after_write( $post, $result );
 	}
@@ -1083,6 +1740,10 @@ class Publisher {
 				'rkey'       => $doc_tid,
 			);
 		}
+
+		// A gate written at the old root rkey must go with the records it
+		// gated; the republish below mints a fresh gate at the new rkey.
+		$delete_writes = \array_merge( $delete_writes, self::threadgate_delete_writes( $post, $stored ) );
 
 		if ( ! empty( $delete_writes ) ) {
 			$delete_result = API::apply_writes( $delete_writes );
@@ -1162,15 +1823,17 @@ class Publisher {
 	private const APPLY_WRITES_CHUNK_SIZE = 100;
 
 	/**
-	 * Delete every bsky record (root + thread replies + outbound
-	 * comment replies) and the document for a post.
+	 * Delete every bsky record (root + thread replies) and the document
+	 * for a post, plus outbound comment replies when comment publishing
+	 * is enabled.
 	 *
 	 * Handles thread posts (reads `META_THREAD_RECORDS`) and legacy
 	 * single-record posts (falls back to the mirrored `META_URI` /
 	 * `META_TID` / `META_CID` keys). Outbound comment replies live in
 	 * our own repo keyed by their own TIDs — the AT Protocol has no
 	 * cascade semantics, so they have to be enumerated alongside the
-	 * post records or they orphan on Bluesky.
+	 * post records or they orphan on Bluesky. When comment publishing is
+	 * disabled, those replies and their local metadata are preserved.
 	 *
 	 * The post + document deletes and the outbound comment-reply deletes
 	 * are submitted as two independent, individually-chunked `applyWrites`
@@ -1185,9 +1848,27 @@ class Publisher {
 		$stored  = self::stored_thread_records( $post->ID, true );
 		$doc_tid = \get_post_meta( $post->ID, Document::META_TID, true );
 
-		$comment_tids = self::collect_published_comment_tids( $post->ID );
+		$foreign_comments = array();
+		$comment_tids     = is_comment_publishing_enabled()
+			? self::collect_published_comment_tids( $post->ID, $foreign_comments )
+			: array();
 
 		if ( empty( $stored ) && ! $doc_tid && empty( $comment_tids ) ) {
+			/*
+			 * Replies from a previous account are the only records left
+			 * (a comment-only retry after reconnecting). Say so, rather
+			 * than claiming the post has nothing published.
+			 */
+			if ( ! empty( $foreign_comments ) ) {
+				return self::did_mismatch_error(
+					array(
+						'post_id'          => $post->ID,
+						'current_did'      => get_did(),
+						'foreign_comments' => $foreign_comments,
+					)
+				);
+			}
+
 			return new \WP_Error(
 				'atmosphere_not_published',
 				\__( 'Post has no AT Protocol records.', 'atmosphere' )
@@ -1204,20 +1885,23 @@ class Publisher {
 		 * operator-visible error so the situation is at least logged
 		 * rather than masked behind a successful-looking cleanup.
 		 */
-		$bsky_origin_did = (string) \get_post_meta( $post->ID, Post::META_DID, true );
-		$doc_origin_did  = (string) \get_post_meta( $post->ID, Document::META_DID, true );
-		$current_did     = get_did();
+		$bsky_origin_did = record_origin_did(
+			(string) \get_post_meta( $post->ID, Post::META_URI, true ),
+			(string) \get_post_meta( $post->ID, Post::META_DID, true )
+		);
+		$doc_origin_did  = record_origin_did(
+			(string) \get_post_meta( $post->ID, Document::META_URI, true ),
+			(string) \get_post_meta( $post->ID, Document::META_DID, true )
+		);
 
-		$bsky_skip = '' !== $bsky_origin_did && '' !== $current_did && $bsky_origin_did !== $current_did;
-		$doc_skip  = '' !== $doc_origin_did && '' !== $current_did && $doc_origin_did !== $current_did;
+		$bsky_skip = self::record_is_foreign( $bsky_origin_did );
+		$doc_skip  = self::record_is_foreign( $doc_origin_did );
 
 		if ( ( $bsky_skip && ! empty( $stored ) ) || ( $doc_skip && $doc_tid ) ) {
-			return new \WP_Error(
-				'atmosphere_did_mismatch',
-				\__( 'Cannot delete records that were created under a different connected account.', 'atmosphere' ),
+			return self::did_mismatch_error(
 				array(
 					'post_id'         => $post->ID,
-					'current_did'     => $current_did,
+					'current_did'     => get_did(),
 					'bsky_origin_did' => $bsky_origin_did,
 					'doc_origin_did'  => $doc_origin_did,
 				)
@@ -1242,6 +1926,11 @@ class Publisher {
 				'rkey'       => $doc_tid,
 			);
 		}
+
+		// The threadgate shares the root post's rkey and repo, so it is
+		// removed with the records it gated (the DID guard above has already
+		// cleared this repo for the bsky deletes).
+		$root_writes = \array_merge( $root_writes, self::threadgate_delete_writes( $post, $stored ) );
 
 		$comment_writes = array();
 		foreach ( $comment_tids as $comment_tid ) {
@@ -1286,12 +1975,11 @@ class Publisher {
 			return $outcome['comments'];
 		}
 
-		// Clean up comment meta for every reply we just deleted.
-		foreach ( $comment_tids as $comment_tid ) {
-			\delete_comment_meta( $comment_tid['comment_id'], Comment::META_TID );
-			\delete_comment_meta( $comment_tid['comment_id'], Comment::META_URI );
-			\delete_comment_meta( $comment_tid['comment_id'], Comment::META_CID );
-			\delete_comment_meta( $comment_tid['comment_id'], Reaction_Sync::META_SOURCE_ID );
+		if ( null !== $outcome['comments'] ) {
+			// Clean up comment meta for every reply we just deleted.
+			foreach ( $comment_tids as $comment_tid ) {
+				self::clear_comment_record_meta( $comment_tid['comment_id'] );
+			}
 		}
 
 		return self::merge_decoupled_results( $outcome );
@@ -1304,14 +1992,26 @@ class Publisher {
 	 * publish would refer to a non-existent record and the delete would
 	 * fail.
 	 *
+	 * Replies that live in a different account's repo are left out too.
+	 * The post cascade deletes against the connected repo, where such a
+	 * reply does not exist, so including it would issue a pointless
+	 * write and, on the trash path, clear its meta while the record
+	 * stays on the old account. Skipping it leaves the meta in place for
+	 * a reconnect to that account, and on permanent deletion the reply's
+	 * own guarded cleanup event logs the mismatch (see #215). Each skipped
+	 * reply is logged here as well, because trashing a post does not
+	 * delete its comments and so never reaches that event.
+	 *
 	 * Public so the permanent-delete path (`on_before_delete`) can
 	 * collect the same TIDs while comments still exist, before WP's
 	 * natural cascade removes them.
 	 *
-	 * @param int $post_id Post ID.
+	 * @param int        $post_id Post ID.
+	 * @param array|null $foreign Optional. Receives the skipped replies as
+	 *                            { comment_id, origin_did } pairs.
 	 * @return array<int, array{comment_id:int, tid:string}>
 	 */
-	public static function collect_published_comment_tids( int $post_id ): array {
+	public static function collect_published_comment_tids( int $post_id, ?array &$foreign = null ): array {
 		$comments = \get_comments(
 			array(
 				'post_id'    => $post_id,
@@ -1337,16 +2037,43 @@ class Publisher {
 			)
 		);
 
-		$out = array();
+		$out     = array();
+		$foreign = array();
 
 		foreach ( $comments as $comment_id ) {
-			$tid = \get_comment_meta( (int) $comment_id, Comment::META_TID, true );
-			if ( ! empty( $tid ) ) {
-				$out[] = array(
-					'comment_id' => (int) $comment_id,
-					'tid'        => (string) $tid,
-				);
+			$comment_id = (int) $comment_id;
+			$tid        = \get_comment_meta( $comment_id, Comment::META_TID, true );
+
+			if ( empty( $tid ) ) {
+				continue;
 			}
+
+			$origin_did = record_origin_did(
+				(string) \get_comment_meta( $comment_id, Comment::META_URI, true ),
+				(string) \get_comment_meta( $comment_id, Comment::META_DID, true )
+			);
+
+			if ( self::record_is_foreign( $origin_did ) ) {
+				$foreign[] = array(
+					'comment_id' => $comment_id,
+					'origin_did' => $origin_did,
+				);
+
+				debug_log(
+					\sprintf(
+						'Skipped deleting comment %d with its post: its reply lives in the repo of %s, not the connected %s.',
+						$comment_id,
+						$origin_did,
+						get_did()
+					)
+				);
+				continue;
+			}
+
+			$out[] = array(
+				'comment_id' => $comment_id,
+				'tid'        => (string) $tid,
+			);
 		}
 
 		return $out;
@@ -1359,31 +2086,74 @@ class Publisher {
 	 * accessible to `delete_post()`. Accepts either a single Bluesky TID
 	 * string (legacy single-record posts) or an array of TIDs
 	 * (thread-strategy posts), plus an optional list of outbound
-	 * comment-reply TIDs. The post + document deletes and the
+	 * comment-reply TIDs when comment publishing is enabled. The post +
+	 * document deletes and the
 	 * comment-reply deletes are submitted as two independent,
 	 * individually-chunked `applyWrites` batches (root first) so a long
 	 * reply tail can neither overflow the root batch nor block its
 	 * cleanup when it fails. Unlike `delete_post()`, this path has no
 	 * local meta to reconcile — the post row is already gone — so meta
-	 * cleanup is left entirely to the caller (`on_before_delete`).
+	 * cleanup is left entirely to the caller (`on_before_delete`). When
+	 * comment publishing is disabled, comment-reply TIDs are ignored.
 	 *
-	 * @param string|string[] $bsky_tids    Bluesky post TID or array of TIDs (may be empty).
-	 * @param string          $doc_tid      Document TID (may be empty).
-	 * @param string[]        $comment_tids Comment reply TIDs to delete in the same batch.
+	 * The post's meta is already gone by the time this runs, so the origin
+	 * DIDs captured at delete time are passed in explicitly to drive the
+	 * same wrong-repo-delete guard {@see self::delete_post()} applies. An
+	 * empty origin (event queued before the guard shipped, or records
+	 * predating DID provenance) disables the guard for that record class.
+	 *
+	 * @param string|string[] $bsky_tids       Bluesky post TID or array of TIDs (may be empty).
+	 * @param string          $doc_tid         Document TID (may be empty).
+	 * @param string[]        $comment_tids    Comment reply TIDs to delete in a separate batch.
+	 * @param string          $threadgate_tid  Root rkey of a written threadgate (empty when none).
+	 * @param string          $bsky_origin_did DID the Bluesky records were minted under (may be empty).
+	 * @param string          $doc_origin_did  DID the document record was minted under (may be empty).
 	 * @return array|\WP_Error
 	 */
-	public static function delete_post_by_tids( $bsky_tids, string $doc_tid, array $comment_tids = array() ): array|\WP_Error {
+	public static function delete_post_by_tids( $bsky_tids, string $doc_tid, array $comment_tids = array(), string $threadgate_tid = '', string $bsky_origin_did = '', string $doc_origin_did = '' ): array|\WP_Error {
 		if ( \is_string( $bsky_tids ) ) {
 			$bsky_tids = '' === $bsky_tids ? array() : array( $bsky_tids );
 		} elseif ( ! \is_array( $bsky_tids ) ) {
 			$bsky_tids = array();
 		}
 
-		$bsky_tids    = \array_values( \array_filter( \array_map( 'strval', $bsky_tids ), 'strlen' ) );
+		$bsky_tids = \array_values( \array_filter( \array_map( 'strval', $bsky_tids ), 'strlen' ) );
+
 		$comment_tids = \array_values( \array_filter( \array_map( 'strval', $comment_tids ), 'strlen' ) );
+
+		if ( $comment_tids && ! is_comment_publishing_enabled() ) {
+			/*
+			 * A queued comment-only cascade is an intentional no-op while
+			 * comment publishing is disabled, not a failure — return an
+			 * empty success so the cron handler does not log it as an error.
+			 */
+			if ( empty( $bsky_tids ) && ! $doc_tid ) {
+				return array( 'results' => array() );
+			}
+
+			$comment_tids = array();
+		}
 
 		if ( empty( $bsky_tids ) && ! $doc_tid && empty( $comment_tids ) ) {
 			return new \WP_Error( 'atmosphere_not_published', \__( 'No TIDs provided.', 'atmosphere' ) );
+		}
+
+		/*
+		 * Same wrong-repo-delete guard as delete_post(), but driven by the
+		 * origin DIDs captured before the post row was removed. Bailing
+		 * before any write aborts the whole cascade (root + document +
+		 * comment replies), matching delete_post()'s all-or-nothing
+		 * behaviour on a foreign account.
+		 */
+		if ( ( self::record_is_foreign( $bsky_origin_did ) && ! empty( $bsky_tids ) )
+			|| ( self::record_is_foreign( $doc_origin_did ) && '' !== $doc_tid ) ) {
+			return self::did_mismatch_error(
+				array(
+					'current_did'     => get_did(),
+					'bsky_origin_did' => $bsky_origin_did,
+					'doc_origin_did'  => $doc_origin_did,
+				)
+			);
 		}
 
 		$root_writes = array();
@@ -1402,6 +2172,12 @@ class Publisher {
 				'collection' => 'site.standard.document',
 				'rkey'       => $doc_tid,
 			);
+		}
+
+		// The threadgate shares the root post's rkey; the post row is already
+		// gone, so its rkey is carried in from the caller's captured state.
+		if ( '' !== $threadgate_tid ) {
+			$root_writes[] = self::threadgate_delete_write( $threadgate_tid );
 		}
 
 		$comment_writes = array();
@@ -1494,15 +2270,16 @@ class Publisher {
 	 * record-meta cleanup on its success and comment-meta cleanup on the
 	 * comment batch's success.
 	 *
-	 * The comment batch is not attempted when the root batch fails — there
-	 * is nothing local to reconcile yet, and a retry re-runs both.
+	 * The comment batch is not attempted when the root batch fails or
+	 * comment publishing is disabled before it starts.
 	 *
 	 * @param array $root_writes    Post + document delete writes (may be empty).
 	 * @param array $comment_writes Outbound comment-reply delete writes (may be empty).
 	 * @return array{root: array|\WP_Error|null, comments: array|\WP_Error|null}
 	 *               Per-batch outcome; an element is null when that batch
-	 *               had no writes, and `comments` is null when the root
-	 *               batch failed and the comment batch was skipped.
+	 *               had no writes. `comments` is also null when the root
+	 *               batch failed or comment publishing was disabled and
+	 *               the comment batch was skipped.
 	 */
 	private static function delete_in_decoupled_batches( array $root_writes, array $comment_writes ): array {
 		$root_result = empty( $root_writes ) ? null : self::apply_writes_chunked( $root_writes );
@@ -1514,7 +2291,9 @@ class Publisher {
 			);
 		}
 
-		$comment_result = empty( $comment_writes ) ? null : self::apply_writes_chunked( $comment_writes );
+		$comment_result = empty( $comment_writes ) || ! is_comment_publishing_enabled()
+			? null
+			: self::apply_writes_chunked( $comment_writes );
 
 		return array(
 			'root'     => $root_result,
@@ -1666,6 +2445,12 @@ class Publisher {
 	 * @return array|\WP_Error applyWrites response or error.
 	 */
 	public static function publish_comment( \WP_Comment $comment ): array|\WP_Error {
+		if ( ! is_comment_publishing_enabled() ) {
+			$result = self::comment_publishing_disabled_error();
+			\do_action( 'atmosphere_publish_comment_result', $comment, $result );
+			return $result;
+		}
+
 		$transformer = new Comment( $comment );
 		$rkey        = $transformer->get_rkey();
 		$record      = $transformer->transform();
@@ -1718,6 +2503,10 @@ class Publisher {
 	 * @return array|\WP_Error
 	 */
 	public static function update_comment( \WP_Comment $comment ): array|\WP_Error {
+		if ( ! is_comment_publishing_enabled() ) {
+			return self::comment_publishing_disabled_error();
+		}
+
 		$comment_id = (int) $comment->comment_ID;
 		$uri        = \get_comment_meta( $comment_id, Comment::META_URI, true );
 
@@ -1767,6 +2556,10 @@ class Publisher {
 	 * @return array|\WP_Error
 	 */
 	public static function delete_comment( \WP_Comment $comment ): array|\WP_Error {
+		if ( ! is_comment_publishing_enabled() ) {
+			return self::comment_publishing_disabled_error();
+		}
+
 		$comment_id = (int) $comment->comment_ID;
 		$uri        = \get_comment_meta( $comment_id, Comment::META_URI, true );
 
@@ -1778,6 +2571,26 @@ class Publisher {
 
 		if ( empty( $tid ) ) {
 			return new \WP_Error( 'atmosphere_missing_tid', \__( 'Comment URI exists but TID is missing.', 'atmosphere' ) );
+		}
+
+		/*
+		 * Refuse to delete a reply that was minted under a different
+		 * account (disconnect + reconnect-to-a-new-DID). Issuing the
+		 * delete against the current repo would no-op remotely while
+		 * clearing local meta, orphaning the reply on the old PDS.
+		 */
+		$origin_did = record_origin_did(
+			(string) $uri,
+			(string) \get_comment_meta( $comment_id, Comment::META_DID, true )
+		);
+		if ( self::record_is_foreign( $origin_did ) ) {
+			return self::did_mismatch_error(
+				array(
+					'comment_id'  => $comment_id,
+					'current_did' => get_did(),
+					'origin_did'  => $origin_did,
+				)
+			);
 		}
 
 		$writes = array(
@@ -1794,10 +2607,7 @@ class Publisher {
 			return $result;
 		}
 
-		\delete_comment_meta( $comment_id, Comment::META_TID );
-		\delete_comment_meta( $comment_id, Comment::META_URI );
-		\delete_comment_meta( $comment_id, Comment::META_CID );
-		\delete_comment_meta( $comment_id, Reaction_Sync::META_SOURCE_ID );
+		self::clear_comment_record_meta( $comment_id );
 
 		return $result;
 	}
@@ -1806,14 +2616,32 @@ class Publisher {
 	 * Delete a bsky comment reply by TID, without needing the comment row.
 	 *
 	 * Used when a comment is permanently deleted and its meta is no
-	 * longer reachable at the point the cron fires.
+	 * longer reachable at the point the cron fires. The origin DID is
+	 * captured before the row is removed and passed in explicitly to drive
+	 * the wrong-repo-delete guard; an empty origin (event queued before the
+	 * guard shipped, or a reply predating DID provenance) disables it.
 	 *
-	 * @param string $tid Comment record TID.
+	 * @param string $tid        Comment record TID.
+	 * @param string $origin_did DID the reply was minted under (may be empty).
 	 * @return array|\WP_Error
 	 */
-	public static function delete_comment_by_tid( string $tid ): array|\WP_Error {
+	public static function delete_comment_by_tid( string $tid, string $origin_did = '' ): array|\WP_Error {
+		if ( ! is_comment_publishing_enabled() ) {
+			return self::comment_publishing_disabled_error();
+		}
+
 		if ( '' === $tid ) {
 			return new \WP_Error( 'atmosphere_not_published', \__( 'No TID provided.', 'atmosphere' ) );
+		}
+
+		if ( self::record_is_foreign( $origin_did ) ) {
+			return self::did_mismatch_error(
+				array(
+					'tid'         => $tid,
+					'current_did' => get_did(),
+					'origin_did'  => $origin_did,
+				)
+			);
 		}
 
 		$writes = array(
@@ -1828,10 +2656,82 @@ class Publisher {
 	}
 
 	/**
+	 * Build the standard error for a blocked outbound comment write.
+	 *
+	 * @return \WP_Error
+	 */
+	private static function comment_publishing_disabled_error(): \WP_Error {
+		return new \WP_Error(
+			'atmosphere_comment_publishing_disabled',
+			\__( 'Comment publishing to Bluesky is disabled.', 'atmosphere' )
+		);
+	}
+
+	/**
+	 * Whether a stored record's origin DID belongs to a different account
+	 * than the one currently connected.
+	 *
+	 * `applyWrites#delete` always targets the currently-connected repo, so
+	 * deleting a record minted under a previous DID (disconnect +
+	 * reconnect-to-a-different-account, atproto account migration) would
+	 * silently no-op while leaving the original orphaned on the old PDS.
+	 * Callers use this to bail with an operator-visible error instead. An
+	 * empty origin (records predating DID provenance, or an already-queued
+	 * cron event from before this guard shipped) or an empty current DID
+	 * (not connected) disables the check so legitimate cleanups are never
+	 * blocked on missing information.
+	 *
+	 * @param string $origin_did DID the record was minted under.
+	 * @return bool
+	 */
+	private static function record_is_foreign( string $origin_did ): bool {
+		$current_did = get_did();
+
+		return '' !== $origin_did && '' !== $current_did && $origin_did !== $current_did;
+	}
+
+	/**
+	 * Build the standard error for a refused wrong-repo delete.
+	 *
+	 * Shared by every delete path that applies {@see self::record_is_foreign()}
+	 * so the error code, translated message, and shape stay identical. The
+	 * `$data` payload varies per call site (post/comment identifiers and the
+	 * relevant origin DIDs) for the operator breadcrumb.
+	 *
+	 * @param array $data Context for the error (identifiers, origin/current DIDs).
+	 * @return \WP_Error
+	 */
+	private static function did_mismatch_error( array $data ): \WP_Error {
+		return new \WP_Error(
+			'atmosphere_did_mismatch',
+			\__( 'Cannot delete records that were created under a different connected account.', 'atmosphere' ),
+			$data
+		);
+	}
+
+	/**
+	 * Delete every AT Protocol record meta key from a comment.
+	 *
+	 * Single definition of the comment record-meta key set so a new key
+	 * (like `Comment::META_DID`) is added in one place instead of the
+	 * several cleanup sites that clear a fully-deleted reply.
+	 *
+	 * @param int $comment_id Comment ID.
+	 */
+	public static function clear_comment_record_meta( int $comment_id ): void {
+		\delete_comment_meta( $comment_id, Comment::META_TID );
+		\delete_comment_meta( $comment_id, Comment::META_URI );
+		\delete_comment_meta( $comment_id, Comment::META_CID );
+		\delete_comment_meta( $comment_id, Comment::META_DID );
+		\delete_comment_meta( $comment_id, Reaction_Sync::META_SOURCE_ID );
+	}
+
+	/**
 	 * Persist the document record's URI/CID from an applyWrites response.
 	 *
-	 * The document is always written at index 1 of the first applyWrites
-	 * batch in every publish flow (root + doc, atomically). Post meta
+	 * The document is written at `$doc_index` (index 1 in dual-record
+	 * batches, 0 in document-only batches) of the first applyWrites
+	 * batch. Post meta
 	 * (`Post::META_URI` / `META_TID` / `META_CID`) is owned by
 	 * `mirror_thread_records_meta()` and intentionally not touched here
 	 * — single mirroring point keeps the two paths from drifting.
@@ -1839,9 +2739,10 @@ class Publisher {
 	 * @param int      $post_id         Post ID.
 	 * @param array    $result          applyWrites response.
 	 * @param Document $doc_transformer Document transformer.
+	 * @param int      $doc_index       Index of the document entry in `results`. Default 1 (dual-record batch); 0 for a document-only batch.
 	 */
-	private static function store_document_meta( int $post_id, array $result, Document $doc_transformer ): void {
-		$doc_entry = $result['results'][1] ?? null;
+	private static function store_document_meta( int $post_id, array $result, Document $doc_transformer, int $doc_index = 1 ): void {
+		$doc_entry = $result['results'][ $doc_index ] ?? null;
 
 		if ( null === $doc_entry ) {
 			return;
@@ -2024,5 +2925,6 @@ class Publisher {
 		\delete_post_meta( $post_id, Document::META_URI );
 		\delete_post_meta( $post_id, Document::META_TID );
 		\delete_post_meta( $post_id, Document::META_CID );
+		\delete_post_meta( $post_id, Threadgate::META_WRITTEN );
 	}
 }

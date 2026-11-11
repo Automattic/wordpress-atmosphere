@@ -1,4 +1,4 @@
-import { strategyLabel, hasOverLimit } from '../utils';
+import { strategyLabel, hasOverLimit, isAuthError } from '../utils';
 
 describe( 'strategyLabel', () => {
 	test( 'labels each known strategy', () => {
@@ -36,5 +36,40 @@ describe( 'hasOverLimit', () => {
 		expect(
 			hasOverLimit( [ { over_limit: false }, { over_limit: true } ] )
 		).toBe( true );
+	} );
+} );
+
+describe( 'isAuthError', () => {
+	test.each( [
+		// [ description, error, expected ]
+		[
+			'rest_forbidden code is a permission failure',
+			{ code: 'rest_forbidden', data: { status: 403 } },
+			true,
+		],
+		[
+			'a bare 401 status is a permission failure',
+			{ data: { status: 401 } },
+			true,
+		],
+		[
+			'a bare 403 status is a permission failure',
+			{ data: { status: 403 } },
+			true,
+		],
+		[
+			'an expired nonce (403) is transient, not a permission failure',
+			{ code: 'rest_cookie_invalid_nonce', data: { status: 403 } },
+			false,
+		],
+		[
+			'a 500 is transient',
+			{ code: 'atmosphere_projection_failed', data: { status: 500 } },
+			false,
+		],
+		[ 'an unknown error is transient', { code: 'whatever' }, false ],
+		[ 'a null error is transient', null, false ],
+	] )( '%s', ( _description, error, expected ) => {
+		expect( isAuthError( error ) ).toBe( expected );
 	} );
 } );

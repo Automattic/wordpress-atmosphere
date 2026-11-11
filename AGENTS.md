@@ -15,15 +15,23 @@ WordPress plugin that publishes posts to AT Protocol in both `app.bsky.feed.post
 ```
 atmosphere.php                  # Main plugin file.
 includes/
-├── class-*.php                 # Core classes (Atmosphere, API, Publisher, Backfill, Handle, Post_Types, Reaction_Sync).
+├── class-*.php                 # Core classes (Atmosphere, API, Publisher, Backfill, Handle, Post_Types, Reaction_Sync, Connectors).
 ├── functions.php               # Helper functions.
 ├── content-parser/             # Pluggable content formats for site.standard.document (interface only by default).
-├── oauth/                      # OAuth flow (Client, DPoP, Encryption, Resolver, Nonce).
+├── oauth/                      # OAuth flow (Client, Client_Authentication, DPoP, Encryption, Resolver, Nonce).
+├── rest/                       # REST controllers (public + admin-only under rest/admin/).
 ├── transformer/                # AT Protocol record transformers (Post, Document, Publication, Comment, Facet, TID).
-└── wp-admin/                   # Admin UI (settings page, sidebar panel).
+└── wp-admin/                   # Admin UI (settings page, sidebar panel, posts-list column).
 integrations/                   # Plugin-specific content-parser integrations (stubs).
 templates/                      # PHP template files.
-assets/                         # CSS and JS.
+assets/                         # CSS, JS, and images.
+src/                            # Source for the wp-scripts build (editor panels, reactions block, connectors card, settings typeahead).
+├── editor-plugin/              # Document sidebar share-to-Bluesky panel.
+├── pre-publish-panel/          # Pre-publish share status panel.
+├── reactions/                  # Bluesky likes/reposts block.
+├── connectors-card/            # Connectors screen connect/disconnect card.
+├── settings-connect/           # Settings page connect-field typeahead enhancement.
+└── shared/                     # Shared JS reused across the above (incl. the handle typeahead component).
 tests/
 └── phpunit/                    # PHPUnit tests.
 ```
@@ -58,7 +66,7 @@ npm run release                 # Interactive release: bumps version, regenerate
 ## Common Pitfalls
 
 - **Custom autoloader, NOT Composer.** Runtime classes are loaded by `includes/class-autoloader.php` (PSR-4-ish with WordPress `class-{name}.php` filenames); `composer.json`'s `autoload` is empty. `composer install`/`update` only refreshes dev dependencies (PHPUnit, PHPCS, Changelogger) and cannot break the running plugin. New classes work as soon as the file is in place — no `composer dump-autoload` step.
-- **Changelog entries MUST be end-user friendly and end with punctuation.** Users see these in the WordPress update screen. Describe what changed from their perspective — no jargon, class names, or method names.
+- **Changelog entries are end-user friendly and end with punctuation.** Users see these in the WordPress update screen. Describe what changed from their perspective — no jargon, class names, or method names.
 
 ## PHP Conventions
 
@@ -68,11 +76,11 @@ Namespaces: `Atmosphere`, `Atmosphere\{OAuth,Transformer,WP_Admin}`
 
 Text domain: always `'atmosphere'`.
 
-**MUST** backslash-prefix all WordPress/PHP global functions in namespaced code: `\get_option()`, `\add_action()`, `\apply_filters()`, `\strlen()`, `\time()`, etc.
+Backslash-prefix all WordPress/PHP global functions in namespaced code: `\get_option()`, `\add_action()`, `\apply_filters()`, `\strlen()`, `\time()`, etc.
 
-**MUST** use `use` imports for cross-namespace references — no inline `\Namespace\Class`.
+Use `use` imports for cross-namespace references — no inline `\Namespace\Class`.
 
-**MUST** build any front-end-displayed Bluesky/appview web link (`profile`, `post`, `hashtag`, `mention`) through `Atmosphere\appview_url( $path, $context )` in `includes/functions.php` — never hardcode `https://bsky.app/...`. The helper centralizes the host and makes it filterable (`atmosphere_appview_host` / `atmosphere_appview_url`). Keep escaping at the call site (`\esc_url()` for HTML, `\esc_url_raw()` for storage); the helper returns an unescaped URL on purpose. This applies to display links only, not to AT Protocol records being published.
+Build any front-end-displayed Bluesky/appview web link (`profile`, `post`, `hashtag`, `mention`) through `Atmosphere\appview_url( $path, $context )` in `includes/functions.php` — never hardcode `https://bsky.app/...`. The helper centralizes the host and makes it filterable (`atmosphere_appview_host` / `atmosphere_appview_url`). Keep escaping at the call site (`\esc_url()` for HTML, `\esc_url_raw()` for storage); the helper returns an unescaped URL on purpose. This applies to display links only, not to AT Protocol records being published.
 
 ## Autoloading
 
@@ -95,6 +103,21 @@ Test files live in `tests/phpunit/tests/` mirroring `includes/` structure. Files
 **Publisher** — Atomic batch `applyWrites` for both bsky post + standard.site document. See `includes/class-publisher.php`.
 
 **Well-known endpoints** — Rewrite rules + `template_redirect` handlers in `Atmosphere` class serve `/.well-known/atproto-did` (domain handle verification) and `/.well-known/site.standard.publication` (publication AT-URI). All share the `atmosphere_wellknown` query var.
+
+**Connectors API** — Progressive-enhancement registration on the WordPress 7.0 Settings → Connectors screen. `Atmosphere\Connectors` (`includes/class-connectors.php`), guarded throughout by `class_exists( 'WP_Connector_Registry' )`.
+
+- **Registration & card.** Registers an `atmosphere` connector on `wp_connectors_init` with `authentication.method => 'none'` (core only auto-renders a UI for `api_key` connectors) and ships a script module (`src/connectors-card/`) that renders the connect/disconnect card. The card drives the flow through `Atmosphere\Rest\Admin\Connection_Controller` (authorize/disconnect), reusing the OAuth `Client`.
+- **Two screen URLs.** Core's top-level `options-connectors.php` (`Connectors::SCREEN`) vs. the Gutenberg plugin's Settings submenu (`options-general.php?page=options-connectors-wp-admin`). Both matched via the shared `Connectors::SCREEN_SLUG` marker: `Connectors::is_connectors_screen()` gates the card enqueue; `Connectors::screen_url()` resolves the OAuth return destination.
+- **Return destination is server-side only.** The card sets a boolean `atmosphere_oauth_from_connectors` transient — no URL crosses the wire. `Admin::handle_oauth_callback()` derives the destination from `screen_url()` (which reads the registered admin `$submenu`), so nothing external can steer the `wp_safe_redirect()`.
+- **Reconnect destination.** Every reconnect prompt (the admin notice, both editor surfaces, Site Health) resolves through `Atmosphere\reconnect_url()`: the settings page while visible, else the Connectors screen when one exists, else nothing. The `atmosphere_reconnect_url` filter runs last, so a host plugin with its own connect UI can redirect all four at once; returning `''` drops the link and leaves plain text.
+- **Handle typeahead.** The card's handle field uses the `atmosphere_handle_typeahead_url` filter (default `public.api.bsky.app`; `''` disables). Shared with the plugin's own Settings connect field via `Atmosphere\handle_typeahead_url()` and `src/shared/handle-typeahead.js`.
+
+**Icon library** — Progressive-enhancement registration with the WordPress 7.1 icon library. `Atmosphere\Icons` (`includes/class-icons.php`), gated on `function_exists( 'wp_register_icon_collection' )` (same shape as Connectors; the plugin's floor is 6.5). Registers the `atmosphere` collection with the ATmosphere mark and the Bluesky butterfly, monochrome, from `assets/svg/`. Those SVGs stay within the library sanitizer's allow-list (`svg`/`path`/`polygon` elements only, no `stroke`); a test pins that property, so redraw assets accordingly.
+
+**Embedding as a connection layer** — one filter lets a host plugin reuse just the connection:
+
+- **`atmosphere_connection_only_mode`** (via `Atmosphere\is_connection_only_mode()`, default `false`) forces cross-posting, reaction sync, reply sync, comment publishing, and `site.standard.publication` upkeep **off**, unschedules the reaction-sync crons, and hides the plugin's own settings page. The settings page stays *registered* (`add_options_page`) because the OAuth callback lands on its URL, but drops from the menu. The reauth notice still renders in this mode, pointing its reconnect link at the Connectors screen when one exists.
+- **Layered gating.** Each *behavior* resolves through a dedicated helper (`is_auto_publish_enabled()`, `is_reaction_sync_enabled()`, `is_reply_sync_enabled()`, `is_comment_publishing_enabled()`, `is_publication_sync_enabled()`): read the stored option (via the shared `feature_option_enabled()` resolver, except publication which has no user option) → force off in connection-only mode → apply a per-feature filter **last** (`atmosphere_should_auto_publish`, `atmosphere_should_sync_publication`, etc.), so a host can re-enable a single lane. Settings-page visibility (`Admin::is_settings_page_visible()`) has no separate override — it simply follows connection-only mode. All behavioral call sites route through these helpers; only the settings form fields read the raw option.
 
 ## Documentation Index
 
@@ -146,8 +169,9 @@ Skills are complex procedures loaded on demand. Canonical files live in `.agents
 | **code-style** | Writing PHP code, creating classes, implementing hooks. |
 | **dev** | Setting up environment, running tests, linting. |
 | **test** | Writing tests, debugging failures, test patterns. |
-| **pr** | Creating or reviewing pull requests. MUST invoke before any PR creation. |
+| **pr** | Creating or reviewing pull requests. Invoke before any PR creation. |
 | **release** | Creating releases, bumping versions, managing changelogs. |
+| **review** | Shared base for the code-review and security-audit agents: how to read a diff, and the per-area guidelines in `.agents/skills/review/guidelines/` to load for the changed paths. |
 
 | Agent | Trigger |
 |-------|---------|

@@ -174,10 +174,15 @@ class Facet {
 	 * comment keeps only the lossy display string.
 	 *
 	 * Link and mention features become anchors; tags become hashtag-search
-	 * links; the byte ranges between facets are copied through untouched.
-	 * The result is an HTML fragment intended to be passed through
-	 * `wp_kses_post()` by the caller (as the reaction-sync path does), so
-	 * only the generated `href` attributes are escaped here.
+	 * links. A record's `text` is plain text per the Lexicon, so every
+	 * slice of it is escaped on the way into the fragment, whether or not
+	 * a facet covers it. The only markup in the result is generated here.
+	 *
+	 * That escaping is `esc_html()`, which encodes quotes as well, so an
+	 * ordinary `It's fine` comes back as `It&#039;s fine`. Core's own
+	 * comment pipeline would have kept the apostrophe. The divergence is
+	 * deliberate: this is a fragment we assemble ourselves rather than a
+	 * value core re-encodes on the way out, and it renders identically.
 	 *
 	 * @since 2.0.0
 	 *
@@ -194,7 +199,7 @@ class Facet {
 		$facets = \array_filter( $facets, '\is_array' );
 
 		if ( empty( $facets ) ) {
-			return $text;
+			return \esc_html( $text );
 		}
 
 		\usort(
@@ -228,6 +233,21 @@ class Facet {
 			}
 
 			/*
+			 * An offset landing inside a multi-byte character would hand
+			 * `esc_html()` a slice that isn't valid UTF-8, and
+			 * `wp_check_invalid_utf8()` answers that with an empty string:
+			 * the neighbouring slice would disappear outright rather than
+			 * just lose its anchor. The record's `text` is always valid
+			 * UTF-8 (it reached us through `json_decode()`, which rejects
+			 * anything else), but the offsets are the reply author's to
+			 * choose, so a facet cutting a character in half is theirs to
+			 * arrange. Drop the facet and the line survives as text.
+			 */
+			if ( self::splits_character( $text, $start ) || self::splits_character( $text, $end ) ) {
+				continue;
+			}
+
+			/*
 			 * A facet may carry several features; in practice Bluesky emits
 			 * one, and a non-array `features` (again, untrusted JSON) must
 			 * not reach the array-typed renderer.
@@ -235,12 +255,12 @@ class Facet {
 			$features = $facet['features'] ?? null;
 			$feature  = \is_array( $features ) && \is_array( $features[0] ?? null ) ? $features[0] : array();
 
-			$result .= \substr( $text, $cursor, $start - $cursor );
+			$result .= \esc_html( \substr( $text, $cursor, $start - $cursor ) );
 			$result .= self::render_feature( $feature, \substr( $text, $start, $end - $start ) );
 			$cursor  = $end;
 		}
 
-		return $result . \substr( $text, $cursor );
+		return $result . \esc_html( \substr( $text, $cursor ) );
 	}
 
 	/**
@@ -256,6 +276,25 @@ class Facet {
 		$index = $facet['index'] ?? null;
 
 		return \is_array( $index ) && \is_int( $index['byteStart'] ?? null ) ? $index['byteStart'] : 0;
+	}
+
+	/**
+	 * Whether a byte offset falls inside a multi-byte UTF-8 character.
+	 *
+	 * True when the byte at `$offset` is a continuation byte (`10xxxxxx`),
+	 * which means a slice starting or ending there splits a character in
+	 * half. The end of the string is a boundary like any other.
+	 *
+	 * @param string $text   Text the offset indexes into.
+	 * @param int    $offset Byte offset.
+	 * @return bool Whether the offset splits a character.
+	 */
+	private static function splits_character( string $text, int $offset ): bool {
+		if ( $offset >= \strlen( $text ) ) {
+			return false;
+		}
+
+		return 0x80 === ( \ord( $text[ $offset ] ) & 0xC0 );
 	}
 
 	/**
@@ -662,8 +701,13 @@ class Facet {
 			 *
 			 * @param bool     $fallback Whether to fall back to `did:web:<handle>`. Default false.
 			 * @param string   $handle   The handle that failed to resolve.
-			 * @param \WP_Error $error    The resolver error (its code distinguishes a
-			 *                            definitive miss from a transient network failure).
+			 * @param \WP_Error $error    The resolver error. Its code distinguishes a
+			 *                            definitive miss (`atmosphere_resolve_handle`:
+			 *                            the host answered, but advertises no DID) from a
+			 *                            transient failure (`http_request_failed` for a
+			 *                            connection-level error, `atmosphere_upstream_error`
+			 *                            or `atmosphere_upstream_rate_limited` for a non-2xx
+			 *                            from the handle's host).
 			 */
 			$fallback = \apply_filters( 'atmosphere_mention_didweb_fallback', false, $handle, $did );
 

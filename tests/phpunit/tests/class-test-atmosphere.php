@@ -18,6 +18,7 @@ use Atmosphere\Reaction_Sync;
 use Atmosphere\Transformer\Comment;
 use Atmosphere\Transformer\Document;
 use Atmosphere\Transformer\Post;
+use Atmosphere\Transformer\Threadgate;
 
 /**
  * Atmosphere tests.
@@ -39,6 +40,14 @@ class Test_Atmosphere extends WP_UnitTestCase {
 
 		$this->atmosphere = new Atmosphere();
 
+		/*
+		 * The head emitters memoize per request. A test process is not a
+		 * request: without this, two tests rendering the same URL under
+		 * different options — the front page with and without a
+		 * publication TID, say — would collide on the same cache key.
+		 */
+		Atmosphere::flush_head_record_cache();
+
 		\update_option(
 			'atmosphere_connection',
 			array(
@@ -56,6 +65,7 @@ class Test_Atmosphere extends WP_UnitTestCase {
 		\delete_option( 'atmosphere_connection' );
 		\delete_option( 'atmosphere_identity' );
 		\delete_option( 'atmosphere_publication_tid' );
+		\delete_option( 'atmosphere_publish_comments' );
 		\delete_option( \Atmosphere\OAuth\Client::DISCONNECTED_OPTION );
 
 		/*
@@ -67,10 +77,15 @@ class Test_Atmosphere extends WP_UnitTestCase {
 		\wp_unschedule_hook( 'atmosphere_update_post' );
 		\wp_unschedule_hook( 'atmosphere_delete_post' );
 		\wp_unschedule_hook( 'atmosphere_delete_records' );
+		\wp_unschedule_hook( 'atmosphere_publish_comment' );
+		\wp_unschedule_hook( 'atmosphere_update_comment' );
+		\wp_unschedule_hook( 'atmosphere_delete_comment' );
 		\wp_unschedule_hook( 'atmosphere_delete_comment_record' );
+		\wp_unschedule_hook( 'atmosphere_backfill_replies' );
 
 		\remove_all_filters( 'atmosphere_should_publish_comment' );
 		\remove_all_filters( 'atmosphere_pre_apply_writes' );
+		\remove_all_filters( 'atmosphere_at_tags' );
 		\delete_option( 'atmosphere_visibility_cleanup_migrated' );
 
 		parent::tear_down();
@@ -82,6 +97,15 @@ class Test_Atmosphere extends WP_UnitTestCase {
 	private function reset_publishing_action(): void {
 		global $wp_actions;
 		unset( $wp_actions['atmosphere_publishing'] );
+	}
+
+	/**
+	 * Create a user authorized to publish outbound comments.
+	 *
+	 * @return int User ID.
+	 */
+	private function make_publishing_user(): int {
+		return self::factory()->user->create( array( 'role' => 'author' ) );
 	}
 
 	/**
@@ -104,7 +128,7 @@ class Test_Atmosphere extends WP_UnitTestCase {
 			'comment_post_ID'  => $post_id,
 			'comment_approved' => '1',
 			'comment_type'     => 'comment',
-			'user_id'          => self::factory()->user->create(),
+			'user_id'          => $this->make_publishing_user(),
 			'comment_content'  => 'Hello.',
 		);
 
@@ -179,6 +203,13 @@ class Test_Atmosphere extends WP_UnitTestCase {
 		$post = self::factory()->post->create_and_get(
 			array( 'post_status' => 'publish' )
 		);
+
+		/*
+		 * Creating the post queued its first share. Drop that marker so this
+		 * is an edit of a post with no share outstanding; an edit made while
+		 * the first share is still owed queues the share instead.
+		 */
+		\delete_post_meta( $post->ID, '_atmosphere_share_pending' );
 
 		$this->reset_publishing_action();
 		$this->atmosphere->on_status_change( 'publish', 'publish', $post );
@@ -278,6 +309,25 @@ class Test_Atmosphere extends WP_UnitTestCase {
 		$this->assertNotFalse(
 			\wp_next_scheduled( 'atmosphere_update_post', array( $post->ID ) ),
 			'Changing the custom Bluesky text must schedule a reconcile.'
+		);
+	}
+
+	/**
+	 * Changing the reply restriction schedules a reconcile so the gate is
+	 * synced even on a meta-only save.
+	 */
+	public function test_reply_restriction_change_schedules_reconcile() {
+		$post = self::factory()->post->create_and_get( array( 'post_status' => 'publish' ) );
+		\wp_clear_scheduled_hook( 'atmosphere_update_post', array( $post->ID ) );
+
+		\update_post_meta( $post->ID, Post::META_TID, 'bsky-tid-123' );
+		\update_post_meta( $post->ID, Threadgate::META_RESTRICTION, array( Threadgate::AUDIENCE_FOLLOWING ) );
+
+		$this->atmosphere->on_share_meta_changed( 0, $post->ID, Threadgate::META_RESTRICTION );
+
+		$this->assertNotFalse(
+			\wp_next_scheduled( 'atmosphere_update_post', array( $post->ID ) ),
+			'Changing the reply restriction must schedule a reconcile.'
 		);
 	}
 
@@ -693,13 +743,28 @@ class Test_Atmosphere extends WP_UnitTestCase {
 	}
 
 	/**
-	 * Baseline: approved comment from a registered user on a published
-	 * post is publishable.
+	 * Baseline: an approved comment from an author on a published post
+	 * is publishable.
 	 */
-	public function test_eligible_registered_user_approved_comment_publishes() {
+	public function test_eligible_author_approved_comment_publishes() {
 		$comment = $this->make_eligible_comment();
 
 		$this->assertTrue( Atmosphere::should_publish_comment( $comment ) );
+	}
+
+	/**
+	 * A registered Subscriber can comment but cannot publish site content.
+	 */
+	public function test_subscriber_comment_is_skipped() {
+		$subscriber_id = self::factory()->user->create( array( 'role' => 'subscriber' ) );
+		$comment       = $this->make_eligible_comment( array( 'user_id' => $subscriber_id ) );
+
+		$this->assertFalse( Atmosphere::should_publish_comment( $comment ) );
+		$this->atmosphere->on_comment_insert( (int) $comment->comment_ID, 1 );
+		$this->assertFalse(
+			\wp_next_scheduled( 'atmosphere_publish_comment', array( (int) $comment->comment_ID ) ),
+			'Subscriber comments must not schedule an outbound publish.'
+		);
 	}
 
 	/**
@@ -800,7 +865,7 @@ class Test_Atmosphere extends WP_UnitTestCase {
 
 	/**
 	 * Third parties can force-allow publication via filter (e.g.
-	 * overriding the anonymous-only guard for a specific integration).
+	 * overriding the core eligibility gates for a specific integration).
 	 */
 	public function test_comment_filter_can_force_publish() {
 		$comment = $this->make_eligible_comment( array( 'user_id' => 0 ) );
@@ -808,6 +873,72 @@ class Test_Atmosphere extends WP_UnitTestCase {
 		\add_filter( 'atmosphere_should_publish_comment', '__return_true' );
 
 		$this->assertTrue( Atmosphere::should_publish_comment( $comment ) );
+	}
+
+	/**
+	 * Turning off comment publishing blocks every comment lifecycle
+	 * scheduler, and the hard boundary cannot be bypassed by the legacy
+	 * eligibility filter.
+	 */
+	public function test_disabled_comment_publishing_do_not_schedule_comment_writes() {
+		$comment    = $this->make_eligible_comment();
+		$comment_id = (int) $comment->comment_ID;
+		\update_comment_meta( $comment_id, Comment::META_TID, 'reply-tid' );
+		\update_comment_meta( $comment_id, Comment::META_URI, 'at://did:plc:test123/app.bsky.feed.post/reply-tid' );
+		\update_option( 'atmosphere_publish_comments', '' );
+		\add_filter( 'atmosphere_should_publish_comment', '__return_true' );
+
+		$this->assertFalse( Atmosphere::should_publish_comment( $comment ) );
+
+		$this->atmosphere->on_comment_insert( $comment_id, 1 );
+		$this->atmosphere->on_comment_edit( $comment_id );
+		$this->atmosphere->on_comment_status_change( 'unapproved', 'approved', $comment );
+		$this->atmosphere->on_comment_before_delete( $comment_id );
+
+		$this->assertFalse( \wp_next_scheduled( 'atmosphere_publish_comment', array( $comment_id ) ) );
+		$this->assertFalse( \wp_next_scheduled( 'atmosphere_update_comment', array( $comment_id ) ) );
+		$this->assertFalse( \wp_next_scheduled( 'atmosphere_delete_comment', array( $comment_id ) ) );
+		$this->assertFalse( \wp_next_scheduled( 'atmosphere_delete_comment_record', array( 'reply-tid' ) ) );
+	}
+
+	/**
+	 * Events queued while the feature was enabled become no-ops when an
+	 * administrator disables comment publishing before WP-Cron runs.
+	 */
+	public function test_queued_comment_cron_events_do_not_write_after_disable() {
+		$comment    = $this->make_eligible_comment();
+		$comment_id = (int) $comment->comment_ID;
+
+		$this->atmosphere->on_comment_insert( $comment_id, 1 );
+		\update_comment_meta( $comment_id, Comment::META_TID, 'reply-tid' );
+		\update_comment_meta( $comment_id, Comment::META_URI, 'at://did:plc:test123/app.bsky.feed.post/reply-tid' );
+		$this->atmosphere->on_comment_edit( $comment_id );
+		$this->atmosphere->on_comment_status_change( 'unapproved', 'approved', $comment );
+		$this->atmosphere->on_comment_before_delete( $comment_id );
+
+		$this->assertNotFalse( \wp_next_scheduled( 'atmosphere_publish_comment', array( $comment_id ) ) );
+		$this->assertNotFalse( \wp_next_scheduled( 'atmosphere_update_comment', array( $comment_id ) ) );
+		$this->assertNotFalse( \wp_next_scheduled( 'atmosphere_delete_comment', array( $comment_id ) ) );
+		// Seeded without META_DID, so the captured origin DID comes from the stored URI.
+		$this->assertNotFalse( \wp_next_scheduled( 'atmosphere_delete_comment_record', array( 'reply-tid', 'did:plc:test123' ) ) );
+
+		\update_option( 'atmosphere_publish_comments', '' );
+
+		$writes = 0;
+		\add_filter(
+			'atmosphere_pre_apply_writes',
+			static function () use ( &$writes ) {
+				++$writes;
+				return new \WP_Error( 'unexpected_write', 'A comment reached the PDS write path.' );
+			}
+		);
+
+		\do_action( 'atmosphere_publish_comment', $comment_id );
+		\do_action( 'atmosphere_update_comment', $comment_id );
+		\do_action( 'atmosphere_delete_comment', $comment_id );
+		\do_action( 'atmosphere_delete_comment_record', 'reply-tid' );
+
+		$this->assertSame( 0, $writes );
 	}
 
 	/**
@@ -837,7 +968,7 @@ class Test_Atmosphere extends WP_UnitTestCase {
 			array(
 				'comment_post_ID'  => $post_id,
 				'comment_approved' => '1',
-				'user_id'          => self::factory()->user->create(),
+				'user_id'          => $this->make_publishing_user(),
 			)
 		);
 
@@ -859,7 +990,7 @@ class Test_Atmosphere extends WP_UnitTestCase {
 			array(
 				'comment_post_ID'  => $post_id,
 				'comment_approved' => '1',
-				'user_id'          => self::factory()->user->create(),
+				'user_id'          => $this->make_publishing_user(),
 			)
 		);
 		\update_comment_meta( $comment_id, Comment::META_URI, 'at://did:plc:test123/app.bsky.feed.post/reply' );
@@ -885,7 +1016,7 @@ class Test_Atmosphere extends WP_UnitTestCase {
 		$comment_id = self::factory()->comment->create(
 			array(
 				'comment_post_ID' => $post_id,
-				'user_id'         => self::factory()->user->create(),
+				'user_id'         => $this->make_publishing_user(),
 			)
 		);
 		\update_comment_meta( $comment_id, Comment::META_TID, 'deadbeef' );
@@ -940,6 +1071,39 @@ class Test_Atmosphere extends WP_UnitTestCase {
 		\remove_all_filters( 'pre_http_request' );
 
 		$this->assertFalse( $captured, 'applyWrites must not be called for a no-longer-eligible comment.' );
+	}
+
+	/**
+	 * The publish cron handler must use the comment author's current
+	 * capabilities, not the user who happens to run WP-Cron.
+	 */
+	public function test_publish_comment_cron_rechecks_author_capability() {
+		$comment    = $this->make_eligible_comment();
+		$comment_id = (int) $comment->comment_ID;
+		$author     = \get_user_by( 'id', (int) $comment->user_id );
+
+		$this->assertInstanceOf( \WP_User::class, $author );
+		$this->atmosphere->on_comment_insert( $comment_id, 1 );
+		$this->assertNotFalse(
+			\wp_next_scheduled( 'atmosphere_publish_comment', array( $comment_id ) ),
+			'Author comment should be queued before the role downgrade.'
+		);
+		$author->set_role( 'subscriber' );
+
+		$captured = false;
+		\add_filter(
+			'atmosphere_pre_apply_writes',
+			static function () use ( &$captured ) {
+				$captured = true;
+				return new \WP_Error( 'unexpected_write', 'Subscriber comment reached the PDS write path.' );
+			}
+		);
+
+		\do_action( 'atmosphere_publish_comment', $comment_id );
+		\remove_all_filters( 'atmosphere_pre_apply_writes' );
+		\wp_clear_scheduled_hook( 'atmosphere_publish_comment', array( $comment_id ) );
+
+		$this->assertFalse( $captured, 'A role downgrade before cron execution must prevent publication.' );
 	}
 
 	/**
@@ -1141,7 +1305,7 @@ class Test_Atmosphere extends WP_UnitTestCase {
 		\update_post_meta( $post_id, Post::META_URI, 'at://did:plc:test123/app.bsky.feed.post/root' );
 		\update_post_meta( $post_id, Post::META_CID, 'bafyroot' );
 
-		$user_id = self::factory()->user->create();
+		$user_id = $this->make_publishing_user();
 
 		$parent_id = self::factory()->comment->create(
 			array(
@@ -1354,7 +1518,7 @@ class Test_Atmosphere extends WP_UnitTestCase {
 		\update_post_meta( $post_id, Post::META_URI, 'at://did:plc:test123/app.bsky.feed.post/root' );
 		\update_post_meta( $post_id, Post::META_CID, 'bafyroot' );
 
-		$user_id = self::factory()->user->create();
+		$user_id = $this->make_publishing_user();
 
 		$parent_id = self::factory()->comment->create(
 			array(
@@ -1432,15 +1596,91 @@ class Test_Atmosphere extends WP_UnitTestCase {
 
 		$this->atmosphere->on_before_delete( $post_id );
 
+		// Records were seeded without META_DID, so the captured origin DIDs
+		// are empty and the wrong-repo-delete guard stays disabled.
 		$expected_args = array(
 			array( 'bsky-tid-root' ),
 			'doc-tid-root',
 			array( 'bsky-tid-a', 'bsky-tid-b' ),
+			'',
+			'',
+			'',
 		);
 
 		$this->assertNotFalse(
 			\wp_next_scheduled( 'atmosphere_delete_records', $expected_args ),
 			'Expected atmosphere_delete_records to be scheduled with the published comment TIDs.'
+		);
+	}
+
+	/**
+	 * The hard-delete capture takes the document's origin from its stored
+	 * URI, and leaves replies that live in a previous account's repo out of
+	 * the cascade (their own guarded event logs the mismatch).
+	 */
+	public function test_on_before_delete_uses_uri_origin_and_skips_foreign_replies() {
+		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		\update_post_meta( $post_id, Document::META_TID, 'doc-tid-root' );
+		\update_post_meta( $post_id, Document::META_URI, 'at://did:plc:old/site.standard.document/doc-tid-root' );
+		\update_post_meta( $post_id, Document::META_DID, 'did:plc:test123' );
+
+		$current = self::factory()->comment->create(
+			array(
+				'comment_post_ID'  => $post_id,
+				'comment_approved' => '1',
+			)
+		);
+		\update_comment_meta( $current, Comment::META_TID, 'reply-current' );
+		\update_comment_meta( $current, Comment::META_URI, 'at://did:plc:test123/app.bsky.feed.post/reply-current' );
+
+		$foreign = self::factory()->comment->create(
+			array(
+				'comment_post_ID'  => $post_id,
+				'comment_approved' => '1',
+			)
+		);
+		\update_comment_meta( $foreign, Comment::META_TID, 'reply-foreign' );
+		\update_comment_meta( $foreign, Comment::META_URI, 'at://did:plc:old/app.bsky.feed.post/reply-foreign' );
+
+		$this->atmosphere->on_before_delete( $post_id );
+
+		$expected_args = array(
+			array(),
+			'doc-tid-root',
+			array( 'reply-current' ),
+			'',
+			'',
+			'did:plc:old',
+		);
+
+		$this->assertNotFalse(
+			\wp_next_scheduled( 'atmosphere_delete_records', $expected_args ),
+			'Expected the URI origin and only the connected-repo reply in the scheduled cascade.'
+		);
+	}
+
+	/**
+	 * Permanent post cleanup still removes the post and document while the
+	 * comment-publishing setting keeps existing comment replies unchanged.
+	 */
+	public function test_on_before_delete_omits_comment_tids_when_comment_publishing_disabled() {
+		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		\update_post_meta( $post_id, Post::META_TID, 'bsky-tid-root' );
+		\update_post_meta( $post_id, Document::META_TID, 'doc-tid-root' );
+
+		$comment_id = self::factory()->comment->create( array( 'comment_post_ID' => $post_id ) );
+		\update_comment_meta( $comment_id, Comment::META_TID, 'reply-tid' );
+		\update_comment_meta( $comment_id, Comment::META_URI, 'at://did:plc:test123/app.bsky.feed.post/reply-tid' );
+		\update_option( 'atmosphere_publish_comments', '' );
+
+		$this->atmosphere->on_before_delete( $post_id );
+
+		$this->assertNotFalse(
+			\wp_next_scheduled(
+				'atmosphere_delete_records',
+				array( array( 'bsky-tid-root' ), 'doc-tid-root', array(), '', '', '' )
+			),
+			'Post cleanup should be queued without the comment-reply TID.'
 		);
 	}
 
@@ -1458,9 +1698,30 @@ class Test_Atmosphere extends WP_UnitTestCase {
 		$this->assertNotFalse(
 			\wp_next_scheduled(
 				'atmosphere_delete_records',
-				array( array( 'bsky-tid-root' ), 'doc-tid-root', array() )
+				array( array( 'bsky-tid-root' ), 'doc-tid-root', array(), '', '', '' )
 			),
 			'Expected atmosphere_delete_records with empty comment list when the post has no replies.'
+		);
+	}
+
+	/**
+	 * A gated post carries its threadgate's root rkey into the async delete
+	 * so the gate is removed after the post row is gone.
+	 */
+	public function test_on_before_delete_threads_threadgate_tid() {
+		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		\update_post_meta( $post_id, Post::META_TID, 'bsky-tid-root' );
+		\update_post_meta( $post_id, Document::META_TID, 'doc-tid-root' );
+		\update_post_meta( $post_id, Threadgate::META_WRITTEN, '1' );
+
+		$this->atmosphere->on_before_delete( $post_id );
+
+		$this->assertNotFalse(
+			\wp_next_scheduled(
+				'atmosphere_delete_records',
+				array( array( 'bsky-tid-root' ), 'doc-tid-root', array(), 'bsky-tid-root', '', '' )
+			),
+			'Expected the threadgate root rkey threaded into the delete event.'
 		);
 	}
 
@@ -1512,7 +1773,7 @@ class Test_Atmosphere extends WP_UnitTestCase {
 		$this->assertNotFalse(
 			\wp_next_scheduled(
 				'atmosphere_delete_records',
-				array( array( 'bsky-tid-123' ), 'doc-tid-456', array() )
+				array( array( 'bsky-tid-123' ), 'doc-tid-456', array(), '', '', '' )
 			),
 			'Permanent delete must schedule remote cleanup even when the post type is no longer in the syncable allowlist.'
 		);
@@ -1746,12 +2007,45 @@ class Test_Atmosphere extends WP_UnitTestCase {
 		);
 
 		$this->assertNotFalse(
-			\wp_next_scheduled( 'atmosphere_delete_comment_record', array( $captured_tid ) ),
-			'Reconcile must schedule delete-by-TID for the orphan record.'
+			\wp_next_scheduled( 'atmosphere_delete_comment_record', array( $captured_tid, 'did:plc:test123' ) ),
+			'Reconcile must schedule delete-by-TID (with origin DID) for the orphan record.'
 		);
 
 		\remove_all_filters( 'atmosphere_pre_apply_writes' );
 		\wp_clear_scheduled_hook( 'atmosphere_delete_comment_record' );
+	}
+
+	/**
+	 * If the setting changes while applyWrites is already in flight,
+	 * retain the successful result instead of scheduling a new outbound
+	 * delete that the disabled state is explicitly meant to prevent.
+	 */
+	public function test_reconcile_keeps_inflight_result_when_comment_publishing_disabled_mid_publish() {
+		$comment    = $this->make_eligible_comment();
+		$comment_id = (int) $comment->comment_ID;
+
+		/* Flip the setting while the applyWrites call is in flight. */
+		\add_filter(
+			'atmosphere_pre_apply_writes',
+			static function ( $short_circuit ) {
+				\update_option( 'atmosphere_publish_comments', '' );
+
+				return $short_circuit;
+			},
+			5
+		);
+		$this->force_apply_writes_success();
+
+		\do_action( 'atmosphere_publish_comment', $comment_id );
+
+		$this->assertNotEmpty( \get_comment_meta( $comment_id, Comment::META_TID, true ) );
+		$this->assertNotEmpty( \get_comment_meta( $comment_id, Comment::META_URI, true ) );
+		$this->assertFalse(
+			\wp_next_scheduled( 'atmosphere_delete_comment_record' ),
+			'Disabling outgoing writes must not enqueue a compensating delete.'
+		);
+
+		\remove_all_filters( 'atmosphere_pre_apply_writes' );
 	}
 
 	/**
@@ -1838,6 +2132,34 @@ class Test_Atmosphere extends WP_UnitTestCase {
 	}
 
 	/**
+	 * Capture what `output_at_tags()` prints to stdout.
+	 *
+	 * @return string Output (empty when the method emits no tags).
+	 */
+	private function capture_at_tags(): string {
+		\ob_start();
+		$this->atmosphere->output_at_tags();
+		return (string) \ob_get_clean();
+	}
+
+	/**
+	 * Set the persisted identity used by the tag-emission tests.
+	 *
+	 * @param string $did DID to store.
+	 */
+	private function set_identity( string $did = 'did:plc:test123' ): void {
+		\update_option(
+			'atmosphere_identity',
+			array(
+				'did'          => $did,
+				'handle'       => 'example.com',
+				'pds_endpoint' => 'https://pds.example.com',
+			),
+			true
+		);
+	}
+
+	/**
 	 * Front-end endpoint query vars are registered through WordPress.
 	 */
 	public function test_register_query_vars_adds_atproto_preview_var() {
@@ -1865,10 +2187,16 @@ class Test_Atmosphere extends WP_UnitTestCase {
 			true
 		);
 		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		// A dual publish writes both the Bluesky post URI and the document URI.
 		\update_post_meta(
 			$post_id,
 			\Atmosphere\Transformer\Post::META_URI,
 			'at://did:plc:test123/app.bsky.feed.post/3krealrecord00'
+		);
+		\update_post_meta(
+			$post_id,
+			\Atmosphere\Transformer\Document::META_URI,
+			'at://did:plc:test123/site.standard.document/3kdocrecord000'
 		);
 
 		$this->go_to_post( $post_id );
@@ -1878,6 +2206,41 @@ class Test_Atmosphere extends WP_UnitTestCase {
 			'<link rel="site.standard.document" href="at://did:plc:test123/site.standard.document/',
 			$output,
 			'A previously-published post must continue advertising its document link even after disconnect.'
+		);
+	}
+
+	/**
+	 * Document link emits for a document-only post — one that carries
+	 * `Document::META_URI` but never a companion `app.bsky.feed.post`
+	 * (`Post::META_URI` absent). Keying the gate on the document URI is what
+	 * keeps standard.site-only publications discoverable via HTML; gating on
+	 * the Bluesky post URI (as the code used to) would leave them silent.
+	 */
+	public function test_output_document_link_emits_for_document_only_post() {
+		\update_option(
+			'atmosphere_identity',
+			array(
+				'did'          => 'did:plc:test123',
+				'handle'       => 'example.com',
+				'pds_endpoint' => 'https://pds.example.com',
+			),
+			true
+		);
+		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		// Document-only: the document record exists, no Bluesky companion post.
+		\update_post_meta(
+			$post_id,
+			\Atmosphere\Transformer\Document::META_URI,
+			'at://did:plc:test123/site.standard.document/3kdoconly00000'
+		);
+
+		$this->go_to_post( $post_id );
+		$output = $this->capture_document_link();
+
+		$this->assertStringContainsString(
+			'<link rel="site.standard.document" href="at://did:plc:test123/site.standard.document/',
+			$output,
+			'A document-only post must advertise its document link even with no Bluesky companion.'
 		);
 	}
 
@@ -2068,6 +2431,714 @@ class Test_Atmosphere extends WP_UnitTestCase {
 	}
 
 	/**
+	 * A dual-published post advertises all three of its records: the
+	 * document as the page's canonical AT record, and the publication
+	 * plus the companion Bluesky post as auxiliary references. Repeated
+	 * `at:alternate` names are the proposal's array form.
+	 */
+	public function test_output_at_tags_emits_full_set_on_dual_published_post() {
+		$this->set_identity();
+		\update_option( 'atmosphere_publication_tid', '3kpubtid000000' );
+
+		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		\update_post_meta( $post_id, Post::META_URI, 'at://did:plc:test123/app.bsky.feed.post/3kbskypost0000' );
+		\update_post_meta( $post_id, Document::META_URI, 'at://did:plc:test123/site.standard.document/3kdocrecord000' );
+		\update_post_meta( $post_id, Document::META_TID, '3kdocrecord000' );
+
+		$this->go_to_post( $post_id );
+		$output = $this->capture_at_tags();
+
+		$this->assertStringContainsString(
+			'<meta name="at:canonical" content="at://did:plc:test123/site.standard.document/3kdocrecord000" />',
+			$output,
+			'The document record is what the page is a rendering of, so it is canonical.'
+		);
+		$this->assertStringContainsString(
+			'<meta name="at:alternate" content="at://did:plc:test123/site.standard.publication/3kpubtid000000" />',
+			$output,
+			'The parent publication is referenced by the page, not depended on by it.'
+		);
+		$this->assertStringContainsString(
+			'<meta name="at:alternate" content="at://did:plc:test123/app.bsky.feed.post/3kbskypost0000" />',
+			$output,
+			'The companion Bluesky post backs the reactions/comments shown on the page.'
+		);
+	}
+
+	/**
+	 * A document-only post — no companion `app.bsky.feed.post` — emits
+	 * the document and publication tags and nothing else. Guards against
+	 * an empty `at:alternate` being printed for the missing Bluesky post.
+	 */
+	public function test_output_at_tags_omits_bluesky_alternate_for_document_only_post() {
+		$this->set_identity();
+		\update_option( 'atmosphere_publication_tid', '3kpubtid000000' );
+
+		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		\update_post_meta( $post_id, Document::META_URI, 'at://did:plc:test123/site.standard.document/3kdoconly00000' );
+		\update_post_meta( $post_id, Document::META_TID, '3kdoconly00000' );
+
+		$this->go_to_post( $post_id );
+		$output = $this->capture_at_tags();
+
+		$this->assertStringContainsString(
+			'<meta name="at:canonical" content="at://did:plc:test123/site.standard.document/3kdoconly00000" />',
+			$output
+		);
+		$this->assertStringContainsString(
+			'<meta name="at:alternate" content="at://did:plc:test123/site.standard.publication/3kpubtid000000" />',
+			$output
+		);
+		$this->assertStringNotContainsString(
+			'app.bsky.feed.post',
+			$output,
+			'A document-only post has no Bluesky record to advertise.'
+		);
+	}
+
+	/**
+	 * The Bluesky post URI is stored verbatim rather than rebuilt from
+	 * the current DID, so a post minted under a previous account would
+	 * otherwise advertise the old repo after a reconnect.
+	 */
+	public function test_output_at_tags_skips_bluesky_alternate_minted_under_another_did() {
+		$this->set_identity( 'did:plc:current' );
+		\update_option( 'atmosphere_publication_tid', '3kpubtid000000' );
+
+		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		\update_post_meta( $post_id, Post::META_URI, 'at://did:plc:previous/app.bsky.feed.post/3kbskypost0000' );
+		\update_post_meta( $post_id, Post::META_DID, 'did:plc:previous' );
+		\update_post_meta( $post_id, Document::META_URI, 'at://did:plc:current/site.standard.document/3kdocrecord000' );
+		\update_post_meta( $post_id, Document::META_TID, '3kdocrecord000' );
+
+		$this->go_to_post( $post_id );
+		$output = $this->capture_at_tags();
+
+		$this->assertStringNotContainsString(
+			'app.bsky.feed.post',
+			$output,
+			'Records minted under a previous account must not be advertised as this page\'s.'
+		);
+		$this->assertStringContainsString(
+			'<meta name="at:canonical" content="at://did:plc:current/site.standard.document/3kdocrecord000" />',
+			$output,
+			'The document URI is rebuilt from the current DID, so it stays advertisable.'
+		);
+	}
+
+	/**
+	 * The origin DID comes out of the stored URI, not `Post::META_DID`.
+	 *
+	 * `Post::get_rkey()` refreshes `META_DID` to the current DID on
+	 * every call — before any PDS write has succeeded — so a failed
+	 * republish after reconnecting to a different account leaves the row
+	 * claiming the current DID while `META_URI` still points at the old
+	 * one. A meta-based guard passes there and advertises the previous
+	 * account's record; parsing the URI does not. Pre-`META_DID` rows
+	 * (no meta at all) are the same hole seen from the other side.
+	 *
+	 * @dataProvider data_stale_bsky_did_meta
+	 *
+	 * @param string $meta_did Value to store in `Post::META_DID`.
+	 * @param string $message  Assertion message.
+	 */
+	public function test_output_at_tags_skips_bluesky_alternate_when_uri_did_is_foreign( string $meta_did, string $message ) {
+		$this->set_identity( 'did:plc:current' );
+		\update_option( 'atmosphere_publication_tid', '3kpubtid000000' );
+
+		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		\update_post_meta( $post_id, Post::META_URI, 'at://did:plc:previous/app.bsky.feed.post/3kbskypost0000' );
+		if ( '' !== $meta_did ) {
+			\update_post_meta( $post_id, Post::META_DID, $meta_did );
+		}
+		\update_post_meta( $post_id, Document::META_URI, 'at://did:plc:current/site.standard.document/3kdocrecord000' );
+		\update_post_meta( $post_id, Document::META_TID, '3kdocrecord000' );
+
+		$this->go_to_post( $post_id );
+		$output = $this->capture_at_tags();
+
+		$this->assertStringNotContainsString( 'app.bsky.feed.post', $output, $message );
+	}
+
+	/**
+	 * Rows where `Post::META_DID` does not reflect the URI's real origin.
+	 *
+	 * @return array<string, array{0: string, 1: string}>
+	 */
+	public function data_stale_bsky_did_meta(): array {
+		return array(
+			'META_DID refreshed to the current account by a failed republish' => array(
+				'did:plc:current',
+				'A META_DID refreshed ahead of a successful write must not vouch for a URI pointing elsewhere.',
+			),
+			'legacy row predating META_DID' => array(
+				'',
+				'A row with no META_DID must be judged on its URI, not waved through.',
+			),
+		);
+	}
+
+	/**
+	 * A stored value that isn't a well-formed `app.bsky.feed.post`
+	 * AT-URI under the current DID is not advertised.
+	 *
+	 * `parse_at_uri()` only asserts the `at://` prefix and a three-
+	 * segment shape, so checking the DID alone would let any other
+	 * record of ours through — a `site.standard.document` URI would be
+	 * published as this page's Bluesky post. Each case here fails a
+	 * different component while the document tag keeps emitting, which
+	 * is what proves the rejection is the Bluesky check and not a
+	 * wholesale bail.
+	 *
+	 * @dataProvider data_non_advertisable_bsky_uris
+	 *
+	 * @param string $uri     Value stored in `Post::META_URI`.
+	 * @param string $message Assertion message.
+	 */
+	public function test_output_at_tags_skips_bluesky_uri_that_is_not_a_feed_post( string $uri, string $message ) {
+		$this->set_identity();
+		\update_option( 'atmosphere_publication_tid', '3kpubtid000000' );
+
+		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		\update_post_meta( $post_id, Post::META_URI, $uri );
+		\update_post_meta( $post_id, Document::META_URI, 'at://did:plc:test123/site.standard.document/3kdocrecord000' );
+		\update_post_meta( $post_id, Document::META_TID, '3kdocrecord000' );
+
+		$this->go_to_post( $post_id );
+		$output = $this->capture_at_tags();
+
+		$this->assertStringNotContainsString(
+			'<meta name="at:alternate" content="' . $uri . '" />',
+			$output,
+			$message
+		);
+		$this->assertStringContainsString(
+			'<meta name="at:canonical" content="at://did:plc:test123/site.standard.document/3kdocrecord000" />',
+			$output,
+			'Rejecting the Bluesky URI must not suppress the document tag.'
+		);
+	}
+
+	/**
+	 * Stored values that must never be advertised as a Bluesky post.
+	 *
+	 * @return array<string, array{0: string, 1: string}>
+	 */
+	public function data_non_advertisable_bsky_uris(): array {
+		return array(
+			'not an AT-URI at all'           => array(
+				'https://bsky.app/not-an-at-uri',
+				'A value that does not parse must fail closed.',
+			),
+			'our own document record'        => array(
+				'at://did:plc:test123/site.standard.document/3kdocrecord000',
+				'Another of our records under the same DID is still not a Bluesky post.',
+			),
+			'right collection, empty rkey'   => array(
+				'at://did:plc:test123/app.bsky.feed.post/',
+				'An AT-URI with no rkey points at no record.',
+			),
+			'unrelated collection, same DID' => array(
+				'at://did:plc:test123/app.bsky.actor.profile/self',
+				'Only feed posts belong in the Bluesky alternate.',
+			),
+		);
+	}
+
+	/**
+	 * After reconnecting to a different account, a post published under
+	 * the previous one advertises nothing.
+	 *
+	 * The URI used to be rebuilt as `get_did()` + the stored TID, which
+	 * silently retargets the record at the new account: the TID belongs
+	 * to the old repo, so `at://NEW_DID/site.standard.document/OLD_TID`
+	 * names a record that exists in neither. Both the meta tag and the
+	 * link tag are asserted here, since both read the same resolver.
+	 */
+	public function test_document_tags_silent_after_reconnect_to_another_account() {
+		$this->set_identity( 'did:plc:current' );
+		\update_option( 'atmosphere_publication_tid', '3kpubtid000000' );
+
+		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		\update_post_meta( $post_id, Document::META_URI, 'at://did:plc:previous/site.standard.document/3kdocrecord000' );
+		\update_post_meta( $post_id, Document::META_TID, '3kdocrecord000' );
+
+		$this->go_to_post( $post_id );
+
+		$at_tags = $this->capture_at_tags();
+
+		$this->assertStringNotContainsString(
+			'at://did:plc:current/site.standard.document/3kdocrecord000',
+			$at_tags,
+			'A record minted under the previous account must not be re-pointed at the current one.'
+		);
+		$this->assertStringNotContainsString( 'at:canonical', $at_tags );
+		$this->assertSame(
+			'',
+			$this->capture_document_link(),
+			'The link tag reads the same resolver and must fall silent too.'
+		);
+	}
+
+	/**
+	 * The advertised document URI is the one the Publisher stored, not
+	 * one reassembled from the post's TID meta.
+	 *
+	 * Pinned with a deliberately divergent `META_TID`: if the URI were
+	 * rebuilt, the tag would carry the meta's TID instead of the
+	 * published record's.
+	 */
+	public function test_document_tags_use_stored_uri_not_rebuilt_tid() {
+		$this->set_identity();
+		\update_option( 'atmosphere_publication_tid', '3kpubtid000000' );
+
+		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		\update_post_meta( $post_id, Document::META_URI, 'at://did:plc:test123/site.standard.document/3kpublished000' );
+		\update_post_meta( $post_id, Document::META_TID, '3kdivergent000' );
+
+		$this->go_to_post( $post_id );
+		$output = $this->capture_at_tags();
+
+		$this->assertStringContainsString(
+			'<meta name="at:canonical" content="at://did:plc:test123/site.standard.document/3kpublished000" />',
+			$output
+		);
+		$this->assertStringNotContainsString( '3kdivergent000', $output );
+	}
+
+	/**
+	 * Rendering a page never touches `Document::META_DID`.
+	 *
+	 * The head emitters were the only render-time callers of
+	 * `Document::get_rkey()`, which refreshes that meta to the current
+	 * DID. Leaving it alone keeps a pageview from moving a post's
+	 * recorded origin out from under the cleanup guards (#217).
+	 */
+	public function test_rendering_does_not_refresh_document_did_meta() {
+		$this->set_identity( 'did:plc:current' );
+		\update_option( 'atmosphere_publication_tid', '3kpubtid000000' );
+
+		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		\update_post_meta( $post_id, Document::META_URI, 'at://did:plc:previous/site.standard.document/3kdocrecord000' );
+		\update_post_meta( $post_id, Document::META_TID, '3kdocrecord000' );
+		\update_post_meta( $post_id, Document::META_DID, 'did:plc:previous' );
+
+		$this->go_to_post( $post_id );
+		$this->capture_document_link();
+		$this->capture_at_tags();
+
+		$this->assertSame(
+			'did:plc:previous',
+			\get_post_meta( $post_id, Document::META_DID, true ),
+			'A front-end render must not rewrite the recorded origin DID.'
+		);
+	}
+
+	/**
+	 * A full head render resolves publishability once, not once per
+	 * emitter.
+	 *
+	 * `is_post_publishable()` walks every registered post type and fires
+	 * `atmosphere_syncable_post_types` on each call, so a site hooking
+	 * that filter pays for every repeat. Counting filter invocations
+	 * across all three emitters pins the memo: without it this is 4 —
+	 * one per emitter plus `is_publication_url()`'s own check.
+	 */
+	public function test_head_emitters_resolve_publishability_once_per_request() {
+		$this->set_identity();
+		\update_option( 'atmosphere_publication_tid', '3kpubtid000000' );
+
+		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		\update_post_meta( $post_id, Document::META_URI, 'at://did:plc:test123/site.standard.document/3kdocrecord000' );
+		\update_post_meta( $post_id, Post::META_URI, 'at://did:plc:test123/app.bsky.feed.post/3kbskypost0000' );
+
+		$this->go_to_post( $post_id );
+		Atmosphere::flush_head_record_cache();
+
+		$calls = 0;
+		\add_filter(
+			'atmosphere_syncable_post_types',
+			static function ( $types ) use ( &$calls ) {
+				++$calls;
+				return $types;
+			}
+		);
+
+		\ob_start();
+		$this->atmosphere->output_document_link();
+		$this->atmosphere->output_publication_link();
+		$this->atmosphere->output_at_tags();
+		$output = (string) \ob_get_clean();
+
+		\remove_all_filters( 'atmosphere_syncable_post_types' );
+
+		$this->assertSame(
+			1,
+			$calls,
+			'Publishability must be resolved once for the whole head, not once per emitter.'
+		);
+
+		// The memo must not have cost us any output.
+		$this->assertStringContainsString( '<link rel="site.standard.document"', $output );
+		$this->assertStringContainsString( '<link rel="site.standard.publication"', $output );
+		$this->assertStringContainsString( '<meta name="at:canonical"', $output );
+		$this->assertSame( 2, \substr_count( $output, 'at:alternate' ) );
+	}
+
+	/**
+	 * The head render opens by dropping the memo, so a worker that
+	 * serves many requests cannot keep advertising a stale AT-URI.
+	 *
+	 * Priority 0 matters: the flush has to land before the emitters,
+	 * which sit at the default 10.
+	 */
+	public function test_init_flushes_head_record_cache_before_emitting() {
+		$this->atmosphere->init();
+
+		try {
+			$this->assertSame(
+				0,
+				\has_action( 'wp_head', array( Atmosphere::class, 'flush_head_record_cache' ) ),
+				'The flush must run before the emitters that populate the memo.'
+			);
+		} finally {
+			\remove_action( 'wp_head', array( Atmosphere::class, 'flush_head_record_cache' ), 0 );
+			foreach ( array( 'output_at_tags', 'output_document_link', 'output_publication_link' ) as $emitter ) {
+				\remove_action( 'wp_head', array( $this->atmosphere, $emitter ) );
+			}
+			\wp_clear_scheduled_hook( 'atmosphere_sync_publication' );
+			\wp_clear_scheduled_hook( 'atmosphere_refresh_token' );
+			\wp_clear_scheduled_hook( 'atmosphere_sync_reactions' );
+			\wp_clear_scheduled_hook( 'atmosphere_backfill_replies' );
+		}
+	}
+
+	/**
+	 * Re-minting a post's document record changes what the next head
+	 * render advertises.
+	 *
+	 * This is the persistent-runtime case in miniature: render, re-mint
+	 * the record as a delete-and-republish or a backfill would, then
+	 * render again in what a worker would treat as a fresh request. The
+	 * memo is keyed by post and DID rather than by the stored URI, so
+	 * without the flush the second render would still serve the first
+	 * URI.
+	 */
+	public function test_flush_head_record_cache_picks_up_a_reminted_record() {
+		$this->set_identity();
+		\update_option( 'atmosphere_publication_tid', '3kpubtid000000' );
+
+		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		\update_post_meta( $post_id, Document::META_URI, 'at://did:plc:test123/site.standard.document/3koriginal0000' );
+
+		$this->go_to_post( $post_id );
+		Atmosphere::flush_head_record_cache();
+
+		$this->assertStringContainsString( '3koriginal0000', $this->capture_at_tags() );
+
+		// Delete + republish, or a backfill: same post, new record.
+		\update_post_meta( $post_id, Document::META_URI, 'at://did:plc:test123/site.standard.document/3kreminted0000' );
+
+		// What `wp_head` at priority 0 does at the top of the next render.
+		Atmosphere::flush_head_record_cache();
+
+		$output = $this->capture_at_tags();
+
+		$this->assertStringContainsString(
+			'<meta name="at:canonical" content="at://did:plc:test123/site.standard.document/3kreminted0000" />',
+			$output
+		);
+		$this->assertStringNotContainsString(
+			'3koriginal0000',
+			$output,
+			'A recycled worker must not keep serving the pre-remint AT-URI.'
+		);
+	}
+
+	/**
+	 * A post carrying a Bluesky record but no document — the state
+	 * `Backfill` exists to find — advertises nothing. Both alternates
+	 * hang off the document's presence, because an alternate with no
+	 * canonical record alongside it references nothing.
+	 */
+	public function test_output_at_tags_silent_for_bluesky_only_post() {
+		$this->set_identity();
+		\update_option( 'atmosphere_publication_tid', '3kpubtid000000' );
+
+		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		\update_post_meta( $post_id, Post::META_URI, 'at://did:plc:test123/app.bsky.feed.post/3kbskypost0000' );
+
+		$this->go_to_post( $post_id );
+
+		$this->assertSame( '', $this->capture_at_tags() );
+	}
+
+	/**
+	 * A static front page that is also a publishable post with a
+	 * document record maps to both records, so both are canonical —
+	 * the array semantics the proposal defines, and the one branch
+	 * where the meta mapping diverges from the link tags.
+	 */
+	public function test_output_at_tags_emits_both_canonicals_on_publishable_static_front_page() {
+		$this->set_identity();
+		\update_option( 'atmosphere_publication_tid', '3kpubtid000000' );
+
+		// `page` is not syncable by default; opt it in so the static
+		// front page clears `is_post_publishable()`.
+		\add_filter(
+			'atmosphere_syncable_post_types',
+			static function ( $types ) {
+				$types[] = 'page';
+				return $types;
+			}
+		);
+
+		$page_id = self::factory()->post->create(
+			array(
+				'post_type'   => 'page',
+				'post_status' => 'publish',
+				'post_title'  => 'Home',
+			)
+		);
+		\update_post_meta( $page_id, Document::META_URI, 'at://did:plc:test123/site.standard.document/3kfrontdoc0000' );
+		\update_post_meta( $page_id, Document::META_TID, '3kfrontdoc0000' );
+
+		\update_option( 'show_on_front', 'page' );
+		\update_option( 'page_on_front', $page_id );
+
+		$this->go_to( '?page_id=' . $page_id );
+
+		$this->assertTrue( \is_front_page(), 'Sanity check: static page must be the front page.' );
+		$this->assertTrue( \is_singular(), 'Sanity check: the static front page is also singular.' );
+
+		$output = $this->capture_at_tags();
+
+		\delete_option( 'show_on_front' );
+		\delete_option( 'page_on_front' );
+		\remove_all_filters( 'atmosphere_syncable_post_types' );
+
+		$this->assertStringContainsString(
+			'<meta name="at:canonical" content="at://did:plc:test123/site.standard.document/3kfrontdoc0000" />',
+			$output
+		);
+		$this->assertStringContainsString(
+			'<meta name="at:canonical" content="at://did:plc:test123/site.standard.publication/3kpubtid000000" />',
+			$output
+		);
+		$this->assertStringNotContainsString(
+			'at:alternate',
+			$output,
+			'The publication is canonical here, so it must not also appear as an alternate.'
+		);
+	}
+
+	/**
+	 * A filter returning something other than an array is a contract
+	 * violation: drop the output, but say so rather than leaving the
+	 * filtering plugin to guess why its tags vanished.
+	 */
+	public function test_output_at_tags_flags_filter_returning_non_array() {
+		$this->setExpectedIncorrectUsage( 'Atmosphere\Atmosphere::output_at_tags' );
+
+		$this->set_identity();
+		\update_option( 'atmosphere_publication_tid', '3kpubtid000000' );
+
+		\add_filter( 'atmosphere_at_tags', '__return_true' );
+
+		$this->go_to_front_page();
+		$output = $this->capture_at_tags();
+
+		\remove_all_filters( 'atmosphere_at_tags' );
+
+		$this->assertSame( '', $output );
+	}
+
+	/**
+	 * Malformed entries are skipped rather than printed, and the skip
+	 * is reported. The valid entries around them still emit — one bad
+	 * tag must not take the rest of the head with it.
+	 */
+	public function test_output_at_tags_flags_and_skips_malformed_entries() {
+		$this->setExpectedIncorrectUsage( 'Atmosphere\Atmosphere::output_at_tags' );
+
+		$this->set_identity();
+		\update_option( 'atmosphere_publication_tid', '3kpubtid000000' );
+
+		\add_filter(
+			'atmosphere_at_tags',
+			static function ( $tags ) {
+				$tags[]          = array( 'at://did:plc:test123' );      // Numeric key.
+				$tags['at:me']   = array( 'at://did:plc:test123', 42 );  // One good, one not.
+				$tags['at:junk'] = array( '' );                          // Empty string.
+				return $tags;
+			}
+		);
+
+		$this->go_to_front_page();
+		$output = $this->capture_at_tags();
+
+		\remove_all_filters( 'atmosphere_at_tags' );
+
+		$this->assertStringContainsString(
+			'<meta name="at:me" content="at://did:plc:test123" />',
+			$output,
+			'Valid entries must survive alongside malformed ones.'
+		);
+		$this->assertStringNotContainsString( 'name="0"', $output );
+		$this->assertStringNotContainsString( 'content="42"', $output );
+		$this->assertStringNotContainsString( 'at:junk', $output );
+		$this->assertStringContainsString(
+			'<meta name="at:canonical" content="at://did:plc:test123/site.standard.publication/3kpubtid000000" />',
+			$output,
+			'The plugin\'s own tags must be unaffected by a third party\'s bad entries.'
+		);
+	}
+
+	/**
+	 * On the front page the publication is the record the page renders,
+	 * so it is canonical there rather than alternate — the one place the
+	 * two mappings diverge.
+	 */
+	public function test_output_at_tags_marks_publication_canonical_on_front_page() {
+		$this->set_identity();
+		\update_option( 'atmosphere_publication_tid', '3kpubtid000000' );
+
+		$this->go_to_front_page();
+		$output = $this->capture_at_tags();
+
+		$this->assertStringContainsString(
+			'<meta name="at:canonical" content="at://did:plc:test123/site.standard.publication/3kpubtid000000" />',
+			$output
+		);
+		$this->assertStringNotContainsString( 'at:alternate', $output );
+	}
+
+	/**
+	 * No document record means no tags at all, and — as with the link
+	 * tag — no lazy `META_TID` mint from a front-end render.
+	 */
+	public function test_output_at_tags_silent_for_post_without_document_record() {
+		$this->set_identity();
+		\update_option( 'atmosphere_publication_tid', '3kpubtid000000' );
+
+		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
+
+		$this->go_to_post( $post_id );
+		$output = $this->capture_at_tags();
+
+		$this->assertSame( '', $output );
+		$this->assertSame(
+			'',
+			\get_post_meta( $post_id, Document::META_TID, true ),
+			'Frontend render must not lazy-mint META_TID for an unpublished post.'
+		);
+	}
+
+	/**
+	 * Archives, search results and 404s map to no record.
+	 */
+	public function test_output_at_tags_silent_on_non_singular_non_front_page() {
+		$this->set_identity();
+		\update_option( 'atmosphere_publication_tid', '3kpubtid000000' );
+
+		$this->go_to( \home_url( '/?s=anything' ) );
+
+		$this->assertSame( '', $this->capture_at_tags() );
+	}
+
+	/**
+	 * A disconnected site with no persisted identity advertises nothing,
+	 * in lockstep with the two link tags.
+	 */
+	public function test_output_at_tags_silent_without_identity() {
+		\delete_option( 'atmosphere_connection' );
+		\delete_option( 'atmosphere_identity' );
+		\update_option( 'atmosphere_publication_tid', '3kpubtid000000' );
+
+		$this->go_to_front_page();
+
+		$this->assertSame( '', $this->capture_at_tags() );
+	}
+
+	/**
+	 * The filter is the supported way to add the tags the plugin does
+	 * not emit on its own — `at:me`, `at:author`, or a namespaced
+	 * community property — without patching the emitter.
+	 */
+	public function test_output_at_tags_filter_can_add_tags() {
+		$this->set_identity();
+		\update_option( 'atmosphere_publication_tid', '3kpubtid000000' );
+
+		\add_filter(
+			'atmosphere_at_tags',
+			static function ( $tags ) {
+				$tags['at:me'] = array( 'at://did:plc:test123' );
+				return $tags;
+			}
+		);
+
+		$this->go_to_front_page();
+		$output = $this->capture_at_tags();
+
+		\remove_all_filters( 'atmosphere_at_tags' );
+
+		$this->assertStringContainsString(
+			'<meta name="at:me" content="at://did:plc:test123" />',
+			$output
+		);
+	}
+
+	/**
+	 * A filter that empties the tag list silences the output entirely,
+	 * rather than printing bare `<meta>` elements with empty content.
+	 */
+	public function test_output_at_tags_filter_can_suppress_all_tags() {
+		$this->set_identity();
+		\update_option( 'atmosphere_publication_tid', '3kpubtid000000' );
+
+		\add_filter( 'atmosphere_at_tags', '__return_empty_array' );
+
+		$this->go_to_front_page();
+		$output = $this->capture_at_tags();
+
+		\remove_all_filters( 'atmosphere_at_tags' );
+
+		$this->assertSame( '', $output );
+	}
+
+	/**
+	 * Both emitters are wired to `wp_head` so the meta tags ship
+	 * alongside the link tags they complement.
+	 */
+	public function test_init_wires_at_tags_to_wp_head() {
+		$emitters = array( 'output_at_tags', 'output_document_link', 'output_publication_link' );
+
+		$this->atmosphere->init();
+
+		try {
+			foreach ( $emitters as $emitter ) {
+				$this->assertNotFalse(
+					\has_action( 'wp_head', array( $this->atmosphere, $emitter ) ),
+					"{$emitter} must be wired to wp_head."
+				);
+			}
+		} finally {
+			/*
+			 * `init()` mutates global hook + cron state the WP test
+			 * framework does not roll back; undo what this test caused,
+			 * mirroring `test_init_wires_publication_sync_triggers()`.
+			 */
+			foreach ( $emitters as $emitter ) {
+				\remove_action( 'wp_head', array( $this->atmosphere, $emitter ) );
+			}
+			\wp_clear_scheduled_hook( 'atmosphere_sync_publication' );
+			\wp_clear_scheduled_hook( 'atmosphere_refresh_token' );
+			\wp_clear_scheduled_hook( 'atmosphere_sync_reactions' );
+			\wp_clear_scheduled_hook( 'atmosphere_backfill_replies' );
+		}
+	}
+
+	/**
 	 * Every trigger that ought to schedule a publication re-sync is
 	 * wired up by `Atmosphere::init()`.
 	 *
@@ -2079,16 +3150,26 @@ class Test_Atmosphere extends WP_UnitTestCase {
 	 * trigger set so a future refactor can't silently drop one.
 	 */
 	public function test_init_wires_publication_sync_triggers() {
+		$option_triggers = \array_merge(
+			array( 'blogname', 'blogdescription', 'site_icon', 'home', 'siteurl' ),
+			\array_values( \Atmosphere\Transformer\Publication::get_theme_color_options() )
+		);
+
 		$triggers = array(
-			'update_option_blogname',
-			'update_option_blogdescription',
-			'update_option_site_icon',
-			'update_option_home',
-			'update_option_siteurl',
 			'switch_theme',
 			'save_post_wp_global_styles',
 			'customize_save_after',
 		);
+
+		/*
+		 * Both hooks per option: an option with no row yet is written by
+		 * `add_option()`, where `update_option_*` never fires — the case a
+		 * plugin option hits the first time it is saved.
+		 */
+		foreach ( $option_triggers as $option ) {
+			$triggers[] = 'add_option_' . $option;
+			$triggers[] = 'update_option_' . $option;
+		}
 
 		$this->atmosphere->init();
 
@@ -2105,7 +3186,7 @@ class Test_Atmosphere extends WP_UnitTestCase {
 			 * framework does not roll back between tests. Roll back the
 			 * pieces our action triggers so a later test changing
 			 * `blogname` / `home` / etc. is not surprised by a spurious
-			 * `atmosphere_sync_publication` schedule, and clear the two
+			 * `atmosphere_sync_publication` schedule, and clear the three
 			 * recurring crons `init()` queues so they do not survive
 			 * either.
 			 */
@@ -2115,6 +3196,34 @@ class Test_Atmosphere extends WP_UnitTestCase {
 			\wp_clear_scheduled_hook( 'atmosphere_sync_publication' );
 			\wp_clear_scheduled_hook( 'atmosphere_refresh_token' );
 			\wp_clear_scheduled_hook( 'atmosphere_sync_reactions' );
+			\wp_clear_scheduled_hook( 'atmosphere_backfill_replies' );
+		}
+	}
+
+	/**
+	 * Connected sites schedule and register the bounded daily reply audit.
+	 */
+	public function test_init_schedules_daily_reply_backfill() {
+		\update_option( 'atmosphere_identity', array( 'did' => 'did:plc:test123' ), false );
+		\wp_unschedule_hook( 'atmosphere_backfill_replies' );
+
+		$this->atmosphere->init();
+		// Scheduling is deferred to the `init` hook (so host filters are
+		// attached first), so run the reconciler the hook would fire.
+		Atmosphere::maybe_schedule_reaction_crons();
+
+		try {
+			$this->assertNotFalse(
+				\has_action(
+					'atmosphere_backfill_replies',
+					array( Reaction_Sync::class, 'backfill_scheduled_replies' )
+				)
+			);
+			$this->assertSame( 'daily', \wp_get_schedule( 'atmosphere_backfill_replies' ) );
+		} finally {
+			\wp_unschedule_hook( 'atmosphere_backfill_replies' );
+			\wp_unschedule_hook( 'atmosphere_refresh_token' );
+			\wp_unschedule_hook( 'atmosphere_sync_reactions' );
 		}
 	}
 
@@ -2150,7 +3259,7 @@ class Test_Atmosphere extends WP_UnitTestCase {
 				'comment_post_ID'  => $post_id,
 				'comment_approved' => '1',
 				'comment_type'     => 'comment',
-				'user_id'          => self::factory()->user->create(),
+				'user_id'          => $this->make_publishing_user(),
 				'comment_content'  => 'Reply to anon.',
 				'comment_parent'   => $parent_id,
 			)
@@ -2201,7 +3310,7 @@ class Test_Atmosphere extends WP_UnitTestCase {
 				'comment_post_ID'  => $post_id,
 				'comment_approved' => '1',
 				'comment_type'     => 'comment',
-				'user_id'          => self::factory()->user->create(),
+				'user_id'          => $this->make_publishing_user(),
 				'comment_content'  => 'Already-published parent.',
 			)
 		);
@@ -2213,7 +3322,7 @@ class Test_Atmosphere extends WP_UnitTestCase {
 				'comment_post_ID'  => $post_id,
 				'comment_approved' => '1',
 				'comment_type'     => 'comment',
-				'user_id'          => self::factory()->user->create(),
+				'user_id'          => $this->make_publishing_user(),
 				'comment_content'  => 'Reply.',
 				'comment_parent'   => $parent_id,
 			)
@@ -2276,7 +3385,7 @@ class Test_Atmosphere extends WP_UnitTestCase {
 				'comment_post_ID'  => $post_id,
 				'comment_approved' => '1',
 				'comment_type'     => 'comment',
-				'user_id'          => self::factory()->user->create(),
+				'user_id'          => $this->make_publishing_user(),
 				'comment_content'  => 'Reply to federated.',
 				'comment_parent'   => $parent_id,
 			)
@@ -2320,7 +3429,7 @@ class Test_Atmosphere extends WP_UnitTestCase {
 				'comment_post_ID'  => $post_id,
 				'comment_approved' => '1',
 				'comment_type'     => 'comment',
-				'user_id'          => self::factory()->user->create(),
+				'user_id'          => $this->make_publishing_user(),
 				'comment_content'  => 'Top-level comment.',
 			)
 		);
@@ -2368,7 +3477,7 @@ class Test_Atmosphere extends WP_UnitTestCase {
 				'comment_post_ID'  => $post_id,
 				'comment_approved' => '1',
 				'comment_type'     => 'comment',
-				'user_id'          => self::factory()->user->create(),
+				'user_id'          => $this->make_publishing_user(),
 				'comment_content'  => 'Half-published parent.',
 			)
 		);
@@ -2382,7 +3491,7 @@ class Test_Atmosphere extends WP_UnitTestCase {
 				'comment_post_ID'  => $post_id,
 				'comment_approved' => '1',
 				'comment_type'     => 'comment',
-				'user_id'          => self::factory()->user->create(),
+				'user_id'          => $this->make_publishing_user(),
 				'comment_content'  => 'Reply to half-state.',
 				'comment_parent'   => $parent_id,
 			)
@@ -2433,6 +3542,41 @@ class Test_Atmosphere extends WP_UnitTestCase {
 	}
 
 	/**
+	 * The `atmosphere_has_record` REST field answers "is there anything out
+	 * there to delete", which is what the editor's removal warning needs.
+	 * It follows `has_post_records()`, so it is true for the AT-URI case the
+	 * View link also covers.
+	 */
+	public function test_atmosphere_has_record_rest_field_follows_the_post_uri() {
+		\wp_set_current_user( self::factory()->user->create( array( 'role' => 'administrator' ) ) );
+
+		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
+
+		$this->assertFalse( $this->rest_get_has_record( $post_id ) );
+
+		\update_post_meta( $post_id, Post::META_URI, 'at://did:plc:abc123/app.bsky.feed.post/3kabc' );
+
+		$this->assertTrue( $this->rest_get_has_record( $post_id ) );
+	}
+
+	/**
+	 * The reason the field exists rather than reusing `atmosphere_url`: a
+	 * document-only site (one filtering `atmosphere_should_publish_bluesky_post`
+	 * false) never gets a Bluesky URI, so the URL stays empty while
+	 * `delete_post()` would still remove the document record.
+	 */
+	public function test_atmosphere_has_record_rest_field_covers_a_document_only_post() {
+		\wp_set_current_user( self::factory()->user->create( array( 'role' => 'administrator' ) ) );
+
+		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
+
+		\update_post_meta( $post_id, Document::META_URI, 'at://did:plc:abc123/site.standard.document/3kdoc' );
+
+		$this->assertSame( '', $this->rest_get_atmosphere_url( $post_id ) );
+		$this->assertTrue( $this->rest_get_has_record( $post_id ) );
+	}
+
+	/**
 	 * Fetch a post's `atmosphere_url` REST field in the edit context.
 	 *
 	 * @param int $post_id Post ID.
@@ -2443,6 +3587,19 @@ class Test_Atmosphere extends WP_UnitTestCase {
 		$request->set_param( 'context', 'edit' );
 
 		return (string) ( \rest_do_request( $request )->get_data()['atmosphere_url'] ?? '' );
+	}
+
+	/**
+	 * Fetch a post's `atmosphere_has_record` REST field in the edit context.
+	 *
+	 * @param int $post_id Post ID.
+	 * @return bool
+	 */
+	private function rest_get_has_record( int $post_id ): bool {
+		$request = new \WP_REST_Request( 'GET', '/wp/v2/posts/' . $post_id );
+		$request->set_param( 'context', 'edit' );
+
+		return (bool) ( \rest_do_request( $request )->get_data()['atmosphere_has_record'] ?? false );
 	}
 
 	/**
@@ -2651,6 +3808,105 @@ class Test_Atmosphere extends WP_UnitTestCase {
 
 		$this->assertNotFalse( $next, 'Expected the update worker to schedule a retry after a transient PDS error.' );
 		$this->assertSame( '1', \get_post_meta( $post->ID, '_atmosphere_publish_retries', true ) );
+	}
+
+	/**
+	 * Short-circuit applyWrites with a rate-limit rejection.
+	 *
+	 * @param int $retry_after Seconds until the rate-limit window resets.
+	 */
+	private function force_apply_writes_rate_limited( int $retry_after ): void {
+		\add_filter(
+			'atmosphere_pre_apply_writes',
+			static fn() => new \WP_Error(
+				'atmosphere_rate_limited',
+				'Rate Limit Exceeded',
+				array(
+					'status'      => 429,
+					'reset'       => \time() + $retry_after,
+					'retry_after' => $retry_after,
+				)
+			)
+		);
+	}
+
+	/**
+	 * Publish a post against a rate-limited PDS and report when the
+	 * retry was scheduled for.
+	 *
+	 * WP-Cron unschedules an event before running its callback; the two
+	 * clears mirror that, so the creation-time event does not mask the
+	 * retry the worker schedules.
+	 *
+	 * @param int $retry_after Seconds until the rate-limit window resets.
+	 * @return int|false Timestamp of the scheduled retry, or false when
+	 *                   none was scheduled.
+	 */
+	private function rate_limited_retry_time( int $retry_after ) {
+		$post = self::factory()->post->create_and_get( array( 'post_status' => 'publish' ) );
+
+		\wp_clear_scheduled_hook( 'atmosphere_publish_post', array( $post->ID ) );
+		\wp_clear_scheduled_hook( 'atmosphere_update_post', array( $post->ID ) );
+
+		$this->force_apply_writes_rate_limited( $retry_after );
+
+		\do_action( 'atmosphere_publish_post', $post->ID );
+
+		return \wp_next_scheduled( 'atmosphere_publish_post', array( $post->ID ) );
+	}
+
+	/**
+	 * A rate-limited publish waits for the window the PDS reported.
+	 *
+	 * Retrying on the ladder's own first rung would spend a rung on a
+	 * request that is guaranteed to come back with the same 429.
+	 */
+	public function test_publish_worker_waits_for_the_rate_limit_window() {
+		$next = $this->rate_limited_retry_time( 20 * MINUTE_IN_SECONDS );
+
+		$this->assertNotFalse( $next, 'A rate-limited publish is transient and must still be retried.' );
+		$this->assertGreaterThan(
+			\time() + 15 * MINUTE_IN_SECONDS,
+			$next,
+			'The retry must wait for the reported window, not the one-minute first rung.'
+		);
+	}
+
+	/**
+	 * A wildly out-of-range reset cannot park a queued publish weeks
+	 * out. Past a day the header has effectively disabled the ladder,
+	 * and we do not control that header.
+	 */
+	public function test_rate_limit_retry_delay_is_capped_at_a_day() {
+		$next = $this->rate_limited_retry_time( WEEK_IN_SECONDS );
+
+		$this->assertNotFalse( $next );
+		$this->assertLessThanOrEqual( \time() + DAY_IN_SECONDS + 5, $next );
+	}
+
+	/**
+	 * The cap applies to the PDS-supplied wait, never to the ladder's
+	 * own step: a site that filters in a longer ladder must not get a
+	 * *shorter* wait just because the failure happened to be a 429.
+	 */
+	public function test_rate_limit_retry_delay_never_shortens_the_ladder() {
+		$ladder = function () {
+			return array( 6 * HOUR_IN_SECONDS );
+		};
+
+		\add_filter( 'atmosphere_publish_retry_delays', $ladder );
+
+		/* A short window; the ladder's own six hours has to win. */
+		$next = $this->rate_limited_retry_time( 5 * MINUTE_IN_SECONDS );
+
+		\remove_filter( 'atmosphere_publish_retry_delays', $ladder );
+
+		$this->assertNotFalse( $next );
+		$this->assertGreaterThan(
+			\time() + 5 * HOUR_IN_SECONDS,
+			$next,
+			'A 429 must not clamp a filtered ladder step down to the cap.'
+		);
 	}
 
 	/**
@@ -2889,6 +4145,63 @@ class Test_Atmosphere extends WP_UnitTestCase {
 	}
 
 	/**
+	 * `needs_reconnect` reflects the live connection: a reconnect-class
+	 * stored error raises it only while the site is still disconnected,
+	 * so a stale per-post error cannot keep telling the author to
+	 * reconnect after the operator already has.
+	 */
+	public function test_publish_error_needs_reconnect_drops_after_reconnect() {
+		$admin = self::factory()->user->create( array( 'role' => 'administrator' ) );
+		\wp_set_current_user( $admin );
+
+		$post_id = self::factory()->post->create( array( 'post_status' => 'publish' ) );
+
+		\update_post_meta(
+			$post_id,
+			'_atmosphere_last_publish_error',
+			array(
+				'code'     => 'atmosphere_needs_reauth',
+				'message'  => 'Session expired',
+				'retrying' => false,
+				'time'     => 1234567890,
+			)
+		);
+
+		/* The failure state: the connection is flagged for reauth. */
+		$conn                 = \get_option( 'atmosphere_connection' );
+		$conn['needs_reauth'] = true;
+		\update_option( 'atmosphere_connection', $conn, false );
+
+		$error = $this->rest_get_publish_error( $post_id );
+
+		$this->assertTrue(
+			$error['needs_reconnect'],
+			'A reconnect-class error on a disconnected site must raise needs_reconnect.'
+		);
+		$this->assertSame(
+			'Session expired',
+			$error['message'],
+			'While disconnected, the stored reconnect instruction is accurate and must surface.'
+		);
+
+		/* The operator reconnected: flag cleared, token present again. */
+		$conn['needs_reauth'] = false;
+		\update_option( 'atmosphere_connection', $conn, false );
+
+		$error = $this->rest_get_publish_error( $post_id );
+
+		$this->assertFalse(
+			$error['needs_reconnect'],
+			'Once the site is reconnected the stale error must not claim otherwise.'
+		);
+		$this->assertSame(
+			'',
+			$error['message'],
+			'The stored reconnect instruction is stale prose once reconnected and must be suppressed.'
+		);
+	}
+
+	/**
 	 * The stored message is stripped of markup and truncated: PDS error
 	 * strings are attacker-influenced and end up rendered in the editor.
 	 */
@@ -2965,6 +4278,48 @@ class Test_Atmosphere extends WP_UnitTestCase {
 			'',
 			\get_post_meta( $post->ID, '_atmosphere_last_publish_error', true ),
 			'A successful reconcile-republish must clear the stale failure record.'
+		);
+	}
+
+	/**
+	 * Decrypt failures are deterministic — the ciphertext can never be
+	 * read until the user reconnects — so neither classification may
+	 * enter the retry ladder.
+	 */
+	public function test_decrypt_failures_are_not_retried() {
+		$reflection = new \ReflectionClass( Atmosphere::class );
+		$method     = $reflection->getMethod( 'is_transient_publish_error' );
+
+		$this->assertFalse( $method->invoke( null, new \WP_Error( 'atmosphere_decrypt', 'nope' ) ) );
+		$this->assertFalse( $method->invoke( null, new \WP_Error( 'atmosphere_key_changed', 'nope' ) ) );
+		$this->assertFalse( $method->invoke( null, new \WP_Error( 'atmosphere_client_authentication', 'nope' ) ), 'A signing failure repeats on retry.' );
+		$this->assertFalse( $method->invoke( null, new \WP_Error( 'atmosphere_client_authentication_key', 'nope' ) ), 'An unreadable signing key repeats on retry.' );
+		$this->assertFalse( $method->invoke( null, new \WP_Error( 'atmosphere_dpop_keygen_failed', 'nope' ) ), 'A runtime without EC key support repeats on retry.' );
+		$this->assertTrue( $method->invoke( null, new \WP_Error( 'atmosphere_refresh_on_hold', 'nope', array( 'cause' => 'atmosphere_client_configuration' ) ) ), 'A hold is shorter than the retry ladder, so the post must be retried.' );
+	}
+
+	/**
+	 * The two refresh failure classes must land on opposite sides of the
+	 * retry ladder.
+	 *
+	 * `Client::refresh()` fails for two very different reasons: a revoked or
+	 * consumed refresh token (permanent — only a reconnect fixes it) and an
+	 * auth server having a bad day (transient — the next attempt may well
+	 * succeed). Collapsing them onto one code would force a single answer
+	 * here, and either choice would be wrong for the other branch.
+	 */
+	public function test_refresh_failure_classes_split_across_the_retry_ladder() {
+		$reflection = new \ReflectionClass( Atmosphere::class );
+		$method     = $reflection->getMethod( 'is_transient_publish_error' );
+
+		$this->assertFalse(
+			$method->invoke( null, new \WP_Error( 'atmosphere_needs_reauth', 'nope', array( 'status' => 400 ) ) ),
+			'A revoked refresh token can never succeed on retry.'
+		);
+
+		$this->assertTrue(
+			$method->invoke( null, new \WP_Error( 'atmosphere_refresh', 'nope', array( 'status' => 503 ) ) ),
+			'An auth server 5xx must stay on the retry ladder.'
 		);
 	}
 

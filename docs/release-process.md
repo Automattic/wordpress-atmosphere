@@ -33,7 +33,7 @@ Major and minor releases share the same workflow. They are cut off `trunk` by th
    4. Mirrors the new changelog block into `readme.txt`'s `== Changelog ==` section (same-major-version history, with a trailing link to the full GitHub `CHANGELOG.md`).
    5. Replaces `@since unreleased` / `@deprecated unreleased` and the equivalent `_deprecated_*` / `_doing_it_wrong` / `apply_filters_deprecated` literals across all `*.php` files (excluding `vendor/`).
    6. Prompts for an optional `== Upgrade Notice ==` entry.
-   7. Commits, pushes the branch, and opens a `Release X.Y.Z` PR against `trunk` (reviewer: `Automattic/fediverse`).
+   7. Commits, pushes the branch, and opens a `Release X.Y.Z` PR against `trunk` (reviewer: `Automattic/atmosphere`).
 
 2. **Review and merge the PR.**
 

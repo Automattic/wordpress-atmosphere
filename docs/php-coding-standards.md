@@ -205,6 +205,7 @@ use function Atmosphere\is_connected;
 \apply_filters( 'atmosphere_transform_comment',     $record, $comment );
 \apply_filters( 'atmosphere_transform_document',    $record, $post );
 \apply_filters( 'atmosphere_transform_publication', $record );
+\apply_filters( 'atmosphere_transform_threadgate',  $record, $post );
 ```
 
 **Content / composition filters:**
@@ -224,12 +225,21 @@ use function Atmosphere\is_connected;
 **Behaviour / gating filters:**
 ```php
 \apply_filters( 'atmosphere_syncable_post_types',         array( 'post' ) );
+\apply_filters( 'atmosphere_connection_only_mode',        false ); // Return true to embed ATmosphere purely as a connection layer: auto cross-posting, reaction/reply import, comment publishing, and the settings screen all default off.
+\apply_filters( 'atmosphere_should_auto_publish',         $bool ); // Feature switch for automatic post cross-posting; runs after the stored setting and connection-only mode, final say.
+\apply_filters( 'atmosphere_should_publish_bluesky_post', true, $post ); // Return false to write the site.standard.document record only, no app.bsky.feed.post companion; `$post` is the post being published, so the answer can be per post. Pure filter (no connection-only pass), forward-only.
 \apply_filters( 'atmosphere_should_publish_comment',      $bool, $comment );
+\apply_filters( 'atmosphere_should_publish_comments',     $bool ); // Feature switch for publishing WP comments to Bluesky; runs after the stored setting and connection-only mode, final say. NOT the per-comment `_comment` filter above.
+\apply_filters( 'atmosphere_should_sync_reactions',       $bool ); // Feature switch for importing Bluesky likes/reposts; runs after the stored setting and connection-only mode, final say.
+\apply_filters( 'atmosphere_should_sync_replies',         $bool ); // Feature switch for importing Bluesky replies as comments; runs after the stored setting and connection-only mode, final say. NOT the per-reply `_reply` filter below.
+\apply_filters( 'atmosphere_should_sync_publication',     $bool ); // Feature switch for writing/refreshing the site.standard.publication record; defaults on, forced off in connection-only mode, final say.
 \apply_filters( 'atmosphere_should_sync_reply',           $bool, $notification, $post_id );
 \apply_filters( 'atmosphere_backfill_query_chunk_size',   500 );
+\apply_filters( 'atmosphere_reply_backfill_batch_size',   5 ); // Posts audited per daily reply-backfill run; 0 disables the rolling audit; clamped to 20.
 \apply_filters( 'atmosphere_publish_retry_delays',        array( 60, 300, 900 ) ); // Backoff ladder for failed publish/update cron workers; length = retry budget; empty array disables retries.
 \apply_filters( 'atmosphere_oauth_redirect_uri',          $uri );
-\apply_filters( 'atmosphere_client_metadata',             $metadata );
+\apply_filters( 'atmosphere_client_metadata',             $metadata, $version ); // $version is 'v2' (confidential client) or 'v1' (legacy public client).
+\apply_filters( 'atmosphere_at_tags',                     $tags ); // AT Tags <meta> mapping the page to its records; tag name => list of AT-URIs. Empty array suppresses them.
 \apply_filters( 'atmosphere_appview_host',                'bsky.app', $path, $context ); // Host/subpath for appview web links; normalized; $context keys: type|did|handle|rkey|tag.
 \apply_filters( 'atmosphere_appview_url',                 $url, $path, $context );        // Whole assembled appview link; rewrite the route from $context.
 ```
@@ -238,16 +248,21 @@ use function Atmosphere\is_connected;
 ```php
 \do_action( 'atmosphere_publishing', $post );                                     // Once per post publish/update/delete schedule.
 \do_action( 'atmosphere_publish_post_result',          $post, $result );
+\do_action( 'atmosphere_publish_post_skipped',         $post, $reason );                   // Post skipped before any publish job ran.
 \do_action( 'atmosphere_publish_comment_result',       $comment, $result );
 \do_action( 'atmosphere_update_skipped_unsynced_post', $post );
 \do_action( 'atmosphere_long_form_strategy_downgraded', $post, $from, $to );
 \do_action( 'atmosphere_reaction_synced', $comment_id, $notification, $post_id, $comment_type );
+\do_action( 'atmosphere_connected',        $did, $handle );                        // Account connected (OAuth callback succeeded).
+\do_action( 'atmosphere_disconnected',     $did );                                 // Connection torn down.
+\do_action( 'atmosphere_reauth_required',  $did, $reason );                        // First transition into a reauth-required state.
 ```
 
 **Test-only short-circuit:**
 ```php
 \apply_filters( 'atmosphere_pre_apply_writes', null, $writes );                    // Short-circuit / observe an applyWrites batch.
 \apply_filters( 'atmosphere_pre_upload_blob', null, $file_path, $mime_type );      // Short-circuit / observe a blob upload.
+\apply_filters( 'atmosphere_pre_get_record', null, $collection, $rkey );           // Short-circuit / observe a getRecord read.
 ```
 
 ## Documentation Standards

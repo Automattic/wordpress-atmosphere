@@ -14,6 +14,10 @@
 namespace Atmosphere\Content_Parser;
 
 use Atmosphere\Transformer\Post;
+use function Atmosphere\get_publishable_content;
+use function Atmosphere\publishable_content_cache_key;
+use function Atmosphere\render_publishable_content;
+use function Atmosphere\rendered_html_contains_image;
 use function Atmosphere\sanitize_text;
 use function Atmosphere\to_iso8601;
 use function Atmosphere\truncate_graphemes;
@@ -26,20 +30,27 @@ use function Atmosphere\truncate_graphemes;
 abstract class Parser_Base implements Content_Parser {
 
 	/**
-	 * Per-request cache of parsed block trees, keyed by post ID.
+	 * Per-request cache of parsed block trees, keyed by the
+	 * publishable-content cache key.
 	 *
 	 * `parse_blocks()` is not free and a parser commonly walks the tree
 	 * more than once (e.g. once to collect images, once to build the
-	 * record), so memoize it for the life of the request.
+	 * record), so memoize it for the life of the request. Keyed via
+	 * {@see \Atmosphere\publishable_content_cache_key()} — not the bare
+	 * post ID — so gating state an integration folds into that key (an
+	 * access level flipped mid-request, a preview override) recomputes
+	 * here too instead of serving the block tree memoized under the
+	 * earlier, more permissive decision.
 	 *
-	 * @var array<int,array>
+	 * @var array<string,array>
 	 */
 	private static array $block_cache = array();
 
 	/**
-	 * Per-request cache of rendered HTML, keyed by post ID.
+	 * Per-request cache of rendered HTML, keyed by the publishable-content
+	 * cache key (see {@see self::$block_cache}).
 	 *
-	 * @var array<int,string>
+	 * @var array<string,string>
 	 */
 	private static array $rendered_html_cache = array();
 
@@ -78,11 +89,13 @@ abstract class Parser_Base implements Content_Parser {
 	 * @return array Parsed blocks from parse_blocks().
 	 */
 	final protected function get_blocks( \WP_Post $post ): array {
-		if ( ! isset( self::$block_cache[ $post->ID ] ) ) {
-			self::$block_cache[ $post->ID ] = \parse_blocks( $post->post_content );
+		$key = publishable_content_cache_key( $post );
+
+		if ( ! isset( self::$block_cache[ $key ] ) ) {
+			self::$block_cache[ $key ] = \parse_blocks( get_publishable_content( $post ) );
 		}
 
-		return self::$block_cache[ $post->ID ];
+		return self::$block_cache[ $key ];
 	}
 
 	/**
@@ -117,8 +130,10 @@ abstract class Parser_Base implements Content_Parser {
 	final protected function get_rendered_html( \WP_Post $post ): string {
 		global $wp_query;
 
-		if ( isset( self::$rendered_html_cache[ $post->ID ] ) ) {
-			return self::$rendered_html_cache[ $post->ID ];
+		$key = publishable_content_cache_key( $post );
+
+		if ( isset( self::$rendered_html_cache[ $key ] ) ) {
+			return self::$rendered_html_cache[ $key ];
 		}
 
 		/*
@@ -139,8 +154,7 @@ abstract class Parser_Base implements Content_Parser {
 		}
 
 		try {
-			// phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Core WordPress filter.
-			$html = \apply_filters( 'the_content', $post->post_content );
+			$html = render_publishable_content( $post );
 		} finally {
 			if ( $has_query ) {
 				if ( $previous_query_post instanceof \WP_Post ) {
@@ -159,9 +173,9 @@ abstract class Parser_Base implements Content_Parser {
 			}
 		}
 
-		self::$rendered_html_cache[ $post->ID ] = \trim( $html );
+		self::$rendered_html_cache[ $key ] = \trim( $html );
 
-		return self::$rendered_html_cache[ $post->ID ];
+		return self::$rendered_html_cache[ $key ];
 	}
 
 	/**
@@ -398,7 +412,7 @@ abstract class Parser_Base implements Content_Parser {
 		$rendered_text = self::normalize_visibility_text( \wp_strip_all_tags( $rendered_html ) );
 
 		if ( ! $this->has_blocks( $post ) ) {
-			$saved_text = self::normalize_visibility_text( \wp_strip_all_tags( $post->post_content ) );
+			$saved_text = self::normalize_visibility_text( \wp_strip_all_tags( get_publishable_content( $post ) ) );
 
 			return '' === $saved_text || \str_contains( $rendered_text, $saved_text );
 		}
@@ -416,7 +430,7 @@ abstract class Parser_Base implements Content_Parser {
 
 				if ( 'core/image' === $name ) {
 					$attachment_id = $this->image_attachment_id( $block );
-					if ( null !== $attachment_id && ! $this->rendered_html_contains_image( $rendered_html, $attachment_id ) ) {
+					if ( null !== $attachment_id && ! rendered_html_contains_image( $rendered_html, $attachment_id ) ) {
 						$visible = false;
 					}
 					return;
@@ -447,23 +461,6 @@ abstract class Parser_Base implements Content_Parser {
 		);
 
 		return $visible;
-	}
-
-	/**
-	 * Whether rendered HTML still contains an attachment image block.
-	 *
-	 * @param string $html          Rendered HTML.
-	 * @param int    $attachment_id Attachment ID.
-	 * @return bool
-	 */
-	private function rendered_html_contains_image( string $html, int $attachment_id ): bool {
-		if ( \str_contains( $html, 'wp-image-' . $attachment_id ) ) {
-			return true;
-		}
-
-		$url = (string) \wp_get_attachment_url( $attachment_id );
-
-		return '' !== $url && \str_contains( $html, $url );
 	}
 
 	/**

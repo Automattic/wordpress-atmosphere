@@ -56,17 +56,19 @@ Always reserve the rkey via meta in `get_rkey()` — that meta key is the marker
 
 ## Hook Quick-Reference
 
-**Transform filters:** `atmosphere_transform_bsky_post`, `atmosphere_transform_comment`, `atmosphere_transform_document`, `atmosphere_transform_publication`.
+**Transform filters:** `atmosphere_transform_bsky_post`, `atmosphere_transform_comment`, `atmosphere_transform_document`, `atmosphere_transform_publication`, `atmosphere_transform_threadgate`.
+
+**Records:** `atmosphere_record_tags` (tag/keyword list for both record types; runs before the 8-tag cap, so prefer it over the record-level transform filters for tag changes).
 
 **Content / composition:** `atmosphere_content_parser` (deprecated; use `Content_Parser\Registry::register()`), `atmosphere_document_content`, `atmosphere_long_form_composition`, `atmosphere_teaser_thread_posts`.
 
-**Gating:** `atmosphere_syncable_post_types`, `atmosphere_should_publish_comment`, `atmosphere_should_sync_reply`, `atmosphere_backfill_query_chunk_size`, `atmosphere_oauth_redirect_uri`, `atmosphere_client_metadata`, `atmosphere_publish_retry_delays` (backoff ladder for failed publish/update cron workers; length = retry budget; empty array disables retries).
+**Gating:** `atmosphere_syncable_post_types`, `atmosphere_should_publish_comment`, `atmosphere_should_publish_bluesky_post` (return `false` for document-only publishing — no `app.bsky.feed.post` companion; pure filter, forward-only), `atmosphere_should_sync_reply`, `atmosphere_backfill_query_chunk_size`, `atmosphere_oauth_redirect_uri`, `atmosphere_client_metadata`, `atmosphere_publish_retry_delays` (backoff ladder for failed publish/update cron workers; length = retry budget; empty array disables retries).
 
 **Actions:** `atmosphere_publishing`, `atmosphere_publish_post_result`, `atmosphere_publish_comment_result`, `atmosphere_update_skipped_unsynced_post`, `atmosphere_long_form_strategy_downgraded`, `atmosphere_reaction_synced`. `atmosphere_publishing` receives the current `WP_Post` and is not a request-wide guard.
 
 **Logging:** `atmosphere_debug_log` — `(bool $enabled, string $message)`; defaults to the `WP_DEBUG` state, lets operators opt log lines in/out independently of `WP_DEBUG`.
 
-**Test-only:** `atmosphere_pre_apply_writes` — Publisher fixture uses this to short-circuit `apply_writes` before the HTTP layer.
+**Test-only:** `atmosphere_pre_apply_writes` / `atmosphere_pre_get_record` — Publisher fixture uses these to short-circuit `apply_writes` / `get_record` before the HTTP layer.
 
 Full signatures and docblocks: [`docs/php-coding-standards.md → Hook Patterns`](../../../docs/php-coding-standards.md#hook-patterns).
 

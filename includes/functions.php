@@ -9,6 +9,10 @@ namespace Atmosphere;
 
 \defined( 'ABSPATH' ) || exit;
 
+use Atmosphere\OAuth\Client;
+use Atmosphere\Transformer\Post;
+use Atmosphere\WP_Admin\Admin;
+
 /**
  * Parse an AT-URI into components.
  *
@@ -43,6 +47,31 @@ function parse_at_uri( string $uri ): array|false {
  */
 function build_at_uri( string $did, string $collection, string $rkey ): string {
 	return "at://{$did}/{$collection}/{$rkey}";
+}
+
+/**
+ * The DID of the repo a stored record lives in.
+ *
+ * The stored AT-URI is the one value written only after a write to the
+ * PDS succeeded, so the DID in it names the repo the record actually
+ * landed in. The separate DID meta is refreshed by `get_rkey()` before
+ * the write, so a republish that fails after a reconnect leaves it
+ * pointing at the new account while the record still lives on the old
+ * one (see #217). The DID meta is only used when there is no usable
+ * URI, and an empty result means the origin is unknown.
+ *
+ * @param string $uri        Stored AT-URI of the record (may be empty).
+ * @param string $stored_did Stored DID meta of the record (may be empty).
+ * @return string The origin DID, or '' when unknown.
+ */
+function record_origin_did( string $uri, string $stored_did ): string {
+	$parsed = parse_at_uri( $uri );
+
+	if ( false !== $parsed && \str_starts_with( $parsed['did'], 'did:' ) ) {
+		return $parsed['did'];
+	}
+
+	return $stored_did;
 }
 
 /**
@@ -100,6 +129,68 @@ function appview_url( string $path, array $context = array() ): string {
 }
 
 /**
+ * Build the appview web URL for one of our own Bluesky post records.
+ *
+ * `at://<did>/app.bsky.feed.post/<rkey>` becomes
+ * `https://<appview-host>/profile/<did>/post/<rkey>`. The appview resolves the
+ * DID form, so no handle lookup is needed. Lives here rather than on a surface
+ * so every caller inherits the same strictness and the same
+ * {@see appview_url()} host and route filters.
+ *
+ * @since 2.2.0
+ *
+ * @param string $uri AT-URI of a Bluesky post record.
+ * @return string Web URL, or '' when the URI is not one of our post records.
+ */
+function post_web_url( string $uri ): string {
+	$parts = parse_at_uri( $uri );
+
+	/*
+	 * `parse_at_uri()` only splits; it accepts an empty segment and ignores
+	 * anything after the third. Rebuilding the URI from the parts and
+	 * requiring it to match is what rejects both, so a trailing slash or a
+	 * stray extra segment never becomes a half-built link.
+	 */
+	if (
+		false === $parts
+		|| 'app.bsky.feed.post' !== $parts['collection']
+		|| "at://{$parts['did']}/{$parts['collection']}/{$parts['rkey']}" !== $uri
+		|| '' === $parts['did']
+		|| '' === $parts['rkey']
+	) {
+		return '';
+	}
+
+	return \esc_url_raw(
+		appview_url(
+			'profile/' . $parts['did'] . '/post/' . $parts['rkey'],
+			array(
+				'type' => 'post',
+				'did'  => $parts['did'],
+				'rkey' => $parts['rkey'],
+			)
+		)
+	);
+}
+
+/**
+ * The appview web URL for a post's Bluesky record.
+ *
+ * Shared by the editor panel's `atmosphere_url` REST field and the posts-list
+ * column, so both link to the same place and agree on what "not shared" means.
+ *
+ * @since 2.2.0
+ *
+ * @param int $post_id Post ID.
+ * @return string Web URL, or '' until the post has a Bluesky record.
+ */
+function post_share_url( int $post_id ): string {
+	$uri = (string) \get_post_meta( $post_id, Post::META_URI, true );
+
+	return '' === $uri ? '' : post_web_url( $uri );
+}
+
+/**
  * Normalize a filtered appview base into a clean 'scheme://host[:port][/prefix]'.
  *
  * Accepts a bare host, a host with a path prefix, with or without a scheme or
@@ -138,7 +229,7 @@ function appview_base_url( string $base ): string {
 		\_doing_it_wrong(
 			__FUNCTION__,
 			\esc_html__( 'atmosphere_appview_host must return a host (optionally with a scheme and path prefix); falling back to bsky.app.', 'atmosphere' ),
-			'unreleased'
+			'2.0.0'
 		);
 		return 'https://bsky.app';
 	}
@@ -152,6 +243,57 @@ function appview_base_url( string $base ): string {
 	$prefix = \trim( $parts['path'] ?? '', '/' );
 
 	return $scheme . '://' . $host . $port . ( '' !== $prefix ? '/' . $prefix : '' );
+}
+
+/**
+ * The handle typeahead endpoint queried as the user types a handle (an
+ * `app.bsky.actor.searchActorsTypeahead` XRPC endpoint).
+ *
+ * Used by both the Settings → ATmosphere connect field and the Settings →
+ * Connectors card. Defaults to Bluesky's official unauthenticated public
+ * appview (`public.api.bsky.app`), which is CORS-enabled so the browser can
+ * call it directly. Centralized and filterable the same way {@see appview_url()}
+ * centralizes the appview host: a site can point it elsewhere — e.g. a
+ * network-wide index such as `typeahead.waow.tech` — or return an empty string
+ * to disable typeahead entirely and fall back to manual handle entry.
+ *
+ * @since 2.1.0
+ *
+ * @return string The typeahead XRPC endpoint, or '' to disable typeahead.
+ */
+function handle_typeahead_url(): string {
+	/**
+	 * Filters the handle typeahead endpoint used across the plugin's admin UI.
+	 *
+	 * @since 2.1.0
+	 *
+	 * @param string $url Default typeahead XRPC endpoint. Return '' to disable
+	 *                    typeahead and require manual handle entry.
+	 */
+	$url = (string) \apply_filters(
+		'atmosphere_handle_typeahead_url',
+		'https://public.api.bsky.app/xrpc/app.bsky.actor.searchActorsTypeahead'
+	);
+
+	return \esc_url_raw( $url );
+}
+
+/**
+ * Normalise a submitted AT Protocol handle for resolution.
+ *
+ * Sanitises the raw value and strips a leading `@`: Bluesky surfaces handles as
+ * `@alice.bsky.social`, so people naturally type the `@`, but the resolver
+ * expects a bare DNS-style identifier and rejects the prefixed form. Shared by
+ * both connect entry points — the settings-page sanitize callback
+ * ({@see Sanitize::handle()}) and the Connectors REST route
+ * ({@see \Atmosphere\Rest\Admin\Connection_Controller::authorize()}) — so the two
+ * flows normalise identically by construction.
+ *
+ * @param mixed $value Raw submitted handle.
+ * @return string Sanitised, bare handle.
+ */
+function normalize_handle( $value ): string {
+	return \ltrim( \sanitize_text_field( (string) $value ), '@' );
 }
 
 /**
@@ -390,7 +532,7 @@ function get_identity(): array {
 		'pds_endpoint' => (string) ( $conn['pds_endpoint'] ?? '' ),
 	);
 
-	\update_option( 'atmosphere_identity', $identity, true );
+	set_identity( $identity );
 
 	return $identity;
 }
@@ -405,6 +547,53 @@ function get_identity(): array {
  */
 function has_identity(): bool {
 	return ! empty( get_identity()['did'] );
+}
+
+/**
+ * Persist the AT Protocol identity (DID, handle, PDS endpoint).
+ *
+ * Replaces the stored identity outright. It is not a partial update: a key
+ * you leave out is stored as an empty string, so passing only `handle` clears
+ * the DID, which takes `has_identity()` false and stops
+ * `/.well-known/atproto-did` answering. Read {@see get_identity()} and pass
+ * the full array back if you mean to change one field.
+ *
+ * The canonical write surface for `atmosphere_identity`, mirroring the
+ * read helpers ({@see get_identity()} and friends). A consumer that writes
+ * identity from outside the OAuth token exchange — a recovery or
+ * escape-hatch flow — should call this rather than `update_option()`
+ * directly, so the option's shape and its autoload flag (which
+ * {@see get_identity()}'s lazy migration also relies on) live in one place.
+ *
+ * @since 2.2.0
+ *
+ * @param array $identity Identity to store. Only `did`, `handle`, and
+ *                        `pds_endpoint` are persisted; a missing or
+ *                        non-scalar key is stored as an empty string and
+ *                        any other keys are dropped.
+ * @return bool False both when the write fails and when the stored value was
+ *              already identical, per `update_option()`. Not a success flag.
+ */
+function set_identity( array $identity ): bool {
+	/*
+	 * Scalar guard: `(string)` on an array warns and stores the literal
+	 * "Array", which `has_identity()` would then treat as a live identity
+	 * and the well-known endpoint would serve. No first-party caller can
+	 * do that, but this helper is documented for third parties.
+	 */
+	$field = static function ( $value ): string {
+		return \is_scalar( $value ) ? (string) $value : '';
+	};
+
+	return \update_option(
+		'atmosphere_identity',
+		array(
+			'did'          => $field( $identity['did'] ?? '' ),
+			'handle'       => $field( $identity['handle'] ?? '' ),
+			'pds_endpoint' => $field( $identity['pds_endpoint'] ?? '' ),
+		),
+		true
+	);
 }
 
 /**
@@ -446,6 +635,80 @@ function is_connected(): bool {
 }
 
 /**
+ * Whether the live connection still uses the public OAuth client.
+ *
+ * Sessions created before confidential client authentication store no
+ * `client_id`. Bluesky caps such sessions at two weeks, so the user has to
+ * reconnect once to get the long-lived login.
+ *
+ * @since 2.4.0
+ *
+ * @return bool
+ */
+function is_legacy_connection(): bool {
+	return is_connected() && empty( get_connection()['client_id'] );
+}
+
+/**
+ * Whether local WordPress comments may be published to Bluesky as replies.
+ *
+ * Unsaved installs default to enabled. The stored per-site preference is
+ * resolved first; the `atmosphere_should_publish_comments` filter then
+ * has the final say, so host plugins can override the effective behavior
+ * without touching the saved option.
+ *
+ * @since 2.1.0
+ *
+ * @return bool
+ */
+function is_comment_publishing_enabled(): bool {
+	$enabled = feature_option_enabled( 'atmosphere_publish_comments' );
+
+	/**
+	 * Filters whether local WordPress comments may be published to Bluesky as replies.
+	 *
+	 * Runs last, so it has the final say over the stored setting and
+	 * {@see is_connection_only_mode()} — a host plugin can force outgoing
+	 * writes off (or back on) regardless of the saved preference. The override
+	 * is on effective behavior, not the option, so the stored preference
+	 * survives untouched.
+	 *
+	 * @since 2.1.0
+	 *
+	 * @param bool $enabled Whether comment publishing is enabled.
+	 */
+	return (bool) \apply_filters( 'atmosphere_should_publish_comments', $enabled );
+}
+
+/**
+ * Whether the record-id link is advertised as this site's `rel=shortlink`.
+ *
+ * Opt in, unlike the plugin's other toggles. The link itself always
+ * resolves — that costs the site nothing and breaks nothing. Claiming
+ * `rel=shortlink` is a different thing to ask for: it speaks for the
+ * whole site, including posts that were never cross-posted, and plenty of
+ * sites already run a shortener that owns that relation.
+ *
+ * @since 2.3.0
+ *
+ * @return bool
+ */
+function is_shortlink_enabled(): bool {
+	$enabled = '1' === (string) \get_option( 'atmosphere_shortlink', '0' );
+
+	/**
+	 * Filters whether the record-id link is advertised as `rel=shortlink`.
+	 *
+	 * Runs last, so it overrides the stored setting either way.
+	 *
+	 * @since 2.3.0
+	 *
+	 * @param bool $enabled Whether the link is advertised as the short link.
+	 */
+	return (bool) \apply_filters( 'atmosphere_should_advertise_shortlink', $enabled );
+}
+
+/**
  * Whether the connection requires the user to re-authorize.
  *
  * True when an identity is on file but the credentials option is
@@ -462,6 +725,325 @@ function needs_reauth(): bool {
 	$conn = get_connection();
 
 	return ! empty( $conn['needs_reauth'] ) || empty( $conn['access_token'] );
+}
+
+/**
+ * The OAuth scopes the server granted, when known.
+ *
+ * Null means the connection predates scope storage and has not been
+ * refreshed since, or the server did not say. Callers must treat null as
+ * "no information", not as "nothing granted".
+ *
+ * @since 2.2.0
+ *
+ * @return string[]|null Granted scope tokens, or null when unknown.
+ */
+function connection_scopes(): ?array {
+	$scope = (string) ( get_connection()['scope'] ?? '' );
+
+	if ( '' === \trim( $scope ) ) {
+		return null;
+	}
+
+	return \array_values( \array_filter( \explode( ' ', $scope ) ) );
+}
+
+/**
+ * Whether reply restrictions need a reconnect before they can be written.
+ *
+ * True only when the site is connected, the granted scope is known, and
+ * the threadgate scope is not in it. A connection whose scope is unknown
+ * is allowed through: the write is attempted, and a rejection surfaces
+ * through the normal publish error. Hiding a working feature on every
+ * pre-existing install would be worse than the occasional failed write.
+ *
+ * @since 2.2.0
+ *
+ * @return bool
+ */
+function threadgate_needs_reconnect(): bool {
+	if ( ! is_connected() ) {
+		return false;
+	}
+
+	$scopes = connection_scopes();
+
+	return null !== $scopes && ! \in_array( Client::THREADGATE_SCOPE, $scopes, true );
+}
+
+/**
+ * Whether the operator explicitly disconnected the site.
+ *
+ * The explicit-disconnect marker only counts when the connection row is
+ * genuinely empty. `Client::disconnect()` deletes `atmosphere_connection`
+ * before any other admin request can land, so a missing connection
+ * alongside the marker is a true operator-initiated disconnect. After a
+ * refresh failure, the connection row stays put (with `needs_reauth`
+ * set) — if a stale marker from an earlier disconnect survived (e.g. a
+ * `delete_option` silently failed at a cache layer), the connection's
+ * presence outs the marker as stale and callers should fall through to
+ * their failure copy, which is the accurate framing.
+ *
+ * @since 2.1.0
+ *
+ * @return bool
+ */
+function is_operator_disconnected(): bool {
+	return (bool) \get_option( Client::DISCONNECTED_OPTION, false ) && empty( get_connection() );
+}
+
+/**
+ * Why the connection was flagged for reauth.
+ *
+ * Canonical values are the `Client::REAUTH_REASON_*` constants:
+ * `key_changed` (encryption key material changed under the stored
+ * tokens), `decrypt_failed` (tokens unreadable with an unchanged key)
+ * and `client_id_changed` (the site's own client_id URL moved, so the
+ * authorization server no longer recognizes the session's client). An
+ * empty string means no specific cause was recorded — legacy rows and
+ * plain session expiry.
+ *
+ * @since 2.1.0
+ *
+ * @return string
+ */
+function get_reauth_reason(): string {
+	return (string) ( get_connection()['reauth_reason'] ?? '' );
+}
+
+/**
+ * Lead sentence explaining why the connection needs a reconnect.
+ *
+ * Single source for the cause copy so every surface that reads the
+ * `reauth_reason` marker explains the same failure with the same words.
+ * Read by the Site Health test directly, and by the admin notice and both
+ * editor surfaces through {@see reauth_lead_for_current_user()}, which
+ * drops the cause for a reader who cannot act on it. Each caller appends
+ * its own consequence/action tail; copy edits and translations happen
+ * once, here.
+ *
+ * @since 2.1.0
+ *
+ * @return string Translated, unescaped sentence.
+ */
+function reauth_reason_lead(): string {
+	switch ( get_reauth_reason() ) {
+		case Client::REAUTH_REASON_KEY_CHANGED:
+			return \__( 'Your site’s security keys have changed, so ATmosphere can no longer read its saved Bluesky login. This happens after a migration, or when a security plugin rotates them on a schedule.', 'atmosphere' );
+		case Client::REAUTH_REASON_DECRYPT_FAILED:
+			return \__( 'ATmosphere can no longer read its saved Bluesky login.', 'atmosphere' );
+		case Client::REAUTH_REASON_CLIENT_ID_CHANGED:
+			return \__( 'Your site’s address has changed, so Bluesky no longer recognizes it.', 'atmosphere' );
+		default:
+			return \__( 'Your Bluesky session has expired.', 'atmosphere' );
+	}
+}
+
+/**
+ * Cause sentence explaining why the connection needs a reconnect, addressed
+ * to the current user's capability.
+ *
+ * Single source for the editor's and the pre-publish panel's cause copy, so
+ * a `key_changed` cause (or any other recorded reason) reads identically on
+ * both surfaces. Reuses {@see reauth_reason_lead()} for the capability-aware
+ * detail; a user without `manage_options` gets a generic sentence instead,
+ * since the recorded causes (rotated security keys, site migrations) are
+ * noise for an author whose only move is to ask an admin. The same
+ * operator-disconnect swap applies: someone who clicked Disconnect must not
+ * be told their session expired. And when the operator's disconnect is the
+ * cause, a non-admin gets nothing at all: that is a state the administrator
+ * chose, not a problem for every author to worry about.
+ *
+ * @since 2.2.0
+ *
+ * @return string Translated, unescaped sentence. Empty when no reconnect is needed.
+ */
+function reauth_lead_for_current_user(): string {
+	if ( ! needs_reauth() ) {
+		return '';
+	}
+
+	$can_manage = \current_user_can( 'manage_options' );
+
+	if ( is_operator_disconnected() ) {
+		if ( ! $can_manage ) {
+			return '';
+		}
+
+		return \__( 'ATmosphere is disconnected from Bluesky.', 'atmosphere' );
+	}
+
+	if ( ! $can_manage ) {
+		return \__( 'Your site’s Bluesky connection needs attention.', 'atmosphere' );
+	}
+
+	return reauth_reason_lead();
+}
+
+/**
+ * The site-level answer to "can this site share right now, and if not, why".
+ *
+ * Single source for both editor surfaces. The document panel used to derive
+ * this in JavaScript from three separate flags while
+ * {@see \Atmosphere\Rest\Admin\Pre_Publish_Controller::publish_decision()}
+ * derived it again in PHP, so the two drifted and the panel could state the
+ * same fact twice, in two severities, or with its explanation suppressed.
+ *
+ * Precedence is the whole point:
+ *
+ *  - Sharing off outranks the connection. When ATmosphere is not the thing
+ *    publishing, the connection has no bearing on the post being edited.
+ *  - Sharing forced off from outside says nothing at all: a host plugin owns
+ *    that experience and the reader cannot act on the arrangement.
+ *
+ * `sharing_enabled` is the site's policy (is cross-posting switched on).
+ * `can_share` is whether a share could succeed right now, which a dead
+ * connection also breaks. They are separate because the toggle still records
+ * a preference while the connection is down, and `wp atmosphere backfill`
+ * reads that meta later. Neither hides the per-post controls: the panel
+ * renders them in every state and lets the help text explain what they mean.
+ *
+ * Two sentences come out of it, from the same decision. `message` is for an
+ * ambient surface like the document panel, which may say nothing at all when
+ * there is nothing the reader can act on. `reason` is for a surface that was
+ * asked a direct question, like the pre-publish panel, which always has to
+ * answer. They differ in exactly one state: sharing forced off from outside,
+ * where the panel stays quiet but "will this post be shared" still needs an
+ * answer.
+ *
+ * @since 2.2.0
+ *
+ * @return array{state: string, message: string, reason: string, severity: string, action: bool, can_share: bool, sharing_enabled: bool}
+ */
+function share_status(): array {
+	$ok = array(
+		'state'           => 'ok',
+		'message'         => '',
+		'reason'          => '',
+		'severity'        => 'info',
+		'action'          => false,
+		'can_share'       => true,
+		'sharing_enabled' => true,
+	);
+
+	if ( ! is_auto_publish_enabled() ) {
+		/*
+		 * Only the site owner's own choice is explained; anything external
+		 * forcing sharing off is not theirs to fix. Read the resolved
+		 * cause, not just the option: a site whose owner had already
+		 * switched sharing off before a host plugin took over is still a
+		 * host-plugin site, and the silence connection-only mode is owed
+		 * must not be defeated by a stale checkbox.
+		 */
+		$owner_turned_it_off = '1' !== (string) \get_option( 'atmosphere_auto_publish', '1' )
+			&& ! is_connection_only_mode();
+
+		$reason = $owner_turned_it_off
+			? \__( 'Automatic publishing to Bluesky is turned off in settings.', 'atmosphere' )
+			: \__( 'Automatic publishing to Bluesky is turned off by another plugin on this site.', 'atmosphere' );
+
+		return array(
+			'state'           => $owner_turned_it_off ? 'sharing_off' : 'sharing_off_external',
+			'message'         => $owner_turned_it_off ? $reason : '',
+			'reason'          => $reason,
+			'severity'        => 'info',
+			'action'          => false,
+			'can_share'       => false,
+			'sharing_enabled' => false,
+		);
+	}
+
+	$lead = reauth_lead_for_current_user();
+
+	if ( '' !== $lead ) {
+		return array(
+			'state'           => 'needs_reconnect',
+			'message'         => $lead,
+			'reason'          => $lead,
+			'severity'        => 'warning',
+			'action'          => true,
+			'can_share'       => false,
+			'sharing_enabled' => true,
+		);
+	}
+
+	/*
+	 * Nothing to show, but the site still cannot share, so the toggle's
+	 * help text hedges. Two states land here: a reconnect whose cause is
+	 * suppressed for this reader (a non-admin on an operator-initiated
+	 * disconnect), and a site that has simply never been connected, which
+	 * is a setup step rather than a problem worth a warning.
+	 */
+	if ( ! is_connected() ) {
+		$ok['can_share'] = false;
+	}
+
+	return $ok;
+}
+
+/**
+ * URL of the ATmosphere settings page.
+ *
+ * Single source for the settings-page location so reconnect prompts and
+ * editor surfaces don't each hardcode the page slug.
+ *
+ * @since 2.1.0
+ *
+ * @return string Unescaped admin URL; escape at the call site.
+ */
+function settings_url(): string {
+	return \admin_url( 'options-general.php?page=atmosphere' );
+}
+
+/**
+ * Where reconnect prompts across the plugin should link.
+ *
+ * Single source for the three-way resolution every reconnect surface — the
+ * admin reauth notice and the editor's reconnect prompts — needs: the
+ * settings page while it's visible, the Connectors screen when the settings
+ * page is hidden (connection-only mode) and the Connectors API is available,
+ * or nowhere when neither exists.
+ *
+ * @since 2.2.0
+ *
+ * @return string Unescaped admin URL, or '' when there is no reconnect destination.
+ */
+function reconnect_url(): string {
+	if ( Admin::is_settings_page_visible() ) {
+		$url = settings_url();
+	} elseif ( \class_exists( 'WP_Connector_Registry' ) ) {
+		$url = Connectors::screen_url();
+	} else {
+		$url = '';
+	}
+
+	/**
+	 * Filters where every reconnect prompt sends the reader.
+	 *
+	 * Runs last, so a host plugin driving the connection itself can point
+	 * the admin notice, both editor surfaces, and Site Health at its own
+	 * screen. Returning '' drops the link and leaves the prompts as plain
+	 * text, which is what happens by default when there is no screen to
+	 * link to.
+	 *
+	 * @since 2.2.0
+	 *
+	 * @param string $url Admin URL to reconnect at, or '' when there is none.
+	 */
+	$url = (string) \apply_filters( 'atmosphere_reconnect_url', $url );
+
+	/*
+	 * Sanitized here rather than at each sink. The PHP surfaces already run
+	 * `esc_url()`, but `Block_Editor::script_data()` localizes this value raw
+	 * and `reconnect-notice.js` renders it as `<a href={ RECONNECT_URL }>`,
+	 * where react-dom only warns about a `javascript:` scheme in development
+	 * and emits the attribute anyway. A filter callback is trusted PHP, so
+	 * this is not a privilege boundary; it stops a host plugin piping an
+	 * option value straight through from becoming one. `sanitize_url()`
+	 * returns '' for a rejected scheme, which the existing empty-string
+	 * branches already degrade to plain text.
+	 */
+	return \sanitize_url( $url );
 }
 
 /**
@@ -496,6 +1078,7 @@ function get_cron_hooks(): array {
 	return array(
 		'atmosphere_refresh_token',
 		'atmosphere_sync_reactions',
+		'atmosphere_backfill_replies',
 		'atmosphere_sync_publication',
 		'atmosphere_publish_post',
 		'atmosphere_update_post',
@@ -539,6 +1122,15 @@ function clear_scheduled_hooks(): void {
 		 */
 		\wp_unschedule_hook( $hook );
 	}
+
+	/*
+	 * The pending-share markers describe publish events that no longer
+	 * exist. Left behind, they would report those posts as "not run" and
+	 * point at WP-Cron. The key is spelled out rather than read from
+	 * `Atmosphere::META_SHARE_PENDING`: uninstall loads this file without
+	 * the autoloader.
+	 */
+	\delete_post_meta_by_key( '_atmosphere_share_pending' );
 }
 
 /**
@@ -608,6 +1200,564 @@ function is_post_publishable( \WP_Post $post ): bool {
  */
 function is_sharing_enabled( \WP_Post $post ): bool {
 	return '1' !== (string) \get_post_meta( $post->ID, ATMOSPHERE_META_DISABLED, true );
+}
+
+/**
+ * The portion of a post's body that is safe to publish to AT Protocol.
+ *
+ * Federation output is remote, site-wide state, so the answer must be
+ * visitor-independent — it may not depend on the current user, cookies, or an
+ * unlock session (the same reasoning that governs {@see is_post_publishable()}).
+ * `the_content` is deliberately *not* used for gating here: membership plugins
+ * hang their paywalls on that filter but resolve them against the current
+ * visitor, so during an author save or WP-Cron run they return the full body.
+ *
+ * By default this returns the post content unchanged — a site with no
+ * membership plugin publishes everything, exactly as before. A membership
+ * integration narrows it through the `atmosphere_publishable_content` filter,
+ * returning only the publicly readable portion:
+ *
+ *  - A fully gated post returns `''` (no body federates; the post transformer
+ *    still shares a title-and-link teaser).
+ *  - A split-point post (e.g. a paywall marker) returns the content above the
+ *    split.
+ *  - A post with an inline gated region returns the content with that region
+ *    removed.
+ *
+ * Every record field *derived from the body* (document `textContent`/
+ * `content`/`description`/images, the Bluesky post text, and the derived
+ * link-card excerpt) reads through this helper, so a single integration closes
+ * all of them at once. The one field that does not is an author-written
+ * `post_excerpt`: it is a deliberate public teaser (the same string a
+ * membership plugin shows in place of the gated body), so it is used as-is.
+ * Integrations MUST fail closed: any ambiguity — gating state unreadable, an
+ * unrecognised access level — must return less content, never more.
+ *
+ * @since 2.3.0
+ *
+ * @param \WP_Post $post Post object.
+ * @return string Publicly publishable post content.
+ */
+function get_publishable_content( \WP_Post $post ): string {
+	/*
+	 * Per-request memoization. Integrations doing real work here (Jetpack
+	 * parses and re-serializes the block tree) are hit several times per
+	 * transform and again on every keystroke of the pre-publish preview, so
+	 * the repeated parse dominates. Key on the post ID plus a hash of the
+	 * stored content: the pre-publish endpoint projects a clone that keeps the
+	 * real ID but carries unsaved content, and the hash keeps those from
+	 * colliding with — or masking — the saved post.
+	 *
+	 * The cache is bounded. `Backfill_Command` walks every post ID in a single
+	 * process and drops its per-post object-cache entries each batch precisely
+	 * to keep memory flat; an unbounded memo here would hold every visited
+	 * post's content for the life of that run and undo it. Evict the oldest
+	 * entry once the cap is reached — the transform path only ever reads back
+	 * the post it is working on.
+	 *
+	 * Held by reference so {@see flush_publishable_content_cache()} can clear it
+	 * (mirroring the content parser's block-cache flush).
+	 */
+	$cache = &publishable_content_cache();
+
+	$key = publishable_content_cache_key( $post );
+
+	if ( isset( $cache[ $key ] ) ) {
+		return $cache[ $key ];
+	}
+
+	/**
+	 * Filters the portion of a post's content that is safe to federate.
+	 *
+	 * Membership/paywall integrations hook this to strip gated content in a
+	 * visitor-independent way. Return only the publicly readable portion of
+	 * `$content`; return `''` when the whole post is gated. Callbacks must not
+	 * depend on the current user, cookies, or session state, and must fail
+	 * closed (return less on any ambiguity). When nothing is gated, return the
+	 * content byte-for-byte unchanged: consumers detect narrowing by comparing
+	 * the result against the stored content (see {@see is_post_gated()}), so
+	 * an unnecessary serialize round-trip reads as gating.
+	 *
+	 * @since 2.3.0
+	 *
+	 * @param string   $content The post's stored content (`post_content`).
+	 * @param \WP_Post $post    The post being published.
+	 */
+	$content = (string) \apply_filters( 'atmosphere_publishable_content', $post->post_content, $post );
+
+	// Keep the memo bounded (see the note above): once full, drop the
+	// oldest entry before recording the newest.
+	if ( \count( $cache ) >= 100 ) {
+		\array_shift( $cache );
+	}
+
+	$cache[ $key ] = $content;
+
+	return $content;
+}
+
+/**
+ * The in-process memo backing {@see get_publishable_content()}.
+ *
+ * Returned by reference so both the memoizing reader and
+ * {@see flush_publishable_content_cache()} operate on the same array.
+ *
+ * @return array<string,string> The memo, by reference.
+ */
+function &publishable_content_cache(): array {
+	static $cache = array();
+
+	return $cache;
+}
+
+/**
+ * Clear the {@see get_publishable_content()} memo.
+ *
+ * The memo is a per-request in-process cache keyed on the post content plus any
+ * state integrations fold in via `atmosphere_publishable_content_cache_key`.
+ * Flushing forces a full recompute for callers that change a gating input the
+ * key does not capture mid-request, and gives tests a reset akin to the content
+ * parser's `flush_block_cache()`.
+ *
+ * @since 2.3.0
+ *
+ * @return void
+ */
+function flush_publishable_content_cache(): void {
+	$cache = &publishable_content_cache();
+	$cache = array();
+}
+
+/**
+ * The memoization key for a post's publishable-content and parser caches.
+ *
+ * Covers the post ID and a hash of the stored content, then lets integrations
+ * fold in any gating state the stored content does not capture. Shared by
+ * {@see get_publishable_content()} and the content parser's block-tree and
+ * rendered-HTML caches so every body-derived cache varies together: a gating
+ * change that recomputes the publishable content must never be served a block
+ * tree or HTML memoized under the previous, more permissive decision.
+ *
+ * @since 2.3.0
+ *
+ * @param \WP_Post $post Post object.
+ * @return string The cache key.
+ */
+function publishable_content_cache_key( \WP_Post $post ): string {
+	$key = $post->ID . ':' . \md5( (string) $post->post_content );
+
+	/**
+	 * Filters the memoization key for {@see get_publishable_content()}.
+	 *
+	 * The default key covers the post ID and its stored content. Integrations
+	 * whose publishable-content output also depends on state the stored content
+	 * does not capture — an unsaved access-level override applied during a
+	 * preview projection, for instance — should append that state so each
+	 * variant gets its own cache slot instead of masking another's.
+	 *
+	 * @since 2.3.0
+	 *
+	 * @param string   $key  The default cache key (post ID + content hash).
+	 * @param \WP_Post $post The post being published.
+	 */
+	return (string) \apply_filters( 'atmosphere_publishable_content_cache_key', $key, $post );
+}
+
+/**
+ * Whether any gating narrowed the post's publishable body.
+ *
+ * True when the publicly publishable content differs from the stored
+ * `post_content` — a fully gated body, a split point, or an inline gated
+ * region. Consumers that must fail closed around gated discussion — the
+ * comment lane keeps a gated parent's whole thread private — read this
+ * predicate rather than comparing content themselves.
+ *
+ * @since 2.3.0
+ *
+ * @param \WP_Post $post Post object.
+ * @return bool True when the post is gated in any way.
+ */
+function is_post_gated( \WP_Post $post ): bool {
+	$gated = get_publishable_content( $post ) !== $post->post_content;
+
+	/**
+	 * Filters whether a post counts as gated.
+	 *
+	 * The default detects narrowing by comparing the publishable content
+	 * against the stored `post_content` byte for byte. Integrations should
+	 * correct both error directions: return true for gating the comparison
+	 * cannot see (a whole-post access level on an empty or image-only body),
+	 * and false when a re-serializing parser changed the markup without
+	 * actually gating anything.
+	 *
+	 * @since 2.3.0
+	 *
+	 * @param bool     $gated Whether the post is gated.
+	 * @param \WP_Post $post  The post being checked.
+	 */
+	return (bool) \apply_filters( 'atmosphere_is_post_gated', $gated, $post );
+}
+
+/**
+ * Render a post's publishable content through the `the_content` filter chain.
+ *
+ * Wraps the render in a pair of actions so membership/paywall integrations can
+ * step their own `the_content` gating aside for its duration. Those callbacks
+ * key off the current viewer, but ATmosphere already narrowed the body to the
+ * publicly readable portion via {@see get_publishable_content()} and renders
+ * as a logged-out visitor; left in place, a membership gate would
+ * re-render the *global* post as a "subscribe to keep reading" form and
+ * overwrite the safe body. The actions always fire in pairs around the
+ * render, so an integration can restore its own state in the `post` hook.
+ *
+ * With `$excerpt`, the publishable content goes through `get_the_excerpt()`
+ * instead, the same way WordPress builds the excerpt for archives: shortcodes
+ * and dynamic blocks are removed, and plugins that keep their output (sharing
+ * links, related posts, paywall forms) out of excerpts do so here as well.
+ *
+ * @since 2.3.0
+ *
+ * @param \WP_Post $post    Post object.
+ * @param bool     $excerpt Optional. Render the excerpt instead of the content. Default false.
+ * @return string The rendered HTML, or the excerpt text.
+ */
+function render_publishable_content( \WP_Post $post, bool $excerpt = false ): string {
+	$content = get_publishable_content( $post );
+
+	/*
+	 * A fully gated body renders to nothing at all. Running the empty string
+	 * through `the_content` would still collect unconditional appenders
+	 * (sharing buttons, CTAs, related-posts blocks) whose boilerplate would
+	 * then ship as the public record body of a gated post — in the Bluesky
+	 * text, the document textContent, and the long-form compositions alike.
+	 */
+	if ( '' === \trim( $content ) && '' !== \trim( (string) $post->post_content ) ) {
+		return '';
+	}
+
+	/*
+	 * Establish the post as the global render context. Blocks, shortcodes,
+	 * and the scoped paywall suspension all key off the global post; the
+	 * parser lane sets up full loop context already, but the Bluesky text
+	 * lane calls this directly — without the global, an inline block would
+	 * resolve against a stale post and the paywall wrapper could not tell
+	 * the narrowed post from any other. Restored below.
+	 */
+	$previous_global_post = $GLOBALS['post'] ?? null;
+	$GLOBALS['post']      = $post; // phpcs:ignore WordPress.WP.GlobalVariablesOverride.Prohibited -- Render context for the duration of the render; restored below.
+
+	/**
+	 * Fires before ATmosphere renders a post's publishable content.
+	 *
+	 * Membership integrations suspend their own `the_content` gating here so it
+	 * does not overwrite the already-narrowed body. Must be mirrored by
+	 * {@see 'atmosphere_post_render_publishable_content'}.
+	 *
+	 * @since 2.3.0
+	 *
+	 * @param \WP_Post $post The post being rendered.
+	 */
+	\do_action( 'atmosphere_pre_render_publishable_content', $post );
+
+	/*
+	 * Render as a logged-out visitor. The record is public, so it must not
+	 * show what plugins only show the current user. Publishing runs in
+	 * WP-Cron, but the preview, the pre-publish panel, and a backfill with
+	 * `--user` render inside a logged-in session.
+	 */
+	$current_user_id = \get_current_user_id();
+	\wp_set_current_user( 0 );
+
+	if ( $excerpt ) {
+		/*
+		 * `get_the_excerpt()` reads the post object, so hand it a copy that
+		 * carries the narrowed content. The copy keeps the ID, so the
+		 * integrations still see the post they suspended their gating for.
+		 * `get_post()` reloads a post from the database unless it is raw,
+		 * which would drop the narrowed content. The content is cut at the
+		 * more tag, because WordPress ignores it on the post's own permalink,
+		 * where the `?atproto` preview renders.
+		 */
+		$excerpt_post               = clone $post;
+		$excerpt_post->post_content = \get_extended( $content )['main'];
+		$excerpt_post->post_excerpt = '';
+		$excerpt_post->filter       = 'raw';
+
+		$html = \get_the_excerpt( $excerpt_post );
+	} else {
+		// phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Core WordPress filter.
+		$html = (string) \apply_filters( 'the_content', $content );
+	}
+
+	\wp_set_current_user( $current_user_id );
+
+	/**
+	 * Fires after ATmosphere renders a post's publishable content.
+	 *
+	 * Mirror of {@see 'atmosphere_pre_render_publishable_content'}.
+	 *
+	 * @since 2.3.0
+	 *
+	 * @param \WP_Post $post The post that was rendered.
+	 */
+	\do_action( 'atmosphere_post_render_publishable_content', $post );
+
+	if ( null === $previous_global_post ) {
+		unset( $GLOBALS['post'] );
+	} else {
+		$GLOBALS['post'] = $previous_global_post; // phpcs:ignore WordPress.WP.GlobalVariablesOverride.Prohibited -- Restores the previous global post.
+	}
+
+	return $html;
+}
+
+/**
+ * Whether rendered HTML still contains an attachment image.
+ *
+ * Matches core's `wp-image-{id}` class, or the attachment URL.
+ *
+ * @since 2.4.2
+ *
+ * @param string $html          Rendered HTML.
+ * @param int    $attachment_id Attachment ID.
+ * @return bool
+ */
+function rendered_html_contains_image( string $html, int $attachment_id ): bool {
+	if ( \preg_match( '/\bwp-image-' . $attachment_id . '\b/', $html ) ) {
+		return true;
+	}
+
+	$url = (string) \wp_get_attachment_url( $attachment_id );
+
+	return '' !== $url && \str_contains( $html, $url );
+}
+
+/**
+ * Whether the plugin is running purely as a connection layer for another plugin.
+ *
+ * A host plugin that embeds ATmosphere only to reuse its AT Protocol
+ * connection — driving everything through the Settings → Connectors card and
+ * its own UI — can return true from the `atmosphere_connection_only_mode`
+ * filter. In that mode ATmosphere stops acting on its own: automatic
+ * cross-posting ({@see is_auto_publish_enabled()}), reaction import
+ * ({@see is_reaction_sync_enabled()}), reply import
+ * ({@see is_reply_sync_enabled()}), and publishing local comments as Bluesky
+ * replies ({@see is_comment_publishing_enabled()}) are all off, and the
+ * plugin's own Settings → ATmosphere screen is hidden
+ * ({@see \Atmosphere\WP_Admin\Admin::is_settings_page_visible()}).
+ *
+ * This is a hard override of the *effective* behaviour, not merely a change of
+ * default: it forces those features off regardless of the stored per-site
+ * option, so the outcome does not depend on whether the site previously saved a
+ * value. Each behavioural lane keeps its own dedicated filter, evaluated last, so
+ * a host that wants to re-enable one (say, keep cross-posting while suppressing
+ * reactions) still can. Settings-page visibility, by contrast, follows
+ * connection-only mode directly, with no separate override.
+ *
+ * @since 2.1.0
+ *
+ * @return bool True when ATmosphere is embedded purely as a connection layer.
+ */
+function is_connection_only_mode(): bool {
+	/**
+	 * Filters whether ATmosphere runs purely as a connection layer.
+	 *
+	 * Return true when another plugin embeds ATmosphere solely to reuse its
+	 * AT Protocol connection. Automatic cross-posting, reaction import,
+	 * reply import, and comment publishing then default off, and Settings →
+	 * ATmosphere is hidden. The per-feature filters
+	 * ({@see 'atmosphere_should_auto_publish'},
+	 * {@see 'atmosphere_should_sync_reactions'},
+	 * {@see 'atmosphere_should_sync_replies'}, and
+	 * {@see 'atmosphere_should_publish_comments'}) are evaluated afterwards and
+	 * have the final say, so individual behavioural lanes can still be re-enabled.
+	 *
+	 * @since 2.1.0
+	 *
+	 * @param bool $connection_only Whether ATmosphere is embedded as a connection layer only. Default false.
+	 */
+	return (bool) \apply_filters( 'atmosphere_connection_only_mode', false );
+}
+
+/**
+ * Resolve a per-feature opt-out flag through the two layers every behavioural
+ * lane shares before its own filter: the stored option (default on), then a
+ * hard off in {@see is_connection_only_mode()}.
+ *
+ * Each lane still applies its own literal `atmosphere_should_*` filter to the
+ * result at its call site — kept there so the hook stays greppable and
+ * documented — so this centralises only the shared option-read + connection-only
+ * override, preventing the four copies from drifting apart.
+ *
+ * @param string $option Option name storing the opt-out preference.
+ * @return bool Effective state before the per-lane filter runs.
+ */
+function feature_option_enabled( string $option ): bool {
+	$enabled = '1' === (string) \get_option( $option, '1' );
+
+	return is_connection_only_mode() ? false : $enabled;
+}
+
+/**
+ * Whether posts are automatically cross-posted to Bluesky on publish.
+ *
+ * Resolves the effective auto-publish state from three layers, in order: the
+ * stored `atmosphere_auto_publish` option (opt-out — on unless the user turned
+ * it off), forced off in {@see is_connection_only_mode()}, and finally the
+ * `atmosphere_should_auto_publish` filter, which has the last word so a host in
+ * connection-only mode can re-enable cross-posting on its own terms.
+ *
+ * @since 2.1.0
+ *
+ * @return bool
+ */
+function is_auto_publish_enabled(): bool {
+	$enabled = feature_option_enabled( 'atmosphere_auto_publish' );
+
+	/**
+	 * Filters whether posts are automatically cross-posted to Bluesky on publish.
+	 *
+	 * Evaluated after the stored option and {@see is_connection_only_mode()},
+	 * so it is the final authority: a host that keeps ATmosphere in
+	 * connection-only mode but still wants automatic cross-posting can return
+	 * true here.
+	 *
+	 * @since 2.1.0
+	 *
+	 * @param bool $enabled Whether auto-publish is effectively enabled.
+	 */
+	return (bool) \apply_filters( 'atmosphere_should_auto_publish', $enabled );
+}
+
+/**
+ * Whether Bluesky likes and reposts are imported as comments.
+ *
+ * Same three-layer resolution as {@see is_auto_publish_enabled()}: the stored
+ * `atmosphere_sync_reactions` option, forced off in
+ * {@see is_connection_only_mode()}, then the `atmosphere_should_sync_reactions`
+ * filter as the final say.
+ *
+ * @since 2.1.0
+ *
+ * @return bool
+ */
+function is_reaction_sync_enabled(): bool {
+	$enabled = feature_option_enabled( 'atmosphere_sync_reactions' );
+
+	/**
+	 * Filters whether Bluesky likes and reposts are imported as comments.
+	 *
+	 * Evaluated after the stored option and {@see is_connection_only_mode()},
+	 * so it has the final say over the effective reaction-import state.
+	 *
+	 * @since 2.1.0
+	 *
+	 * @param bool $enabled Whether reaction import is effectively enabled.
+	 */
+	return (bool) \apply_filters( 'atmosphere_should_sync_reactions', $enabled );
+}
+
+/**
+ * Whether Bluesky replies are imported as comments.
+ *
+ * Same three-layer resolution as {@see is_auto_publish_enabled()}: the stored
+ * `atmosphere_sync_replies` option, forced off in
+ * {@see is_connection_only_mode()}, then the `atmosphere_should_sync_replies`
+ * filter as the final say.
+ *
+ * @since 2.1.0
+ *
+ * @return bool
+ */
+function is_reply_sync_enabled(): bool {
+	$enabled = feature_option_enabled( 'atmosphere_sync_replies' );
+
+	/**
+	 * Filters whether Bluesky replies are imported as comments.
+	 *
+	 * Evaluated after the stored option and {@see is_connection_only_mode()},
+	 * so it has the final say over the effective reply-import state.
+	 *
+	 * @since 2.1.0
+	 *
+	 * @param bool $enabled Whether reply import is effectively enabled.
+	 */
+	return (bool) \apply_filters( 'atmosphere_should_sync_replies', $enabled );
+}
+
+/**
+ * Whether the `site.standard.publication` record is written/refreshed automatically.
+ *
+ * Establishing the site's standard.site publication is ATmosphere acting on its
+ * own, so a host embedding it purely as a connection layer shouldn't get a
+ * public publication record written to the connected repo the moment a user
+ * connects. Unlike the other lanes this has no stored user option — it defaults
+ * on, is forced off in {@see is_connection_only_mode()}, and a dedicated filter
+ * has the final say so a host can opt back in.
+ *
+ * @since 2.1.0
+ *
+ * @return bool
+ */
+function is_publication_sync_enabled(): bool {
+	$enabled = ! is_connection_only_mode();
+
+	/**
+	 * Filters whether the site.standard.publication record is synced automatically.
+	 *
+	 * Runs after {@see is_connection_only_mode()}, so it has the final say: a host
+	 * running ATmosphere as a connection layer can re-enable publication upkeep.
+	 *
+	 * @since 2.1.0
+	 *
+	 * @param bool $enabled Whether publication sync is effectively enabled.
+	 */
+	return (bool) \apply_filters( 'atmosphere_should_sync_publication', $enabled );
+}
+
+/**
+ * Whether a companion Bluesky feed post is published alongside the document.
+ *
+ * When this returns false, ATmosphere publishes only the
+ * `site.standard.document` record for a post — no `app.bsky.feed.post`
+ * companion — across backfill, auto-publish, and edit-updates. Use it to run a
+ * site as a standard.site publication that never cross-posts to Bluesky.
+ *
+ * Forward-only: it governs new writes and does not remove Bluesky posts
+ * published before it was enabled.
+ *
+ * Unlike the other lane helpers (see {@see is_publication_sync_enabled()}), this
+ * one has no connection-only pass. Connection-only mode only forces *automatic*
+ * publishing off ({@see is_auto_publish_enabled()}); manual paths such as the
+ * Backfill CLI still call {@see \Atmosphere\Publisher} directly, so this helper
+ * can — and should — still run in that mode. That is deliberate: it shapes
+ * *what* a publish writes, not *whether* the site publishes, so a host embedded
+ * as a connection layer that runs a manual backfill can still choose
+ * document-only output. Forcing it off in connection-only mode would take that
+ * choice away. It is therefore a pure filter, not the
+ * "option → force off in connection-only → filter last" contract.
+ *
+ * The post is passed to the filter so a callback can answer per post.
+ *
+ * @since 2.2.0
+ *
+ * @param \WP_Post $post The post being published.
+ * @return bool True when the Bluesky companion post should be published. Default true.
+ */
+function is_bluesky_post_enabled( \WP_Post $post ): bool {
+	/**
+	 * Filters whether a companion Bluesky feed post is published alongside the
+	 * site.standard.document record.
+	 *
+	 * Return false to publish documents only. Forward-only: it does not remove
+	 * Bluesky posts published before it was enabled.
+	 *
+	 * @since 2.2.0
+	 *
+	 * @param bool     $enabled Whether to publish the Bluesky companion post. Default true.
+	 * @param \WP_Post $post    The post being published.
+	 */
+	return (bool) \apply_filters( 'atmosphere_should_publish_bluesky_post', true, $post );
 }
 
 /**

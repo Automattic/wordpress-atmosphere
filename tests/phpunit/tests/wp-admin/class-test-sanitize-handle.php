@@ -20,6 +20,7 @@
 
 namespace Atmosphere\Tests\WP_Admin;
 
+use Atmosphere\OAuth\Client;
 use Atmosphere\Sanitize;
 use WP_UnitTestCase;
 use WPDieException;
@@ -76,6 +77,45 @@ class Test_Sanitize_Handle extends WP_UnitTestCase {
 	}
 
 	/**
+	 * The shared authorize-URL safety gate accepts absolute HTTPS URLs.
+	 *
+	 * @covers \Atmosphere\Sanitize::is_safe_authorize_url
+	 */
+	public function test_is_safe_authorize_url_accepts_https(): void {
+		$this->assertTrue( Sanitize::is_safe_authorize_url( 'https://auth.example.com/oauth/authorize?client_id=x' ) );
+	}
+
+	/**
+	 * The gate rejects anything that is not an absolute HTTPS URL — the
+	 * `javascript:` / `data:` / `http:` / scheme-relative cases both connect
+	 * entry points guard against before acting on the URL.
+	 *
+	 * @dataProvider provide_unsafe_authorize_urls
+	 * @covers \Atmosphere\Sanitize::is_safe_authorize_url
+	 *
+	 * @param string $url Candidate authorization URL.
+	 */
+	public function test_is_safe_authorize_url_rejects_unsafe( string $url ): void {
+		$this->assertFalse( Sanitize::is_safe_authorize_url( $url ) );
+	}
+
+	/**
+	 * Unsafe authorization URLs the gate must reject.
+	 *
+	 * @return array<string, array{0: string}>
+	 */
+	public static function provide_unsafe_authorize_urls(): array {
+		return array(
+			'javascript scheme'    => array( 'javascript:alert(1)' ),
+			'data scheme'          => array( 'data:text/html,<script>alert(1)</script>' ),
+			'plain http'           => array( 'http://auth.example.com/oauth/authorize' ),
+			'no scheme'            => array( 'auth.example.com/oauth/authorize' ),
+			'scheme-relative host' => array( '//auth.example.com/oauth/authorize' ),
+			'empty string'         => array( '' ),
+		);
+	}
+
+	/**
 	 * Become an admin so `current_user_can('manage_options')` passes.
 	 */
 	private function become_admin(): void {
@@ -86,12 +126,13 @@ class Test_Sanitize_Handle extends WP_UnitTestCase {
 	/**
 	 * Register a filter and remember it for tearDown removal.
 	 *
-	 * @param string   $hook     Hook name.
-	 * @param callable $callback Callback.
-	 * @param int      $priority Priority.
+	 * @param string   $hook          Hook name.
+	 * @param callable $callback      Callback.
+	 * @param int      $priority      Priority.
+	 * @param int      $accepted_args Number of arguments the callback accepts.
 	 */
-	private function add_filter_tracked( string $hook, callable $callback, int $priority = 10 ): void {
-		\add_filter( $hook, $callback, $priority, PHP_INT_MAX );
+	private function add_filter_tracked( string $hook, callable $callback, int $priority = 10, int $accepted_args = 1 ): void {
+		\add_filter( $hook, $callback, $priority, $accepted_args );
 		$this->tracked_filters[] = array( $hook, $callback, $priority );
 	}
 
@@ -316,5 +357,36 @@ class Test_Sanitize_Handle extends WP_UnitTestCase {
 			'A leading "@" must be stripped so the handle resolves and redirects.'
 		);
 		$this->assertStringStartsWith( 'https://auth.example.com/oauth/authorize', $captured_target );
+	}
+
+	/**
+	 * A settings-page connect starts a flow whose origin is `settings`, so the
+	 * callback returns here — even if a Connectors-card flow was mid-air. The
+	 * origin lives in the flow's own resolved record, so the two can't be crossed
+	 * the way a shared site-wide flag could.
+	 */
+	public function test_settings_page_connect_marks_settings_origin(): void {
+		$this->become_admin();
+		$this->stub_resolver_chain( 'https://auth.example.com/oauth/authorize' );
+
+		$this->add_filter_tracked(
+			'wp_redirect',
+			static function () {
+				throw new WPDieException( 'redirect_intercepted' );
+			}
+		);
+
+		try {
+			Sanitize::handle( 'alice.bsky-test-handle.io' );
+			$this->fail( 'Expected redirect to be intercepted.' );
+		} catch ( WPDieException $e ) {
+			$this->assertSame( 'redirect_intercepted', $e->getMessage() );
+		}
+
+		$this->assertSame(
+			'settings',
+			Client::pending_origin(),
+			'A settings-page connect must mark the flow origin as settings.'
+		);
 	}
 }

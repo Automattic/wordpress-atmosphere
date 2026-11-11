@@ -17,8 +17,6 @@ use Atmosphere\Transformer\Post;
 use Atmosphere\Transformer\Publication;
 use Atmosphere\Transformer\TID;
 
-require_once __DIR__ . '/class-tid-decoder.php';
-
 /**
  * Post transformer tests.
  *
@@ -43,7 +41,6 @@ class Test_Post extends WP_UnitTestCase {
 
 		// Mention resolution memoizes into a static; clear it between tests.
 		$cache = new \ReflectionProperty( Facet::class, 'resolution_cache' );
-		$cache->setAccessible( true );
 		$cache->setValue( null, array() );
 
 		parent::tear_down();
@@ -149,6 +146,225 @@ class Test_Post extends WP_UnitTestCase {
 		$this->assertStringContainsString( 'A Titled Post', $record['text'] );
 		$this->assertArrayHasKey( 'embed', $record );
 		$this->assertSame( 'app.bsky.embed.external', $record['embed']['$type'] );
+	}
+
+	/**
+	 * Without a manual excerpt, the link-card text is built like a WordPress
+	 * excerpt, so plugins that keep their output out of excerpts (sharing
+	 * links, reading time) stay out of the post too.
+	 *
+	 * @covers ::transform
+	 */
+	public function test_long_form_text_skips_output_kept_out_of_excerpts() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'A Titled Post',
+				'post_content' => 'A short post body.',
+				'post_excerpt' => '',
+			)
+		);
+
+		$filter = static fn( $content ) => \doing_filter( 'get_the_excerpt' ) ? $content : 'Reading time: 1 minute' . $content . ' Share this: Facebook X';
+		\add_filter( 'the_content', $filter );
+
+		$record = ( new Post( $post ) )->transform();
+
+		\remove_filter( 'the_content', $filter );
+
+		$this->assertStringContainsString( 'A short post body.', $record['text'] );
+		$this->assertStringNotContainsString( 'Reading time', $record['text'] );
+		$this->assertStringNotContainsString( 'Share this', $record['text'] );
+		$this->assertStringNotContainsString( 'Share this', $record['embed']['external']['description'] );
+	}
+
+	/**
+	 * Content a plugin hides from logged-out visitors stays out of the
+	 * link-card text and description, even when an admin triggers the render.
+	 *
+	 * @covers ::transform
+	 */
+	public function test_long_form_text_hides_members_only_content() {
+		\wp_set_current_user( self::factory()->user->create( array( 'role' => 'administrator' ) ) );
+
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'A Titled Post',
+				'post_content' => 'Public part of the post. Members only: the secret part.',
+				'post_excerpt' => '',
+			)
+		);
+
+		$hide = static fn( $content ) => \is_user_logged_in() ? $content : \preg_replace( '/Members only:.*$/s', '', $content );
+		\add_filter( 'the_content', $hide );
+
+		$record = ( new Post( $post ) )->transform();
+
+		\remove_filter( 'the_content', $hide );
+
+		$this->assertStringContainsString( 'Public part of the post.', $record['text'] );
+		$this->assertStringNotContainsString( 'secret', $record['text'] );
+		$this->assertStringNotContainsString( 'secret', $record['embed']['external']['description'] );
+	}
+
+	/**
+	 * The link-card text stops at the more tag, even on the post's own
+	 * permalink, where WordPress would show the full content (the preview).
+	 *
+	 * @covers ::transform
+	 */
+	public function test_long_form_text_stops_at_more_tag_on_permalink() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'A Titled Post',
+				'post_content' => 'The teaser part.<!--more-->The part after the more tag.',
+				'post_excerpt' => '',
+			)
+		);
+
+		$this->go_to( \get_permalink( $post ) );
+
+		$record = ( new Post( $post ) )->transform();
+
+		$this->assertStringContainsString( 'The teaser part.', $record['text'] );
+		$this->assertStringNotContainsString( 'after the more tag', $record['text'] );
+		$this->assertStringNotContainsString( 'after the more tag', $record['embed']['external']['description'] );
+	}
+
+	/**
+	 * The link-card text and description share one excerpt render.
+	 *
+	 * @covers ::transform
+	 */
+	public function test_long_form_renders_excerpt_once() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'A Titled Post',
+				'post_content' => 'A short post body.',
+				'post_excerpt' => '',
+			)
+		);
+
+		$renders = 0;
+		$counter = static function ( $excerpt ) use ( &$renders ) {
+			++$renders;
+			return $excerpt;
+		};
+		\add_filter( 'get_the_excerpt', $counter );
+
+		$record = ( new Post( $post ) )->transform();
+
+		\remove_filter( 'get_the_excerpt', $counter );
+
+		$this->assertStringContainsString( 'A short post body.', $record['text'] );
+		$this->assertSame( 'A short post body.', $record['embed']['external']['description'] );
+		$this->assertSame( 1, $renders );
+	}
+
+	/**
+	 * An in-body image without the `wp-image-` class is still attached when
+	 * the rendered content shows it by URL.
+	 *
+	 * @covers ::transform
+	 */
+	public function test_short_form_keeps_inbody_image_matched_by_url() {
+		$image_id = self::factory()->attachment->create_object(
+			array(
+				'file'           => 'visible.jpg',
+				'post_mime_type' => 'image/jpeg',
+			)
+		);
+
+		\update_post_meta(
+			$image_id,
+			'_atmosphere_blob_ref',
+			array(
+				'cid'      => 'bafyvisible',
+				'mimeType' => 'image/jpeg',
+				'size'     => 1,
+			)
+		);
+
+		$content = '<!-- wp:paragraph --><p>Just an aside.</p><!-- /wp:paragraph -->'
+			. "\n\n"
+			. '<!-- wp:image {"id":' . $image_id . '} -->'
+			. '<figure class="wp-block-image"><img src="' . \wp_get_attachment_url( $image_id ) . '" alt="" class="wp-image-' . $image_id . '"/></figure>'
+			. '<!-- /wp:image -->';
+
+		$post_id = self::factory()->post->create(
+			array(
+				'post_title'   => 'Aside with image',
+				'post_content' => $content,
+			)
+		);
+		\set_post_format( $post_id, 'aside' );
+
+		// Like an image plugin that rewrites the markup and drops the class.
+		$strip_class = static fn( $html ) => \str_replace( 'wp-image-' . $image_id, '', $html );
+		\add_filter( 'the_content', $strip_class, 99 );
+
+		$record = ( new Post( \get_post( $post_id ) ) )->transform();
+
+		\remove_filter( 'the_content', $strip_class, 99 );
+
+		$this->assertSame( 'bafyvisible', $record['embed']['images'][0]['image']['cid'] );
+	}
+
+	/**
+	 * A custom text keeps hidden content out of the link-card description.
+	 *
+	 * @covers ::transform
+	 */
+	public function test_custom_text_card_hides_members_only_content() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'A Titled Post',
+				'post_content' => 'Public part of the post. Members only: the secret part.',
+				'post_excerpt' => '',
+			)
+		);
+
+		$hide = static fn( $content ) => \is_user_logged_in() ? $content : \preg_replace( '/Members only:.*$/s', '', $content );
+		\add_filter( 'the_content', $hide );
+
+		$transformer = new Post( $post );
+		$transformer->set_custom_text_override( 'My own words.' );
+		$record = $transformer->transform();
+
+		\remove_filter( 'the_content', $hide );
+
+		$this->assertSame( 'My own words.', $record['text'] );
+		$this->assertStringContainsString( 'Public part of the post.', $record['embed']['external']['description'] );
+		$this->assertStringNotContainsString( 'secret', $record['embed']['external']['description'] );
+	}
+
+	/**
+	 * A teaser thread keeps hidden content out of every post and the link card.
+	 *
+	 * @covers ::build_long_form_records
+	 */
+	public function test_teaser_thread_hides_members_only_content() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'A Titled Post',
+				'post_content' => \str_repeat( 'Public sentence for the thread. ', 10 ) . 'Members only: the secret part.',
+				'post_excerpt' => '',
+			)
+		);
+
+		$hide = static fn( $content ) => \is_user_logged_in() ? $content : \preg_replace( '/Members only:.*$/s', '', $content );
+		\add_filter( 'the_content', $hide );
+		\add_filter( 'atmosphere_long_form_composition', fn() => 'teaser-thread' );
+
+		$records = ( new Post( $post ) )->build_long_form_records();
+
+		\remove_filter( 'the_content', $hide );
+
+		$this->assertGreaterThanOrEqual( 2, \count( $records ) );
+		foreach ( $records as $record ) {
+			$this->assertStringNotContainsString( 'secret', $record['text'] );
+		}
+		$last = \end( $records );
+		$this->assertStringNotContainsString( 'secret', $last['embed']['external']['description'] );
 	}
 
 	/**
@@ -2311,6 +2527,45 @@ class Test_Post extends WP_UnitTestCase {
 	}
 
 	/**
+	 * A whitespace-only, ungated post with a featured image stays on the plain
+	 * short-form path (the image embed), rather than being mistaken for a fully
+	 * gated body and pushed to the link card. `is_body_gated()` trims the stored
+	 * content before deciding it is "empty", so a stray newline does not look
+	 * like a gated-away body.
+	 *
+	 * @covers ::transform
+	 */
+	public function test_whitespace_only_ungated_post_with_featured_image_stays_short_form() {
+		$thumb = self::factory()->attachment->create();
+		$post  = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => '',
+				'post_content' => "\n",
+			)
+		);
+		// Set the thumbnail meta directly: set_post_thumbnail() drops it when the
+		// factory attachment has no real image file.
+		\update_post_meta( $post->ID, '_thumbnail_id', $thumb );
+
+		$seen_strategy = null;
+		\add_filter(
+			'atmosphere_post_embed',
+			static function ( $embed, $filter_post, $strategy ) use ( &$seen_strategy ) {
+				$seen_strategy = $strategy;
+				return $embed;
+			},
+			10,
+			3
+		);
+
+		// Projection stands in a placeholder blob for the featured image, so the
+		// embed is non-null and `is_body_gated()` alone decides the path.
+		( new Post( $post ) )->project();
+
+		$this->assertSame( 'short-form', $seen_strategy );
+	}
+
+	/**
 	 * Filter return replaces the embed assigned to the record.
 	 *
 	 * @covers ::transform
@@ -2573,6 +2828,43 @@ class Test_Post extends WP_UnitTestCase {
 
 		$this->assertSame( $cached_ref, Post::upload_image_blob( $attachment_id ) );
 		$this->assertSame( $cached_ref, Post::upload_thumbnail( $attachment_id ) );
+	}
+
+	/**
+	 * A forced re-upload bypasses the cached blob ref.
+	 *
+	 * The self-heal retry sets this flag so a stale cached ref — one the
+	 * current PDS no longer has — is not reused: `upload_image_blob()` must
+	 * skip the cache and take the upload path, whichever image or content
+	 * format carried the ref. The upload has no readable file in the test
+	 * environment, so it returns null rather than the stale ref, which is
+	 * enough to prove the cache was bypassed.
+	 *
+	 * @covers ::upload_image_blob
+	 * @covers ::set_force_blob_reupload
+	 */
+	public function test_force_blob_reupload_bypasses_the_cache() {
+		$attachment_id = self::factory()->attachment->create_object(
+			array(
+				'file'           => 'cached.jpg',
+				'post_mime_type' => 'image/jpeg',
+			),
+			0,
+			array( 'post_title' => 'Cached' )
+		);
+		$cached_ref    = array( 'ref' => array( '$link' => 'bafstale' ) );
+		\update_post_meta( $attachment_id, '_atmosphere_blob_ref', $cached_ref );
+
+		// Normally the cached ref is returned without an upload.
+		$this->assertSame( $cached_ref, Post::upload_image_blob( $attachment_id ) );
+
+		// Forced: the cache is skipped and the upload path (no file here) runs.
+		Post::set_force_blob_reupload( true );
+		$this->assertNull( Post::upload_image_blob( $attachment_id ) );
+		Post::set_force_blob_reupload( false );
+
+		// Resetting the flag restores the cached fast path.
+		$this->assertSame( $cached_ref, Post::upload_image_blob( $attachment_id ) );
 	}
 
 	/**
@@ -3358,7 +3650,7 @@ class Test_Post extends WP_UnitTestCase {
 		$content = '<!-- wp:paragraph --><p>Just an aside.</p><!-- /wp:paragraph -->'
 			. "\n\n"
 			. '<!-- wp:image {"id":' . $inbody_id . ',"sizeSlug":"large"} -->'
-			. '<figure class="wp-block-image size-large"><img src="" alt="" class="wp-image-' . $inbody_id . '"/></figure>'
+			. '<figure class="wp-block-image size-large"><img src="https://example.com/image.jpg" alt="" class="wp-image-' . $inbody_id . '"/></figure>'
 			. '<!-- /wp:image -->';
 
 		$post_id = self::factory()->post->create(
@@ -3378,6 +3670,54 @@ class Test_Post extends WP_UnitTestCase {
 		$this->assertCount( 1, $record['embed']['images'] );
 		$this->assertSame( 'An in-body image', $record['embed']['images'][0]['alt'] );
 		$this->assertSame( 'bafyinbody', $record['embed']['images'][0]['image']['cid'] );
+	}
+
+	/**
+	 * An in-body image in a part of the post that a plugin hides from
+	 * logged-out visitors is not attached.
+	 *
+	 * @covers ::transform
+	 */
+	public function test_short_form_skips_hidden_inbody_image() {
+		$image_id = self::factory()->attachment->create_object(
+			array(
+				'file'           => 'hidden.jpg',
+				'post_mime_type' => 'image/jpeg',
+			)
+		);
+		\update_post_meta(
+			$image_id,
+			'_atmosphere_blob_ref',
+			array(
+				'cid'      => 'bafyhidden',
+				'mimeType' => 'image/jpeg',
+				'size'     => 1,
+			)
+		);
+
+		$content = '<!-- wp:paragraph --><p>Just an aside.</p><!-- /wp:paragraph -->'
+			. "\n\n<!-- members-only -->\n"
+			. '<!-- wp:image {"id":' . $image_id . '} -->'
+			. '<figure class="wp-block-image"><img src="https://example.com/image.jpg" alt="" class="wp-image-' . $image_id . '"/></figure>'
+			. '<!-- /wp:image -->';
+
+		$post_id = self::factory()->post->create(
+			array(
+				'post_title'   => 'Aside with hidden image',
+				'post_content' => $content,
+			)
+		);
+		\set_post_format( $post_id, 'aside' );
+
+		$hide = static fn( $html ) => \is_user_logged_in() ? $html : \preg_replace( '/<!-- members-only -->.*$/s', '', $html );
+		\add_filter( 'the_content', $hide, 1 );
+
+		$record = ( new Post( \get_post( $post_id ) ) )->transform();
+
+		\remove_filter( 'the_content', $hide, 1 );
+
+		$this->assertSame( 'Just an aside.', $record['text'] );
+		$this->assertArrayNotHasKey( 'embed', $record );
 	}
 
 	/**
@@ -3415,7 +3755,7 @@ class Test_Post extends WP_UnitTestCase {
 		$content  = '<!-- wp:paragraph --><p>Look at these images.</p><!-- /wp:paragraph -->' . "\n\n";
 		foreach ( $sequence as $id ) {
 			$content .= '<!-- wp:image {"id":' . $id . '} -->'
-				. '<figure class="wp-block-image"><img class="wp-image-' . $id . '"/></figure>'
+				. '<figure class="wp-block-image"><img src="https://example.com/image.jpg" class="wp-image-' . $id . '"/></figure>'
 				. "<!-- /wp:image -->\n";
 		}
 
@@ -3465,7 +3805,7 @@ class Test_Post extends WP_UnitTestCase {
 			. '<!-- wp:group -->'
 			. '<div class="wp-block-group">'
 			. '<!-- wp:image {"id":' . $inner_id . '} -->'
-			. '<figure class="wp-block-image"><img class="wp-image-' . $inner_id . '"/></figure>'
+			. '<figure class="wp-block-image"><img src="https://example.com/image.jpg" class="wp-image-' . $inner_id . '"/></figure>'
 			. '<!-- /wp:image -->'
 			. '</div>'
 			. '<!-- /wp:group -->';
@@ -3811,13 +4151,13 @@ class Test_Post extends WP_UnitTestCase {
 		// with synthetic IDs so the breadth cap fires before the tail
 		// attachment is seen. The tail then sits at position 35.
 		foreach ( $valid_ids as $id ) {
-			$content .= '<!-- wp:image {"id":' . $id . '} --><figure></figure><!-- /wp:image -->';
+			$content .= '<!-- wp:image {"id":' . $id . '} --><figure><img src="https://example.com/image.jpg" class="wp-image-' . $id . '"/></figure><!-- /wp:image -->';
 		}
 		for ( $i = 0; $i < 30; $i++ ) {
 			$synthetic_id = 90000 + $i;
-			$content     .= '<!-- wp:image {"id":' . $synthetic_id . '} --><figure></figure><!-- /wp:image -->';
+			$content     .= '<!-- wp:image {"id":' . $synthetic_id . '} --><figure><img src="https://example.com/image.jpg" class="wp-image-' . $synthetic_id . '"/></figure><!-- /wp:image -->';
 		}
-		$content .= '<!-- wp:image {"id":' . $tail_id . '} --><figure></figure><!-- /wp:image -->';
+		$content .= '<!-- wp:image {"id":' . $tail_id . '} --><figure><img src="https://example.com/image.jpg" class="wp-image-' . $tail_id . '"/></figure><!-- /wp:image -->';
 
 		$post_id = self::factory()->post->create(
 			array(
@@ -3894,7 +4234,7 @@ class Test_Post extends WP_UnitTestCase {
 		$content = '<!-- wp:paragraph --><p>Deeply nested aside.</p><!-- /wp:paragraph -->'
 			. $open
 			. '<!-- wp:image {"id":' . $deep_id . '} -->'
-			. '<figure class="wp-block-image"><img class="wp-image-' . $deep_id . '"/></figure>'
+			. '<figure class="wp-block-image"><img src="https://example.com/image.jpg" class="wp-image-' . $deep_id . '"/></figure>'
 			. '<!-- /wp:image -->'
 			. $close;
 
@@ -4309,7 +4649,7 @@ class Test_Post extends WP_UnitTestCase {
 		$post      = self::factory()->post->create_and_get(
 			array(
 				'post_title'   => '',
-				'post_content' => $long_body . \sprintf( '<!-- wp:image {"id":%1$d} --><figure class="wp-block-image"><img class="wp-image-%1$d"/></figure><!-- /wp:image -->', $attachment_id ),
+				'post_content' => $long_body . \sprintf( '<!-- wp:image {"id":%1$d} --><figure class="wp-block-image"><img src="https://example.com/image.jpg" class="wp-image-%1$d"/></figure><!-- /wp:image -->', $attachment_id ),
 			)
 		);
 
@@ -4780,5 +5120,173 @@ class Test_Post extends WP_UnitTestCase {
 			static fn( $facet ) => 'app.bsky.richtext.facet#mention' === ( $facet['features'][0]['$type'] ?? '' )
 		);
 		$this->assertCount( 1, $mention_facets, 'Bare-permalink post must still emit a #mention facet.' );
+	}
+
+	/**
+	 * With original-time minting on, get_rkey() reserves a TID that
+	 * decodes to the post's original publish date, and is idempotent.
+	 */
+	public function test_get_rkey_uses_original_time_when_enabled() {
+		$post_id = self::factory()->post->create(
+			array(
+				'post_status'   => 'publish',
+				'post_date'     => '2020-03-15 12:00:00',
+				'post_date_gmt' => '2020-03-15 12:00:00',
+			)
+		);
+
+		$transformer = new Post( \get_post( $post_id ) );
+		$transformer->use_original_time();
+
+		$rkey     = $transformer->get_rkey();
+		$expected = \strtotime( '2020-03-15 12:00:00' ) * 1_000_000 + ( $post_id % 100000 ) * 10;
+
+		$this->assertSame( $expected, TID::decode( $rkey ) );
+		$this->assertSame( $rkey, $transformer->get_rkey() );
+		$this->assertSame( $rkey, \get_post_meta( $post_id, Post::META_TID, true ) );
+	}
+
+	/**
+	 * Without the flag, get_rkey() mints a live (near-now) TID, not a
+	 * historical one.
+	 */
+	public function test_get_rkey_defaults_to_live_tid() {
+		$post_id = self::factory()->post->create(
+			array(
+				'post_status'   => 'publish',
+				'post_date'     => '2020-03-15 12:00:00',
+				'post_date_gmt' => '2020-03-15 12:00:00',
+			)
+		);
+
+		$rkey     = ( new Post( \get_post( $post_id ) ) )->get_rkey();
+		$historic = \strtotime( '2020-03-15 12:00:00' ) * 1_000_000;
+
+		$this->assertGreaterThan( $historic, TID::decode( $rkey ) );
+	}
+
+	/**
+	 * A post that already reserved a (live) TID from a prior attempt keeps
+	 * it under original-time minting — get_rkey() must not re-mint an
+	 * already-persisted rkey. Protects the reserved-TID reuse the update
+	 * path depends on.
+	 */
+	public function test_get_rkey_preserves_existing_reserved_tid_under_original_time() {
+		$post_id = self::factory()->post->create(
+			array(
+				'post_status'   => 'publish',
+				'post_date'     => '2020-03-15 12:00:00',
+				'post_date_gmt' => '2020-03-15 12:00:00',
+			)
+		);
+
+		$reserved = TID::generate();
+		\update_post_meta( $post_id, Post::META_TID, $reserved );
+
+		$transformer = new Post( \get_post( $post_id ) );
+		$transformer->use_original_time();
+
+		$this->assertSame( $reserved, $transformer->get_rkey() );
+		$this->assertSame( $reserved, \get_post_meta( $post_id, Post::META_TID, true ) );
+	}
+
+	/**
+	 * A thread reply key is historical and sorts just after the root.
+	 */
+	public function test_mint_reply_rkey_is_historical_and_after_root() {
+		$post_id = self::factory()->post->create(
+			array(
+				'post_status'   => 'publish',
+				'post_date'     => '2020-03-15 12:00:00',
+				'post_date_gmt' => '2020-03-15 12:00:00',
+			)
+		);
+
+		$transformer = new Post( \get_post( $post_id ) );
+		$transformer->use_original_time();
+
+		$root  = $transformer->get_rkey();
+		$reply = $transformer->mint_reply_rkey( 1 );
+
+		$this->assertGreaterThan( $root, $reply );
+		$this->assertSame(
+			\strtotime( '2020-03-15 12:00:00' ) * 1_000_000 + ( $post_id % 100000 ) * 10 + 1,
+			TID::decode( $reply )
+		);
+	}
+
+	/**
+	 * A thread reply key must not collide with the root key of the post
+	 * published one ID later in the same second. The reply sequence lives
+	 * in a reserved sub-range of the disambiguator, so `mint_reply_rkey(N)`
+	 * can never land on the slot post `ID + N` would use for its root.
+	 * Regression test: summing the ID and sequence made these identical.
+	 */
+	public function test_reply_rkey_does_not_collide_with_next_post_root() {
+		$date    = '2020-03-15 12:00:00';
+		$post_id = self::factory()->post->create(
+			array(
+				'post_status'   => 'publish',
+				'post_date'     => $date,
+				'post_date_gmt' => $date,
+			)
+		);
+
+		$transformer = new Post( \get_post( $post_id ) );
+		$transformer->use_original_time();
+
+		$reply = $transformer->mint_reply_rkey( 1 );
+
+		// The slot the root of post ( $post_id + 1 ), published in the same
+		// second, would occupy under original-time minting.
+		$next_root_slot = \strtotime( $date ) * 1_000_000 + ( ( $post_id + 1 ) % 100000 ) * 10;
+
+		$this->assertNotSame( $next_root_slot, TID::decode( $reply ) );
+	}
+
+	/**
+	 * Two posts published in the same second whose IDs collide in the
+	 * sub-second slot (congruent modulo 100,000) still mint distinct rkeys,
+	 * because the higher ID bits ride in the clock component. The
+	 * sub-second-only scheme minted an identical rkey and dropped the
+	 * second post to "record already exists".
+	 */
+	public function test_original_time_rkeys_distinct_for_slot_colliding_ids() {
+		$date = '2020-03-15 12:00:00';
+
+		$a_id = self::factory()->post->create(
+			array(
+				'import_id'     => 1_000_050,
+				'post_status'   => 'publish',
+				'post_date'     => $date,
+				'post_date_gmt' => $date,
+			)
+		);
+		$b_id = self::factory()->post->create(
+			array(
+				'import_id'     => 1_100_050,
+				'post_status'   => 'publish',
+				'post_date'     => $date,
+				'post_date_gmt' => $date,
+			)
+		);
+
+		// Guard the fixture: the IDs must land as imported and share a
+		// sub-second slot for this test to exercise the clock widening.
+		$this->assertSame( 1_000_050, $a_id );
+		$this->assertSame( 1_100_050, $b_id );
+		$this->assertSame( $a_id % 100000, $b_id % 100000 );
+
+		$a = new Post( \get_post( $a_id ) );
+		$a->use_original_time();
+		$b = new Post( \get_post( $b_id ) );
+		$b->use_original_time();
+
+		$a_rkey = $a->get_rkey();
+		$b_rkey = $b->get_rkey();
+
+		$this->assertNotSame( $a_rkey, $b_rkey );
+		// Same microsecond slot; the disambiguation is entirely in the clock.
+		$this->assertSame( TID::decode( $a_rkey ), TID::decode( $b_rkey ) );
 	}
 }

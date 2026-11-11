@@ -15,6 +15,8 @@ namespace Atmosphere\Transformer;
 use Atmosphere\Mention;
 use function Atmosphere\build_at_uri;
 use function Atmosphere\get_did;
+use function Atmosphere\publishable_content_cache_key;
+use function Atmosphere\render_publishable_content;
 use function Atmosphere\sanitize_text;
 use function Atmosphere\to_iso8601;
 
@@ -50,6 +52,73 @@ abstract class Base {
 	 */
 	public function __construct( mixed $object ) { // phpcs:ignore Universal.NamingConventions.NoReservedKeywordParameterNames
 		$this->object = $object;
+	}
+
+	/**
+	 * Whether rkeys are minted from the object's original publish time
+	 * instead of the current time.
+	 *
+	 * @var bool
+	 */
+	protected bool $original_time = false;
+
+	/**
+	 * Mint record keys from the object's original publish date.
+	 *
+	 * Used by `--original-time` backfills so historical records sort by
+	 * their original date in feeds/readers instead of by backfill-run
+	 * time. Only affects the *first* `get_rkey()` reservation — an
+	 * already-persisted TID is reused unchanged.
+	 *
+	 * @param bool $on Whether to enable original-time minting.
+	 */
+	public function use_original_time( bool $on = true ): void {
+		$this->original_time = $on;
+	}
+
+	/**
+	 * Mint a historical TID from the post's original publish date.
+	 *
+	 * Fills the sub-second slot with a disambiguator so records sharing a
+	 * publish second sort deterministically and are very unlikely to
+	 * collide on the same rkey. The post ID and the reply `$sequence`
+	 * occupy disjoint ranges of that slot: the ID (reduced modulo 100,000)
+	 * picks the high part, the sequence the reserved low decimal digit. A
+	 * teaser thread is capped at 5 records
+	 * ({@see Post::build_teaser_thread()}), so a single digit is ample
+	 * headroom for the sequence.
+	 *
+	 * Disjoint ranges — rather than summing as `ID + $sequence` — stop
+	 * reply N of post P from sharing a slot with the root of post P+N when
+	 * both are published in the same second (which would mint an identical
+	 * rkey); adjacent IDs sharing a second are common in bulk/WXR imports,
+	 * the backfill case this feature targets.
+	 *
+	 * The sub-second slot alone only distinguishes 100,000 posts, so the
+	 * next slice of the ID rides in the TID's 10 clock-id bits. That widens
+	 * the effective per-second disambiguation to ~102.4 million (100,000 x
+	 * 1,024): two roots collide only if their IDs are congruent modulo
+	 * 102,400,000 within the same second — beyond the ID range of a
+	 * realistic site, so a same-second bulk import no longer drops posts to
+	 * "record already exists".
+	 *
+	 * @param int $sequence Offset within the post's records (0 = root/doc).
+	 * @return string
+	 */
+	protected function historical_rkey( int $sequence = 0 ): string {
+		$unix = (int) \get_post_time( 'U', true, $this->object );
+		$id   = $this->object->ID;
+
+		// Post ID in the high part, reply sequence in the reserved low
+		// digit; `% 100000` keeps the product inside the microsecond slot.
+		$disambiguator = ( $id % 100000 ) * 10 + $sequence;
+
+		// The next slice of the ID rides in the clock bits so posts whose
+		// sub-second slots collide (IDs congruent modulo 100,000) still get
+		// distinct rkeys.
+		$clock = \intdiv( $id, 100000 ) % 1024;
+
+		return TID::generate_for_time( $unix, $disambiguator, $clock );
 	}
 
 	/**
@@ -105,73 +174,61 @@ abstract class Base {
 	}
 
 	/**
-	 * Mint an rkey that honors the historical-TID filter contract.
+	 * Reserve the record's rkey (TID) and refresh its DID provenance.
 	 *
-	 * Shared by `Post::get_rkey()`, `Document::get_rkey()`, and
-	 * `Comment::get_rkey()`. Each subclass calls this with its own
-	 * collection NSID, the relevant `*_date_gmt` string and ID, a
-	 * per-class salt prefix (so `applyWrites` can never see two records
-	 * collapse onto the same rkey within a single collection), and an
-	 * optional kind label that separates records of different WordPress
-	 * object kinds when they share an AT Protocol collection.
+	 * Shared by the Post, Document, and Comment transformers, which each
+	 * store an rkey plus the DID it was minted under so the delete guards
+	 * in {@see \Atmosphere\Publisher} can refuse a wrong-repo delete after
+	 * a disconnect + reconnect-to-a-different-account. The subclass supplies
+	 * the meta accessors (post vs comment meta); the key set comes from its
+	 * `static::META_DID` / `static::META_TID` constants.
 	 *
-	 * The historical path falls back to `TID::generate()` when either
-	 * the filter opts out or the GMT datetime cannot be parsed
-	 * (empty string, MySQL `0000-00-00 00:00:00` sentinel, garbage),
-	 * so callers never need to handle the "no usable date" case.
+	 * Three invariants live here once, all load-bearing for the guard:
 	 *
-	 * @since unreleased
+	 * 1. When there is a DID to write, it is written BEFORE the TID, so a
+	 *    partial failure between the two writes leaves the safe "DID set,
+	 *    no TID" state. The inverse, "TID set, no DID", reads as "origin
+	 *    unknown" and lets the guard fall through to the current DID,
+	 *    re-opening the wrong-repo delete. A disconnected site does end
+	 *    up in that state (see 3), and there it is the truth: nothing was
+	 *    published under any account.
+	 * 2. The DID is compared before writing, so republishing an unchanged
+	 *    record is a meta no-op and only an actual account transition
+	 *    issues a write. Every caller is in the Publisher at publish time;
+	 *    the `wp_head` emitters deliberately read the stored AT-URI
+	 *    instead of routing through `get_rkey()`.
+	 * 3. An empty current DID never overwrites a stored one. The guards
+	 *    read an empty origin as "unknown" and wave the delete through,
+	 *    so blanking a real origin on a disconnected site would disarm
+	 *    them for that record. Every caller today sits behind
+	 *    `is_connected()`, so this is belt and braces, but it is the one
+	 *    place the rule has to hold.
 	 *
-	 * @param string               $collection   AT Protocol collection NSID.
-	 * @param string               $gmt_datetime GMT datetime string from the WP object.
-	 * @param int                  $object_id    Post or comment identifier.
-	 * @param string               $salt_prefix  Per-class salt prefix (e.g. `'post:'`).
-	 * @param \WP_Post|\WP_Comment $wp_object    WordPress object being transformed.
-	 * @param string               $kind         Optional kind label for collection-sharing
-	 *                                           record types (e.g. `'comment'`).
-	 * @return string Minted TID rkey.
+	 * The historical-rkey path exists for posts only: `historical_rkey()`
+	 * derives the TID from `get_post_time()` and the post ID, neither of
+	 * which a `WP_Comment` has. A comment transformer with original-time
+	 * minting switched on therefore falls back to a fresh TID.
+	 *
+	 * @param callable $read  Reader: `fn( string $key ): mixed`.
+	 * @param callable $write Writer: `fn( string $key, string $value ): void`.
+	 * @return string The reserved 13-character TID.
 	 */
-	final protected function mint_historical_rkey(
-		string $collection,
-		string $gmt_datetime,
-		int $object_id,
-		string $salt_prefix,
-		\WP_Post|\WP_Comment $wp_object,
-		string $kind = ''
-	): string {
-		/**
-		 * Filters whether to mint a historical TID based on the post's
-		 * original publish date.
-		 *
-		 * Defaults to true so backfilled posts get rkeys that reflect
-		 * the original publish time rather than the time of the
-		 * backfill run. Return false to fall back to the live-publish
-		 * `TID::generate()` path (now-based, with the monotonic floor).
-		 *
-		 * @since unreleased
-		 *
-		 * @param bool                 $use_historical Whether to mint a historical TID.
-		 * @param \WP_Post|\WP_Comment $object         WordPress object being transformed.
-		 * @param string               $collection     AT Protocol collection NSID.
-		 */
-		$use_historical = (bool) \apply_filters(
-			'atmosphere_use_historical_tid',
-			true,
-			$wp_object,
-			$collection
-		);
-
-		if ( ! $use_historical ) {
-			return TID::generate();
+	protected function reserve_rkey_with_provenance( callable $read, callable $write ): string {
+		$current_did = get_did();
+		$stored_did  = (string) $read( static::META_DID );
+		if ( '' !== $current_did && $stored_did !== $current_did ) {
+			$write( static::META_DID, $current_did );
 		}
 
-		$microseconds = TID::microseconds_from_post_date( $gmt_datetime, $object_id, $kind );
-
-		if ( $microseconds <= 0 ) {
-			return TID::generate();
+		$rkey = (string) $read( static::META_TID );
+		if ( '' === $rkey ) {
+			$rkey = ( $this->original_time && $this->object instanceof \WP_Post )
+				? $this->historical_rkey()
+				: TID::generate();
+			$write( static::META_TID, $rkey );
 		}
 
-		return TID::generate_for_time( $microseconds, $salt_prefix . $object_id );
+		return $rkey;
 	}
 
 	/**
@@ -192,6 +249,21 @@ abstract class Base {
 	protected function to_iso8601( string $datetime ): string {
 		return to_iso8601( $datetime );
 	}
+
+	/**
+	 * Maximum tags written into a record.
+	 *
+	 * Both `app.bsky.feed.post` and `site.standard.document` cap their
+	 * `tags` array at 8, so the limit is applied here rather than in
+	 * each transformer. It is enforced after
+	 * `atmosphere_record_tags` runs, so a filter cannot push a record
+	 * past what the lexicons accept.
+	 *
+	 * @since 2.2.0
+	 *
+	 * @var int
+	 */
+	private const MAX_TAGS = 8;
 
 	/**
 	 * Collect tags from post taxonomies (max 8, no "uncategorized").
@@ -218,11 +290,93 @@ abstract class Base {
 			}
 		}
 
-		return \array_slice( \array_unique( $tags ), 0, 8 );
+		$tags = \array_values( \array_unique( $tags ) );
+
+		/**
+		 * Filters the tag list for a post's AT Protocol records.
+		 *
+		 * Runs before the 8-tag cap and before any record is built, so
+		 * the `app.bsky.feed.post` and the `site.standard.document` for
+		 * a post always see the same list. Use it to drop junk terms a
+		 * migration left behind, or to feed the records from a taxonomy
+		 * the plugin does not read.
+		 *
+		 * This is the filter to reach for rather than
+		 * `atmosphere_transform_document` / `atmosphere_transform_bsky_post`:
+		 * those run after the cap, so dropping a tag there shortens the
+		 * list instead of making room for the next one.
+		 *
+		 * The return value is normalized before use. Entries that are
+		 * not strings are dropped, the rest are trimmed, empties are
+		 * removed, and the result is de-duplicated and capped again at
+		 * {@see self::MAX_TAGS}. That bounds how many tags a record
+		 * carries, not how long each one is: both lexicons also bound a
+		 * single tag (64 graphemes for `app.bsky.feed.post`), and an
+		 * over-long entry is passed through as-is, exactly as an
+		 * over-long WordPress tag name already is. A filter that builds
+		 * tag names rather than picking from existing terms should keep
+		 * them short itself.
+		 *
+		 * @since 2.2.0
+		 *
+		 * @param string[] $tags Tag names collected from the post's tags and categories.
+		 * @param \WP_Post $post WordPress post.
+		 */
+		$filtered = \apply_filters( 'atmosphere_record_tags', $tags, $post );
+
+		if ( ! \is_array( $filtered ) ) {
+			\_doing_it_wrong(
+				__METHOD__,
+				\esc_html__( 'atmosphere_record_tags must return an array; falling back to the unfiltered tags.', 'atmosphere' ),
+				'2.2.0'
+			);
+			$filtered = $tags;
+		}
+
+		/*
+		 * Normalize whatever came back. A record's `tags` entries have
+		 * to be strings, and this list is written to the PDS unescaped,
+		 * so a filter returning term objects or integers must not reach
+		 * the transformer. Dropping silently rather than casting is
+		 * deliberate: `(string) $term` on a WP_Term would fatal, and
+		 * stringifying an integer would quietly write the junk keyword
+		 * this filter mostly exists to remove.
+		 *
+		 * Deliberately quieter than the non-array branch above, which
+		 * does call `_doing_it_wrong()`. A filter returning the wrong
+		 * type outright is a bug in that filter; a filter returning a
+		 * mixed list is usually a `get_terms()` result someone forgot to
+		 * pluck, and warning once per post across a backfill would be
+		 * noise rather than signal.
+		 */
+		$normalized = array();
+
+		foreach ( $filtered as $tag ) {
+			if ( ! \is_string( $tag ) ) {
+				continue;
+			}
+
+			$tag = \trim( $tag );
+
+			if ( '' !== $tag ) {
+				$normalized[] = $tag;
+			}
+		}
+
+		return \array_slice( \array_values( \array_unique( $normalized ) ), 0, self::MAX_TAGS );
 	}
 
 	/**
 	 * Get a short plain-text excerpt for a post.
+	 *
+	 * A stored `post_excerpt` is an author-provided public teaser and is used
+	 * verbatim — this is the same string Jetpack surfaces as the public preview
+	 * of a gated post, so it stays public here too. Only the *derived* excerpt,
+	 * generated when no excerpt was written, is built like the excerpt
+	 * WordPress shows a logged-out visitor on an archive page
+	 * ({@see render_publishable_content()}). It starts from the publishable
+	 * content, so a gated body never leaks into it, and plugins that hide
+	 * parts of the content or keep their output out of excerpts apply.
 	 *
 	 * @param \WP_Post $post      Post object.
 	 * @param int      $word_limit Words to keep.
@@ -233,7 +387,24 @@ abstract class Base {
 			return sanitize_text( $post->post_excerpt );
 		}
 
-		return \wp_trim_words( sanitize_text( $post->post_content ), $word_limit, '...' );
+		$key = publishable_content_cache_key( $post );
+
+		if ( ! isset( $this->excerpt_cache[ $key ] ) ) {
+			/*
+			 * Render the excerpt once, untrimmed, and trim it per word limit
+			 * below. One less than PHP_INT_MAX, because `wp_trim_words()`
+			 * adds one to the limit.
+			 */
+			$length = static fn() => PHP_INT_MAX - 1;
+
+			\add_filter( 'excerpt_length', $length, PHP_INT_MAX );
+
+			$this->excerpt_cache[ $key ] = sanitize_text( render_publishable_content( $post, true ) );
+
+			\remove_filter( 'excerpt_length', $length, PHP_INT_MAX );
+		}
+
+		return \wp_trim_words( $this->excerpt_cache[ $key ], $word_limit, '...' );
 	}
 
 	/**
@@ -259,22 +430,35 @@ abstract class Base {
 	}
 
 	/**
-	 * Cache of `render_post_content_plain()` output keyed by post ID.
+	 * Cache of `render_post_content_plain()` output, keyed by the
+	 * publishable-content cache key.
 	 *
 	 * Per-instance memoization; `the_content` filter chains can be
 	 * expensive, and long-form composition may touch a post's plain
-	 * text from multiple helpers inside a single publish pass.
+	 * text from multiple helpers inside a single publish pass. Keyed via
+	 * {@see \Atmosphere\publishable_content_cache_key()} — not the bare
+	 * post ID — so gating state folded into that key gets its own slot,
+	 * like every other body-derived cache.
 	 *
-	 * @var array<int,string>
+	 * @var array<string,string>
 	 */
 	private array $plain_content_cache = array();
 
 	/**
-	 * Per-instance memoization of the rendered-HTML render (linkification off).
+	 * Per-instance memoization of the rendered-HTML render (linkification
+	 * off), keyed like {@see self::$plain_content_cache}.
 	 *
-	 * @var array<int,string>
+	 * @var array<string,string>
 	 */
 	private array $html_content_cache = array();
+
+	/**
+	 * Per-instance memoization of the untrimmed excerpt, keyed like
+	 * {@see self::$plain_content_cache}.
+	 *
+	 * @var array<string,string>
+	 */
+	private array $excerpt_cache = array();
 
 	/**
 	 * Render a post's content to HTML, with mention linkification suppressed.
@@ -296,15 +480,17 @@ abstract class Base {
 	 * @return string
 	 */
 	protected function render_post_content_html( \WP_Post $post ): string {
-		if ( isset( $this->html_content_cache[ $post->ID ] ) ) {
-			return $this->html_content_cache[ $post->ID ];
+		$key = publishable_content_cache_key( $post );
+
+		if ( isset( $this->html_content_cache[ $key ] ) ) {
+			return $this->html_content_cache[ $key ];
 		}
 
 		$html = Mention::without_links(
-			static fn() => \apply_filters( 'the_content', $post->post_content ) // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Core WordPress filter.
+			static fn() => render_publishable_content( $post )
 		);
 
-		$this->html_content_cache[ $post->ID ] = $html;
+		$this->html_content_cache[ $key ] = $html;
 
 		return $html;
 	}
@@ -315,19 +501,22 @@ abstract class Base {
 	 * Runs the_content filter, strips tags, decodes entities, and
 	 * collapses whitespace. Shared by short-form Bluesky post
 	 * composition and the document record's textContent field.
-	 * Memoized per post ID to avoid re-running the filter chain.
+	 * Memoized per publishable-content cache key to avoid re-running
+	 * the filter chain.
 	 *
 	 * @param \WP_Post $post Post object.
 	 * @return string
 	 */
 	protected function render_post_content_plain( \WP_Post $post ): string {
-		if ( isset( $this->plain_content_cache[ $post->ID ] ) ) {
-			return $this->plain_content_cache[ $post->ID ];
+		$key = publishable_content_cache_key( $post );
+
+		if ( isset( $this->plain_content_cache[ $key ] ) ) {
+			return $this->plain_content_cache[ $key ];
 		}
 
 		$plain = sanitize_text( $this->render_post_content_html( $post ) );
 
-		$this->plain_content_cache[ $post->ID ] = $plain;
+		$this->plain_content_cache[ $key ] = $plain;
 
 		return $plain;
 	}
@@ -346,7 +535,7 @@ abstract class Base {
 		}
 
 		if ( ! \is_array( $value ) || empty( $value['$type'] ) || ! \is_string( $value['$type'] ) ) {
-			\_doing_it_wrong( \esc_html( $method ), \esc_html( $message ), 'unreleased' );
+			\_doing_it_wrong( \esc_html( $method ), \esc_html( $message ), '2.0.0' );
 			return null;
 		}
 
@@ -374,7 +563,7 @@ abstract class Base {
 			\_doing_it_wrong(
 				\esc_html( $method ),
 				\esc_html__( 'Self-label filters must return a com.atproto.label.defs#selfLabels object with a values array; omitting the labels field.', 'atmosphere' ),
-				'unreleased'
+				'2.0.0'
 			);
 			return null;
 		}
@@ -384,7 +573,7 @@ abstract class Base {
 				\_doing_it_wrong(
 					\esc_html( $method ),
 					\esc_html__( 'Self-label values must be arrays with a non-empty string val field; omitting the labels field.', 'atmosphere' ),
-					'unreleased'
+					'2.0.0'
 				);
 				return null;
 			}

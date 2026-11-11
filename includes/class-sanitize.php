@@ -22,6 +22,21 @@ use Atmosphere\OAuth\Client;
 class Sanitize {
 
 	/**
+	 * Sanitize a boolean option while preserving its string storage format.
+	 *
+	 * WordPress caches the value passed to `update_option()` without first
+	 * converting scalar values to their database string representation. Keep
+	 * these existing checkbox options as `'1'` or `''` so strict comparisons
+	 * behave consistently whether the value comes from the database or cache.
+	 *
+	 * @param mixed $value Submitted value.
+	 * @return string
+	 */
+	public static function boolean_option( $value ): string {
+		return \rest_sanitize_boolean( $value ) ? '1' : '';
+	}
+
+	/**
 	 * Sanitize the handle field and trigger OAuth if a value is submitted.
 	 *
 	 * Used as the `sanitize_callback` for the `atmosphere_handle`
@@ -38,20 +53,16 @@ class Sanitize {
 			return '';
 		}
 
-		$handle = \sanitize_text_field( $value );
-
-		/*
-		 * Strip a leading "@". Bluesky surfaces handles as "@alice.bsky.social",
-		 * so people naturally type the "@" in — but the resolver expects a bare
-		 * DNS-style identifier and would reject the "@"-prefixed form as invalid.
-		 */
-		$handle = \ltrim( $handle, '@' );
+		$handle = normalize_handle( $value );
 
 		if ( empty( $handle ) ) {
 			return '';
 		}
 
-		$auth_url = Client::authorize( $handle );
+		// A settings-page connect lands back on the settings page: the origin
+		// travels inside this flow's own resolved record (see Client::authorize),
+		// so it can't be crossed with a Connectors-card flow.
+		$auth_url = Client::authorize( $handle, 'settings' );
 
 		if ( \is_wp_error( $auth_url ) ) {
 			\add_settings_error( 'atmosphere', 'auth_failed', $auth_url->get_error_message() );
@@ -77,10 +88,7 @@ class Sanitize {
 		 * guarantees detachment even when a `wp_redirect` filter throws
 		 * instead of returning.
 		 */
-		$auth_host   = \is_string( $auth_url ) ? \wp_parse_url( $auth_url, PHP_URL_HOST ) : '';
-		$auth_scheme = \is_string( $auth_url ) ? \wp_parse_url( $auth_url, PHP_URL_SCHEME ) : '';
-
-		if ( empty( $auth_host ) || 'https' !== $auth_scheme ) {
+		if ( ! \is_string( $auth_url ) || ! self::is_safe_authorize_url( $auth_url ) ) {
 			\add_settings_error(
 				'atmosphere',
 				'auth_failed',
@@ -88,6 +96,8 @@ class Sanitize {
 			);
 			return '';
 		}
+
+		$auth_host = \wp_parse_url( $auth_url, PHP_URL_HOST );
 
 		$allow_auth_host = static function ( $hosts ) use ( $auth_host ) {
 			$hosts[] = $auth_host;
@@ -101,6 +111,26 @@ class Sanitize {
 			\remove_filter( 'allowed_redirect_hosts', $allow_auth_host );
 		}
 		exit;
+	}
+
+	/**
+	 * Whether an OAuth authorization URL is a safe HTTPS target.
+	 *
+	 * Defence-in-depth for the URL {@see Client::authorize()} builds from
+	 * auth-server metadata. The resolver validates each URL it persists, but
+	 * both connect entry points re-check the scheme + host before acting on the
+	 * URL — {@see self::handle()} before an admin redirect, and
+	 * {@see \Atmosphere\Rest\Admin\Connection_Controller::authorize()} before
+	 * handing it to the Connectors card, which navigates client-side — so a
+	 * misconfigured `atmosphere_*` filter or future code path can't slip a
+	 * `javascript:` / `data:` URI through.
+	 *
+	 * @param string $url Authorization URL returned by {@see Client::authorize()}.
+	 * @return bool True when the URL is an absolute `https://` URL with a host.
+	 */
+	public static function is_safe_authorize_url( string $url ): bool {
+		return 'https' === \wp_parse_url( $url, PHP_URL_SCHEME )
+			&& ! empty( \wp_parse_url( $url, PHP_URL_HOST ) );
 	}
 
 	/**
@@ -138,5 +168,33 @@ class Sanitize {
 		}
 
 		return Registry::has( $value ) ? $value : '';
+	}
+
+	/**
+	 * Sanitize a publication-theme hex color.
+	 *
+	 * Accepts an empty string — which means "keep the colour derived from
+	 * the active theme" — or a `#RGB` / `#RRGGBB` value, lower-cased.
+	 * Anything else sanitizes to empty rather than being stored, so a
+	 * malformed paste degrades to the derived colour instead of dropping
+	 * the whole theme object from the record.
+	 *
+	 * @param mixed $value Submitted value.
+	 * @return string
+	 */
+	public static function hex_color( $value ): string {
+		if ( ! \is_string( $value ) ) {
+			return '';
+		}
+
+		// Core validates the `#RGB` / `#RRGGBB` shape and returns null otherwise.
+		$color = \strtolower( (string) \sanitize_hex_color( \trim( $value ) ) );
+
+		// Normalize the shorthand form so stored values are always `#rrggbb`.
+		if ( 4 === \strlen( $color ) ) {
+			$color = '#' . $color[1] . $color[1] . $color[2] . $color[2] . $color[3] . $color[3];
+		}
+
+		return $color;
 	}
 }

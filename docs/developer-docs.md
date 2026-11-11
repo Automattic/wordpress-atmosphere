@@ -8,6 +8,8 @@
 - [Extending Content Formats](#extending-content-formats)
 - [Custom Post Type Support](#custom-post-type-support)
 - [Publishing Programmatically](#publishing-programmatically)
+- [Outgoing Comment Controls](#outgoing-comment-controls)
+- [Token Encryption](#token-encryption)
 - [Templates and Admin UI](#templates-and-admin-ui)
 
 ## Introduction
@@ -42,20 +44,61 @@ ATmosphere exposes a small set of filters and actions for plugins to extend beha
 | `atmosphere_document_contributors` | filter | Add contributor metadata to `site.standard.document` records. |
 | `atmosphere_publication_labels` | filter | Add standard self-labels to `site.standard.publication` records. |
 | `atmosphere_publication_show_in_discover` | filter | Override `preferences.showInDiscover` (defaults to the site's `blog_public` option) for `site.standard.publication` records. |
+| `atmosphere_record_tags` | filter | Add, change, or remove the tags/keywords written into a post's records. Runs before the 8-tag cap and covers both the Bluesky post and the document. |
 | `atmosphere_syncable_post_types` | filter | Add or remove post types eligible for cross-posting. |
-| `atmosphere_should_publish_comment` | filter | Customise which approved comments are mirrored as Bluesky replies. |
+| `atmosphere_connection_only_mode` | filter | Return `true` to embed ATmosphere purely as a connection layer: auto cross-posting, reaction/reply import, and comment publishing all default off, and the Settings → ATmosphere screen is hidden. |
+| `atmosphere_should_auto_publish` | filter | Effective on/off for automatic post cross-posting; runs after the stored setting and connection-only mode, and has the final say. |
+| `atmosphere_should_publish_bluesky_post` | filter | Return `false` to publish the `site.standard.document` record only, without a companion `app.bsky.feed.post`, across backfill, auto-publish, and edits. Receives the post being published as a second argument, so the answer can be made per post (by type, meta, or author). Shapes what a publish writes (not whether it runs), so it is a pure filter with no connection-only pass. Forward-only — leaves already-published Bluesky posts in place. |
+| `atmosphere_should_publish_comments` | filter | Effective on/off for publishing local comments as Bluesky replies; runs after the stored setting and connection-only mode, and has the final say. Re-enable this lane while in connection-only mode. Not the per-comment `_comment` filter below. |
+| `atmosphere_should_publish_comment` | filter | Customise which approved comments from users allowed to publish posts are mirrored as Bluesky replies. |
+| `atmosphere_should_sync_reactions` | filter | Effective on/off for importing Bluesky likes and reposts; runs after the stored setting and connection-only mode, and has the final say. |
+| `atmosphere_should_sync_replies` | filter | Effective on/off for importing Bluesky replies as comments; runs after the stored setting and connection-only mode, and has the final say. Re-enable this lane while in connection-only mode. Not the per-reply `_reply` filter below. |
+| `atmosphere_should_sync_publication` | filter | Effective on/off for writing/refreshing the `site.standard.publication` record. Defaults on, forced off in connection-only mode, and this has the final say — so a connection-layer host doesn't get a public publication record written on connect unless it opts back in. |
 | `atmosphere_should_sync_reply` | filter | Customise which inbound Bluesky replies become WordPress comments. |
 | `atmosphere_transform_bsky_post` | filter | Mutate the Bluesky post record before write. |
 | `atmosphere_transform_document` | filter | Mutate the document record before write. |
 | `atmosphere_transform_publication` | filter | Mutate the publication record before write. |
 | `atmosphere_atproto_preview_transformers` | filter | Add a transformer to the `?atproto={$type}` preview for posts and the front page. |
+| `atmosphere_at_tags` | filter | Add, change, or remove the AT Tags `<meta>` tags mapping a page to its AT Protocol records. |
 | `atmosphere_appview_host` | filter | Point Bluesky web links at an alternative AT Protocol appview (host or subpath). |
 | `atmosphere_appview_url` | filter | Rewrite the whole assembled appview link, including its route. |
 | `atmosphere_publish_post_result` | action | React to a post-publish outcome (success or `WP_Error`). |
+| `atmosphere_publish_post_skipped` | action | React when a post that would have been shared is skipped before any publish job runs, for example because the login needs reconnecting. Receives the post and a `WP_Error` with the reason. |
 | `atmosphere_publish_comment_result` | action | React to a comment-publish outcome. |
 | `atmosphere_reaction_synced` | action | React when a Bluesky reaction is stored as a WordPress comment. |
+| `atmosphere_connected` | action | React when an AT Protocol account is connected (OAuth callback succeeded). Useful for a host plugin embedding ATmosphere as a connection layer. |
+| `atmosphere_disconnected` | action | React when the AT Protocol connection is torn down. |
+| `atmosphere_reauth_required` | action | React when the connection first enters a reauth-required state after a permanent OAuth failure. Fires once per transition. |
 
 When adding a new public hook, mark its `@since` tag as `unreleased` — the release script rewrites it (see [Release Process → Marking Unreleased Code](release-process.md#marking-unreleased-code)).
+
+### Mapping pages back to AT Protocol records
+
+Every page that represents a record advertises it twice: through the `<link rel="site.standard.document">` / `<link rel="site.standard.publication">` tags standard.site expects, and through the [AT Tags](https://tangled.org/chrisshank.com/at-tags/) `<meta>` tags Bluesky and Leaflet emit. A dual-published post carries all five:
+
+```html
+<link rel="site.standard.document" href="at://did:plc:xxx/site.standard.document/3l…" />
+<link rel="site.standard.publication" href="at://did:plc:xxx/site.standard.publication/3l…" />
+<meta name="at:canonical" content="at://did:plc:xxx/site.standard.document/3l…" />
+<meta name="at:alternate" content="at://did:plc:xxx/site.standard.publication/3l…" />
+<meta name="at:alternate" content="at://did:plc:xxx/app.bsky.feed.post/3l…" />
+```
+
+`at:canonical` marks the records the page is a rendering of; `at:alternate` marks records it references. On the front page the publication is canonical instead, since that is the URL the publication record's `url` field points at.
+
+Two tags from the proposal are not emitted: `at:author`, because a site has exactly one connected account and it would attribute every post on a multi-author site to whoever connected it, and `at:me`, which has no clear use under the same constraint. Add either — or a namespaced `at:{namespace}:{property}` — with `atmosphere_at_tags`, which receives the assembled tags keyed by name, each holding a list of AT-URIs:
+
+```php
+add_filter(
+	'atmosphere_at_tags',
+	function ( $tags ) {
+		$tags['at:me'] = array( 'at://' . \Atmosphere\get_did() );
+		return $tags;
+	}
+);
+```
+
+Returning an empty array suppresses the meta tags entirely; the `<link rel>` tags are unaffected by this filter.
 
 ### Pointing Bluesky links at another appview
 
@@ -174,6 +217,24 @@ add_filter( 'atmosphere_publication_show_in_discover', '__return_false' );
 
 The field-specific filters run before `atmosphere_transform_document` and `atmosphere_transform_publication`, so a final record-level filter can still inspect or override the complete record.
 
+### Tags and keywords
+
+A post's `tags` come from its post tags plus its categories (minus `uncategorized`), de-duplicated and capped at 8 by `Transformer\Base::collect_tags()`. The same list feeds the `app.bsky.feed.post` and the `site.standard.document`.
+
+`atmosphere_record_tags` filters that list before the cap:
+
+```php
+// Drop legacy terms a migration left behind.
+add_filter(
+	'atmosphere_record_tags',
+	static fn( array $tags ): array => array_values( array_diff( $tags, array( '1', 'imported' ) ) )
+);
+```
+
+Prefer this over `atmosphere_transform_document` / `atmosphere_transform_bsky_post` for tag changes. Those run after the cap, so removing a tag there shortens the list rather than making room for the next one.
+
+Non-string entries are dropped from the return value, and the result is de-duplicated and capped again, so a filter cannot write more than 8 tags into a record. The per-tag length limit (64 graphemes for `app.bsky.feed.post`) is not enforced, the same way it is not enforced for an over-long WordPress tag name, so a filter that builds tag names rather than picking from existing terms should keep them short itself.
+
 ATmosphere models one root publication per WordPress site. It verifies that publication at `/.well-known/site.standard.publication` and does not currently implement Standard.site's non-root publication verification path (`/.well-known/site.standard.publication/path/to/publication`). Social Standard.site lexicons such as `site.standard.graph.subscription` and `site.standard.graph.recommend` are also out of scope for the plugin's publishing flow; ATmosphere requests explicit `repo:` scopes only for `app.bsky.feed.post`, `site.standard.document`, and `site.standard.publication`, and intentionally keeps the documented `include:site.standard.authFull` permission set for Standard.site compatibility even though it does not publish or manage social records itself.
 
 ## Previewing AT Protocol Records
@@ -264,6 +325,8 @@ ATmosphere only cross-posts post types that opt in. Two ways to add one:
 \add_post_type_support( 'product', 'atmosphere' );
 ```
 
+Opting a post type into sharing also force-enables its `custom-fields` support. WordPress only saves registered meta over the REST API when the type supports custom fields, so without this the per-post Bluesky settings would be dropped silently by the editor. Side effects to know about: the Custom Fields panel becomes available in that type's editor preferences, and any other plugin's `show_in_rest` meta on the same type, previously inert for the same reason, becomes readable and writable over REST as well.
+
 ### Filter override
 
 ```php
@@ -328,6 +391,25 @@ outcome, and returns the `applyWrites` response(s) or a `WP_Error`.
 publishable (trashed, unpublished, or opted out via `atmosphere_disabled`)
 it removes the remote records.
 
+### Why a post is not on Bluesky
+
+`\Atmosphere\Atmosphere::get_publish_error( $post_id )` returns why a post
+is not on Bluesky, or `null` when nothing is wrong. The Posts list column and
+the editor panel (through the edit-context `atmosphere_publish_error` REST
+field) both read it. It returns an array with `code`, `message`, `retrying`,
+`needs_reconnect` and `time`. Most codes come from a failed publish job, but
+three describe shares that never got that far:
+
+| Code | Meaning |
+|------|---------|
+| `atmosphere_share_skipped_disconnected` | The login needed reconnecting when the post was published, so it was skipped. `needs_reconnect` stays true until the site is reconnected; the message stays after that. |
+| `atmosphere_share_not_run` | The publish job was queued but has not run: its event is gone, or more than an hour late. `retrying` is true while the late event is still queued. |
+| `atmosphere_share_interrupted` | The publish job started more than ten minutes ago and never finished. |
+
+The skip also fires `atmosphere_publish_post_skipped`, so a site can send its
+own alert. The other two are only noticed when the post is looked at, so no
+action fires for them.
+
 ### Reading back the published record
 
 After a successful publish the post carries the created record's
@@ -348,8 +430,130 @@ with `protocol` comment meta `atproto`). Replies carry a link to the
 reply's Bluesky page in `source_url`; likes and reposts have no Bluesky
 landing page, so their `source_url` is intentionally empty and
 `comment_author_url` (the author's profile) is the outbound link.
+`comment_author` holds the remote display name HTML-encoded, the same way
+core stores names that arrive through the comment form: safe to print as
+is, decode it with `html_entity_decode()` if you need the plain-text name.
 Integrations can react to each via
 [`atmosphere_reaction_synced`](#public-hooks).
+
+### Document-only publishing
+
+By default every cross-post writes an `app.bsky.feed.post` (Bluesky) record
+alongside the `site.standard.document` record. Returning `false` from
+[`atmosphere_should_publish_bluesky_post`](#public-hooks) drops the Bluesky
+companion and publishes the document alone — useful for running a site as a
+standard.site publication that never appears on Bluesky. It applies uniformly
+across auto-publish, the `wp atmosphere backfill` command, and edit-updates.
+
+The filter shapes *what* a publish writes, not *whether* the site publishes,
+so — unlike the connection-only lane switches — it has no connection-only pass
+and stays a pure filter. A host embedded as a connection layer can still choose
+document-only output when it runs a manual backfill.
+
+**Decide per post, not just site-wide.** The filter receives the post being
+published as a second argument, so a callback can route individual posts.
+A site-wide `__return_false` still works unchanged — it simply ignores the post.
+The post is always a real `WP_Post`, so no `null` check is needed.
+
+Route a whole post type document-only (e.g. short-form status updates or an
+activity-log CPT) while long-form posts keep their Bluesky companion:
+
+```php
+add_filter(
+	'atmosphere_should_publish_bluesky_post',
+	function ( $enabled, $post ) {
+		return 'status' === $post->post_type ? false : $enabled;
+	},
+	10,
+	2
+);
+```
+
+Or honor a per-post author choice stored in post meta ("publish this one
+quietly"):
+
+```php
+add_filter(
+	'atmosphere_should_publish_bluesky_post',
+	function ( $enabled, $post ) {
+		return get_post_meta( $post->ID, 'skip_bluesky', true ) ? false : $enabled;
+	},
+	10,
+	2
+);
+```
+
+**This is a one-way choice, on purpose.** A post first published as a
+document-only record does not retroactively gain a Bluesky companion if you
+later stop returning `false`:
+
+- **Backfill skips it.** A post counts as synced once its document record
+  exists (`Document::META_URI` is set), so `wp atmosphere backfill` never
+  revisits it.
+- **Edits keep it document-only.** An update finds no reserved Bluesky record
+  (`Post::META_TID` is never written on the document-only path), treats the
+  post as unsynced, fires the `atmosphere_update_skipped_unsynced_post` action,
+  and leaves it untouched.
+
+The mirror of this holds in the other direction too: enabling document-only
+leaves Bluesky posts published *before* it in place. The filter governs new
+writes and never rewrites history — document-only is document-only. Adding a
+Bluesky post to an already-published document is a separate job that neither
+backfill nor a routine edit performs; a host that genuinely needs it can
+subscribe to `atmosphere_update_skipped_unsynced_post` and call
+`\Atmosphere\Publisher::publish_post()` itself.
+
+## Outgoing Comment Controls
+
+ATmosphere publishes eligible WordPress comments as Bluesky replies.
+Administrators can turn these writes off under
+**Settings → ATmosphere → Reactions** ("Outgoing replies"). The underlying
+`atmosphere_publish_comments` option defaults to enabled so existing sites
+keep their current behavior.
+
+Host plugins can enforce the boundary with a behavior filter that runs
+*after* the stored preference and has the final say:
+
+```php
+add_filter( 'atmosphere_should_publish_comments', '__return_false' );
+```
+
+The override is on effective behavior, not the option — the saved
+preference stays untouched (and the settings form keeps editing it), so
+removing the filter restores whatever the site had configured. Because the
+filter runs last, it can also force the lane back *on* while the option is
+off.
+
+While comment publishing is disabled, ATmosphere does not create, update,
+or delete Bluesky reply records for WordPress comments, including work that
+was already queued in WP-Cron. Replies that were previously published
+remain unchanged. Post and standard.site document publishing continues
+normally, as does inbound syncing of Bluesky replies, likes, and reposts.
+
+Direct calls to the `Publisher` comment methods return a WP_Error with the
+`atmosphere_comment_publishing_disabled` code while the control is off. Use
+`\Atmosphere\is_comment_publishing_enabled()` when an integration needs to inspect
+the effective state.
+
+## Token Encryption
+
+OAuth tokens are encrypted at rest with a key derived from the site's `AUTH_KEY` and `AUTH_SALT`. That keeps the key out of the database, but it also means the stored tokens become unreadable when the salts change — after a migration, a regenerated `wp-config.php`, or a security plugin that rotates salts on a schedule. ATmosphere detects that case, flags the connection, and asks the user to reconnect.
+
+Sites that rotate their salts deliberately can pin a dedicated key instead, which takes precedence over the salts:
+
+```php
+define( 'ATMOSPHERE_ENCRYPTION_KEY', 'a long random secret that never changes' );
+```
+
+Define it in `wp-config.php` **before** connecting (or reconnect afterwards — changing key material always orphans previously stored tokens). Treat it like a salt: long, random, and never committed to version control.
+
+## OAuth Client Authentication
+
+New connections use a confidential OAuth client. ATmosphere generates a separate per-site ES256 signing key, encrypts its private half with the token-encryption key, and publishes only its public half in the JWKS of the `atmosphere/v2` client-metadata document. PAR, authorization-code exchange, and token refresh requests carry a `private_key_jwt` assertion signed with that key; it is never reused as a DPoP key.
+
+The signing key is encrypted with the same key material as the tokens. If that material changes, the key can no longer be read; as long as a live session still matches the current material the plugin reports the error, and once no such session exists it discards the key and generates a new one, so reconnecting works without manual cleanup.
+
+The original client-metadata URL remains a public-client document for existing connections. Their stored connection has no `client_id`, so refreshes continue using that legacy URL without a client assertion. A successful new authorization stores the `atmosphere/v2` client ID. Do not repoint or remove the legacy endpoint: authorization servers must be able to refresh those sessions until their users reconnect.
 
 ## Templates and Admin UI
 
