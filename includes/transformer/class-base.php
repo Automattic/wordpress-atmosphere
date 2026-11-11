@@ -277,7 +277,7 @@ abstract class Base {
 		$post_tags = \get_the_tags( $post->ID );
 		if ( $post_tags ) {
 			foreach ( $post_tags as $t ) {
-				$tags[] = $t->name;
+				$tags[] = sanitize_text( $t->name );
 			}
 		}
 
@@ -285,7 +285,7 @@ abstract class Base {
 		if ( $categories ) {
 			foreach ( $categories as $cat ) {
 				if ( 'uncategorized' !== $cat->slug ) {
-					$tags[] = $cat->name;
+					$tags[] = sanitize_text( $cat->name );
 				}
 			}
 		}

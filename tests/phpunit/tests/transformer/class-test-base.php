@@ -68,6 +68,27 @@ class Test_Base extends \WP_UnitTestCase {
 	}
 
 	/**
+	 * Tag and category names are stored entity-encoded (`&` becomes
+	 * `&amp;`), and records carry plain text, so names are decoded the
+	 * same way titles are.
+	 */
+	public function test_tag_and_category_names_are_decoded() {
+		$post     = $this->post_with_tags( array( 'Rock & Roll', 'It&#8217;s' ) );
+		$category = self::factory()->category->create( array( 'name' => 'Q&A' ) );
+		\wp_set_post_categories( $post->ID, array( $category ) );
+
+		$document = ( new Document( $post ) )->transform();
+		$bsky     = ( new Post( $post ) )->transform();
+
+		foreach ( array( $document['tags'], $bsky['tags'] ) as $tags ) {
+			$this->assertContains( 'Rock & Roll', $tags );
+			$this->assertContains( "It\u{2019}s", $tags );
+			$this->assertContains( 'Q&A', $tags );
+			$this->assertNotContains( 'Rock &amp; Roll', $tags );
+		}
+	}
+
+	/**
 	 * The filter runs before the cap: dropping one of nine tags leaves a
 	 * full list of 8, not a short list of 7.
 	 *

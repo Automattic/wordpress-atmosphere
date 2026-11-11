@@ -1,0 +1,4 @@
+Significance: patch
+Type: fixed
+
+Tags and categories with special characters, like an apostrophe or an ampersand, now show up correctly on Bluesky and in reader apps instead of as HTML codes.
