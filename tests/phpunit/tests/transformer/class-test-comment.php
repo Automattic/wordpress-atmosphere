@@ -345,8 +345,8 @@ class Test_Comment extends WP_UnitTestCase {
 	}
 
 	/**
-	 * A post and a comment with the same ID and second share
-	 * app.bsky.feed.post, so their historical rkeys must differ.
+	 * A post (root and thread replies) and a comment with the same ID and
+	 * second share app.bsky.feed.post, so their historical rkeys must differ.
 	 *
 	 * @covers ::get_rkey
 	 */
@@ -376,7 +376,12 @@ class Test_Comment extends WP_UnitTestCase {
 		$post = new Post( \get_post( $post_id ) );
 		$post->use_original_time();
 
-		$this->assertNotSame( TID::decode( $post->get_rkey() ), TID::decode( $comment->get_rkey() ) );
+		$comment_micros = TID::decode( $comment->get_rkey() );
+
+		$this->assertNotSame( TID::decode( $post->get_rkey() ), $comment_micros );
+		for ( $i = 1; $i <= 4; $i++ ) {
+			$this->assertNotSame( TID::decode( $post->mint_reply_rkey( $i ) ), $comment_micros, "Thread reply $i collides with the comment." );
+		}
 	}
 
 	/**

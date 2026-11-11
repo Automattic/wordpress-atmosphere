@@ -39,6 +39,17 @@ abstract class Base {
 	public const BLUESKY_MAX_GRAPHEMES = 300;
 
 	/**
+	 * Low sub-second digit reserved for historical comment rkeys.
+	 *
+	 * A teaser thread holds at most 5 records, so post sequences stay in 0–4.
+	 *
+	 * @since unreleased
+	 *
+	 * @var int
+	 */
+	private const COMMENT_SEQUENCE = 5;
+
+	/**
 	 * The WordPress object being transformed.
 	 *
 	 * @var mixed
@@ -53,15 +64,6 @@ abstract class Base {
 	public function __construct( mixed $object ) { // phpcs:ignore Universal.NamingConventions.NoReservedKeywordParameterNames
 		$this->object = $object;
 	}
-
-	/**
-	 * Low sub-second digit reserved for historical comment rkeys.
-	 *
-	 * A teaser thread holds at most 5 records, so post sequences stay in 0–4.
-	 *
-	 * @var int
-	 */
-	private const COMMENT_SEQUENCE = 5;
 
 	/**
 	 * Whether rkeys are minted from the object's original publish time
