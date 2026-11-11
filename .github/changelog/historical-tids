@@ -1,4 +1,4 @@
 Significance: minor
 Type: added
 
-Backfilled posts can now publish with rkeys that reflect the original publish date.
+Backfilled comments can now publish with rkeys that reflect their original date when original-time minting is on.
