@@ -306,9 +306,11 @@ abstract class Base {
 		 * those run after the cap, so dropping a tag there shortens the
 		 * list instead of making room for the next one.
 		 *
-		 * The return value is normalized before use. Entries that are
-		 * not strings are dropped, the rest are trimmed, empties are
-		 * removed, and the result is de-duplicated and capped again at
+		 * Names arrive as WordPress stores them, entity-encoded
+		 * (`Rock &amp; Roll`). The return value is normalized before
+		 * use. Entries that are not strings are dropped, the rest are
+		 * entity-decoded and trimmed, empties are removed, and the
+		 * result is de-duplicated and capped again at
 		 * {@see self::MAX_TAGS}. That bounds how many tags a record
 		 * carries, not how long each one is: both lexicons also bound a
 		 * single tag (64 graphemes for `app.bsky.feed.post`), and an
