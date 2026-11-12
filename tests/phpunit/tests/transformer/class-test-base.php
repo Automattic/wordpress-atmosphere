@@ -68,6 +68,52 @@ class Test_Base extends \WP_UnitTestCase {
 	}
 
 	/**
+	 * Tag and category names are stored entity-encoded (`&` becomes
+	 * `&amp;`), and records carry plain text, so names are decoded. A
+	 * lone `<` is text, not the start of a tag, and survives.
+	 */
+	public function test_tag_and_category_names_are_decoded() {
+		$post     = $this->post_with_tags( array( 'Rock & Roll', 'It&#8217;s', 'I <3 NY' ) );
+		$category = self::factory()->category->create( array( 'name' => 'Q&A' ) );
+		\wp_set_post_categories( $post->ID, array( $category ) );
+
+		$document = ( new Document( $post ) )->transform();
+		$bsky     = ( new Post( $post ) )->transform();
+
+		foreach ( array( $document['tags'], $bsky['tags'] ) as $tags ) {
+			$this->assertContains( 'Rock & Roll', $tags );
+			$this->assertContains( "It\u{2019}s", $tags );
+			$this->assertContains( 'Q&A', $tags );
+			$this->assertContains( 'I <3 NY', $tags );
+			$this->assertNotContains( 'Rock &amp; Roll', $tags );
+		}
+	}
+
+	/**
+	 * Filters receive names as stored, and whatever they return is
+	 * decoded, so a name pulled from another taxonomy is plain text too.
+	 */
+	public function test_filter_receives_stored_names_and_its_additions_are_decoded() {
+		$post     = $this->post_with_tags( array( 'Rock & Roll' ) );
+		$received = array();
+
+		\add_filter(
+			'atmosphere_record_tags',
+			static function ( array $tags ) use ( &$received ): array {
+				$received = $tags;
+				$tags[]   = 'Q&amp;A';
+				return $tags;
+			}
+		);
+
+		$record = ( new Document( $post ) )->transform();
+
+		$this->assertContains( 'Rock &amp; Roll', $received );
+		$this->assertContains( 'Q&A', $record['tags'] );
+		$this->assertNotContains( 'Q&amp;A', $record['tags'] );
+	}
+
+	/**
 	 * The filter runs before the cap: dropping one of nine tags leaves a
 	 * full list of 8, not a short list of 7.
 	 *
