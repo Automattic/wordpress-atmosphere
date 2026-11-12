@@ -39,7 +39,7 @@ class Test_Comment_Types extends \WP_UnitTestCase {
 	 * Unregister the test types.
 	 */
 	public function tear_down(): void {
-		foreach ( array( 'reaction', 'private_log' ) as $comment_type ) {
+		foreach ( array( 'review', 'private_log' ) as $comment_type ) {
 			if ( \comment_type_exists( $comment_type ) ) {
 				\unregister_comment_type( $comment_type );
 			}
@@ -59,15 +59,15 @@ class Test_Comment_Types extends \WP_UnitTestCase {
 	}
 
 	/**
-	 * The built-in types are registered, and only 'note' is internal.
+	 * The built-in types are registered, and only 'note' and 'reaction' are internal.
 	 */
 	public function test_built_in_comment_types() {
-		foreach ( array( 'comment', 'pingback', 'trackback', 'note' ) as $comment_type ) {
+		foreach ( array( 'comment', 'pingback', 'trackback', 'note', 'reaction' ) as $comment_type ) {
 			$object = \get_comment_type_object( $comment_type );
 
 			$this->assertInstanceOf( \WP_Comment_Type::class, $object );
 			$this->assertTrue( $object->_builtin );
-			$this->assertSame( 'note' === $comment_type, $object->internal );
+			$this->assertSame( \in_array( $comment_type, array( 'note', 'reaction' ), true ), $object->internal );
 		}
 
 		$this->assertSame( 'Pingback', \get_comment_type_object( 'pingback' )->labels->singular_name );
@@ -78,23 +78,23 @@ class Test_Comment_Types extends \WP_UnitTestCase {
 	 */
 	public function test_register_comment_type() {
 		$object = \register_comment_type(
-			'reaction',
+			'review',
 			array(
-				'label'      => 'Reactions',
+				'label'      => 'Reviews',
 				'extra_flag' => true,
 			)
 		);
 
 		$this->assertInstanceOf( \WP_Comment_Type::class, $object );
-		$this->assertSame( $object, \get_comment_type_object( 'reaction' ) );
-		$this->assertSame( 'Reactions', $object->label );
-		$this->assertSame( 'Reactions', $object->labels->name );
-		$this->assertSame( 'Reactions', $object->labels->singular_name );
+		$this->assertSame( $object, \get_comment_type_object( 'review' ) );
+		$this->assertSame( 'Reviews', $object->label );
+		$this->assertSame( 'Reviews', $object->labels->name );
+		$this->assertSame( 'Reviews', $object->labels->singular_name );
 		$this->assertFalse( isset( $object->labels->all_items ) );
 		$this->assertTrue( $object->extra_flag );
 		$this->assertTrue( $object->public );
 		$this->assertFalse( $object->internal );
-		$this->assertContains( 'reaction', \get_comment_types( array( 'extra_flag' => true ) ) );
+		$this->assertContains( 'review', \get_comment_types( array( 'extra_flag' => true ) ) );
 	}
 
 	/**
@@ -113,26 +113,26 @@ class Test_Comment_Types extends \WP_UnitTestCase {
 	 * Custom types can be unregistered, built-in types cannot.
 	 */
 	public function test_unregister_comment_type() {
-		\register_comment_type( 'reaction' );
+		\register_comment_type( 'review' );
 
-		$this->assertTrue( \unregister_comment_type( 'reaction' ) );
-		$this->assertFalse( \comment_type_exists( 'reaction' ) );
-		$this->assertWPError( \unregister_comment_type( 'reaction' ) );
+		$this->assertTrue( \unregister_comment_type( 'review' ) );
+		$this->assertFalse( \comment_type_exists( 'review' ) );
+		$this->assertWPError( \unregister_comment_type( 'review' ) );
 		$this->assertWPError( \unregister_comment_type( 'comment' ) );
 	}
 
 	/**
-	 * The excluded set holds 'note' and internal types, and is normalized after the filter.
+	 * The excluded set holds 'note', 'reaction' and internal types, and is normalized after the filter.
 	 */
 	public function test_default_excluded_comment_types() {
 		\register_comment_type( 'private_log', array( 'internal' => true ) );
 
 		$filter = static function ( $types ) {
-			return \array_merge( $types, array( 'reaction', '', 'all', 'pings', array( 'x' ), 'reaction' ) );
+			return \array_merge( $types, array( 'review', '', 'all', 'pings', array( 'x' ), 'review' ) );
 		};
 		\add_filter( 'default_excluded_comment_types', $filter );
 
-		$this->assertSame( array( 'note', 'private_log', 'reaction' ), \wp_get_default_excluded_comment_types() );
+		$this->assertSame( array( 'note', 'reaction', 'private_log', 'review' ), \wp_get_default_excluded_comment_types() );
 
 		\remove_filter( 'default_excluded_comment_types', $filter );
 	}
@@ -173,7 +173,7 @@ class Test_Comment_Types extends \WP_UnitTestCase {
 		self::factory()->comment->create(
 			array(
 				'comment_post_ID' => $this->post_id,
-				'comment_type'    => 'reaction',
+				'comment_type'    => 'review',
 			)
 		);
 
@@ -184,7 +184,7 @@ class Test_Comment_Types extends \WP_UnitTestCase {
 
 		$this->assertSame( 1, \get_comments( $query ) );
 
-		$filter = static fn( $types ) => \array_merge( $types, array( 'reaction' ) );
+		$filter = static fn( $types ) => \array_merge( $types, array( 'review' ) );
 		\add_filter( 'default_excluded_comment_types', $filter );
 
 		$this->assertSame( 0, \get_comments( $query ) );
@@ -202,12 +202,15 @@ class Test_Comment_Types extends \WP_UnitTestCase {
 		\register_comment_type( 'private_log', array( 'internal' => true ) );
 
 		self::factory()->comment->create( array( 'comment_post_ID' => $this->post_id ) );
-		self::factory()->comment->create(
-			array(
-				'comment_post_ID' => $this->post_id,
-				'comment_type'    => 'private_log',
-			)
-		);
+
+		foreach ( array( 'private_log', 'note', 'reaction' ) as $comment_type ) {
+			self::factory()->comment->create(
+				array(
+					'comment_post_ID' => $this->post_id,
+					'comment_type'    => $comment_type,
+				)
+			);
+		}
 
 		\wp_update_comment_count_now( $this->post_id );
 		$this->assertSame( '1', \get_comments_number( $this->post_id ) );
@@ -228,8 +231,9 @@ class Test_Comment_Types extends \WP_UnitTestCase {
 
 		$where = \apply_filters( 'comment_feed_where', "WHERE comment_approved = '1'" );
 
-		$this->assertStringStartsWith( "WHERE comment_approved = '1' AND {$wpdb->comments}.comment_type NOT IN (", $where );
+		$this->assertStringStartsWith( "WHERE comment_approved = '1' AND `{$wpdb->comments}`.`comment_type` NOT IN (", $where );
 		$this->assertStringContainsString( "'note'", $where );
+		$this->assertStringContainsString( "'reaction'", $where );
 	}
 
 	/**

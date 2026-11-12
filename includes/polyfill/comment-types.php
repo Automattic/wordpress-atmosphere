@@ -4,11 +4,12 @@
  *
  * Mirrors two open core pull requests for Trac #35214:
  *
- * - WordPress/wordpress-develop#12311 (at 1473c5b): the registration API, `WP_Comment_Type`,
+ * - WordPress/wordpress-develop#12311 (at ea9622a): the registration API, `WP_Comment_Type`,
  *   `register_comment_type()` and friends, and the built-in comment types.
- * - WordPress/wordpress-develop#12310 (at 217a46c): `wp_get_default_excluded_comment_types()` and
- *   the `default_excluded_comment_types` filter, applied to comment queries, the stored comment
- *   count, the comment feeds and the comment page calculation.
+ * - WordPress/wordpress-develop#12310 (at c11b38b): `wp_get_default_excluded_comment_types()`,
+ *   `wp_get_excluded_comment_types_clause()` and the `default_excluded_comment_types` filter,
+ *   applied to comment queries, the stored comment count, the comment feeds and the comment
+ *   page calculation.
  *
  * Every function and the class are guarded, so whatever core ships wins and the copy here is
  * skipped. The exclusion hooks only run while core does not apply the excluded set itself.
@@ -22,13 +23,12 @@
  *
  * Known differences to core:
  *
- * - `get_pending_comments_num()` and the `comment_type()` label fallback have no hook, so they
- *   keep their current behavior.
- * - Core changes the default `type` of `get_page_of_comment()` from 'all' to ''. The polyfill
- *   cannot tell the default from an explicit 'all', so it maps every 'all' to ''.
+ * - `get_pending_comments_num()`, `get_lastcommentmodified()` and the `comment_type()` label
+ *   fallback have no hook, so they keep their current behavior.
  * - The non-singular comment feeds only apply the excluded set when filters are not suppressed.
- * - WordPress 6.9 excludes 'note' from comment queries and feeds on its own. Removing 'note'
- *   from the excluded set brings it back into the stored comment count, but not into queries.
+ * - WordPress 6.9 excludes 'note', and 7.2 also 'reaction', from comment queries and feeds on
+ *   its own. Removing them from the excluded set brings them back into the stored comment
+ *   count, but not into queries.
  *
  * Requires PHP 7.4 and WordPress 6.2, the lowest versions of the plugins sharing it.
  *
@@ -200,7 +200,7 @@ if ( ! class_exists( 'WP_Comment_Type', false ) ) {
 		 *
 		 * @param array|string $args Array or string of arguments for registering a comment type.
 		 */
-		public function set_props( $args ) {
+		public function set_props( $args ): void {
 			$args = wp_parse_args( $args );
 
 			/**
@@ -273,7 +273,7 @@ if ( ! class_exists( 'WP_Comment_Type', false ) ) {
 		/**
 		 * Resets the cache for the default labels.
 		 */
-		public static function reset_default_labels() {
+		public static function reset_default_labels(): void {
 			self::$default_labels = array();
 		}
 	}
@@ -285,13 +285,12 @@ if ( ! function_exists( 'create_initial_comment_types' ) ) {
 	 *
 	 * See register_comment_type() for accepted arguments.
 	 */
-	function create_initial_comment_types() {
+	function create_initial_comment_types(): void {
 		WP_Comment_Type::reset_default_labels();
 
 		/*
-		 * The 'comment', 'pingback', and 'trackback' labels deliberately reuse existing
-		 * core translation strings, while 'note' introduces new strings with explicit
-		 * contexts.
+		 * The 'comment', 'pingback', and 'trackback' labels reuse existing translation
+		 * strings; 'note' and 'reaction' use new strings with explicit contexts.
 		 */
 		register_comment_type(
 			'comment',
@@ -335,6 +334,19 @@ if ( ! function_exists( 'create_initial_comment_types' ) ) {
 				'label'    => _x( 'Notes', 'comment type general name', 'default' ),
 				'labels'   => array(
 					'singular_name' => _x( 'Note', 'comment type singular name', 'default' ),
+				),
+				'public'   => false,
+				'internal' => true,
+				'_builtin' => true,
+			)
+		);
+
+		register_comment_type(
+			'reaction',
+			array(
+				'label'    => _x( 'Reactions', 'comment type general name', 'default' ),
+				'labels'   => array(
+					'singular_name' => _x( 'Reaction', 'comment type singular name', 'default' ),
 				),
 				'public'   => false,
 				'internal' => true,
@@ -387,7 +399,7 @@ if ( ! function_exists( 'register_comment_type' ) ) {
 
 		// phpcs:disable WordPress.Security.EscapeOutput.ExceptionNotEscaped, WordPress.Security.EscapeOutput.OutputNotEscaped -- Passed on unescaped like core.
 		if ( empty( $comment_type ) || strlen( $comment_type ) > 20 ) {
-			_doing_it_wrong( __FUNCTION__, __( 'Comment type names must be between 1 and 20 characters in length.', 'default' ), '7.2.0' );
+			_doing_it_wrong( __FUNCTION__, __( 'Comment type names must be between 1 and 20 characters in length.', 'default' ), '7.3.0' );
 			return new WP_Error( 'comment_type_length_invalid', __( 'Comment type names must be between 1 and 20 characters in length.', 'default' ) );
 		}
 
@@ -406,7 +418,7 @@ if ( ! function_exists( 'register_comment_type' ) ) {
 					__( 'The "%s" comment type is a built-in type and cannot be re-registered.', 'default' ),
 					$comment_type
 				),
-				'7.2.0'
+				'7.3.0'
 			);
 			return new WP_Error( 'comment_type_builtin', __( 'Built-in comment types cannot be re-registered.', 'default' ) );
 		}
@@ -420,7 +432,7 @@ if ( ! function_exists( 'register_comment_type' ) ) {
 					__( 'The "%s" comment type name is reserved for use by WP_Comment_Query.', 'default' ),
 					$comment_type
 				),
-				'7.2.0'
+				'7.3.0'
 			);
 			return new WP_Error( 'comment_type_reserved', __( 'This comment type name is reserved.', 'default' ) );
 		}
@@ -466,11 +478,11 @@ if ( ! function_exists( 'unregister_comment_type' ) ) {
 	function unregister_comment_type( $comment_type ) {
 		global $wp_comment_types;
 
-		if ( ! comment_type_exists( $comment_type ) ) {
+		$comment_type_object = get_comment_type_object( $comment_type );
+
+		if ( ! $comment_type_object ) {
 			return new WP_Error( 'invalid_comment_type', __( 'Invalid comment type.', 'default' ) );
 		}
-
-		$comment_type_object = get_comment_type_object( $comment_type );
 
 		// Do not allow unregistering built-in comment types.
 		if ( $comment_type_object->_builtin ) {
@@ -617,58 +629,54 @@ if ( ! function_exists( 'wp_get_default_excluded_comment_types' ) ) {
 	/**
 	 * Retrieves the comment types that are excluded from queries and counts by default.
 	 *
-	 * The default set is the 'note' type plus every comment type registered with
-	 * `'internal' => true`. The {@see 'default_excluded_comment_types'} filter is then
-	 * applied and the result normalized: non-scalar values are discarded, the rest are
-	 * cast to strings, empties and duplicates are removed, and the special type tokens
-	 * understood by WP_Comment_Query ('all', 'comment', 'comments', 'pings') are stripped.
+	 * Starts from 'note', 'reaction' and every comment type registered as internal, then
+	 * applies the {@see 'default_excluded_comment_types'} filter. The result holds unique,
+	 * non-empty strings and never the WP_Comment_Query type aliases ('all', 'comment',
+	 * 'comments', 'pings').
 	 *
-	 * @param WP_Comment_Query|null $query Optional. The current query instance when called
-	 *                                     from WP_Comment_Query, or null. Default null.
+	 * @param WP_Comment_Query|null $query Optional. The comment query resolving the set, if any.
+	 *                                     Default null.
 	 * @return string[] Comment types excluded by default.
 	 */
 	function wp_get_default_excluded_comment_types( $query = null ) {
-		$default_excluded_types = array( 'note' );
+		$default_excluded_types = array( 'note', 'reaction' );
 
-		// The 'note' type is listed above as well, so the default holds before types are registered.
+		// The comment type registry is optional; 'note' and 'reaction' stay excluded without it.
 		if ( function_exists( 'get_comment_types' ) ) {
-			$default_excluded_types = array_values(
-				array_unique(
-					array_merge(
-						$default_excluded_types,
-						get_comment_types( array( 'internal' => true ), 'names' )
-					)
-				)
-			);
+			$internal_types = array_filter( (array) get_comment_types( array( 'internal' => true ), 'names' ), 'is_string' );
+
+			$default_excluded_types = array_values( array_unique( array_merge( $default_excluded_types, $internal_types ) ) );
 		}
 
 		/**
 		 * Filters the comment types that are excluded from query results by default.
 		 *
-		 * Comment types in this list are omitted from `WP_Comment_Query` results unless the
-		 * query explicitly requests the 'all' type, or explicitly includes the specific type
-		 * via the 'type' or 'type__in' query variables. The same set is applied to the stored
-		 * comment count and the comment feeds.
+		 * Excluded types are left out of WP_Comment_Query results unless the query requests
+		 * 'all' types or names the type in 'type' or 'type__in'. The same set is applied to
+		 * the stored post comment count, the pending comment count, the comment feeds and
+		 * get_lastcommentmodified().
 		 *
-		 * Values must be literal `comment_type` values as stored in the database. Register
-		 * callbacks for this filter unconditionally rather than toggling them per call.
+		 * Values are literal `comment_type` values. The WP_Comment_Query type aliases
+		 * ('all', 'comment', 'comments', 'pings') and non-scalar values are ignored.
 		 *
-		 * A plugin that starts excluding a type which already has comments in the database
-		 * should recount the affected posts on activation and deactivation, with
-		 * wp_update_comment_count_now().
+		 * Stored comment counts are only refreshed when a comment changes, so a plugin that
+		 * changes the set for types that already have comments should call
+		 * wp_update_comment_count_now() for the affected posts on activation and deactivation.
 		 *
-		 * This exclusion is a default-visibility convenience, not an access-control mechanism.
+		 * This is a default-visibility setting, not access control: excluded types can still
+		 * be queried explicitly.
 		 *
-		 * @param string[]              $excluded_types Comment types excluded from query results by default.
-		 * @param WP_Comment_Query|null $query          The WP_Comment_Query instance, or null when the set is
-		 *                                              resolved outside of a comment query.
+		 * @param string[]              $excluded_types Comment types excluded by default. Defaults to
+		 *                                              'note', 'reaction' and every comment type
+		 *                                              registered as internal.
+		 * @param WP_Comment_Query|null $query          The comment query resolving the set, or null
+		 *                                              outside of a comment query.
 		 */
 		$excluded_types = apply_filters( 'default_excluded_comment_types', $default_excluded_types, $query );
 
-		// Drop values that cannot be cast to a string.
 		$excluded_types = array_filter( (array) $excluded_types, 'is_scalar' );
 
-		// Drop empty strings, but keep a type literally named '0'.
+		// Keeps a type named '0', which array_filter() without a callback would drop.
 		$excluded_types = array_filter(
 			array_map( 'strval', $excluded_types ),
 			static function ( $excluded_type ) {
@@ -678,25 +686,26 @@ if ( ! function_exists( 'wp_get_default_excluded_comment_types' ) ) {
 
 		$excluded_types = array_unique( $excluded_types );
 
-		// Strip the special type tokens so an alias cannot poison explicit-type queries.
+		// An alias in the set would exclude types a query requests explicitly.
 		return array_values( array_diff( $excluded_types, array( 'all', 'comment', 'comments', 'pings' ) ) );
 	}
 }
 
-if ( ! function_exists( '_wp_get_excluded_comment_types_clause' ) ) {
+if ( ! function_exists( 'wp_get_excluded_comment_types_clause' ) ) {
 	/**
 	 * Builds the SQL condition that excludes the default-excluded comment types.
 	 *
-	 * @access private
+	 * For comment queries built without WP_Comment_Query.
 	 *
 	 * @global wpdb $wpdb WordPress database abstraction object.
 	 *
-	 * @param string $column Optional. The `comment_type` column to filter on. Must not contain
-	 *                       user input. Default 'comment_type'.
+	 * @param string $column Optional. The `comment_type` column to filter on, qualified with a
+	 *                       table name where the query joins other tables, for example
+	 *                       'wp_comments.comment_type'. Default 'comment_type'.
 	 * @return string Prepared ` AND <column> NOT IN (...)` condition, or an empty string when
 	 *                no comment types are excluded.
 	 */
-	function _wp_get_excluded_comment_types_clause( $column = 'comment_type' ) {
+	function wp_get_excluded_comment_types_clause( string $column = 'comment_type' ): string {
 		global $wpdb;
 
 		$excluded_types = wp_get_default_excluded_comment_types();
@@ -705,11 +714,13 @@ if ( ! function_exists( '_wp_get_excluded_comment_types_clause' ) ) {
 			return '';
 		}
 
+		// Quotes each part of a qualified name as its own identifier.
+		$column_parts = explode( '.', $column );
+		$column_sql   = implode( '.', array_fill( 0, count( $column_parts ), '%i' ) );
 		$placeholders = implode( ', ', array_fill( 0, count( $excluded_types ), '%s' ) );
-		$clause       = sprintf( ' AND %s NOT IN ( %s )', $column, $placeholders );
 
-		// The column name comes from the call sites; the type values are prepared here.
-		return $wpdb->prepare( $clause, $excluded_types ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+		// phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared, WordPress.DB.PreparedSQLPlaceholders.UnfinishedPrepare -- Both hold placeholders only.
+		return (string) $wpdb->prepare( " AND $column_sql NOT IN ( $placeholders )", array_merge( $column_parts, $excluded_types ) );
 	}
 }
 
@@ -791,7 +802,7 @@ if ( ! $wp_comment_types_polyfill_core_exclusion ) {
 			$wpdb->prepare(
 				"SELECT COUNT(*) FROM $wpdb->comments WHERE comment_post_ID = %d AND comment_approved = '1'",
 				$post_id
-			) . _wp_get_excluded_comment_types_clause()
+			) . wp_get_excluded_comment_types_clause()
 		);
 	}
 
@@ -811,14 +822,14 @@ if ( ! $wp_comment_types_polyfill_core_exclusion ) {
 	function _wp_comment_types_polyfill_comment_feed_where( $cwhere ) {
 		global $wpdb;
 
-		return $cwhere . _wp_get_excluded_comment_types_clause( "{$wpdb->comments}.comment_type" );
+		return $cwhere . wp_get_excluded_comment_types_clause( "{$wpdb->comments}.comment_type" );
 	}
 
 	/**
 	 * Counts only the comments the comment list renders when calculating a comment's page.
 	 *
-	 * Core changes the default 'type' of get_page_of_comment() from 'all' to ''. The
-	 * default cannot be told apart from an explicit 'all' here, so every 'all' is mapped.
+	 * 'all' disables the default exclusions, but comments_template() never renders those
+	 * types. Core sets 'type__not_in' before the filter runs, so the polyfill hooks in first.
 	 *
 	 * @access private
 	 *
@@ -826,8 +837,8 @@ if ( ! $wp_comment_types_polyfill_core_exclusion ) {
 	 * @return array The comment query arguments.
 	 */
 	function _wp_comment_types_polyfill_page_of_comment_args( $comment_args ) {
-		if ( isset( $comment_args['type'] ) && 'all' === $comment_args['type'] ) {
-			$comment_args['type'] = '';
+		if ( isset( $comment_args['type'] ) && in_array( 'all', (array) $comment_args['type'], true ) ) {
+			$comment_args['type__not_in'] = wp_get_default_excluded_comment_types();
 		}
 
 		return $comment_args;
@@ -836,5 +847,5 @@ if ( ! $wp_comment_types_polyfill_core_exclusion ) {
 	add_action( 'pre_get_comments', '_wp_comment_types_polyfill_exclude_from_query', PHP_INT_MAX );
 	add_filter( 'pre_wp_update_comment_count_now', '_wp_comment_types_polyfill_update_comment_count', PHP_INT_MAX, 3 );
 	add_filter( 'comment_feed_where', '_wp_comment_types_polyfill_comment_feed_where', PHP_INT_MIN );
-	add_filter( 'get_page_of_comment_query_args', '_wp_comment_types_polyfill_page_of_comment_args' );
+	add_filter( 'get_page_of_comment_query_args', '_wp_comment_types_polyfill_page_of_comment_args', PHP_INT_MIN );
 }
