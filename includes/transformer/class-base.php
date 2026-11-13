@@ -39,6 +39,17 @@ abstract class Base {
 	public const BLUESKY_MAX_GRAPHEMES = 300;
 
 	/**
+	 * Low sub-second digit reserved for historical comment rkeys.
+	 *
+	 * A teaser thread holds at most 5 records, so post sequences stay in 0–4.
+	 *
+	 * @since unreleased
+	 *
+	 * @var int
+	 */
+	private const COMMENT_SEQUENCE = 5;
+
+	/**
 	 * The WordPress object being transformed.
 	 *
 	 * @var mixed
@@ -77,7 +88,7 @@ abstract class Base {
 	}
 
 	/**
-	 * Mint a historical TID from the post's original publish date.
+	 * Mint a historical TID from the object's original publish date.
 	 *
 	 * Fills the sub-second slot with a disambiguator so records sharing a
 	 * publish second sort deterministically and are very unlikely to
@@ -102,12 +113,23 @@ abstract class Base {
 	 * realistic site, so a same-second bulk import no longer drops posts to
 	 * "record already exists".
 	 *
-	 * @param int $sequence Offset within the post's records (0 = root/doc).
+	 * Comments share `app.bsky.feed.post` with posts, so they take the low
+	 * digit {@see self::COMMENT_SEQUENCE}, which no thread record can reach.
+	 * A comment and a post with the same ID and second therefore never
+	 * share a microsecond, whatever their clock bits.
+	 *
+	 * @param int $sequence Offset within the post's records (0 = root/doc). Ignored for comments.
 	 * @return string
 	 */
 	protected function historical_rkey( int $sequence = 0 ): string {
-		$unix = (int) \get_post_time( 'U', true, $this->object );
-		$id   = $this->object->ID;
+		if ( $this->object instanceof \WP_Comment ) {
+			$unix     = (int) \strtotime( $this->object->comment_date_gmt . ' UTC' );
+			$id       = (int) $this->object->comment_ID;
+			$sequence = self::COMMENT_SEQUENCE;
+		} else {
+			$unix = (int) \get_post_time( 'U', true, $this->object );
+			$id   = $this->object->ID;
+		}
 
 		// Post ID in the high part, reply sequence in the reserved low
 		// digit; `% 100000` keeps the product inside the microsecond slot.
@@ -204,11 +226,6 @@ abstract class Base {
 	 *    `is_connected()`, so this is belt and braces, but it is the one
 	 *    place the rule has to hold.
 	 *
-	 * The historical-rkey path exists for posts only: `historical_rkey()`
-	 * derives the TID from `get_post_time()` and the post ID, neither of
-	 * which a `WP_Comment` has. A comment transformer with original-time
-	 * minting switched on therefore falls back to a fresh TID.
-	 *
 	 * @param callable $read  Reader: `fn( string $key ): mixed`.
 	 * @param callable $write Writer: `fn( string $key, string $value ): void`.
 	 * @return string The reserved 13-character TID.
@@ -222,7 +239,7 @@ abstract class Base {
 
 		$rkey = (string) $read( static::META_TID );
 		if ( '' === $rkey ) {
-			$rkey = ( $this->original_time && $this->object instanceof \WP_Post )
+			$rkey = ( $this->original_time && ( $this->object instanceof \WP_Post || $this->object instanceof \WP_Comment ) )
 				? $this->historical_rkey()
 				: TID::generate();
 			$write( static::META_TID, $rkey );

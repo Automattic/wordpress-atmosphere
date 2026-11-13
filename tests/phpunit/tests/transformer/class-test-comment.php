@@ -13,6 +13,7 @@ use WP_UnitTestCase;
 use Atmosphere\Reaction_Sync;
 use Atmosphere\Transformer\Comment;
 use Atmosphere\Transformer\Post;
+use Atmosphere\Transformer\TID;
 
 /**
  * Comment transformer tests.
@@ -318,14 +319,78 @@ class Test_Comment extends WP_UnitTestCase {
 	}
 
 	/**
-	 * Original-time minting is a post-only concept: the historical rkey
-	 * derives from the post date and ID, which a comment does not have.
-	 * Switching it on for a comment must fall back to a generated TID
-	 * rather than reaching into `WP_Post` fields that are not there.
+	 * With original-time minting on, a comment's rkey decodes to its
+	 * original GMT date, in the comment slot, and is persisted.
 	 *
 	 * @covers ::get_rkey
 	 */
-	public function test_get_rkey_ignores_original_time_for_comments() {
+	public function test_get_rkey_uses_original_time_when_enabled() {
+		$comment_id = self::factory()->comment->create(
+			array(
+				'comment_post_ID'  => $this->post_id,
+				'user_id'          => 1,
+				'comment_date'     => '2014-06-01 09:30:00',
+				'comment_date_gmt' => '2014-06-01 09:30:00',
+			)
+		);
+
+		$transformer = new Comment( \get_comment( $comment_id ) );
+		$transformer->use_original_time();
+
+		$rkey     = $transformer->get_rkey();
+		$expected = \strtotime( '2014-06-01 09:30:00 UTC' ) * 1_000_000 + ( $comment_id % 100000 ) * 10 + 5;
+
+		$this->assertSame( $expected, TID::decode( $rkey ) );
+		$this->assertSame( $rkey, \get_comment_meta( $comment_id, Comment::META_TID, true ) );
+	}
+
+	/**
+	 * A post (root and thread replies) and a comment with the same ID and
+	 * second share app.bsky.feed.post, so their historical rkeys must differ.
+	 *
+	 * @covers ::get_rkey
+	 */
+	public function test_original_time_rkey_differs_from_post_with_same_id_and_date() {
+		$date       = '2014-06-01 09:30:00';
+		$comment_id = self::factory()->comment->create(
+			array(
+				'comment_post_ID'  => $this->post_id,
+				'user_id'          => 1,
+				'comment_date'     => $date,
+				'comment_date_gmt' => $date,
+			)
+		);
+
+		$post_id = self::factory()->post->create(
+			array(
+				'import_id'     => $comment_id,
+				'post_status'   => 'publish',
+				'post_date'     => $date,
+				'post_date_gmt' => $date,
+			)
+		);
+		$this->assertSame( $comment_id, $post_id, 'Precondition: the post must reuse the comment ID.' );
+
+		$comment = new Comment( \get_comment( $comment_id ) );
+		$comment->use_original_time();
+		$post = new Post( \get_post( $post_id ) );
+		$post->use_original_time();
+
+		$comment_micros = TID::decode( $comment->get_rkey() );
+
+		$this->assertNotSame( TID::decode( $post->get_rkey() ), $comment_micros );
+		for ( $i = 1; $i <= 4; $i++ ) {
+			$this->assertNotSame( TID::decode( $post->mint_reply_rkey( $i ) ), $comment_micros, "Thread reply $i collides with the comment." );
+		}
+	}
+
+	/**
+	 * A zero comment date falls back to a live TID rather than a
+	 * pre-epoch one.
+	 *
+	 * @covers ::get_rkey
+	 */
+	public function test_original_time_with_zero_date_mints_live_tid() {
 		$comment_id = self::factory()->comment->create(
 			array(
 				'comment_post_ID' => $this->post_id,
@@ -333,13 +398,13 @@ class Test_Comment extends WP_UnitTestCase {
 			)
 		);
 
-		$transformer = new Comment( \get_comment( $comment_id ) );
+		$comment                   = \get_comment( $comment_id );
+		$comment->comment_date_gmt = '0000-00-00 00:00:00';
+
+		$transformer = new Comment( $comment );
 		$transformer->use_original_time();
 
-		$rkey = $transformer->get_rkey();
-
-		$this->assertMatchesRegularExpression( '/^[234567a-z]{13}$/', $rkey );
-		$this->assertSame( $rkey, \get_comment_meta( $comment_id, Comment::META_TID, true ) );
+		$this->assertGreaterThan( ( \time() - 60 ) * 1_000_000, TID::decode( $transformer->get_rkey() ) );
 	}
 
 	/**
