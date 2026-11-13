@@ -1,0 +1,4 @@
+Significance: patch
+Type: changed
+
+Site Health now points sites behind Cloudflare to the firewall rule Bluesky needs, because Cloudflare's bot protection can block Bluesky while the site's own check still passes.
