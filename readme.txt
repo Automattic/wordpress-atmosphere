@@ -62,6 +62,10 @@ Yes. ATmosphere signs in to Bluesky directly from your WordPress site. Nothing i
 
 Your Bluesky sign-in tokens are stored encrypted using your site's WordPress security keys. If those keys change — after a site migration, or when a security plugin rotates them — the saved login can no longer be read, and ATmosphere asks you to reconnect. Reconnecting on the settings page fixes it in one step. If it keeps happening, look for a security plugin that rotates your keys on a schedule.
 
+= My site uses Cloudflare and its Bluesky login stopped renewing. What can I do? =
+
+Bluesky regularly reads a small file from your site to confirm who is signing in. Cloudflare's bot protection, including Super Bot Fight Mode, can block those requests, and then the saved login can no longer be renewed. ATmosphere's Site Health check can't see this, because it runs from your own server. With Super Bot Fight Mode, add a custom rule in Cloudflare that skips it for requests whose address contains `client-metadata`. Bot Fight Mode on the free plan can't be skipped by a rule, so turn it off instead. Don't allow Bluesky's IP addresses. They can change without notice.
+
 = Can I use my own domain as my Bluesky handle? =
 
 Yes — that's one of the headline features. Once you've connected, open Bluesky's app settings, choose "Change Handle", pick "I have my own domain", and enter your WordPress site's domain. Bluesky will check that it really is your site (ATmosphere takes care of the verification file) and switch your handle.

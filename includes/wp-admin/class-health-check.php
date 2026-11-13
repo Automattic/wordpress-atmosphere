@@ -172,7 +172,7 @@ class Health_Check {
 				$result['label']          = \__( 'Bluesky rejected ATmosphere’s OAuth client configuration', 'atmosphere' );
 				$result['description']    = \sprintf(
 					'<p>%s</p>',
-					\__( 'The saved login remains available, but Bluesky rejected its latest renewal. Further down this screen, check whether Bluesky can reach ATmosphere on this site. If that check passed, it is listed under Passed tests. Make sure security or caching software allows the client-metadata endpoint. ATmosphere tries again on its own, and this message goes away after the next successful renewal.', 'atmosphere' )
+					\__( 'The saved login remains available, but Bluesky rejected its latest renewal. Further down this screen, check whether Bluesky can reach ATmosphere on this site. If that check passed, it is listed under Passed tests. That check runs from your own server, so it cannot see a firewall that blocks only Bluesky, such as Cloudflare’s bot protection. Make sure security or caching software and any firewall in front of your site allow the client-metadata endpoint. A protection that cannot make an exception for it, like Bot Fight Mode on the free Cloudflare plan, has to be turned off. ATmosphere tries again on its own, and this message goes away after the next successful renewal.', 'atmosphere' )
 				);
 			} elseif ( self::renewal_is_failing( $status ) ) {
 				$result['status']         = 'recommended';
@@ -343,6 +343,33 @@ class Health_Check {
 		$problem  = self::client_metadata_problem( $response, $url );
 
 		if ( '' === $problem ) {
+			/*
+			 * This loopback leaves from the site's own server, which a
+			 * proxy in front of the site trusts in a way it does not
+			 * trust Bluesky. Cloudflare's bot protection is the case seen
+			 * in practice: it challenged Bluesky's fetch while this check
+			 * kept passing. Its `cf-ray` header gives the proxy away.
+			 *
+			 * Many hosts resolve their own domain locally, so the loopback
+			 * never passes Cloudflare and carries no `cf-ray`. The admin's
+			 * own request to this screen usually does, so it is checked
+			 * too. Only its presence matters; the value is never used.
+			 */
+			if (
+				'' !== \wp_remote_retrieve_header( $response, 'cf-ray' )
+				|| ! empty( $_SERVER['HTTP_CF_RAY'] )
+			) {
+				$result['description'] .= \sprintf(
+					'<p>%1$s</p><p>%2$s</p>',
+					\sprintf(
+						/* translators: %s: "client-metadata", the part of the address to match. */
+						\esc_html__( 'This site is served through Cloudflare. This check runs from your own server, so it passes even when Cloudflare’s bot protection blocks Bluesky. If your Bluesky login stops renewing and you use Super Bot Fight Mode, add a rule in Cloudflare that skips it for addresses containing %s.', 'atmosphere' ),
+						'<code>client-metadata</code>'
+					),
+					\esc_html__( 'Bot Fight Mode on the free Cloudflare plan cannot be skipped by a rule. If you use it, turn it off.', 'atmosphere' )
+				);
+			}
+
 			return $result;
 		}
 

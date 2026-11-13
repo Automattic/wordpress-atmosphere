@@ -416,7 +416,42 @@ class Test_Health_Check extends \WP_UnitTestCase {
 		$this->use_https_site();
 		$this->stub_loopback( $this->good_metadata_response() );
 
-		$this->assertSame( 'good', Health_Check::test_client_metadata()['status'] );
+		$result = Health_Check::test_client_metadata();
+
+		$this->assertSame( 'good', $result['status'] );
+		$this->assertStringNotContainsString( 'Cloudflare', $result['description'], 'Only a site behind Cloudflare gets the hint.' );
+	}
+
+	/**
+	 * A site behind Cloudflare still passes, but learns that the check
+	 * cannot see Cloudflare's bot protection.
+	 */
+	public function test_client_metadata_warns_about_cloudflare_when_passing() {
+		$this->use_https_site();
+		$this->stub_loopback( $this->good_metadata_response() + array( 'headers' => array( 'cf-ray' => '8d1f2e3a4b5c6d7e-ORD' ) ) );
+
+		$result = Health_Check::test_client_metadata();
+
+		$this->assertSame( 'good', $result['status'] );
+		$this->assertStringContainsString( 'Cloudflare', $result['description'] );
+		$this->assertStringContainsString( '<code>client-metadata</code>', $result['description'] );
+		$this->assertStringContainsString( 'free Cloudflare plan', $result['description'] );
+	}
+
+	/**
+	 * A host that resolves its own domain locally sends the loopback past
+	 * Cloudflare; the admin's own request still shows the proxy.
+	 */
+	public function test_client_metadata_warns_about_cloudflare_from_the_admin_request() {
+		$this->use_https_site();
+		$this->stub_loopback( $this->good_metadata_response() );
+
+		$_SERVER['HTTP_CF_RAY'] = '8d1f2e3a4b5c6d7e-ORD';
+		$result                 = Health_Check::test_client_metadata();
+		unset( $_SERVER['HTTP_CF_RAY'] );
+
+		$this->assertSame( 'good', $result['status'] );
+		$this->assertStringContainsString( 'Cloudflare', $result['description'] );
 	}
 
 	/**
