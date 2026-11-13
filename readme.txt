@@ -64,7 +64,7 @@ Your Bluesky sign-in tokens are stored encrypted using your site's WordPress sec
 
 = My site uses Cloudflare and its Bluesky login stopped renewing. What can I do? =
 
-Bluesky regularly reads a small file from your site to confirm who is signing in. Cloudflare's bot protection, including Super Bot Fight Mode, can block those requests, and then the saved login can no longer be renewed. ATmosphere's Site Health check can't see this, because it runs from your own server, which Cloudflare doesn't block. In Cloudflare, add a custom rule that skips bot protection for requests whose address contains `client-metadata`. Don't allow Bluesky's IP addresses instead. They can change without notice.
+Bluesky regularly reads a small file from your site to confirm who is signing in. Cloudflare's bot protection, including Super Bot Fight Mode, can block those requests, and then the saved login can no longer be renewed. ATmosphere's Site Health check can't see this, because it runs from your own server, which Cloudflare doesn't block. With Super Bot Fight Mode, add a custom rule in Cloudflare that skips it for requests whose address contains `client-metadata`. Bot Fight Mode on the free plan can't be skipped by a rule, so turn it off instead. Don't allow Bluesky's IP addresses. They can change without notice.
 
 = Can I use my own domain as my Bluesky handle? =
 

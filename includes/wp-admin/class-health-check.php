@@ -349,15 +349,24 @@ class Health_Check {
 			 * trust Bluesky. Cloudflare's bot protection is the case seen
 			 * in practice: it challenged Bluesky's fetch while this check
 			 * kept passing. Its `cf-ray` header gives the proxy away.
+			 *
+			 * Many hosts resolve their own domain locally, so the loopback
+			 * never passes Cloudflare and carries no `cf-ray`. The admin's
+			 * own request to this screen usually does, so it is checked
+			 * too. Only its presence matters; the value is never used.
 			 */
-			if ( '' !== \wp_remote_retrieve_header( $response, 'cf-ray' ) ) {
+			if (
+				'' !== \wp_remote_retrieve_header( $response, 'cf-ray' )
+				|| ! empty( $_SERVER['HTTP_CF_RAY'] )
+			) {
 				$result['description'] .= \sprintf(
-					'<p>%s</p>',
+					'<p>%1$s</p><p>%2$s</p>',
 					\sprintf(
 						/* translators: %s: "client-metadata", the part of the address to match. */
-						\esc_html__( 'This site is served through Cloudflare. This check runs from your own server, so it passes even when Cloudflare’s bot protection blocks Bluesky. If your Bluesky login stops renewing, add a rule in Cloudflare that skips bot protection for addresses containing %s.', 'atmosphere' ),
+						\esc_html__( 'This site is served through Cloudflare. This check runs from your own server, so it passes even when Cloudflare’s bot protection blocks Bluesky. If your Bluesky login stops renewing and you use Super Bot Fight Mode, add a rule in Cloudflare that skips it for addresses containing %s.', 'atmosphere' ),
 						'<code>client-metadata</code>'
-					)
+					),
+					\esc_html__( 'Bot Fight Mode on the free Cloudflare plan cannot be skipped by a rule. If you use it, turn it off.', 'atmosphere' )
 				);
 			}
 
