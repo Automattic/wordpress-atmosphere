@@ -479,6 +479,31 @@ class Test_Health_Check extends \WP_UnitTestCase {
 	}
 
 	/**
+	 * When Cloudflare challenges the loopback itself, the critical result
+	 * points at Cloudflare too, not only at a security plugin.
+	 */
+	public function test_client_metadata_critical_warns_about_cloudflare() {
+		$this->use_https_site();
+		$this->stub_loopback(
+			array(
+				'headers'  => array( 'cf-ray' => '8d1f2e3a4b5c6d7e-ORD' ),
+				'response' => array(
+					'code'    => 403,
+					'message' => 'Forbidden',
+				),
+				'body'     => '<html><body><h1>Just a moment...</h1></body></html>',
+			)
+		);
+
+		$result = Health_Check::test_client_metadata();
+
+		$this->assertSame( 'critical', $result['status'] );
+		$this->assertStringContainsString( 'served through Cloudflare', $result['description'] );
+		$this->assertStringContainsString( '<code>client-metadata</code>', $result['description'] );
+		$this->assertStringContainsString( 'URI field', $result['description'] );
+	}
+
+	/**
 	 * A transport failure is critical and carries the error.
 	 */
 	public function test_client_metadata_is_critical_on_transport_error() {

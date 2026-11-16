@@ -342,32 +342,28 @@ class Health_Check {
 		$response = \wp_remote_get( $url, $args + array( 'sslverify' => true ) );
 		$problem  = self::client_metadata_problem( $response, $url );
 
+		/*
+		 * Rule advice for sites behind Cloudflare, shared by the passing and
+		 * the critical result. Cloudflare's rule builder offers URI Path
+		 * first, which leaves out the query string, so it would never match
+		 * the `?rest_route=` address of a site with plain permalinks.
+		 */
+		$cloudflare_advice = \sprintf(
+			'<p>%1$s</p><p>%2$s</p>',
+			\sprintf(
+				/* translators: %s: "client-metadata", the part of the address to match. */
+				\esc_html__( 'If you use Super Bot Fight Mode, add a rule in Cloudflare that skips it when the URI field contains %s. Do not use the URI Path field. It leaves out the part of the address that sites with plain permalinks use.', 'atmosphere' ),
+				'<code>client-metadata</code>'
+			),
+			\esc_html__( 'Bot Fight Mode on the free Cloudflare plan cannot be skipped by a rule. If you use it, turn it off.', 'atmosphere' )
+		);
+
 		if ( '' === $problem ) {
-			/*
-			 * This loopback leaves from the site's own server, which a
-			 * proxy in front of the site trusts in a way it does not
-			 * trust Bluesky. Cloudflare's bot protection is the case seen
-			 * in practice: it challenged Bluesky's fetch while this check
-			 * kept passing. Its `cf-ray` header gives the proxy away.
-			 *
-			 * Many hosts resolve their own domain locally, so the loopback
-			 * never passes Cloudflare and carries no `cf-ray`. The admin's
-			 * own request to this screen usually does, so it is checked
-			 * too. Only its presence matters; the value is never used.
-			 */
-			if (
-				'' !== \wp_remote_retrieve_header( $response, 'cf-ray' )
-				|| ! empty( $_SERVER['HTTP_CF_RAY'] )
-			) {
+			if ( self::behind_cloudflare( $response ) ) {
 				$result['description'] .= \sprintf(
-					'<p>%1$s</p><p>%2$s</p>',
-					\sprintf(
-						/* translators: %s: "client-metadata", the part of the address to match. */
-						\esc_html__( 'This site is served through Cloudflare. This check runs from your own server, so it passes even when Cloudflare’s bot protection blocks Bluesky. If your Bluesky login stops renewing and you use Super Bot Fight Mode, add a rule in Cloudflare that skips it for addresses containing %s.', 'atmosphere' ),
-						'<code>client-metadata</code>'
-					),
-					\esc_html__( 'Bot Fight Mode on the free Cloudflare plan cannot be skipped by a rule. If you use it, turn it off.', 'atmosphere' )
-				);
+					'<p>%s</p>',
+					\esc_html__( 'This site is served through Cloudflare. This check runs from your own server, so it passes even when Cloudflare’s bot protection blocks Bluesky. If your Bluesky login stops renewing, check that protection.', 'atmosphere' )
+				) . $cloudflare_advice;
 			}
 
 			return $result;
@@ -419,7 +415,38 @@ class Health_Check {
 			\esc_html__( 'Posts you have already shared are not affected.', 'atmosphere' )
 		);
 
+		if ( self::behind_cloudflare( $response ) ) {
+			$result['description'] .= \sprintf(
+				'<p>%s</p>',
+				\esc_html__( 'This site is served through Cloudflare. Its bot protection may be what blocks this request.', 'atmosphere' )
+			) . $cloudflare_advice;
+		}
+
 		return $result;
+	}
+
+	/**
+	 * Whether this site is served through Cloudflare.
+	 *
+	 * The loopback leaves from the site's own server, which a proxy in
+	 * front of the site trusts in a way it does not trust Bluesky.
+	 * Cloudflare's bot protection is the case seen in practice: it
+	 * challenged Bluesky's fetch while the loopback kept passing, or it
+	 * challenged the loopback too. Its `cf-ray` header gives the proxy away.
+	 *
+	 * Many hosts resolve their own domain locally, so the loopback never
+	 * passes Cloudflare and carries no `cf-ray`. The admin's own request to
+	 * this screen usually does, so it is checked too. Only its presence
+	 * matters; the value is never used.
+	 *
+	 * @since unreleased
+	 *
+	 * @param array|\WP_Error $response Result of the loopback request.
+	 * @return bool True when the loopback or the current request passed Cloudflare.
+	 */
+	private static function behind_cloudflare( array|\WP_Error $response ): bool {
+		return '' !== \wp_remote_retrieve_header( $response, 'cf-ray' )
+			|| ! empty( $_SERVER['HTTP_CF_RAY'] );
 	}
 
 	/**
