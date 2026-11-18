@@ -1,0 +1,4 @@
+Significance: patch
+Type: changed
+
+Site Health now explains what sites behind Cloudflare need to change so Bluesky can reach them, because Cloudflare's bot protection can block Bluesky while the site's own check still passes.
