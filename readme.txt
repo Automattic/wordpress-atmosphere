@@ -4,7 +4,7 @@ Tags: at-protocol, bluesky, connector, atproto, crossposting
 Requires at least: 6.5
 Tested up to: 7.1
 Requires PHP: 8.2
-Stable tag: 2.6.0
+Stable tag: 2.6.1
 License: GPL-2.0-or-later
 License URI: https://spdx.org/licenses/GPL-2.0-or-later.html
 
@@ -123,6 +123,13 @@ These addresses need pretty permalinks turned on under **Settings → Permalinks
 Not at this time. ATmosphere is designed for a single WordPress site. On a Network-activated install only the current site's data is read and written, and uninstall only cleans the current site — credentials and records on other sites in the network are left intact.
 
 == Changelog ==
+
+### 2.6.1 - 2026-11-18
+#### Changed
+- Site Health now explains what sites behind Cloudflare need to change so Bluesky can reach them, because Cloudflare's bot protection can block Bluesky while the site's own check still passes.
+
+#### Fixed
+- Tags and categories with special characters, like an ampersand or a curly apostrophe, now show up correctly on Bluesky and in reader apps instead of as HTML codes.
 
 ### 2.6.0 - 2026-11-09
 #### Changed
