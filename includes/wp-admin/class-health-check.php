@@ -439,7 +439,7 @@ class Health_Check {
 	 * this screen usually does, so it is checked too. Only its presence
 	 * matters; the value is never used.
 	 *
-	 * @since unreleased
+	 * @since 2.6.1
 	 *
 	 * @param array|\WP_Error $response Result of the loopback request.
 	 * @return bool True when the loopback or the current request passed Cloudflare.
