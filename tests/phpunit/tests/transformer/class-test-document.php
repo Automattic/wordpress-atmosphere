@@ -765,4 +765,111 @@ class Test_Document extends \WP_UnitTestCase {
 		$this->assertSame( $reserved, $transformer->get_rkey() );
 		$this->assertSame( $reserved, \get_post_meta( $post_id, Document::META_TID, true ) );
 	}
+
+	/**
+	 * Test that the record shows what a logged-out visitor sees.
+	 */
+	public function test_renders_as_logged_out_visitor() {
+		$user_id = self::factory()->user->create( array( 'role' => 'administrator' ) );
+		\wp_set_current_user( $user_id );
+
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_content' => 'Public part.',
+				'post_excerpt' => '',
+			)
+		);
+
+		$filter = static fn( $content ) => \is_user_logged_in() ? $content . ' Members only.' : $content;
+		\add_filter( 'the_content', $filter );
+
+		$record = ( new Document( $post ) )->transform();
+
+		\remove_filter( 'the_content', $filter );
+
+		$this->assertSame( 'Public part.', $record['textContent'] );
+		$this->assertSame( 'Public part.', $record['description'] );
+		$this->assertSame( $user_id, \get_current_user_id() );
+	}
+
+	/**
+	 * Test that the derived description removes shortcodes instead of showing them as text.
+	 */
+	public function test_description_strips_shortcodes() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_content' => 'Visible text. [caption id="attachment_1"]Caption text.[/caption]',
+				'post_excerpt' => '',
+			)
+		);
+
+		$record = ( new Document( $post ) )->transform();
+
+		$this->assertSame( 'Visible text.', $record['description'] );
+	}
+
+	/**
+	 * Test that the derived description keeps the narrowed content for a
+	 * post object that is not raw, instead of reloading the full body.
+	 */
+	public function test_description_keeps_narrowed_content_for_non_raw_post() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_content' => 'Public part. Members only part.',
+				'post_excerpt' => '',
+			)
+		);
+
+		$post->filter = 'display';
+
+		$narrow = static fn() => 'Public part.';
+		\add_filter( 'atmosphere_publishable_content', $narrow );
+
+		$record = ( new Document( $post ) )->transform();
+
+		\remove_filter( 'atmosphere_publishable_content', $narrow );
+
+		$this->assertSame( 'Public part.', $record['description'] );
+	}
+
+	/**
+	 * Test that a theme's excerpt length and "Continue reading" text do not
+	 * change the derived description.
+	 */
+	public function test_description_ignores_theme_excerpt_filters() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_content' => 'One two three four five six seven eight.',
+				'post_excerpt' => '',
+			)
+		);
+
+		$length = static fn() => 3;
+		$more   = static fn() => ' Continue reading';
+		\add_filter( 'excerpt_length', $length );
+		\add_filter( 'excerpt_more', $more );
+
+		$record = ( new Document( $post ) )->transform();
+
+		\remove_filter( 'excerpt_length', $length );
+		\remove_filter( 'excerpt_more', $more );
+
+		$this->assertSame( 'One two three four five six seven eight.', $record['description'] );
+	}
+
+	/**
+	 * Test that the derived description is trimmed to 55 words.
+	 */
+	public function test_description_is_trimmed_to_55_words() {
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_content' => \trim( \str_repeat( 'word ', 60 ) ),
+				'post_excerpt' => '',
+			)
+		);
+
+		$record = ( new Document( $post ) )->transform();
+
+		$this->assertSame( \trim( \str_repeat( 'word ', 55 ) ) . '...', $record['description'] );
+	}
 }

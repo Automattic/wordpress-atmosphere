@@ -1055,7 +1055,11 @@ class Client {
 				\is_array( $data ) && ! empty( $data['refresh_error'] )
 					? (string) $data['refresh_error']
 					: (string) $result->get_error_code(),
-				$conn
+				$conn,
+				// A transport failure keeps its message: the code alone does not tell a timeout from a DNS or TLS problem.
+				'http_request_failed' === $result->get_error_code()
+					? $result->get_error_message()
+					: ''
 			);
 
 			/*
@@ -1860,8 +1864,10 @@ class Client {
 	 *                      call site can silently skip the session check); a
 	 *                      failure belonging to a session that ended
 	 *                      mid-flight is dropped.
+	 * @param string $detail Optional. The transport error message, stored
+	 *                       after the code. Default ''.
 	 */
-	private static function record_refresh_failure( string $error, array $conn ): void {
+	private static function record_refresh_failure( string $error, array $conn, string $detail = '' ): void {
 		self::invalidate_lock_option_cache( 'atmosphere_connection' );
 		$current = \get_option( 'atmosphere_connection', array() );
 
@@ -1899,6 +1905,15 @@ class Client {
 		 * as a canvas.
 		 */
 		$error = truncate_graphemes( \sanitize_text_field( $error ), 64 );
+
+		/*
+		 * The transport message comes from the site's own HTTP library,
+		 * but it is bounded the same way. A cURL message fits in 200.
+		 */
+		$detail = truncate_graphemes( \sanitize_text_field( $detail ), 200 );
+		if ( '' !== $detail ) {
+			$error .= ': ' . $detail;
+		}
 
 		/*
 		 * A row that fails on every API-touching request (a token-less

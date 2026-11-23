@@ -1431,6 +1431,19 @@ class Reaction_Sync {
 			return false;
 		}
 
+		/*
+		 * Skip records the plugin published itself, such as the follow-up
+		 * posts of a teaser thread. They are part of the post, not replies
+		 * to it. Their parent is the root or an earlier follow-up, so it
+		 * resolves to the same post, and its record index is read from the
+		 * meta cache. A reply the account writes by hand on Bluesky is not
+		 * in the index and still imports. No DID check: the index can hold
+		 * records of a previously connected account.
+		 */
+		if ( \in_array( $reply_uri, \get_post_meta( $post_id, BskyPost::META_URI_INDEX, false ), true ) ) {
+			return false;
+		}
+
 		$text = $record['text'] ?? '';
 
 		/*
@@ -1477,11 +1490,12 @@ class Reaction_Sync {
 		 * being kept (author profile resolution, comment row insert,
 		 * comment-meta writes). Return false to skip the insert.
 		 *
-		 * Use case: consumers publishing multi-record threads from their
-		 * own DID may want to skip the round-tripped self-replies that
-		 * `Reaction_Sync` would otherwise ingest as comments. The filter
-		 * is intentionally policy-free upstream so consumers can express
-		 * whatever discriminator fits their publishing strategy.
+		 * Records the plugin published itself, such as the follow-up posts
+		 * of a teaser thread, are already skipped before this filter runs.
+		 * Use case: a site that does not want replies the connected account
+		 * writes by hand on Bluesky can return false for its own DID. The
+		 * filter is intentionally policy-free upstream so consumers can
+		 * express whatever discriminator fits their publishing strategy.
 		 *
 		 * @param bool  $should         Whether to sync this reply. Default true.
 		 * @param array $notification   Notification or synthesized own-record.

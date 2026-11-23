@@ -15,7 +15,6 @@ namespace Atmosphere\Transformer;
 use Atmosphere\Mention;
 use function Atmosphere\build_at_uri;
 use function Atmosphere\get_did;
-use function Atmosphere\get_publishable_content;
 use function Atmosphere\publishable_content_cache_key;
 use function Atmosphere\render_publishable_content;
 use function Atmosphere\sanitize_text;
@@ -307,9 +306,11 @@ abstract class Base {
 		 * those run after the cap, so dropping a tag there shortens the
 		 * list instead of making room for the next one.
 		 *
-		 * The return value is normalized before use. Entries that are
-		 * not strings are dropped, the rest are trimmed, empties are
-		 * removed, and the result is de-duplicated and capped again at
+		 * Names arrive as WordPress stores them, entity-encoded
+		 * (`Rock &amp; Roll`). The return value is normalized before
+		 * use. Entries that are not strings are dropped, the rest are
+		 * entity-decoded and trimmed, empties are removed, and the
+		 * result is de-duplicated and capped again at
 		 * {@see self::MAX_TAGS}. That bounds how many tags a record
 		 * carries, not how long each one is: both lexicons also bound a
 		 * single tag (64 graphemes for `app.bsky.feed.post`), and an
@@ -357,7 +358,15 @@ abstract class Base {
 				continue;
 			}
 
-			$tag = \trim( $tag );
+			/*
+			 * Term names are stored entity-encoded (`&` as `&amp;`), and
+			 * records carry plain text. Decoding here rather than when
+			 * collecting covers names a filter adds from another taxonomy
+			 * too. A plain decode, not sanitize_text(): `pre_term_name`
+			 * already strips markup on save, and stripping again would
+			 * cut `I <3 NY` down to `I`.
+			 */
+			$tag = \trim( \html_entity_decode( $tag, ENT_QUOTES, 'UTF-8' ) );
 
 			if ( '' !== $tag ) {
 				$normalized[] = $tag;
@@ -373,9 +382,11 @@ abstract class Base {
 	 * A stored `post_excerpt` is an author-provided public teaser and is used
 	 * verbatim — this is the same string Jetpack surfaces as the public preview
 	 * of a gated post, so it stays public here too. Only the *derived* excerpt,
-	 * generated when no excerpt was written, is pulled from the body, and it
-	 * reads through {@see get_publishable_content()} so a gated body never leaks
-	 * into it.
+	 * generated when no excerpt was written, is built like the excerpt
+	 * WordPress shows a logged-out visitor on an archive page
+	 * ({@see render_publishable_content()}). It starts from the publishable
+	 * content, so a gated body never leaks into it, and plugins that hide
+	 * parts of the content or keep their output out of excerpts apply.
 	 *
 	 * @param \WP_Post $post      Post object.
 	 * @param int      $word_limit Words to keep.
@@ -386,7 +397,24 @@ abstract class Base {
 			return sanitize_text( $post->post_excerpt );
 		}
 
-		return \wp_trim_words( sanitize_text( get_publishable_content( $post ) ), $word_limit, '...' );
+		$key = publishable_content_cache_key( $post );
+
+		if ( ! isset( $this->excerpt_cache[ $key ] ) ) {
+			/*
+			 * Render the excerpt once, untrimmed, and trim it per word limit
+			 * below. One less than PHP_INT_MAX, because `wp_trim_words()`
+			 * adds one to the limit.
+			 */
+			$length = static fn() => PHP_INT_MAX - 1;
+
+			\add_filter( 'excerpt_length', $length, PHP_INT_MAX );
+
+			$this->excerpt_cache[ $key ] = sanitize_text( render_publishable_content( $post, true ) );
+
+			\remove_filter( 'excerpt_length', $length, PHP_INT_MAX );
+		}
+
+		return \wp_trim_words( $this->excerpt_cache[ $key ], $word_limit, '...' );
 	}
 
 	/**
@@ -433,6 +461,14 @@ abstract class Base {
 	 * @var array<string,string>
 	 */
 	private array $html_content_cache = array();
+
+	/**
+	 * Per-instance memoization of the untrimmed excerpt, keyed like
+	 * {@see self::$plain_content_cache}.
+	 *
+	 * @var array<string,string>
+	 */
+	private array $excerpt_cache = array();
 
 	/**
 	 * Render a post's content to HTML, with mention linkification suppressed.

@@ -1845,6 +1845,77 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 	}
 
 	/**
+	 * Test that a teaser-thread follow-up post the plugin published for a
+	 * post is not imported back as a comment on that post.
+	 */
+	public function test_process_own_record_skips_published_thread_record() {
+		$this->seed_self_identity();
+
+		$post_id   = self::factory()->post->create();
+		$root_uri  = 'at://did:plc:me/app.bsky.feed.post/threadroot';
+		$chunk_uri = 'at://did:plc:me/app.bsky.feed.post/threadchunk';
+		\update_post_meta( $post_id, BskyPost::META_URI, $root_uri );
+		\add_post_meta( $post_id, BskyPost::META_URI_INDEX, $root_uri );
+		\add_post_meta( $post_id, BskyPost::META_URI_INDEX, $chunk_uri );
+
+		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_own_record' );
+
+		$record = array(
+			'uri'   => $chunk_uri,
+			'cid'   => 'bafythreadchunk',
+			'value' => array(
+				'$type'     => 'app.bsky.feed.post',
+				'text'      => 'Continue reading: https://example.com/post',
+				'createdAt' => '2026-04-20T15:00:00.000Z',
+				'reply'     => array(
+					'parent' => array( 'uri' => $root_uri ),
+					'root'   => array( 'uri' => $root_uri ),
+				),
+			),
+		);
+
+		$this->assertFalse( $method->invoke( null, $record, 'comment' ) );
+		$this->assertSame( array(), \get_comments( array( 'post_id' => $post_id ) ) );
+	}
+
+	/**
+	 * Test that a thread record published under a previously connected
+	 * account is still skipped after the site switched accounts.
+	 */
+	public function test_process_reply_skips_thread_record_of_previous_account() {
+		$this->seed_self_identity( 'did:plc:new', 'new.bsky.social' );
+
+		$post_id   = self::factory()->post->create();
+		$root_uri  = 'at://did:plc:old/app.bsky.feed.post/oldroot';
+		$chunk_uri = 'at://did:plc:old/app.bsky.feed.post/oldchunk';
+		\update_post_meta( $post_id, BskyPost::META_URI, $root_uri );
+		\add_post_meta( $post_id, BskyPost::META_URI_INDEX, $root_uri );
+		\add_post_meta( $post_id, BskyPost::META_URI_INDEX, $chunk_uri );
+
+		$method = new \ReflectionMethod( Reaction_Sync::class, 'process_reply' );
+
+		$notification = array(
+			'uri'    => $chunk_uri,
+			'cid'    => 'bafyoldchunk',
+			'author' => array(
+				'did'    => 'did:plc:old',
+				'handle' => 'old.bsky.social',
+			),
+			'record' => array(
+				'text'      => 'Continue reading: https://example.com/post',
+				'createdAt' => '2026-04-20T15:00:00.000Z',
+				'reply'     => array(
+					'parent' => array( 'uri' => $root_uri ),
+					'root'   => array( 'uri' => $root_uri ),
+				),
+			),
+		);
+
+		$this->assertFalse( $method->invoke( null, $notification ) );
+		$this->assertSame( array(), \get_comments( array( 'post_id' => $post_id ) ) );
+	}
+
+	/**
 	 * Test that a self-authored original post (no reply field) is skipped.
 	 */
 	public function test_process_own_record_original_post_is_skipped() {
@@ -2646,6 +2717,77 @@ class Test_Reaction_Sync extends WP_UnitTestCase {
 			),
 			$second
 		);
+	}
+
+	/**
+	 * A thread backfill skips the teaser-thread follow-up posts the plugin
+	 * published for the post, and still imports replies from other accounts.
+	 */
+	public function test_import_thread_replies_skips_published_thread_records() {
+		$this->seed_self_identity();
+
+		$post_id   = self::factory()->post->create( array( 'post_status' => 'publish' ) );
+		$root_uri  = 'at://did:plc:me/app.bsky.feed.post/teaserroot';
+		$chunk_uri = 'at://did:plc:me/app.bsky.feed.post/teaserchunk';
+		$reply_uri = 'at://did:plc:alice/app.bsky.feed.post/realreply';
+
+		\update_post_meta( $post_id, BskyPost::META_URI, $root_uri );
+		\add_post_meta( $post_id, BskyPost::META_URI_INDEX, $root_uri );
+		\add_post_meta( $post_id, BskyPost::META_URI_INDEX, $chunk_uri );
+		\set_transient( 'atmosphere_profile_' . \md5( 'did:plc:alice' ), array( 'handle' => 'alice.test' ), \HOUR_IN_SECONDS );
+
+		$thread = array(
+			'$type'   => 'app.bsky.feed.defs#threadViewPost',
+			'post'    => array( 'uri' => $root_uri ),
+			'replies' => array(
+				array(
+					'$type' => 'app.bsky.feed.defs#threadViewPost',
+					'post'  => array(
+						'uri'    => $chunk_uri,
+						'cid'    => 'bafyteaserchunk',
+						'author' => array(
+							'did'    => 'did:plc:me',
+							'handle' => 'me.bsky.social',
+						),
+						'record' => array(
+							'text'      => 'Continue reading: https://example.com/post',
+							'createdAt' => '2026-07-10T12:00:00.000Z',
+							'reply'     => array(
+								'root'   => array( 'uri' => $root_uri ),
+								'parent' => array( 'uri' => $root_uri ),
+							),
+						),
+					),
+				),
+				array(
+					'$type' => 'app.bsky.feed.defs#threadViewPost',
+					'post'  => array(
+						'uri'    => $reply_uri,
+						'cid'    => 'bafyrealreply',
+						'author' => array(
+							'did'    => 'did:plc:alice',
+							'handle' => 'alice.test',
+						),
+						'record' => array(
+							'text'      => 'Great post.',
+							'createdAt' => '2026-07-10T12:05:00.000Z',
+							'reply'     => array(
+								'root'   => array( 'uri' => $root_uri ),
+								'parent' => array( 'uri' => $root_uri ),
+							),
+						),
+					),
+				),
+			),
+		);
+
+		$method = new \ReflectionMethod( Reaction_Sync::class, 'import_thread_replies' );
+		$result = $method->invoke( null, $root_uri, $thread );
+
+		$this->assertSame( 1, $result['imported'] );
+		$this->assertSame( 1, $result['skipped'] );
+		$this->assertFalse( $this->find_comment_id_by_source_uri( $chunk_uri ) );
+		$this->assertIsInt( $this->find_comment_id_by_source_uri( $reply_uri ) );
 	}
 
 	/**

@@ -47,14 +47,14 @@ composer lint
 
 ## WP-CLI Inside wp-env
 
-There is no `env` npm script — call `wp-env` directly via `npx`:
+Go through the `env` npm script, which runs the project's own `@wordpress/env`. Don't use `npx wp-env`: `wp-env` on npm is an unrelated package, and npx downloads and runs it whenever the local binary isn't found.
 
 ```bash
-npx wp-env run cli -- wp plugin list
-npx wp-env run cli -- wp option get atmosphere_identity
-npx wp-env run cli -- wp post create --post_title='Test' --post_status=publish --porcelain
-npx wp-env run cli -- wp transient delete --all
-npx wp-env run tests-cli -- wp option list     # Same, against the tests instance (:8885).
+npm run env -- run cli -- wp plugin list
+npm run env -- run cli -- wp option get atmosphere_identity
+npm run env -- run cli -- wp post create --post_title='Test' --post_status=publish --porcelain
+npm run env -- run cli -- wp transient delete --all
+npm run env -- run tests-cli -- wp option list     # Same, against the tests instance (:8885).
 ```
 
 ## When to Read the Full Docs

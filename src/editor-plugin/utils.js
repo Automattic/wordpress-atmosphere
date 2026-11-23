@@ -179,6 +179,43 @@ export function panelMessage(
 }
 
 /**
+ * Codes for a share that was skipped, never ran, or did not finish.
+ *
+ * Mirror the `Atmosphere::ERROR_SKIPPED_DISCONNECTED`, `ERROR_SHARE_NOT_RUN`
+ * and `ERROR_SHARE_INTERRUPTED` constants on the PHP side.
+ *
+ * @type {string[]}
+ */
+const SELF_EXPLAINING_ERROR_CODES = [
+	'atmosphere_share_skipped_disconnected',
+	'atmosphere_share_not_run',
+	'atmosphere_share_interrupted',
+];
+
+/**
+ * What to tell the author after a publish error that explains itself.
+ *
+ * Those errors are not a failed attempt, so the usual "Sharing to Bluesky
+ * failed" lead would be wrong above them. Their own message leads, followed
+ * by what will fix it.
+ *
+ * @param {Object|null} publishError The `atmosphere_publish_error` REST field.
+ * @return {'reconnect'|'retrying'|'update'|null} The follow-up, or null when
+ *                                                the error takes the usual lead.
+ */
+export function publishErrorFollowUp( publishError ) {
+	if ( ! SELF_EXPLAINING_ERROR_CODES.includes( publishError?.code ) ) {
+		return null;
+	}
+
+	if ( publishError.needs_reconnect ) {
+		return 'reconnect';
+	}
+
+	return publishError.retrying ? 'retrying' : 'update';
+}
+
+/**
  * Reply-restriction audience tokens.
  *
  * Mirror the `Threadgate::AUDIENCE_*` constants on the PHP side, which are

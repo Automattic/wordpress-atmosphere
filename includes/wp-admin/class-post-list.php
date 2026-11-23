@@ -165,6 +165,12 @@ class Post_List {
 			return;
 		}
 
+		if ( Atmosphere::is_share_pending( $post_id ) ) {
+			\esc_html_e( 'Sharing…', 'atmosphere' );
+
+			return;
+		}
+
 		// Quiet by design: see the note on the unauthorized branch above.
 		\printf(
 			'<span aria-hidden="true">&mdash;</span><span class="screen-reader-text">%s</span>',

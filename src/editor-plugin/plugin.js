@@ -42,6 +42,7 @@ import {
 	isSharingEnabled,
 	shareHelpText,
 	panelMessage,
+	publishErrorFollowUp,
 	readReplyRestriction,
 	getReplyMode,
 	getReplyAudiences,
@@ -242,6 +243,36 @@ const EditorPlugin = () => {
 				'atmosphere'
 			);
 
+	/* A share that was skipped, never ran, or did not finish leads with its
+	   own message instead of "Sharing to Bluesky failed", then says what
+	   will fix it. */
+	const followUp = publishErrorFollowUp( publishError );
+	let publishErrorNotice = null;
+	if ( followUp ) {
+		const followUpText = {
+			reconnect: <ReconnectAction />,
+			retrying: __( 'Your site will retry automatically.', 'atmosphere' ),
+			update: __( 'Update the post to try again.', 'atmosphere' ),
+		}[ followUp ];
+
+		publishErrorNotice = (
+			<>
+				{ publishError.message } { followUpText }
+			</>
+		);
+	} else if ( publishError ) {
+		publishErrorNotice = (
+			<>
+				{ needsReconnect ? reconnectMessage : retryMessage }
+				{ publishError.message && (
+					<p style={ { marginBottom: 0 } }>
+						<small>{ publishError.message }</small>
+					</p>
+				) }
+			</>
+		);
+	}
+
 	/*
 	 * Sharing forced off from outside, with no record to link to: a host
 	 * plugin owns the sharing experience, so the panel stays out of the way
@@ -285,16 +316,7 @@ const EditorPlugin = () => {
 				<BaseControl>
 					<Notice status={ message.severity } isDismissible={ false }>
 						{ 'publishError' === message.kind ? (
-							<>
-								{ needsReconnect
-									? reconnectMessage
-									: retryMessage }
-								{ publishError.message && (
-									<p style={ { marginBottom: 0 } }>
-										<small>{ publishError.message }</small>
-									</p>
-								) }
-							</>
+							publishErrorNotice
 						) : (
 							<>
 								{ message.message }{ ' ' }

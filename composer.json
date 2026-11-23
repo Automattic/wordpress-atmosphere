@@ -32,7 +32,7 @@
 			"vendor/bin/phpunit"
 		],
 		"test:wp-env": [
-			"wp-env run tests-cli --env-cwd=\"wp-content/plugins/atmosphere\" vendor/bin/phpunit"
+			"npm run env-test --"
 		],
 		"lint": [
 			"vendor/bin/phpcs"

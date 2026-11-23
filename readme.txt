@@ -4,7 +4,7 @@ Tags: at-protocol, bluesky, connector, atproto, crossposting
 Requires at least: 6.5
 Tested up to: 7.1
 Requires PHP: 8.2
-Stable tag: 2.4.1
+Stable tag: 2.6.1
 License: GPL-2.0-or-later
 License URI: https://spdx.org/licenses/GPL-2.0-or-later.html
 
@@ -61,6 +61,10 @@ Yes. ATmosphere signs in to Bluesky directly from your WordPress site. Nothing i
 = Why does ATmosphere say it needs to reconnect? =
 
 Your Bluesky sign-in tokens are stored encrypted using your site's WordPress security keys. If those keys change — after a site migration, or when a security plugin rotates them — the saved login can no longer be read, and ATmosphere asks you to reconnect. Reconnecting on the settings page fixes it in one step. If it keeps happening, look for a security plugin that rotates your keys on a schedule.
+
+= My site uses Cloudflare and its Bluesky login stopped renewing. What can I do? =
+
+Bluesky regularly reads a small file from your site to confirm who is signing in. Cloudflare's bot protection, including Super Bot Fight Mode, can block those requests, and then the saved login can no longer be renewed. ATmosphere's Site Health check can't see this, because it runs from your own server. With Super Bot Fight Mode, add a custom rule in Cloudflare that skips it for requests whose URI field contains `client-metadata`. Don't use the URI Path field. It leaves out the part of the address that sites with plain permalinks use. Bot Fight Mode on the free plan can't be skipped by a rule, so turn it off instead. Don't allow Bluesky's IP addresses. They can change without notice.
 
 = Can I use my own domain as my Bluesky handle? =
 
@@ -119,6 +123,39 @@ These addresses need pretty permalinks turned on under **Settings → Permalinks
 Not at this time. ATmosphere is designed for a single WordPress site. On a Network-activated install only the current site's data is read and written, and uninstall only cleans the current site — credentials and records on other sites in the network are left intact.
 
 == Changelog ==
+
+### 2.6.1 - 2026-11-18
+#### Changed
+- Site Health now explains what sites behind Cloudflare need to change so Bluesky can reach them, because Cloudflare's bot protection can block Bluesky while the site's own check still passes.
+
+#### Fixed
+- Tags and categories with special characters, like an ampersand or a curly apostrophe, now show up correctly on Bluesky and in reader apps instead of as HTML codes.
+
+### 2.6.0 - 2026-11-09
+#### Changed
+- The Bluesky column in the Posts list and the editor panel now explain why a post was not shared, including when the site was disconnected from Bluesky at the time, or when the background task that shares it never ran or did not finish. Switching "Share this post" on for a post that was never shared now shares it.
+
+#### Fixed
+- The follow-up posts of a teaser thread no longer show up as comments on your own post. Replies from other people, and replies you write yourself on Bluesky, still arrive as before.
+
+### 2.5.0 - 2026-10-29
+#### Added
+- The ATmosphere settings page now has a Help tab that explains the plugin, common error messages, and where to find its Site Health checks.
+
+#### Changed
+- Site Health now shows the full error message when the site could not reach Bluesky to renew its login, so a timeout, DNS or SSL problem can be told apart.
+
+#### Fixed
+- Featured images stored on a CDN or offloaded media service no longer stop scheduled posts from being shared to Bluesky.
+- The reactions block and the reactions REST route no longer show likes and reposts of password-protected posts.
+
+### 2.4.2 - 2026-10-16
+#### Fixed
+- Fix the alignment of Bluesky likes and reposts beside their avatars in the dashboard Activity widget.
+- Fix the Site Health message about a rejected Bluesky login renewal pointing to a check that is not shown on the screen.
+- Posts shared to Bluesky now always show what a logged-out visitor sees, not the version shown to the logged-in author.
+- Replies on Bluesky no longer show up as comments on posts that are no longer public.
+- Text and images that plugins hide from visitors no longer show up in posts shared to Bluesky.
 
 ### 2.4.1 - 2026-10-01
 #### Fixed

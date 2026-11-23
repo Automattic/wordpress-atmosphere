@@ -679,6 +679,115 @@ class Test_Jetpack extends \WP_UnitTestCase {
 	}
 
 	/**
+	 * Add mocks of Jetpack's sharing buttons, Likes and Related Posts, with
+	 * the hooks, priorities and early returns of the real modules.
+	 */
+	private function add_jetpack_content_output(): void {
+		// sharing_display() in modules/sharedaddy/sharing-service.php.
+		$sharing = static function ( $text ) {
+			global $post, $wp_current_filter;
+
+			if ( empty( $post ) || ! $post instanceof \WP_Post ) {
+				return $text;
+			}
+
+			if ( \is_preview() || \is_admin() ) {
+				return $text;
+			}
+
+			if ( \defined( 'REST_REQUEST' ) && REST_REQUEST ) {
+				return $text;
+			}
+
+			// Don't output flair on excerpts.
+			if ( \in_array( 'get_the_excerpt', (array) $wp_current_filter, true ) ) {
+				return $text;
+			}
+
+			if ( \in_array( 'the_excerpt', (array) $wp_current_filter, true ) && \in_array( 'the_content', (array) $wp_current_filter, true ) ) {
+				return $text;
+			}
+
+			return $text . '<div class="sharedaddy sd-sharing-enabled"><h3 class="sd-title">Share this:</h3><ul><li>Facebook</li><li>X</li></ul></div>';
+		};
+		\add_filter( 'the_content', $sharing, 19 );
+		\add_filter( 'the_excerpt', $sharing, 19 );
+
+		// Jetpack_Likes::post_likes() in modules/likes.php.
+		$likes = static function ( $content ) {
+			global $wp_current_filter;
+
+			if ( \is_feed() || \is_preview() ) {
+				return $content;
+			}
+
+			if ( \in_array( 'get_the_excerpt', (array) $wp_current_filter, true ) ) {
+				return $content;
+			}
+
+			return $content . '<div class="sharedaddy sd-like jetpack-likes-widget-wrapper"><h3 class="sd-title">Like this:</h3><span>Like Loading…</span></div>';
+		};
+		\add_filter( 'the_content', $likes, 30 );
+
+		// Jetpack_RelatedPosts::filter_add_target_to_dom() in modules/related-posts.
+		$related = static fn( $content ) => \doing_filter( 'get_the_excerpt' ) ? $content : $content . '<div id="jp-relatedposts" class="jp-relatedposts"><h3 class="jp-relatedposts-headline"><em>Related</em></h3></div>';
+		\add_filter( 'the_content', $related, 40 );
+	}
+
+	/**
+	 * Jetpack sharing buttons, Likes and Related Posts stay out of the
+	 * Bluesky text, the link card and the document description, when
+	 * published and in the preview on the post's permalink.
+	 *
+	 * @dataProvider data_contexts
+	 *
+	 * @param bool $on_permalink Render on the post's permalink.
+	 */
+	public function test_jetpack_content_output_stays_out_of_excerpts( bool $on_permalink ) {
+		\wp_set_current_user( self::factory()->user->create( array( 'role' => 'administrator' ) ) );
+
+		$post = self::factory()->post->create_and_get(
+			array(
+				'post_title'   => 'A Titled Post',
+				'post_content' => '<!-- wp:paragraph --><p>A short post body.</p><!-- /wp:paragraph -->',
+				'post_excerpt' => '',
+			)
+		);
+
+		if ( $on_permalink ) {
+			$this->go_to( \get_permalink( $post ) );
+		}
+
+		$this->add_jetpack_content_output();
+
+		$bsky     = ( new Post( $post ) )->transform();
+		$document = ( new Document( $post ) )->transform();
+		$content  = render_publishable_content( $post );
+
+		foreach ( array( 'Share this', 'Like this', 'Related' ) as $output ) {
+			$this->assertStringContainsString( $output, $content, 'the mock is active for the full content' );
+			$this->assertStringNotContainsString( $output, $bsky['text'] );
+			$this->assertStringNotContainsString( $output, $bsky['embed']['external']['description'] );
+			$this->assertStringNotContainsString( $output, $document['description'] );
+		}
+
+		$this->assertStringContainsString( 'A short post body.', $bsky['text'] );
+		$this->assertSame( 'A short post body.', $document['description'] );
+	}
+
+	/**
+	 * Contexts: published from cron, and the preview on the permalink.
+	 *
+	 * @return array[]
+	 */
+	public function data_contexts(): array {
+		return array(
+			'cron'    => array( false ),
+			'preview' => array( true ),
+		);
+	}
+
+	/**
 	 * A whole-post access level gates the comment thread even when the body
 	 * comparison sees nothing: an empty-content (title + featured image)
 	 * subscribers post narrows no bytes but is still subscriber-only.

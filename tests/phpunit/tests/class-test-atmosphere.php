@@ -204,6 +204,13 @@ class Test_Atmosphere extends WP_UnitTestCase {
 			array( 'post_status' => 'publish' )
 		);
 
+		/*
+		 * Creating the post queued its first share. Drop that marker so this
+		 * is an edit of a post with no share outstanding; an edit made while
+		 * the first share is still owed queues the share instead.
+		 */
+		\delete_post_meta( $post->ID, '_atmosphere_share_pending' );
+
 		$this->reset_publishing_action();
 		$this->atmosphere->on_status_change( 'publish', 'publish', $post );
 

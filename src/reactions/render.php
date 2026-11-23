@@ -9,7 +9,7 @@
  * Protocol exposes only a compose intent, no like/repost intent).
  *
  * Outputs nothing when the post has no such reactions, is not publicly
- * viewable, or in a feed context.
+ * viewable, is password protected, or in a feed context.
  *
  * @package Atmosphere
  *
@@ -50,8 +50,9 @@ $atmosphere_post_id = ( $atmosphere_block && isset( $atmosphere_block->context['
 	? (int) $atmosphere_block->context['postId']
 	: (int) get_the_ID();
 
-// Don't leak reaction metadata for posts that aren't publicly viewable.
-if ( ! $atmosphere_post_id || ! is_post_publicly_viewable( $atmosphere_post_id ) ) {
+// Don't leak reaction metadata for posts that aren't publicly viewable,
+// or are password protected and not unlocked by the visitor.
+if ( ! $atmosphere_post_id || ! is_post_publicly_viewable( $atmosphere_post_id ) || post_password_required( $atmosphere_post_id ) ) {
 	return;
 }
 

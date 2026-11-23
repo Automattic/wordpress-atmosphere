@@ -5,6 +5,39 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.6.1] - 2026-11-18
+### Changed
+- Site Health now explains what sites behind Cloudflare need to change so Bluesky can reach them, because Cloudflare's bot protection can block Bluesky while the site's own check still passes. [#351]
+
+### Fixed
+- Tags and categories with special characters, like an ampersand or a curly apostrophe, now show up correctly on Bluesky and in reader apps instead of as HTML codes. [#350]
+
+## [2.6.0] - 2026-11-09
+### Changed
+- The Bluesky column in the Posts list and the editor panel now explain why a post was not shared, including when the site was disconnected from Bluesky at the time, or when the background task that shares it never ran or did not finish. Switching "Share this post" on for a post that was never shared now shares it. [#335]
+
+### Fixed
+- The follow-up posts of a teaser thread no longer show up as comments on your own post. Replies from other people, and replies you write yourself on Bluesky, still arrive as before. [#339]
+
+## [2.5.0] - 2026-10-29
+### Added
+- The ATmosphere settings page now has a Help tab that explains the plugin, common error messages, and where to find its Site Health checks. [#300]
+
+### Changed
+- Site Health now shows the full error message when the site could not reach Bluesky to renew its login, so a timeout, DNS or SSL problem can be told apart. [#331]
+
+### Fixed
+- Featured images stored on a CDN or offloaded media service no longer stop scheduled posts from being shared to Bluesky. [#327]
+- The reactions block and the reactions REST route no longer show likes and reposts of password-protected posts. [#299]
+
+## [2.4.2] - 2026-10-16
+### Fixed
+- Fix the alignment of Bluesky likes and reposts beside their avatars in the dashboard Activity widget. [#284]
+- Fix the Site Health message about a rejected Bluesky login renewal pointing to a check that is not shown on the screen. [#288]
+- Posts shared to Bluesky now always show what a logged-out visitor sees, not the version shown to the logged-in author. [#289]
+- Replies on Bluesky no longer show up as comments on posts that are no longer public. [#286]
+- Text and images that plugins hide from visitors no longer show up in posts shared to Bluesky. [#289]
+
 ## [2.4.1] - 2026-10-01
 ### Fixed
 - Deleting a post that was shared from a previous Bluesky account no longer pretends to succeed. The post stays marked as shared, so it can still be removed after reconnecting that account. [#279]
@@ -215,6 +248,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Remove a comment reply from Bluesky if the comment was deleted or unapproved while it was being published, instead of leaving an orphan reply behind. [#32]
 - Short posts under the long-form teaser-thread strategy no longer ship a redundant "continue reading" reply when the entire body already fits in a single Bluesky post. The link-back is preserved as a card on the same post. [#51]
 
+[2.6.1]: https://github.com/Automattic/wordpress-atmosphere/compare/2.6.0...2.6.1
+[2.6.0]: https://github.com/Automattic/wordpress-atmosphere/compare/2.5.0...2.6.0
+[2.5.0]: https://github.com/Automattic/wordpress-atmosphere/compare/2.4.2...2.5.0
+[2.4.2]: https://github.com/Automattic/wordpress-atmosphere/compare/2.4.1...2.4.2
 [2.4.1]: https://github.com/Automattic/wordpress-atmosphere/compare/2.4.0...2.4.1
 [2.4.0]: https://github.com/Automattic/wordpress-atmosphere/compare/2.3.0...2.4.0
 [2.3.0]: https://github.com/Automattic/wordpress-atmosphere/compare/2.2.0...2.3.0
