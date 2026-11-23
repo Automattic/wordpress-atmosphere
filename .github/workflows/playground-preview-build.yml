@@ -1,10 +1,15 @@
 name: Playground Preview - Build
 
-# Packages the PR as a plugin zip (read-only, safe for fork PRs).
+# Packages the PR as a plugin zip (read-only).
 # Playground Preview - Publish picks it up and posts the preview button as a comment.
 on:
   pull_request:
     types: [opened, synchronize, reopened]
+
+# A newer push cancels the older build, so publish skips it instead of failing on a stale SHA.
+concurrency:
+  group: playground-preview-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 
 permissions:
   contents: read

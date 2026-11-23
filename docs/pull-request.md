@@ -156,6 +156,11 @@ Every PR must:
 - [ ] No merge conflicts with `trunk`.
 - [ ] Code coverage maintained or improved.
 
+### Playground preview
+PRs from branches in this repository get a bot comment with a button that opens the branch in WordPress Playground, logged in and on the settings page. PRs from forks get no preview.
+
+Connecting to Bluesky does not work in the preview: Playground's OpenSSL cannot create the EC key the connection needs, and the OAuth client metadata lives on a site that only exists in the reviewer's browser. Use the preview for everything that does not need a connection, and wp-env for the rest.
+
 ### Review process
 - [ ] Reply to every review comment inline.
 - [ ] Mark resolved threads as resolved.

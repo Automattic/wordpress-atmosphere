@@ -8,9 +8,13 @@ on:
 
 jobs:
   publish:
+    # Skip fork PRs: a bot comment would make a link to fork-built code look vetted.
+    # The check lives here because the build workflow comes from the PR and can be changed by it.
+    if: github.event.workflow_run.head_repository.full_name == github.repository
     permissions:
       contents: write
       pull-requests: write
+      actions: read
     uses: WordPress/action-wp-playground-pr-preview/.github/workflows/preview-publish.yml@1b15093d61b5e98cdfeb31466f34ade495762cd7 # v4.0.0
     with:
       mode: comment
